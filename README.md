@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/AgentSense-v2.9-2563eb?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/FuturesMind-v2.9-2563eb?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python" alt="Python">
   <img src="https://img.shields.io/badge/License-Apache%202.0-green?style=for-the-badge" alt="License">
 </p>
 
-<h1 align="center">🧠 AgentSense</h1>
+<h1 align="center">🧠 FuturesMind</h1>
 <h3 align="center">Multi-Agent LLM Framework for Commodity Futures Research<br>with Social Media Sentiment Fusion</h3>
 
 <p align="center">
@@ -20,13 +20,13 @@
 
 ## 📖 Overview
 
-**AgentSense** is a multi-agent LLM framework that adapts the [TradingAgents](https://github.com/TauricResearch/TradingAgents) architecture for **Chinese commodity futures markets**, fusing traditional quantitative analysis with **real-time social media sentiment** from Weibo, Zhihu, Xueqiu, and Xiaohongshu.
+**FuturesMind** is a multi-agent LLM framework that adapts the [TradingAgents](https://github.com/TauricResearch/TradingAgents) architecture for **Chinese commodity futures markets**, fusing traditional quantitative analysis with **real-time social media sentiment** from Weibo, Zhihu, Xueqiu, and Xiaohongshu.
 
 > ⚡ 11 specialized agents collaborate in a structured debate to produce market analysis reports — covering 21 commodity varieties across ferrous metals, non-ferrous metals, energy/chemicals, and agricultural products.
 
 ### Why AgentSense?
 
-| Challenge | AgentSense Solution |
+| Challenge | FuturesMind Solution |
 |-----------|-------------------|
 | Commodity markets driven by policy & sentiment | Social media NLP + multi-platform sentiment fusion |
 | Single-analyst bias | Bull vs. Bear adversarial debate with tool-calling verification |
@@ -87,8 +87,8 @@
 ### Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/AgentSense.git
-cd AgentSense
+git clone https://github.com/2779639552/FuturesMind.git
+cd FuturesMind
 
 # Create virtual environment
 python -m venv venv
@@ -238,11 +238,11 @@ Based on [TradingAgents](https://github.com/TauricResearch/TradingAgents) by Tau
 If you use AgentSense in your research, please cite:
 
 ```bibtex
-@software{agentsense2026,
-  title     = {AgentSense: Multi-Agent LLM Framework for Commodity Futures Research},
-  author    = {AgentSense Contributors},
+@software{futuresmind2026,
+  title     = {FuturesMind: Multi-Agent LLM Framework for Commodity Futures Research},
+  author    = {FuturesMind Contributors},
   year      = {2026},
-  url       = {https://github.com/YOUR_USERNAME/AgentSense}
+  url       = {https://github.com/2779639552/FuturesMind}
 }
 
 @misc{tradingagents2025,

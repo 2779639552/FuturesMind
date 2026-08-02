@@ -1,12 +1,12 @@
-# Contributing to AgentSense
+# Contributing to FuturesMind
 
 Thanks for your interest in contributing! Here's how to get started.
 
 ## Development Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/AgentSense.git
-cd AgentSense
+git clone https://github.com/2779639552/FuturesMind.git
+cd FuturesMind
 python -m venv venv
 venv\Scripts\pip install -e ".[dev]"
 cp .env.example .env

@@ -1,4 +1,4 @@
-# AgentSense Architecture
+# FuturesMind Architecture
 
 ## High-Level Design
 
