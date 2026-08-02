@@ -1,10 +1,14 @@
-# AgentSense v2.9 — Commodity Futures Multi-Agent Research System
-# Install: pip install -e .
-# Main deps are in pyproject.toml
+# FuturesMind v2.9 — Commodity Futures Multi-Agent Research System
+#
+# Full dependency list is in pyproject.toml.
+# Run: pip install -e .     (installs everything from pyproject.toml)
+#
+# The packages below are additional runtime dependencies
+# not yet listed in the upstream pyproject.toml:
 
-# Web framework
+# Web dashboard
 flask>=3.0
 waitress>=3.0
 
-# Chinese futures data
+# Chinese futures market data
 akshare>=1.18

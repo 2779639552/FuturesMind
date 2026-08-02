@@ -180,7 +180,6 @@ venv\Scripts\python commodity_demo.py RB 2026-08-02   # Rebar
 ## 🗂 Project Structure
 
 ```
-AgentSense/
 ├── tradingagents/            # Core library (agents, dataflows, graph, LLM clients)
 │   ├── agents/               # Analyst agents + debate (Bull/Bear/Moderator)
 │   ├── dataflows/            # Data pipeline, commodity futures, sentiment, tools

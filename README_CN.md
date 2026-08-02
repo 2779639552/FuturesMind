@@ -208,7 +208,6 @@ venv\Scripts\python commodity_demo.py RB 2026-08-02   # 螺纹钢
 ## 🗂 项目结构
 
 ```
-FuturesMind/
 ├── tradingagents/            # 核心库（agents, dataflows, graph, LLM clients）
 │   ├── agents/               # 分析师 + 辩论 Agent (Bull/Bear/Moderator)
 │   ├── dataflows/            # 数据管道、商品期货、情绪数据、工具

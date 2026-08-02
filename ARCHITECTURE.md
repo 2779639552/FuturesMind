@@ -2,7 +2,7 @@
 
 ## High-Level Design
 
-AgentSense extends the TradingAgents multi-agent framework with commodity futures specialization and social media sentiment fusion.
+FuturesMind extends the TradingAgents multi-agent framework with commodity futures specialization and social media sentiment fusion.
 
 ```
                          ┌──────────────────────────┐
@@ -62,7 +62,7 @@ AgentSense extends the TradingAgents multi-agent framework with commodity future
 **Max iterations**: 6 rounds
 
 ### 4. Sentiment Analyst
-**Tools**: Social media sentiment, crowd情绪, author influence data
+**Tools**: Social media sentiment, crowd sentiment, author influence data
 **Data**: Multi-platform social media pipeline (Weibo, Zhihu, Xueqiu, Xiaohongshu)
 **Max iterations**: 4 rounds
 
