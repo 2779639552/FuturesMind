@@ -1,0 +1,2951 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentSense 大宗智研 Dashboard</title>
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+<!-- Libraries -->
+<script src="/static/marked.min.js?v=3"></script>
+<script src="/static/echarts.min.js?v=3"></script>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+
+<style>
+/* ============================================================
+   DESIGN TOKENS — Dark Theme (default)
+   ============================================================ */
+:root {
+  --brand: #ff5a1f;
+  --brand-hover: #e04d15;
+  --brand-light: #ff8c42;
+  --brand-shadow: rgba(255,90,31,0.3);
+  --bg: #0a0a0a;
+  --bg-elevated: #0f0f0f;
+  --bg-card: #161616;
+  --bg-input: #1a1a1a;
+  --border: #2a2a2a;
+  --border-light: #333;
+  --text: #f5f1eb;
+  --text-secondary: #a0a0a0;
+  --text-muted: #666;
+  --green: #22c55e;
+  --green-bg: rgba(34,197,94,0.15);
+  --red: #ef4444;
+  --red-bg: rgba(239,68,68,0.15);
+  --amber: #fbbf24;
+  --amber-bg: rgba(251,191,36,0.15);
+  --blue: #60a5fa;
+  --teal: #2dd4bf;
+  --purple: #a78bfa;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --radius-sm: 6px;
+  --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  --transition: 0.2s ease;
+}
+
+/* Light Theme */
+[data-theme="light"] {
+  --bg: #f5f5f5;
+  --bg-elevated: #ffffff;
+  --bg-card: #ffffff;
+  --bg-input: #f0f0f0;
+  --border: #e0e0e0;
+  --border-light: #d0d0d0;
+  --text: #1a1a1a;
+  --text-secondary: #555;
+  --text-muted: #999;
+  --shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+/* ============================================================
+   RESET & BASE
+   ============================================================ */
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+html { font-size: 15px; scroll-behavior: smooth; }
+body {
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  line-height: 1.5;
+  transition: background var(--transition), color var(--transition);
+}
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+header {
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  transition: background var(--transition);
+}
+.header-left { display:flex; align-items:center; gap:12px; }
+header h1 {
+  font-size: 1.25rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+header h1 .brand-orange { color: var(--brand); }
+header h1 .brand-white { color: var(--text); }
+.header-badge {
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+/* Theme Toggle */
+.theme-toggle {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all var(--transition);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.theme-toggle:hover { border-color: var(--brand); color: var(--brand); }
+
+/* ============================================================
+   NAVIGATION
+   ============================================================ */
+nav { display: flex; gap: 2px; }
+nav button {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all var(--transition);
+  white-space: nowrap;
+  font-family: inherit;
+}
+nav button:hover { color: var(--text); background: var(--bg-input); }
+nav button.active {
+  color: var(--brand);
+  border-bottom: 2px solid var(--brand);
+  border-radius: 0;
+  background: transparent;
+}
+
+/* ============================================================
+   MAIN LAYOUT
+   ============================================================ */
+main {
+  padding: 20px 24px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+.tab { display: none; }
+.tab.active { display: block; animation: fadeIn 0.25s ease; }
+@keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+
+/* ============================================================
+   GRID SYSTEM
+   ============================================================ */
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: 1fr 1fr; }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+
+/* ============================================================
+   CARDS
+   ============================================================ */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  transition: background var(--transition), border var(--transition), box-shadow var(--transition);
+}
+.card:hover { box-shadow: var(--shadow); }
+.card h3 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card h3 .badge {
+  font-size: 0.68rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.badge-bull { background: var(--green-bg); color: var(--green); }
+.badge-bear { background: var(--red-bg); color: var(--red); }
+.badge-neutral { background: var(--amber-bg); color: var(--amber); }
+.badge-info { background: rgba(96,165,250,0.15); color: var(--blue); }
+
+/* ============================================================
+   SIGNAL BANNER
+   ============================================================ */
+.signal-banner {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 24px 32px;
+  text-align: center;
+  margin-bottom: 20px;
+}
+[data-theme="light"] .signal-banner {
+  background: linear-gradient(135deg, #f0f4ff 0%, #e8f0fe 100%);
+}
+.signal-banner .signal-label {
+  font-size: 0.75rem;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.signal-banner .signal-rating {
+  font-size: 3rem;
+  font-weight: 900;
+  margin: 4px 0;
+}
+.signal-banner .signal-meta {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   STAT CARDS
+   ============================================================ */
+.stat-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  text-align: center;
+  flex: 1;
+  min-width: 100px;
+  transition: all var(--transition);
+}
+.stat-card .stat-val {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--brand);
+}
+.stat-card .stat-lbl {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* ============================================================
+   FORM ELEMENTS
+   ============================================================ */
+input, select, textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  font-family: inherit;
+  transition: border var(--transition);
+  width: 100%;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-shadow);
+}
+select { cursor: pointer; }
+label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 4px; }
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all var(--transition);
+  font-family: inherit;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: linear-gradient(135deg, var(--brand), var(--brand-light));
+  color: #fff;
+  box-shadow: 0 4px 15px var(--brand-shadow);
+}
+.btn-primary:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 6px 20px var(--brand-shadow); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn-green { background: var(--green); color: #fff; }
+.btn-red { background: var(--red); color: #fff; }
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+.btn-outline:hover { border-color: var(--brand); color: var(--brand); }
+.btn-sm { padding: 6px 12px; font-size: 0.78rem; }
+
+/* ============================================================
+   PIPELINE PROGRESS (dot indicators)
+   ============================================================ */
+.pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.pipeline-stage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 16px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  transition: all var(--transition);
+}
+.pipeline-stage .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pipeline-stage.done { border-color: var(--green); color: var(--green); }
+.pipeline-stage.done .dot { background: var(--green); }
+.pipeline-stage.active { border-color: var(--brand); color: var(--brand); animation: pulse 1.5s infinite; }
+.pipeline-stage.active .dot { background: var(--brand); }
+.pipeline-stage.pending { color: var(--text-muted); }
+.pipeline-stage.pending .dot { background: #444; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+
+/* ============================================================
+   PROGRESS LOG
+   ============================================================ */
+.progress-log {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  max-height: 500px;
+  overflow-y: auto;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.progress-log .node { color: var(--brand); font-weight: 600; }
+.progress-log .tool { color: var(--teal); }
+.progress-log .report { color: var(--green); }
+.progress-log .debate { color: var(--amber); }
+.progress-log .error { color: var(--red); }
+
+/* ============================================================
+   REPORT CONTENT
+   ============================================================ */
+.report-content {
+  line-height: 1.7;
+  font-size: 0.88rem;
+  max-height: none;
+  overflow-y: visible;
+}
+.report-content h1, .report-content h2, .report-content h3 {
+  color: var(--brand);
+  margin: 16px 0 8px;
+}
+.report-content h2 { font-size: 1.2rem; }
+.report-content h3 { font-size: 1rem; }
+.report-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin: 8px 0;
+}
+.report-content th {
+  background: var(--bg-input);
+  color: var(--brand);
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 2px solid var(--border);
+}
+.report-content td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.report-content ul, .report-content ol { margin: 8px 0; padding-left: 20px; }
+.report-content li { margin: 2px 0; }
+.report-content code {
+  background: var(--bg-input);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.report-content pre {
+  background: var(--bg-input);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 0.82em;
+}
+.report-content blockquote {
+  border-left: 3px solid var(--brand);
+  padding: 8px 14px;
+  margin: 8px 0;
+  background: var(--bg-input);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.report-content a { color: var(--blue); text-decoration: none; }
+.report-content a:hover { text-decoration: underline; }
+.report-content hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+/* ============================================================
+   DEBATE ROUNDS
+   ============================================================ */
+.debate-round {
+  background: var(--bg-input);
+  padding: 10px 14px;
+  margin: 6px 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 0.85rem;
+}
+.debate-round.bull { border-left: 3px solid var(--green); }
+.debate-round.bear { border-left: 3px solid var(--red); }
+.debate-round .speaker { font-weight: 700; font-size: 0.82rem; margin-bottom: 4px; }
+
+/* ============================================================
+   POST CARDS
+   ============================================================ */
+#sentiment-posts { max-height: 700px; overflow-y: auto; }
+.post-card {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin: 6px 0;
+  font-size: 0.84rem;
+  transition: border var(--transition);
+}
+.post-card:hover { border-color: var(--border-light); }
+.post-card .platform-tag {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 6px;
+  font-weight: 600;
+}
+.platform-tag.weibo { background: rgba(239,68,68,0.2); color: var(--red); }
+.platform-tag.zhihu { background: rgba(45,212,191,0.2); color: var(--teal); }
+.platform-tag.xhs { background: rgba(255,90,31,0.2); color: var(--brand); }
+.platform-tag.xueqiu { background: rgba(14,165,233,0.2); color: #0ea5e9; }
+
+/* ============================================================
+   COLLAPSIBLE / EXPANDER
+   ============================================================ */
+.expander { border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 8px 0; overflow: hidden; }
+.expander-header {
+  padding: 10px 14px;
+  background: var(--bg-input);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+  transition: background var(--transition);
+}
+.expander-header:hover { background: var(--border); }
+.expander-header .arrow { transition: transform var(--transition); font-size: 0.7rem; }
+.expander.open .expander-header .arrow { transform: rotate(90deg); }
+.expander-body { display: none; padding: 14px; }
+.expander.open .expander-body { display: block; }
+
+/* ============================================================
+   TOAST / NOTIFICATION
+   ============================================================ */
+.toast-container {
+  position: fixed;
+  top: 70px;
+  right: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  padding: 12px 18px;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 500;
+  animation: slideIn 0.3s ease;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  max-width: 380px;
+}
+.toast.success { background: var(--green); color: #fff; }
+.toast.error { background: var(--red); color: #fff; }
+.toast.info { background: var(--blue); color: #fff; }
+@keyframes slideIn { from { opacity:0; transform:translateX(40px); } to { opacity:1; transform:translateX(0); } }
+
+/* ============================================================
+   CHARTS
+   ============================================================ */
+.chart-container { width: 100%; height: 320px; }
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1200px) {
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 900px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  header { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; }
+  nav { overflow-x: auto; width: 100%; -webkit-overflow-scrolling: touch; }
+  nav button { font-size: 0.78rem; padding: 6px 10px; flex-shrink: 0; }
+  main { padding: 12px; }
+  .stat-row { flex-wrap: wrap; }
+  .stat-card { min-width: 80px; flex: 1 1 40%; }
+  .signal-banner .signal-rating { font-size: 2rem; }
+  .chart-container { height: 240px; }
+}
+@media (max-width: 480px) {
+  .stat-card { flex: 1 1 100%; }
+  .pipeline-stage { font-size: 0.7rem; padding: 4px 8px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toasts"></div>
+
+<!-- Header -->
+<header>
+  <div class="header-left">
+    <h1><span class="brand-orange">Agent</span><span class="brand-white">Sense</span></h1>
+    <span class="header-badge">v2.5</span>
+  </div>
+  <nav id="nav">
+    <button class="active" data-tab="run">运行分析</button>
+    <button data-tab="sentiment">情绪数据</button>
+    <button data-tab="analysis">分析工具</button>
+    <button data-tab="backtest">回测</button>
+    <button data-tab="trading">模拟交易</button>
+    <button data-tab="update">数据更新</button>
+    <button data-tab="history">历史报告</button>
+    <button data-tab="system">系统</button>
+  </nav>
+  <button class="theme-toggle" onclick="App.toggleTheme()" title="切换主题">
+    <span id="theme-icon">🌙</span> <span id="theme-label">暗色</span>
+  </button>
+</header>
+
+<main>
+<!-- ================================================================
+     TAB: Run Analysis
+     ================================================================ -->
+<div id="tab-run" class="tab active">
+  <!-- Info -->
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 模块说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>10节点多智能体分析管线</b>：4位分析师（技术/基本面/宏观/情绪）并行运行 → 多空辩论（3轮）→ 裁决 → 综合研判 → 情景分析。<br>
+      <b>预计耗时</b>：3-6分钟（取决于LLM响应速度和数据源状态）。<br>
+      <b>输出</b>：每位分析师报告 + 辩论记录 + RATING信号（偏多/偏空）+ 置信度评分（1-10）。
+    </div>
+  </div>
+  <!-- Stat Row -->
+  <div class="stat-row">
+    <div class="stat-card"><div class="stat-val" id="stat-varieties">-</div><div class="stat-lbl">品种覆盖</div></div>
+    <div class="stat-card"><div class="stat-val" id="stat-posts">-</div><div class="stat-lbl">情绪帖数</div></div>
+    <div class="stat-card"><div class="stat-val" id="stat-time">-</div><div class="stat-lbl">上次耗时</div></div>
+    <div class="stat-card"><div class="stat-val" id="stat-status">就绪</div><div class="stat-lbl">状态</div></div>
+    <div class="stat-card"><div class="stat-val" id="stat-llm">-</div><div class="stat-lbl">LLM调用</div></div>
+  </div>
+
+  <!-- Config Row -->
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <h3>分析配置</h3>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div style="flex:1;min-width:140px">
+          <label>品种</label>
+          <select id="sym" onchange="App.updateSentimentStats()"></select>
+        </div>
+        <div style="flex:1;min-width:140px">
+          <label>日期</label>
+          <input type="date" id="date" value="2026-07-14">
+        </div>
+        <button class="btn btn-primary" id="btn-run" onclick="App.runAnalysis()">▶ 开始分析</button>
+        <button class="btn btn-outline btn-sm" id="btn-pause" onclick="App.pauseAnalysis()" style="display:none" title="暂停">⏸</button>
+        <button class="btn btn-outline btn-sm" id="btn-resume" onclick="App.resumeAnalysis()" style="display:none" title="恢复">▶</button>
+        <button class="btn btn-red btn-sm" id="btn-stop" onclick="App.stopAnalysis()" style="display:none" title="停止">⏹</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>品种信息 <span class="badge badge-info" id="sentiment-badge"></span></h3>
+      <div id="variety-info" style="font-size:0.84rem;color:var(--text-secondary)">选择品种查看详情</div>
+    </div>
+  </div>
+
+  <!-- Pipeline Progress -->
+  <div class="card" id="progress-card" style="display:none;margin-bottom:16px">
+    <h3>分析进度 <span id="progress-status" style="font-size:0.75rem;color:var(--text-muted)"></span></h3>
+    <div class="pipeline" id="pipeline-stages"></div>
+    <div class="progress-log" id="progress-log"></div>
+  </div>
+
+  <!-- Results -->
+  <div id="results-area"></div>
+  <div style="margin-top:12px">
+    <button class="btn btn-outline btn-sm" onclick="App.toggleFeedback()">💬 讨论进化</button>
+  </div>
+  <div class="grid grid-2" id="comparison-charts" style="display:none;margin-top:16px">
+    <div class="card"><h3>预测 vs 实盘价格</h3><div class="chart-container" id="chart-compare-price"></div></div>
+    <div class="card"><h3>平台权重</h3><div class="chart-container" id="chart-platform-weights"></div></div>
+  </div>
+  <div id="feedback-box" style="display:none;margin-top:8px">
+    <div class="card" style="max-height:350px;overflow-y:auto;margin-bottom:8px" id="feedback-msgs"></div>
+    <div style="display:flex;gap:8px">
+      <input id="feedback-input" placeholder="输入观点与Agent辩论..." style="flex:1" onkeydown="if(event.key==='Enter')App.sendFeedback()">
+      <button class="btn btn-primary btn-sm" onclick="App.sendFeedback()">发送</button>
+    </div>
+  </div>
+  <div class="grid grid-2" id="comparison-charts" style="display:none;margin-top:16px">
+    <div class="card"><h3>预测 vs 实盘价格</h3><div class="chart-container" id="chart-compare-price"></div></div>
+    <div class="card"><h3>平台权重</h3><div class="chart-container" id="chart-platform-weights"></div></div>
+  </div>
+</div>
+
+<!-- ================================================================
+     TAB: Sentiment
+     ================================================================ -->
+<div id="tab-sentiment" class="tab">
+  <!-- Info -->
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 指标说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>情绪得分 (Sentiment Score)</b>：范围 [-1, +1]。正=看多，负=看空。基于作者影响力加权计算，大V权重更高。<br>
+      <b>作者加权 vs 简单平均</b>：作者加权 = 每条帖子 × 作者影响力 / 总影响力；简单平均 = 所有帖子等权。<br>
+      <b>重叠图</b>：左轴(橙)=价格，右轴(绿)=情绪。两者同向 = 情绪跟随价格；背离 = 可能信号。<br>
+      <b>回看天数</b>：控制图表显示多长的时间范围，不影响底层数据。
+    </div>
+  </div>
+  <!-- Time range info bar -->
+  <div class="stat-row" id="sentiment-meta-bar" style="display:none">
+    <div class="stat-card"><div class="stat-val" id="meta-sent-start">-</div><div class="stat-lbl">情绪起始</div></div>
+    <div class="stat-card"><div class="stat-val" id="meta-sent-end">-</div><div class="stat-lbl">情绪截止</div></div>
+    <div class="stat-card"><div class="stat-val" id="meta-price-start">-</div><div class="stat-lbl">价格起始</div></div>
+    <div class="stat-card"><div class="stat-val" id="meta-price-end">-</div><div class="stat-lbl">价格截止</div></div>
+    <div class="stat-card"><div class="stat-val" id="meta-posts-start">-</div><div class="stat-lbl">帖子最早</div></div>
+    <div class="stat-card"><div class="stat-val" id="meta-posts-end">-</div><div class="stat-lbl">帖子最新</div></div>
+  </div>
+
+  <!-- Lookback control -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+      <div style="flex:1;min-width:150px">
+        <label>回看天数</label>
+        <select id="lookback-days" onchange="App.onLookbackChange()">
+          <option value="30">30 天</option>
+          <option value="60">60 天</option>
+          <option value="90">90 天</option>
+          <option value="180" selected>180 天</option>
+          <option value="365">1 年</option>
+          <option value="730">2 年</option>
+        </select>
+      </div>
+      <span style="font-size:0.78rem;color:var(--text-muted);padding-bottom:8px">
+        选择回看范围后自动刷新下方图表和帖子数据
+      </span>
+    </div>
+  </div>
+
+  <!-- Sentiment-Price Overlay Chart -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>情绪得分 vs 价格走势 <span class="badge badge-info" id="overlay-badge"></span></h3>
+    <div class="chart-container" id="chart-overlay" style="height:420px"></div>
+  </div>
+
+  <!-- Posts -->
+  <div class="card">
+    <h3>采集帖子
+      <span style="font-size:0.68rem;color:var(--text-muted);margin-left:8px" id="posts-time-range"></span>
+      <select id="post-filter" onchange="App.filterPosts()" style="width:auto;display:inline;margin-left:12px">
+        <option value="">全部品种</option>
+      </select>
+    </h3>
+    <div id="sentiment-posts">加载中...</div>
+  </div>
+</div>
+
+<!-- ================================================================
+     TAB: Backtest
+     ================================================================ -->
+<div id="tab-backtest" class="tab">
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 指标说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>方向准确率</b>：情绪信号方向(正/负)与次日价格涨跌方向一致的比例。>50%=优于随机。<br>
+      <b>平台权重</b>：基于回测表现的 Softmax 权重。知乎权重高=知乎情绪预测力更强。<br>
+      <b>作者加权 vs 简单平均</b>：作者加权准确率 > 简单平均 → 大V观点更有参考价值。
+    </div>
+  </div>
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card"><h3>平台预测力</h3><div class="chart-container" id="chart-platforms"></div></div>
+    <div class="card"><h3>品种级方向准确率</h3><div class="chart-container" id="chart-varieties"></div></div>
+  </div>
+  <div class="grid grid-3" id="backtest-stats"></div>
+</div>
+
+<!-- ================================================================
+     TAB: Data Update
+     ================================================================ -->
+<div id="tab-update" class="tab">
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>流水线</b>：多平台采集→粉丝解析→情绪聚合(作者加权)→回测调优→生成JSON→平台统计。<br>
+      <b>每关键词条数</b>：每个品种关键词搜索多少条帖子。微博API每词最多约20条。<br>
+      <b>最低帖数阈值</b>：品种帖子数少于此值则不生成情绪JSON。<br>
+      <b>收集起始日期</b>：只保留该日期之后的帖子。注意：平台API本身只返回近1-3个月数据。<br>
+      <b>平台</b>：微博(快,3min) | 知乎(慢,10min) | 小红书(反爬) | 雪球(Playwright,5min)。
+    </div>
+  </div>
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <h3>数据更新配置</h3>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div style="flex:1;min-width:110px"><label>每关键词条数</label><input type="number" id="update-perkw" value="15" min="5" max="50"></div>
+        <div style="flex:1;min-width:110px"><label>最低帖数阈值</label><input type="number" id="update-minnotes" value="3" min="1" max="20"></div>
+        <div style="flex:1;min-width:140px"><label>收集起始日期 (可选)</label><input type="date" id="update-since" value="" onchange="App.updatePlatformHint()" placeholder="不限"></div>
+        <button class="btn btn-green" id="btn-update" onclick="App.runDataUpdate()">一键更新</button>
+      </div>
+      <div style="margin-top:8px;font-size:0.82rem">
+        <label style="cursor:pointer;margin-right:14px;display:inline"><input type="checkbox" id="plat-weibo" checked onchange="App.updatePlatformHint()"> 微博</label>
+        <label style="cursor:pointer;margin-right:14px;display:inline"><input type="checkbox" id="plat-zhihu" onchange="App.updatePlatformHint()"> 知乎</label>
+        <label style="cursor:pointer;display:inline"><input type="checkbox" id="plat-xhs" onchange="App.updatePlatformHint()"> 小红书</label>
+        <label style="cursor:pointer;display:inline;margin-left:14px"><input type="checkbox" id="plat-xueqiu" onchange="App.updatePlatformHint()"> 雪球</label>
+      </div>
+      <div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)" id="platform-hint">流程: 多平台采集 → 粉丝解析 → 情绪聚合 → 回测 → 生成JSON</div>
+      <div style="margin-top:4px;font-size:0.72rem;color:var(--amber)">
+        ⚠ 平台搜索API通常只返回近1-3个月数据。「收集起始日期」用于过滤结果，不能突破平台API的时间限制。
+      </div>
+    </div>
+    <div class="card">
+      <h3>当前数据概览 <span class="badge badge-info" id="update-stats"></span></h3>
+      <div id="update-summary" style="font-size:0.84rem;color:var(--text-secondary)">点击更新后显示</div>
+    </div>
+  </div>
+  <div class="card"><h3>更新日志</h3><div class="progress-log" id="update-log" style="min-height:280px"></div></div>
+</div>
+
+<!-- ================================================================
+     TAB: History
+     ================================================================ -->
+<div id="tab-history" class="tab">
+  <div class="card"><h3>历史分析报告</h3><div id="history-list"></div></div>
+  <div class="card" id="report-viewer" style="display:none;margin-top:16px">
+    <h3>
+      报告内容
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" id="btn-download-md" onclick="App.downloadReport('md')">📥 MD</button>
+        <button class="btn btn-outline btn-sm" id="btn-download-pdf" onclick="App.downloadReport('pdf')">📄 PDF</button>
+      </span>
+    </h3>
+    <div class="report-content" id="report-content"></div>
+  </div>
+</div>
+
+
+<!-- ================================================================
+     TAB: Analysis Tools (P1)
+     ================================================================ -->
+<div id="tab-analysis" class="tab">
+  <!-- Info -->
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 子模块说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>异常检测</b>：Z-score = (当日情绪 - 7日均值) / 7日标准差。\|Z\|>2 = 情绪显著偏离近期均值。<br>
+      <b>分歧度</b>：1 - \|看多%-看空%\|。高=共识强，低=市场严重分歧（可能反转）。<br>
+      <b>领先滞后</b>：计算情绪→价格 和 价格→情绪的时滞相关系数，判断谁领先谁。<br>
+      <b>品种对比</b>：多品种横截面比较，看哪些品种情绪最强/最弱。<br>
+      <b>跨平台</b>：微博(散户)、知乎(专业)、小红书(社交)三方情绪差异。分歧大=信号不可靠。<br>
+      <b>作者</b>：影响力 = 发帖量×0.3 + log(粉丝)×0.3 + log(互动)×0.4。<br>
+      <b>事件</b>：从帖子中提取关键词匹配的8类事件（停产/政策/进出口/天气/矿山/地缘/库存/宏观）。
+    </div>
+  </div>
+  <!-- Sub-nav -->
+  <div style="display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap" id="analysis-subnav">
+    <button class="btn btn-outline btn-sm active" data-asub="comprehensive" onclick="App.switchAnalysisSub('comprehensive')">综合分析</button>
+    <button class="btn btn-outline btn-sm" data-asub="authors" onclick="App.switchAnalysisSub('authors')">作者</button>
+    <button class="btn btn-outline btn-sm" data-asub="events" onclick="App.switchAnalysisSub('events')">事件</button>
+    <button class="btn btn-outline btn-sm" data-asub="framework" onclick="App.switchAnalysisSub('framework')">框架说明</button>
+    <button class="btn btn-outline btn-sm" data-asub="agentval" onclick="App.switchAnalysisSub('agentval')" style="border-color:var(--green);font-weight:700">Agent验证</button>
+    <button class="btn btn-outline btn-sm" data-asub="agentbt" onclick="App.switchAnalysisSub('agentbt')" style="border-color:var(--brand)">Agent回测</button>
+  </div>
+
+  <!-- Comprehensive Analysis (anomalies + divergence + leadlag + ranking + compare) -->
+  <div class="analysis-sub" id="asub-comprehensive">
+    <div style="display:flex;gap:8px;align-items:end;margin-bottom:14px;flex-wrap:wrap">
+      <div><label>品种</label><select id="comp-variety"></select></div>
+      <button class="btn btn-primary btn-sm" onclick="App.loadComprehensive()">分析</button>
+      <button class="btn btn-outline btn-sm" onclick="App.loadDivergenceAll()">全品种分歧度</button>
+    </div>
+    <!-- Row 1: Anomalies + Divergence -->
+    <div class="grid grid-2" style="margin-bottom:14px">
+      <div class="card"><h3>情绪异动检测</h3><div id="anomalies-result"><span style="color:var(--text-muted)">选择品种后点击分析</span></div></div>
+      <div class="card"><h3>多空分歧度</h3><div id="divergence-detail" style="font-size:0.9rem"></div><div id="divergence-all-list" style="max-height:200px;overflow-y:auto;margin-top:8px"></div></div>
+    </div>
+    <!-- Row 2: Lead-Lag + Divergence chart -->
+    <div class="grid grid-2" style="margin-bottom:14px">
+      <div class="card"><h3>领先滞后</h3><div id="leadlag-conclusion"></div><div class="chart-container" id="chart-leadlag" style="height:250px"></div></div>
+      <div class="card"><h3>全品种分歧度</h3><div class="chart-container" id="chart-divergence" style="height:250px"></div></div>
+    </div>
+    <!-- Row 3: Ranking + Compare tables -->
+    <div class="grid grid-2" style="margin-bottom:14px">
+      <div class="card"><h3>品种情绪排名</h3><div id="ranking-table" style="overflow-x:auto;max-height:350px;overflow-y:auto"></div></div>
+      <div class="card"><h3>多维度对比</h3><div id="compare-table" style="overflow-x:auto;max-height:350px;overflow-y:auto"></div></div>
+    </div>
+    <!-- Row 4: Charts -->
+    <div class="grid grid-2" style="margin-bottom:14px">
+      <div class="card"><h3>情绪得分排名</h3><div class="chart-container" id="chart-ranking" style="height:300px"></div></div>
+      <div class="card"><h3>多品种情绪对比</h3><div class="chart-container" id="chart-compare" style="height:300px"></div></div>
+    </div>
+  </div>
+
+  <!-- Cross Platform -->
+  <!-- Authors -->
+  <div class="analysis-sub" id="asub-authors" style="display:none">
+    <div class="card"><h3>作者影响力排行</h3><div id="authors-table" style="overflow-x:auto"></div></div>
+  </div>
+
+  <!-- Framework Explanation -->
+  <div class="analysis-sub" id="asub-framework" style="display:none">
+    <div class="card" style="margin-bottom:14px">
+      <h3>原版 TradingAgents 框架</h3>
+      <div class="report-content" style="font-size:0.88rem;line-height:1.8">
+        <p>TradingAgents 是 <b>TauricResearch</b> 开源的<a href="https://github.com/TauricResearch/TradingAgents" target="_blank" style="color:var(--blue)">多智能体金融投研框架</a>（65K+ Stars），原版面向美股市场。</p>
+
+        <h3>原版架构</h3>
+        <table>
+          <tr><th>阶段</th><th>节点</th><th>说明</th></tr>
+          <tr><td><b>1. 分析师</b></td><td>Market / Social / News / Fundamentals</td><td>4位分析师<b>串行</b>运行，各自调用数据工具生成报告</td></tr>
+          <tr><td><b>2. 辩论</b></td><td>Bull Researcher vs Bear Researcher</td><td>基于分析师报告进行<b>多轮对抗辩论</b>，每方可引用数据反驳对方</td></tr>
+          <tr><td><b>3. 研究</b></td><td>Research Manager</td><td>审阅辩论记录，输出结构化投资计划（Buy/Overweight/Hold/Underweight/Sell）</td></tr>
+          <tr><td><b>4. 交易</b></td><td>Trader</td><td>基于研究计划制定具体交易（入场价/止损/仓位）</td></tr>
+          <tr><td><b>5. 风控</b></td><td>Aggressive / Neutral / Conservative</td><td>3位风控分析师进行<b>三方辩论</b>，评估风险</td></tr>
+          <tr><td><b>6. 决策</b></td><td>Portfolio Manager</td><td>综合研究+交易+风控，输出最终交易决策</td></tr>
+        </table>
+
+        <h3>原版局限性</h3>
+        <ol>
+          <li><b>串行分析师</b>：4位分析师依次运行，4倍耗时，错误通过共享状态传播</li>
+          <li><b>"传话游戏"效应</b>：数据→分析师→辩论→研究→交易→风控→决策，5次LLM传递，精确数据退化为模糊文字</li>
+          <li><b>美股硬编码</b>：4层代码深度绑定美股数据源（Alpha Vantage/Yahoo Finance/Reddit）</li>
+          <li><b>风控后置</b>：风控在交易决策之后，方向已定无法修正</li>
+          <li><b>权重黑箱</b>：LLM隐式判断权重，无可编程/可审计的权重机制</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <h3>AgentSense 改进</h3>
+      <div class="report-content" style="font-size:0.88rem;line-height:1.8">
+        <table>
+          <tr><th>维度</th><th>原版</th><th>AgentSense v2.7</th></tr>
+          <tr><td><b>分析师</b></td><td>4位串行（美股）</td><td>4位<b>并行</b>（技术/基本面/宏观/情绪），各自独立工具循环</td></tr>
+          <tr><td><b>数据</b></td><td>美股API</td><td>AKShare(中国期货) + 微博/知乎/小红书社交媒体</td></tr>
+          <tr><td><b>辩论</b></td><td>Bull/Bear → Manager</td><td>Bull(R1)→Bear→Bull(R2)→Moderator（<b>Bull有最后反驳权</b>）</td></tr>
+          <tr><td><b>合成</b></td><td>LLM自由裁量</td><td><b>动态证据权重</b>：清晰度×具体性×共识度×时效性 + 4条特殊规则</td></tr>
+          <tr><td><b>输出</b></td><td>5级评级</td><td>RATING + CONFIDENCE + SCORE(0-10) + 情景分析 + 反事实检验</td></tr>
+          <tr><td><b>情绪维度</b></td><td>Reddit/StockTwits（英文）</td><td>微博/知乎/小红书（中文），<b>作者影响力加权</b></td></tr>
+          <tr><td><b>规模</b></td><td>单支股票</td><td><b>55个品种</b>，全品种对比/排名/回测</td></tr>
+          <tr><td><b>Web</b></td><td>CLI + Streamlit</td><td>Flask SPA + ECharts + 7策略对比</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>当前11节点管线</h3>
+      <div style="font-family:monospace;font-size:0.82rem;line-height:2;color:var(--text-secondary);padding:12px;background:var(--bg-input);border-radius:8px">
+        START → [📊技术 ∥ 📋基本面 ∥ 🌍宏观 ∥ 💬情绪] <span style="color:var(--brand)">(并行·quick_llm)</span><br>
+        &nbsp;&nbsp;→ 🐂Bull(R1) → 🐻Bear refute → 🐂Bull(R2 rebuttal) → ⚖️Moderator <span style="color:var(--brand)">(辩论·quick_llm)</span><br>
+        &nbsp;&nbsp;→ 🎯Synthesis → 📈Scenario <span style="color:var(--green)">(深度研判·deep_llm)</span><br>
+        &nbsp;&nbsp;→ END<br>
+        <span style="color:var(--text-muted)">双LLM分层：quick(分析师+辩论) | deep(Synthesis+Scenario)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Validation -->
+  <div class="analysis-sub" id="asub-agentval" style="display:none">
+    <div class="expander" style="margin-bottom:14px">
+      <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+        📖 模块说明 <span class="arrow">▶</span>
+      </div>
+      <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+        <b>目的</b>：验证完整10节点Agent管线在方向预测上的有效性。<br>
+        <b>方法</b>：对每个品种运行完整分析 → 提取RATING/SCORE/CONFIDENCE → 对比5天后实际价格方向。<br>
+        <b>指标</b>：方向准确率、SCORE与涨幅相关性、置信度校准（高/中/低分别的准确率）。<br>
+        <b>耗时</b>：每品种约3-5分钟，12品种约40-60分钟。
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h3>验证配置</h3>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div><label>分析日期</label><input type="date" id="val-date" value="2026-07-10"></div>
+        <div><label>品种 (逗号分隔，空=全部12个)</label><input type="text" id="val-varieties" placeholder="RB,I,J" style="width:180px"></div>
+        <button class="btn btn-primary" id="btn-val-start" onclick="App.startAgentValidation()">开始验证</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px"><h3>验证进度</h3>
+      <div id="val-progress"><span style="color:var(--text-muted)">点击开始验证</span></div>
+    </div>
+    <div class="grid grid-3" id="val-stats" style="margin-bottom:14px"></div>
+    <div class="grid grid-2" style="margin-bottom:14px">
+      <div class="card"><h3>方向准确率对比</h3><div class="chart-container" id="chart-val-dir" style="height:280px"></div></div>
+      <div class="card"><h3>SCORE vs 实际涨幅</h3><div class="chart-container" id="chart-val-score" style="height:280px"></div></div>
+    </div>
+    <div class="card"><h3>品种明细</h3><div id="val-detail" style="overflow-x:auto"></div></div>
+  </div>
+
+  <!-- Agent Backtest -->
+  <div class="analysis-sub" id="asub-agentbt" style="display:none">
+    <div class="expander" style="margin-bottom:14px">
+      <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+        📖 模块说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+      </div>
+      <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+        <b>目的</b>：对比纯情绪信号 vs 完整Agent的方向预测准确率，证明多智能体框架的改进效果。<br>
+        <b>纯情绪</b>：avg_score > 0 = 看多，< 0 = 看空（瞬时计算）。<br>
+        <b>Agent预测</b>：运行完整的10节点管线（4分析师+辩论+综合研判），提取RATING信号。<br>
+        <b>实盘验证</b>：对比分析日之后5个交易日的实际价格方向。<br>
+        <b>批量运行Agent</b>：勾选后逐个品种运行完整分析（每品种约3-5分钟）。
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h3>回测配置</h3>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div><label>分析日期</label><input type="date" id="bt-date" value="2026-07-15"></div>
+        <div><label>品种 (逗号分隔，空=全部)</label><input type="text" id="bt-varieties" placeholder="RB,I,J,TA" style="width:180px"></div>
+        <div style="padding-bottom:8px"><label style="display:inline;cursor:pointer"><input type="checkbox" id="bt-run-agent"> 批量运行Agent</label></div>
+        <button class="btn btn-primary" id="btn-bt-start" onclick="App.startBatchBacktest()">开始回测</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px"><h3>回测结果摘要</h3><div id="bt-summary"><span style="color:var(--text-muted)">点击开始回测</span></div></div>
+    <div class="grid grid-3" id="bt-stats" style="margin-bottom:14px"></div>
+    <div class="chart-container" id="chart-bt-compare" style="height:350px;margin-bottom:14px"></div>
+    <div class="card"><h3>品种明细</h3><div id="bt-detail" style="overflow-x:auto"></div></div>
+  </div>
+
+  <!-- Events -->
+  <div class="analysis-sub" id="asub-events" style="display:none">
+    <div class="card">
+      <h3>舆情事件提取
+        <select id="event-variety" onchange="App.loadEvents()" style="width:auto;display:inline;margin-left:12px"><option value="">全部品种</option></select>
+        <select id="event-days" onchange="App.loadEvents()" style="width:auto;display:inline;margin-left:4px">
+          <option value="1">1天</option><option value="3">3天</option><option value="7" selected>7天</option><option value="14">14天</option><option value="30">30天</option>
+        </select>
+      </h3>
+      <div id="events-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     TAB: Simulated Trading (P3)
+     ================================================================ -->
+<div id="tab-trading" class="tab">
+  <!-- Live Price Ticker -->
+  <div id="live-prices" style="background:var(--bg-input);border-radius:8px;padding:8px 14px;margin-bottom:14px;overflow:hidden;white-space:nowrap;font-size:0.82rem">
+    <span style="color:var(--text-muted);margin-right:8px">📊 实时行情</span>
+    <span id="price-ticker" style="display:inline-block">加载中...</span>
+    <span style="float:right;font-size:0.7rem;color:var(--text-muted);cursor:pointer" onclick="App.fetchLivePrices()" title="刷新">🔄</span>
+  </div>
+
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 策略说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>固定持仓(情绪)</b>：当情绪得分绝对值超过阈值时入场，固定持仓N天平仓。<br>
+      <b>情绪反转出场</b>：入场后持有直到情绪翻转到对立方向（或达到最大持仓天数）。<br>
+      <b>基本面vs情绪对比</b>：纯基本面(趋势+动量+量) vs 基本面+情绪共振。三曲线同图对比。<br><br>
+      <b>信号阈值</b>：只交易 \|情绪得分\| > 阈值的信号。0.1=高频，0.3=低频但质量高。<br>
+      <b>胜率</b>：盈利笔数/总笔数。>50%=优于随机。<br>
+      <b>年化夏普</b>：(年化收益-无风险利率)/年化波动率。>1=优秀，>2=出色。<br>
+      <b>索提诺比率</b>：类似夏普但只惩罚下行波动（下跌风险），更能反映真实风险调整收益。<br>
+      <b>卡玛比率</b>：年化收益/最大回撤，衡量每单位回撤的回报。>0.5=良好。<br>
+      <b>年化波动率</b>：收益率的标准差年化值。低波动=策略稳定。<br>
+      <b>盈亏比(Profit Factor)</b>：总盈利/总亏损。>1.5=良好，>2=优秀。<br>
+      <b>最大回撤</b>：累计收益从峰值回落的最大幅度。<br>
+      <b>基本面因子</b>：趋势(60%) + 动量(25%) + 成交量(15%)，合成 fund_score ∈ [-1,+1]。
+    </div>
+  </div>
+  <div class="grid grid-2" style="margin-bottom:14px">
+    <div class="card">
+      <h3>交易配置</h3>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div><label>品种 (空=全部)</label><select id="trade-variety"><option value="">全部品种</option></select></div>
+        <div><label>开始日期</label><input type="date" id="trade-start" value="2025-01-01" style="width:130px"></div>
+        <div><label>结束日期</label><input type="date" id="trade-end" value="2026-07-22" style="width:130px"></div>
+        <div><label>策略</label><select id="trade-strategy" onchange="App.onStrategyChange()">
+          <option value="fixed">固定持仓(情绪)</option>
+          <option value="trailing">情绪反转出场</option>
+          <option value="adaptive_sent">自适应情绪🔄</option>
+          <option value="contrarian">逆情绪(背离)🔄</option>
+          <option value="momentum_ad">动量+自适应🔄</option>
+          <option value="compare">基本面vs情绪对比</option>
+        </select></div>
+        <div id="param-horizon"><label>持仓天数</label><input type="number" id="trade-horizon" value="3" min="1" max="20" style="width:70px"></div>
+        <div id="param-maxhold" style="display:none"><label>最大持仓天数</label><input type="number" id="trade-maxhold" value="10" min="3" max="30" style="width:70px"></div>
+        <div><label>信号阈值</label><input type="number" id="trade-threshold" value="0.2" min="0" max="1" step="0.05" style="width:70px"></div>
+        <div style="flex:0 0 auto;padding-top:16px">
+          <label style="font-size:0.72rem;color:var(--amber);cursor:pointer">
+            <input type="checkbox" id="cost-enabled" onchange="App.toggleCost()"> 交易成本
+          </label>
+        </div>
+        <div id="cost-params" style="display:none;gap:8px;align-items:end;flex-wrap:wrap">
+          <div><label>手续费(万分之)</label><input type="number" id="cost-comm" value="3" min="0" max="20" step="0.5" style="width:65px"></div>
+          <div><label>滑点(tick)</label><input type="number" id="cost-slip" value="1" min="0" max="10" style="width:60px"></div>
+        </div>
+        <div style="flex:0 0 auto;padding-top:16px">
+          <label style="font-size:0.72rem;color:var(--red);cursor:pointer">
+            <input type="checkbox" id="risk-enabled" onchange="App.toggleRisk()"> 风控
+          </label>
+        </div>
+        <div id="risk-params" style="display:none;gap:8px;align-items:end;flex-wrap:wrap">
+          <div><label>止损%</label><input type="number" id="risk-stop" value="5" min="1" max="20" step="0.5" style="width:65px"></div>
+          <div><label>移动止盈%</label><input type="number" id="risk-trail" value="8" min="1" max="20" step="0.5" style="width:65px"></div>
+        </div>
+        <button class="btn btn-primary" onclick="App.runTradingBacktest()">运行回测</button>
+        <button class="btn btn-outline btn-sm" onclick="App.runMultiCompare()" style="margin-left:4px">多策略对比</button>
+      </div>
+      <div style="margin-top:6px;font-size:0.75rem;color:var(--text-muted)">
+        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="fixed" checked> 情绪固定</label>
+        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="trailing"> 情绪反转</label>
+        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="adaptive_sent" checked> 自适应</label>
+        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="contrarian"> 逆情绪</label>
+        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="momentum_ad"> 动量+自适应</label>
+        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="momentum"> 动量(纯价格)</label>
+      </div>
+    </div>
+    <div class="card"><h3>回测结果概览</h3><div id="trading-summary"><span style="color:var(--text-muted)">点击运行回测</span></div></div>
+  </div>
+  <div class="grid grid-3" id="trading-stats" style="margin-bottom:14px"></div>
+  <div class="chart-container" id="chart-trading-pnl" style="height:350px;margin-bottom:14px"></div>
+  <div class="card"><h3>最近交易明细</h3><div id="trading-detail" style="overflow-x:auto"></div></div>
+</div>
+
+<!-- ================================================================
+     TAB: System (P0 status)
+     ================================================================ -->
+<div id="tab-system" class="tab">
+  <div class="grid grid-3" style="margin-bottom:14px">
+    <div class="card">
+      <h3>定时采集调度</h3>
+      <div id="scheduler-status">加载中...</div>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="App.schedulerControl('start')">启动</button>
+        <button class="btn btn-red btn-sm" onclick="App.schedulerControl('stop')">停止</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>数据概览</h3><div id="db-stats">加载中...</div>
+    </div>
+    <div class="card">
+      <h3>告警 <span class="badge badge-bear" id="alert-count"></span></h3>
+      <div id="alerts-list" style="max-height:250px;overflow-y:auto;font-size:0.82rem"></div>
+    </div>
+  </div>
+  <div class="card"><h3>采集历史</h3><div id="collection-history" style="overflow-x:auto"></div></div>
+</div>
+
+</main>
+
+<!-- ================================================================
+     JAVASCRIPT — App State & Logic
+     ================================================================ -->
+<script>
+// Configure marked.js
+marked.setOptions({ breaks: true, gfm: true });
+
+// ================================================================
+// App State
+// ================================================================
+const App = {
+  // State
+  _currentTab: 'run',
+  _currentReportFile: null,
+  _chartInstances: {},
+  _allPosts: [],
+  _varieties: [],
+  _isAnalysisRunning: false,
+
+  // ── Init ──
+  async init() {
+    this._bindNav();
+    this._loadTheme();
+    await this._loadVarieties();
+    this.updatePlatformHint();
+    // Handle window resize for charts
+    window.addEventListener('resize', () => this._resizeAllCharts());
+    // Keyboard nav: Ctrl+1-8 to switch tabs
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key >= '1' && e.key <= '8') {
+        e.preventDefault();
+        const tabs = ['run', 'sentiment', 'analysis', 'backtest', 'trading', 'update', 'history', 'system'];
+        this.switchTab(tabs[parseInt(e.key) - 1]);
+      }
+    });
+  },
+
+  _bindNav() {
+    document.querySelectorAll('nav button').forEach(btn => {
+      btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
+    });
+  },
+
+  // ── Tab switching ──
+  switchTab(t) {
+    this._currentTab = t;
+    document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(el => el.classList.remove('active'));
+    const tabEl = document.getElementById('tab-' + t);
+    if (tabEl) tabEl.classList.add('active');
+    const navBtn = document.querySelector(`nav button[data-tab="${t}"]`);
+    if (navBtn) navBtn.classList.add('active');
+
+    // Lazy load
+    if (t === 'sentiment') { this.loadOverlayChart(); this.loadSentimentPosts(); }
+    if (t === 'analysis') this.initAnalysisTab();
+    if (t === 'backtest') this.loadBacktest();
+    if (t === 'trading') this.initTradingTab();
+    if (t === 'update') this.loadUpdateStats();
+    if (t === 'history') this.loadHistory();
+    if (t === 'system') this.loadSystemTab();
+    this._resizeAllCharts();
+  },
+
+  // ── Toast ──
+  toast(msg, type='info') {
+    const container = document.getElementById('toasts');
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    container.appendChild(el);
+    setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 3500);
+  },
+
+  // ── Theme ──
+  toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('agentsense-theme', next);
+    this._updateThemeUI(next);
+    this._resizeAllCharts();
+  },
+
+  _loadTheme() {
+    const saved = localStorage.getItem('agentsense-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+    this._updateThemeUI(saved);
+  },
+
+  _updateThemeUI(theme) {
+    document.getElementById('theme-icon').textContent = theme === 'dark' ? '🌙' : '☀️';
+    document.getElementById('theme-label').textContent = theme === 'dark' ? '暗色' : '亮色';
+  },
+
+  // ── Varieties ──
+  async _loadVarieties() {
+    try {
+      const r = await fetch('/api/varieties');
+      this._varieties = await r.json();
+      const sel = document.getElementById('sym');
+      sel.innerHTML = '';
+      this._varieties.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.code;
+        o.textContent = `${v.code} - ${v.name} (${v.sentiment_posts}帖)`;
+        sel.appendChild(o);
+      });
+      document.getElementById('stat-varieties').textContent = this._varieties.length;
+      this.updateSentimentStats();
+    } catch (e) { console.error('Failed to load varieties', e); }
+  },
+
+  async updateSentimentStats() {
+    const sym = document.getElementById('sym').value;
+    try {
+      const r = await fetch(`/api/sentiment/${sym}`);
+      if (r.ok) {
+        const d = await r.json();
+        const ss = d.data.social_sentiment;
+        document.getElementById('stat-posts').textContent = ss.total_posts_analyzed;
+        document.getElementById('sentiment-badge').textContent = ss.overall_sentiment_label;
+        document.getElementById('variety-info').innerHTML =
+          `<b>${d.variety_name}</b> | ${d.sector} | 情绪: ${ss.overall_sentiment_label} | 多空比: ${(ss.bullish_ratio*100).toFixed(0)}:${(ss.bearish_ratio*100).toFixed(0)} | 趋势: ${ss.trend_label}`;
+        // Show time range if available
+        if (d._meta) {
+          document.getElementById('variety-info').innerHTML +=
+            `<br><small style="color:var(--text-muted)">数据覆盖: ${d._meta.data_start} ~ ${d._meta.data_end} (${d._meta.data_days}天) | 更新: ${d._meta.file_updated}</small>`;
+        }
+      }
+    } catch (e) { /* ignore */ }
+  },
+
+  // ── SSE Reader (shared) ──
+  async _readSSE(response, handlers) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const d = JSON.parse(line.slice(6));
+          if (handlers[d.type]) handlers[d.type](d);
+          if (handlers['*']) handlers['*'](d);
+        } catch (e) { /* skip malformed */ }
+      }
+    }
+  },
+
+  // ── Run Analysis (polling — reliable, no network errors) ──
+  async runAnalysis() {
+    if (this._isAnalysisRunning) return;
+    this._isAnalysisRunning = true;
+
+    const btnRun = document.getElementById('btn-run');
+    const log = document.getElementById('progress-log');
+    const progCard = document.getElementById('progress-card');
+    const pipeline = document.getElementById('pipeline-stages');
+
+    btnRun.disabled = true; btnRun.textContent = 'Running...';
+    log.textContent = '';
+    progCard.style.display = 'block';
+    document.getElementById('results-area').innerHTML = '';
+    document.getElementById('comparison-charts').style.display = 'none';
+    document.getElementById('stat-status').textContent = 'Starting...';
+
+    const stages = [
+      {id:'technical',name:'Tech',icon:'📊'},{id:'fundamental',name:'Fund',icon:'📋'},
+      {id:'macro',name:'Macro',icon:'🌍'},{id:'sentiment',name:'Sent',icon:'💬'},
+      {id:'bull_opening',name:'Bull',icon:'🐂'},{id:'bear_refute',name:'Bear',icon:'🐻'},
+      {id:'bull_rebuttal',name:'Rebuttal',icon:'🔄'},{id:'moderator',name:'Judge',icon:'⚖️'},
+      {id:'synthesis',name:'Synth',icon:'🎯'},{id:'scenario',name:'Scenario',icon:'📈'}
+    ];
+    pipeline.innerHTML = stages.map((s,i) =>
+      `<span class="pipeline-stage ${i<4?'active':'pending'}" id="stage-${s.id}"><span class="dot"></span>${s.icon} ${s.name}</span>`
+    ).join('');
+
+    const sym = document.getElementById('sym').value;
+    const date = document.getElementById('date').value;
+    const start = Date.now();
+    const timer = setInterval(() => {
+      document.getElementById('stat-time').textContent = Math.floor((Date.now()-start)/1000) + 's';
+    }, 1000);
+
+    // Step 1: Start analysis
+    log.innerHTML += '<span class="node">Starting analysis...</span>\n';
+    const r1 = await fetch('/api/run_analysis', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:sym, date})
+    });
+    const d1 = await r1.json();
+    log.innerHTML += `<span class="node">Analysis started (${d1.status})</span>\n`;
+
+    // Step 2: Poll for progress
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/api/progress');
+        const d = await r.json();
+        document.getElementById('stat-status').textContent = d.is_running ? 'Analyzing...' : d.is_complete ? 'Complete' : d.error ? 'Error' : '?';
+        if (d.stages) {
+          d.stages.forEach(s => {
+            const el = document.getElementById('stage-'+s.id);
+            if (el) el.className = 'pipeline-stage '+s.status;
+          });
+          document.getElementById('progress-status').textContent =
+            `${d.completed_stages?.length||0}/10 stages`;
+          document.getElementById('stat-llm').textContent = d.llm_calls || '-';
+        }
+
+        // Check complete
+        if (d.is_complete) {
+          clearInterval(poll); clearInterval(timer);
+          document.getElementById('stat-status').textContent = 'Complete';
+          document.getElementById('stat-time').textContent = d.elapsed;
+          log.innerHTML += '<span class="node">=== DONE ===</span>\n';
+
+          // Fetch reports
+          await this.loadAnalysisResults(sym, date);
+          this._isAnalysisRunning = false;
+          btnRun.disabled = false; btnRun.textContent = '▶ Start';
+          return;
+        }
+        if (d.error) {
+          clearInterval(poll); clearInterval(timer);
+          log.innerHTML += `<span class="error">ERROR: ${d.error}</span>\n`;
+          this._isAnalysisRunning = false;
+          btnRun.disabled = false; btnRun.textContent = '▶ Start';
+        }
+      } catch(e) {}
+    }, 2000);
+  },
+
+  _feedbackVisible: false, _feedbackHistory: [],
+
+  toggleFeedback() {
+    this._feedbackVisible = !this._feedbackVisible;
+    const box = document.getElementById('feedback-box');
+    box.style.display = this._feedbackVisible ? 'block' : 'none';
+    if (this._feedbackVisible) box.scrollIntoView({behavior:'smooth'});
+  },
+
+  async sendFeedback() {
+    const input = document.getElementById('feedback-input');
+    const msg = input.value.trim();
+    if (!msg) return;
+    input.value = '';
+    const sym = document.getElementById('sym').value;
+    this._feedbackHistory.push({role:'user', content:msg});
+    this._renderFeedback();
+
+    try {
+      const r = await fetch('/api/feedback', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({symbol:sym, message:msg, history:this._feedbackHistory})
+      });
+      const d = await r.json();
+      this._feedbackHistory.push({role:'agent', content:d.reply||'No response'});
+      this._renderFeedback();
+    } catch(e) { this._feedbackHistory.push({role:'agent', content:'Error: '+e.message}); this._renderFeedback(); }
+  },
+
+  _renderFeedback() {
+    const box = document.getElementById('feedback-msgs');
+    box.innerHTML = this._feedbackHistory.map(h =>
+      `<div class="debate-round ${h.role==='agent'?'bull':'bear'}" style="margin:4px 0">
+        <span class="speaker">${h.role==='agent'?'🤖 Agent':'👤 You'}</span>
+        <div style="font-size:0.84rem;margin-top:4px">${h.role==='agent'?marked.parse(h.content):h.content}</div>
+      </div>`).join('');
+    box.scrollTop = box.scrollHeight;
+  },
+
+  async loadComparisonChart(sym, date) {
+    try {
+      const r = await fetch('/api/compare/' + sym + '/' + date);
+      const d = await r.json();
+      const prices = d.prices || [];
+      if (!prices || prices.length < 2) return;
+      document.getElementById('comparison-charts').style.display = 'grid';
+      const chart = this._initChart('chart-compare-price');
+      if (!chart) return;
+      chart.setOption({
+        title:{text:'Actual: '+d.actual_direction+' ('+(d.pct_change>0?'+':'')+d.pct_change+'%)',left:'center',textStyle:{color:'#888',fontSize:11}},
+        tooltip:{trigger:'axis'},
+        grid:{left:60,right:20,top:35,bottom:20},
+        xAxis:{type:'category',data:prices.map(p=>p.date),axisLabel:{show:false}},
+        yAxis:{type:'value',axisLabel:{color:'#888'}},
+        series:[{
+          type:'line',data:prices.map(p=>p.close),smooth:true,showSymbol:false,
+          lineStyle:{color:'#ff5a1f',width:2},
+          markLine:{silent:true,symbol:'none',data:[{xAxis:date,lineStyle:{color:'#fbbf24',type:'dashed'}}]}
+        }]
+      },true);
+      chart.resize();
+    } catch(e) {}
+  },
+
+  async loadPlatformWeightsChart() {
+    try {
+      const r = await fetch('/api/backtest');
+      const d = await r.json();
+      const platforms = d.platforms || {};
+      const chart = this._initChart('chart-platform-weights');
+      if (!chart) return;
+      chart.setOption({
+        title:{text:'Platform Weights',left:'center',textStyle:{color:'#888',fontSize:11}},
+        grid:{left:50,right:20,top:35,bottom:20},
+        xAxis:{type:'category',data:Object.keys(platforms)},
+        yAxis:{type:'value',axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:'#888'}},
+        series:[{type:'bar',data:Object.values(platforms).map(v=>(v*100).toFixed(1)),
+          itemStyle:{color:'#ff5a1f'},label:{show:true,position:'top',formatter:p=>p.value+'%',color:'#888'}}]
+      },true);
+      chart.resize();
+    } catch(e) {}
+  },
+
+  async loadAnalysisResults(sym, date) {
+    try {
+      const r = await fetch('/api/analysis_results');
+      const d = await r.json();
+      if (!d.ready) return;
+      const reports = d.reports || {};
+      const order = ['technical_analyst','fundamental_analyst','macro_analyst','sentiment_analyst',
+                     'bull_opening','bear_refute','bull_rebuttal','debate_moderator','synthesis','scenario_analysis'];
+      const names = {
+        'technical_analyst':'📊 Technical Analysis','fundamental_analyst':'📋 Fundamental Analysis',
+        'macro_analyst':'🌍 Macro/News','sentiment_analyst':'💬 Sentiment Analysis',
+        'bull_opening':'🐂 Bull Opening','bear_refute':'🐻 Bear Refute',
+        'bull_rebuttal':'🔄 Bull Rebuttal','debate_moderator':'⚖️ Debate Moderator',
+        'synthesis':'🎯 Synthesis','scenario_analysis':'📈 Scenario Analysis'
+      };
+      let html = '';
+      order.forEach(key => {
+        const txt = reports[key];
+        if (!txt) return;
+        if (key.includes('bull')||key.includes('bear')) {
+          const cls = key.includes('bull')?'bull':'bear';
+          html += `<div class="debate-round ${cls}"><span class="speaker">${names[key]}</span>${marked.parse(txt)}</div>`;
+        } else {
+          html += `<div class="card" style="margin-top:12px"><h3>${names[key]}</h3><div class="report-content">${marked.parse(txt)}</div></div>`;
+        }
+      });
+      // Rating + predicted magnitude
+      if (d.rating) {
+        const c = d.rating.score>=6?'var(--green)':d.rating.score<=4?'var(--red)':'var(--amber)';
+        const mag = d.predicted_magnitude;
+        const magText = mag != null ? ` | 预测幅度: ${mag>0?'+':''}${mag}%` : '';
+        html += `<div class="signal-banner"><div class="signal-label">RATING</div><div class="signal-rating" style="color:${c}">${d.rating.rating}</div><div class="signal-meta">CONFIDENCE: ${d.rating.confidence} | SCORE: ${d.rating.score}/10${magText}</div></div>`;
+      }
+      // Divergence warning
+      const divergence = d.reports?._divergence;
+      if (divergence) {
+        html += `<div class="card" style="margin-top:12px;border-left:3px solid var(--red);background:rgba(239,68,68,0.05)">
+          <h3>⚠️ 预测背离 — 已自动学习</h3>
+          <div style="font-size:0.85rem;color:var(--text-secondary)">${divergence.note}</div>
+        </div>`;
+      }
+      document.getElementById('results-area').innerHTML = html;
+      App.loadComparisonChart(sym, date);
+      App.loadPlatformWeightsChart();
+    } catch(e) { console.error(e); }
+  },
+
+  async pauseAnalysis() {
+    try {
+      const r = await fetch('/api/pause', { method: 'POST' });
+      const d = await r.json();
+      if (d.status === 'paused') {
+        this.toast('分析已暂停', 'info');
+        document.getElementById('btn-pause').style.display = 'none';
+        document.getElementById('btn-resume').style.display = 'inline-flex';
+        document.getElementById('stat-status').textContent = '已暂停';
+      }
+    } catch (e) { this.toast('暂停失败', 'error'); }
+  },
+
+  async resumeAnalysis() {
+    try {
+      const r = await fetch('/api/resume', { method: 'POST' });
+      const d = await r.json();
+      if (d.status === 'resumed') {
+        this.toast('分析已恢复', 'success');
+        document.getElementById('btn-resume').style.display = 'none';
+        document.getElementById('btn-pause').style.display = 'inline-flex';
+        document.getElementById('stat-status').textContent = '分析中...';
+      }
+    } catch (e) { this.toast('恢复失败', 'error'); }
+  },
+
+  async stopAnalysis() {
+    try {
+      const r = await fetch('/api/stop', { method: 'POST' });
+      const d = await r.json();
+      if (d.status === 'stopping') {
+        this.toast('正在停止...', 'info');
+        document.getElementById('stat-status').textContent = '停止中...';
+      }
+    } catch (e) { this.toast('停止失败', 'error'); }
+  },
+
+  // ── Charts (ECharts) ──
+  _initChart(containerId) {
+    const el = document.getElementById(containerId);
+    if (!el) { console.warn('Chart container not found:', containerId); return null; }
+    // Ensure container has dimensions
+    if (el.clientHeight === 0) { el.style.height = '320px'; }
+    if (this._chartInstances[containerId]) {
+      try { this._chartInstances[containerId].dispose(); } catch(e) {}
+      delete this._chartInstances[containerId];
+    }
+    const chart = echarts.init(el);
+    this._chartInstances[containerId] = chart;
+    return chart;
+  },
+
+  _getEChartsTheme() {
+    // Standard ECharts CDN doesn't include dark theme; use undefined always
+    return undefined;
+  },
+
+  _resizeAllCharts() {
+    Object.values(this._chartInstances).forEach(c => { try { c.resize(); } catch(e){} });
+  },
+
+  _baseChartOptions(title) {
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    return {
+      backgroundColor: 'transparent',
+      title: { text: title, left: 'center', textStyle: { color: isDark ? '#888' : '#666', fontSize: 12 } },
+      tooltip: { trigger: 'axis' },
+      grid: { left: 50, right: 20, top: 40, bottom: 30 },
+      xAxis: { type: 'category', axisLine: { lineStyle: { color: isDark ? '#333' : '#ddd' } }, axisLabel: { color: isDark ? '#666' : '#999' } },
+      yAxis: { type: 'value', axisLine: { lineStyle: { color: isDark ? '#333' : '#ddd' } }, axisLabel: { color: isDark ? '#666' : '#999' }, splitLine: { lineStyle: { color: isDark ? '#1a1a1a' : '#eee' } } },
+      legend: { textStyle: { color: isDark ? '#888' : '#666' } }
+    };
+  },
+
+  async loadPriceChart() {
+    const sym = document.getElementById('sym').value;
+    const days = document.getElementById('lookback-days')?.value || 180;
+    try {
+      const r = await fetch(`/api/price/${sym}?days=${days}`);
+      const d = await r.json();
+      const prices = d.prices || d; // Support both new {_meta, prices} and old array format
+      const chart = this._initChart('chart-price');
+      if (!chart) return;
+      chart.setOption({
+        ...this._baseChartOptions(sym + ' 价格走势'),
+        series: [{
+          type: 'line', data: prices.map(p => [p.date, p.close]),
+          smooth: true, showSymbol: false,
+          lineStyle: { color: '#ff5a1f', width: 2 },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,
+            [{offset:0,color:'rgba(255,90,31,0.25)'},{offset:1,color:'rgba(255,90,31,0.02)'}]) }
+        }]
+      });
+    } catch (e) { /* ignore */ }
+  },
+
+  // ── Sentiment-Price Overlay Chart (dual Y-axis) ──
+  async loadOverlayChart() {
+    const sym = document.getElementById('sym').value;
+    const days = document.getElementById('lookback-days')?.value || 180;
+    try {
+      const r = await fetch(`/api/overlay/${sym}?days=${days}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      const data = d.overlay || [];
+      const meta = d._meta || {};
+
+      // Update time range badges
+      document.getElementById('sentiment-meta-bar').style.display = 'flex';
+      document.getElementById('meta-sent-start').textContent = meta.sentiment_start || '-';
+      document.getElementById('meta-sent-end').textContent = meta.sentiment_end || '-';
+      document.getElementById('meta-price-start').textContent = meta.price_start || '-';
+      document.getElementById('meta-price-end').textContent = meta.price_end || '-';
+      document.getElementById('overlay-badge').textContent = `${data.length} 个交易日`;
+
+      const chart = this._initChart('chart-overlay');
+      if (!chart) return;
+
+      const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+      const textColor = isDark ? '#888' : '#666';
+      const gridColor = isDark ? '#1a1a1a' : '#eee';
+
+      chart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'cross', crossStyle: { color: '#999' } }
+        },
+        legend: {
+          data: ['收盘价', '作者加权情绪', '简单平均情绪'],
+          bottom: 0,
+          textStyle: { color: textColor, fontSize: 11 }
+        },
+        grid: { left: 65, right: 65, top: 15, bottom: 35 },
+        xAxis: {
+          type: 'category',
+          data: data.map(d => d.date),
+          axisLine: { lineStyle: { color: gridColor } },
+          axisLabel: { color: '#888', fontSize: 10, rotate: data.length > 60 ? 45 : 0 },
+          splitLine: { show: false }
+        },
+        yAxis: [
+          {
+            type: 'value',
+            name: '价格',
+            nameTextStyle: { color: textColor, fontSize: 10 },
+            axisLine: { lineStyle: { color: '#ff5a1f' } },
+            axisLabel: { color: '#ff5a1f', fontSize: 10 },
+            splitLine: { lineStyle: { color: gridColor } }
+          },
+          {
+            type: 'value',
+            name: '情绪得分 (-1 ~ +1)',
+            nameTextStyle: { color: textColor, fontSize: 10 },
+            axisLine: { lineStyle: { color: '#22c55e' } },
+            axisLabel: { color: '#22c55e', fontSize: 10 },
+            min: -1, max: 1,
+            splitLine: { show: false }
+          }
+        ],
+        series: [
+          {
+            name: '收盘价',
+            type: 'line',
+            yAxisIndex: 0,
+            data: data.map(d => d.close != null ? d.close : null),
+            smooth: true,
+            showSymbol: false,
+            connectNulls: false,
+            lineStyle: { color: '#ff5a1f', width: 2.5 },
+            itemStyle: { color: '#ff5a1f' }
+          },
+          {
+            name: '作者加权情绪',
+            type: 'line',
+            yAxisIndex: 1,
+            data: data.map(d => d.avg_score != null ? d.avg_score : null),
+            smooth: true,
+            showSymbol: false,
+            connectNulls: false,
+            lineStyle: { color: '#22c55e', width: 2 },
+            itemStyle: { color: '#22c55e' }
+          },
+          {
+            name: '简单平均情绪',
+            type: 'line',
+            yAxisIndex: 1,
+            data: data.map(d => d.simple_avg != null ? d.simple_avg : null),
+            smooth: true,
+            showSymbol: false,
+            connectNulls: false,
+            lineStyle: { color: '#fbbf24', width: 1.5, type: 'dashed' },
+            itemStyle: { color: '#fbbf24' }
+          }
+        ]
+      });
+    } catch (e) { console.error('Overlay chart error:', e); }
+  },
+
+  // ── Sentiment Posts (separated from chart loading) ──
+  async loadSentimentPosts() {
+    // Load posts with lookback filter
+    const days = document.getElementById('lookback-days')?.value || 180;
+    try {
+      const r2 = await fetch(`/api/sentiment_posts?days=${days}`);
+      const d = await r2.json();
+      const posts = d.posts || d; // Support both new {_meta, posts} and old array format
+      const meta = d._meta || {};
+      this._allPosts = Array.isArray(posts) ? posts : [];
+
+      // Update posts time range
+      if (meta.posts_start) {
+        document.getElementById('posts-time-range').textContent =
+          `(${meta.posts_start} ~ ${meta.posts_end}, ${meta.total_posts || this._allPosts.length} 条)`;
+        document.getElementById('meta-posts-start').textContent = meta.posts_start;
+        document.getElementById('meta-posts-end').textContent = meta.posts_end;
+      }
+
+      const varieties = new Set();
+      this._allPosts.forEach(p => p.varieties.forEach(v => varieties.add(v)));
+      const sel = document.getElementById('post-filter');
+      sel.innerHTML = '<option value="">全部 (' + this._allPosts.length + ')</option>';
+      [...varieties].sort().forEach(v => {
+        const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
+      });
+      this.renderPostCards(this._allPosts.slice(0, 100));
+    } catch (e) { /* ignore */ }
+  },
+
+  // ── Lookback days change handler ──
+  onLookbackChange() {
+    if (this._currentTab === 'sentiment') {
+      this.loadOverlayChart();
+      this.loadSentimentPosts();
+    }
+  },
+
+  // ── Old loadSentimentData kept for backward compat, now just calls new functions ──
+  async loadSentimentData() {
+    this.loadOverlayChart();
+    this.loadSentimentPosts();
+  },
+
+  filterPosts() {
+    const sel = document.getElementById('post-filter').value;
+    const filtered = sel ? this._allPosts.filter(p => p.varieties.includes(sel)) : this._allPosts;
+    this.renderPostCards(filtered.slice(0, 100));
+  },
+
+  renderPostCards(posts) {
+    document.getElementById('sentiment-posts').innerHTML = posts.map(p => `
+      <div class="post-card">
+        <span class="platform-tag ${p.platform}">${p.platform}</span>
+        <b>${this._escHtml(p.author)}</b> ${p.fans ? '(' + (p.fans/10000).toFixed(1) + '万粉)' : '·'}
+        <span style="color:${p.score>0?'var(--green)':p.score<0?'var(--red)':'var(--text-muted)'};font-weight:600">
+          ${p.score > 0.1 ? '看多' : p.score < -0.1 ? '看空' : '中性'}
+        </span>
+        ${p.varieties.length ? ' [' + p.varieties.join(',') + ']' : ''}<br>
+        ${p.url ? `<a href="${p.url}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${this._escHtml(p.title)}</a>` : this._escHtml(p.title)}<br>
+        <small style="color:var(--text-muted)">${p.time} · ${p.likes}赞</small>
+      </div>`).join('');
+  },
+
+  _escHtml(s) {
+    const div = document.createElement('div');
+    div.textContent = s || '';
+    return div.innerHTML;
+  },
+
+  async loadComparisonChart(sym, date) {
+    try {
+      const r = await fetch(`/api/compare/${sym}/${date}`);
+      const d = await r.json();
+      const prices = d.prices || [];
+      if (!prices || prices.length < 2) return;
+      document.getElementById('comparison-charts').style.display = 'grid';
+      const chart = this._initChart('chart-compare-price');
+      if (!chart) return;
+      chart.setOption({
+        ...this._baseChartOptions(`实际: ${d.actual_direction} (${d.pct_change > 0 ? '+' : ''}${d.pct_change}%)`),
+        series: [{
+          name: sym + ' Close', type: 'line',
+          data: prices.map(p => [p.date, p.close]),
+          smooth: true, showSymbol: false,
+          lineStyle: { color: '#ff5a1f', width: 2 },
+          markLine: {
+            silent: true,
+            data: [{ xAxis: date, label: { formatter: '分析日', color: '#fbbf24' }, lineStyle: { color: '#fbbf24', type: 'dashed' } }]
+          }
+        }]
+      });
+    } catch (e) { console.error(e); }
+  },
+
+  async loadPlatformWeightsChart() {
+    try {
+      const r = await fetch('/api/backtest');
+      const d = await r.json();
+      const platforms = d.platforms || {};
+      const chart = this._initChart('chart-platform-weights');
+      if (!chart) return;
+      const labels = Object.keys(platforms);
+      const values = Object.values(platforms).map(w => w * 100);
+      chart.setOption({
+        ...this._baseChartOptions('平台权重 (回测 Softmax)'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: labels },
+        series: [{
+          type: 'bar', data: values,
+          itemStyle: {
+            color: new echarts.graphic.LinearGradient(0,0,0,1,
+              [{offset:0,color:'#ff5a1f'},{offset:1,color:'#ff8c42'}])
+          },
+          label: { show: true, position: 'top', formatter: p => p.value.toFixed(1) + '%', color: '#888' }
+        }]
+      });
+    } catch (e) { /* ignore */ }
+  },
+
+  async loadBacktest() {
+    try {
+      const r = await fetch('/api/backtest');
+      const d = await r.json();
+
+      // Platform chart
+      const platLabels = Object.keys(d.platforms || {});
+      const chart1 = this._initChart('chart-platforms');
+      if (chart1) {
+        chart1.setOption({
+          ...this._baseChartOptions('平台预测力'),
+          xAxis: { ...this._baseChartOptions('').xAxis, data: platLabels },
+          series: [{
+            type: 'bar', data: platLabels.map(p => (d.platforms[p] * 100).toFixed(1)),
+            itemStyle: { color: '#ff5a1f' },
+            label: { show: true, position: 'top', formatter: p => p.value + '%', color: '#888' }
+          }]
+        });
+      }
+
+      // Variety chart
+      const vars = Object.entries(d.varieties || {}).sort((a, b) => b[1].accuracy - a[1].accuracy).slice(0, 15);
+      const chart2 = this._initChart('chart-varieties');
+      if (chart2) {
+        chart2.setOption({
+          ...this._baseChartOptions('品种方向准确率'),
+          xAxis: { ...this._baseChartOptions('').xAxis, data: vars.map(v => v[0]), axisLabel: { rotate: 45, fontSize: 9 } },
+          yAxis: { ...this._baseChartOptions('').yAxis, axisLabel: { formatter: v => (v * 100).toFixed(0) + '%' } },
+          series: [{
+            type: 'bar',
+            data: vars.map(v => (v[1].accuracy * 100).toFixed(1)),
+            itemStyle: { color: params => params.value >= 55 ? '#22c55e' : '#ef4444' }
+          }]
+        });
+      }
+
+      // Stats
+      const cmp = d.signal_comparison || {};
+      document.getElementById('backtest-stats').innerHTML = `
+        <div class="card"><h3>作者加权</h3><div style="font-size:2rem;font-weight:700;color:var(--green)">${((cmp.author_weighted?.direction_accuracy || 0) * 100).toFixed(1)}%</div><div style="font-size:0.78rem;color:var(--text-muted)">方向准确率 (n=${cmp.author_weighted?.data_points || 0})</div></div>
+        <div class="card"><h3>简单平均</h3><div style="font-size:2rem;color:var(--text-secondary)">${((cmp.simple_avg?.direction_accuracy || 0) * 100).toFixed(1)}%</div><div style="font-size:0.78rem;color:var(--text-muted)">对照基准 (n=${cmp.simple_avg?.data_points || 0})</div></div>
+        <div class="card"><h3>加权来源</h3><div style="font-size:1.1rem;color:var(--brand)">${d.weight_source || 'N/A'}</div><div style="font-size:0.78rem;color:var(--text-muted)">平台权重优化方法</div></div>`;
+    } catch (e) { console.error(e); }
+  },
+
+  // ── History ──
+  async loadHistory() {
+    try {
+      const r = await fetch('/api/history');
+      const reports = await r.json();
+      document.getElementById('history-list').innerHTML = reports.map(rp => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;transition:background var(--transition)"
+             onclick="App.viewReport('${rp.filename}')" onmouseover="this.style.background='var(--bg-input)'" onmouseout="this.style.background=''">
+          <span><b>${rp.symbol}</b></span>
+          <span style="color:var(--text-muted);font-size:0.84rem">${rp.time}</span>
+          <span style="color:var(--text-muted);font-size:0.78rem">${(rp.size / 1024).toFixed(0)}KB</span>
+        </div>`).join('') || '<div style="color:var(--text-muted);padding:12px">暂无历史报告</div>';
+    } catch (e) { /* ignore */ }
+  },
+
+  async viewReport(filename) {
+    this._currentReportFile = filename;
+    try {
+      const r = await fetch(`/api/report/${encodeURIComponent(filename)}`);
+      const d = await r.json();
+      const v = document.getElementById('report-viewer');
+      v.style.display = 'block';
+      let html = '';
+      if (d.rating) {
+        const color = d.rating.score >= 6 ? 'var(--green)' : d.rating.score <= 4 ? 'var(--red)' : 'var(--amber)';
+        html += `<div class="signal-banner"><div class="signal-label">RATING</div><div class="signal-rating" style="color:${color}">${d.rating.rating}</div><div class="signal-meta">CONFIDENCE: ${d.rating.confidence} | SCORE: ${d.rating.score}/10</div></div>`;
+      }
+      if (d.sections) {
+        for (const [title, content] of Object.entries(d.sections)) {
+          if (content) html += `<div class="card" style="margin-top:8px"><h3>${title}</h3><div class="report-content">${marked.parse(content)}</div></div>`;
+        }
+      }
+      if (!html) html = `<div class="report-content">${marked.parse(d.content || '')}</div>`;
+      document.getElementById('report-content').innerHTML = html;
+      v.scrollIntoView({ behavior: 'smooth' });
+    } catch (e) { this.toast('加载报告失败', 'error'); }
+  },
+
+  downloadReport(format) {
+    if (!this._currentReportFile) return;
+    const url = `/api/report/${encodeURIComponent(this._currentReportFile)}/${format}`;
+    window.open(url, '_blank');
+  },
+
+  // ── Data Update ──
+  async loadUpdateStats() {
+    try {
+      const vars = this._varieties.length ? this._varieties : await fetch('/api/varieties').then(r => r.json());
+      const total = vars.reduce((s, v) => s + v.sentiment_posts, 0);
+      document.getElementById('update-stats').textContent = `${vars.length}品种·${total}帖`;
+      document.getElementById('update-summary').innerHTML = vars.filter(v => v.sentiment_posts > 0).slice(0, 8).map(v =>
+        `${v.code} ${v.name}: ${v.sentiment_posts}帖`).join(' | ') || '暂无数据';
+    } catch (e) { /* ignore */ }
+  },
+
+  updatePlatformHint() {
+    const plats = []; let t = 0;
+    if (document.getElementById('plat-weibo').checked) { plats.push('微博'); t += 4; }
+    if (document.getElementById('plat-zhihu').checked) { plats.push('知乎'); t += 16; }
+    if (document.getElementById('plat-xhs').checked) { plats.push('小红书'); t += 3; }
+    if (document.getElementById('plat-xueqiu').checked) { plats.push('雪球'); t += 5; }
+    document.getElementById('platform-hint').textContent =
+      '流程: 多平台采集 → 时间过滤 → 粉丝解析 → 情绪聚合(作者加权) → 回测调优 → 生成JSON | ' +
+      (plats.length ? '平台: ' + plats.join(' + ') + ' | 预计: ' + t + 'min'
+                    : '请选择至少一个平台') +
+      (document.getElementById('update-since').value ? ' | 仅保留 ' + document.getElementById('update-since').value + ' 之后' : '');
+  },
+
+  async runDataUpdate() {
+    const btn = document.getElementById('btn-update');
+    btn.disabled = true; btn.textContent = '更新中...';
+    const log = document.getElementById('update-log');
+    log.textContent = '';
+    const perKw = parseInt(document.getElementById('update-perkw').value);
+    const minNotes = parseInt(document.getElementById('update-minnotes').value);
+    const sinceDate = document.getElementById('update-since').value || '';
+    const platforms = [];
+    if (document.getElementById('plat-weibo').checked) platforms.push('weibo');
+    if (document.getElementById('plat-zhihu').checked) platforms.push('zhihu');
+    if (document.getElementById('plat-xhs').checked) platforms.push('xhs');
+    if (document.getElementById('plat-xueqiu').checked) platforms.push('xueqiu');
+    if (!platforms.length) {
+      this.toast('请至少选择一个平台', 'error');
+      btn.disabled = false; btn.textContent = '一键更新';
+      return;
+    }
+
+    try {
+      const resp = await fetch('/api/update_data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ per_kw: perKw, min_notes: minNotes, platforms, since_date: sinceDate })
+      });
+      await this._readSSE(resp, {
+        'step': (d) => { log.innerHTML += `\n<span class="node">[${d.progress}] ${d.label}</span>`; },
+        'log': (d) => { log.innerHTML += `\n<span class="tool">${d.msg}</span>`; },
+        'platform_summary': (d) => {
+          // Render platform summary card
+          const platforms = d.platforms || {};
+          const pct = (count) => d.total ? (count / d.total * 100).toFixed(0) + '%' : '';
+          const platNames = { weibo: '微博', zhihu: '知乎', xhs: '小红书', xueqiu: '雪球' };
+          let cardsHTML = '<div class="grid grid-3" style="margin-top:12px">';
+          for (const [plat, count] of Object.entries(platforms).sort((a,b) => b[1] - a[1])) {
+            const name = platNames[plat] || plat;
+            cardsHTML += `<div class="stat-card"><div class="stat-val">${count}</div><div class="stat-lbl">${name} (${pct(count)})</div></div>`;
+          }
+          cardsHTML += '</div>';
+          document.getElementById('update-summary').innerHTML =
+            `<div style="font-size:0.84rem;color:var(--text-secondary);margin-bottom:8px">
+              📊 总计 <b>${d.total}</b> 条 · 时间 ${d.earliest} ~ ${d.latest}
+            </div>${cardsHTML}`;
+          document.getElementById('update-stats').textContent = `${Object.keys(platforms).length}平台·${d.total}条`;
+        },
+        'complete': (d) => {
+          log.innerHTML += `\n<span class="report">=== ${d.msg} ===</span>`;
+          this.loadUpdateStats();
+          this.updateSentimentStats();
+          this.loadOverlayChart();
+          this.loadSentimentPosts();
+          this._loadVarieties();
+          this.toast('数据更新完成', 'success');
+        },
+        'error': (d) => { log.innerHTML += `\n<span class="error">${d.msg}</span>`; }
+      });
+      log.scrollTop = log.scrollHeight;
+    } catch (e) {
+      log.innerHTML += `\n<span class="error">ERROR: ${e}</span>`;
+      this.toast('更新失败: ' + e.message, 'error');
+    }
+    btn.disabled = false; btn.textContent = '一键更新';
+  },
+
+  // ═══════════════════════════════════════════════════════
+  // ANALYSIS TAB
+  // ═══════════════════════════════════════════════════════
+  _analysisSub: 'comprehensive',
+
+  initAnalysisTab() {
+    this._populateVarietySelects(['comp-variety', 'trade-variety', 'event-variety']);
+    this.switchAnalysisSub(this._analysisSub);
+    this.loadEvents();
+  },
+
+  switchAnalysisSub(sub) {
+    this._analysisSub = sub;
+    document.querySelectorAll('.analysis-sub').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('#analysis-subnav button').forEach(b => b.classList.remove('active'));
+    const panel = document.getElementById('asub-' + sub);
+    if (panel) panel.style.display = 'block';
+    const btn = document.querySelector(`[data-asub="${sub}"]`);
+    if (btn) btn.classList.add('active');
+    if (sub === 'comprehensive') this.loadComprehensive();
+    if (sub === 'authors') this.loadAuthors();
+    if (sub === 'events') this.loadEvents();
+  },
+
+  // Load ALL comprehensive analysis sections
+  async loadComprehensive() {
+    const v = document.getElementById('comp-variety').value;
+    this.loadAnomalies(v);
+    this.loadDivergence(v);
+    this.loadDivergenceAll();
+    this.loadLeadLag(v);
+    this.loadRanking();
+    this.loadCompare();
+  },
+
+  _populateVarietySelects(ids) {
+    ids.forEach(id => {
+      const sel = document.getElementById(id);
+      if (!sel || sel.options.length > 1) return;
+      this._varieties.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.code; o.textContent = `${v.code} - ${v.name}`;
+        sel.appendChild(o);
+      });
+    });
+  },
+
+  async loadAnomalies(forceV) {
+    const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
+    const t = 2.0;
+    try {
+      const r = await fetch(`/api/analysis/anomalies/${v}?threshold=${t}`);
+      const d = await r.json();
+      document.getElementById('anomalies-result').innerHTML = d.anomalies.length === 0
+        ? '<span style="color:var(--green)">未检测到显著异常</span>'
+        : d.anomalies.map(a => `
+          <div class="debate-round ${a.direction === 'bullish' ? 'bull' : 'bear'}">
+            <span class="speaker">${a.date} | Z=${a.z_score} | ${a.type}</span>
+            得分: ${a.score} | MA(7d): ${a.ma_7d}
+          </div>`).join('');
+    } catch(e) { this.toast('检测失败', 'error'); }
+  },
+
+  async loadDivergence(forceV) {
+    const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
+    try {
+      const r = await fetch(`/api/analysis/divergence/${v}`);
+      const d = await r.json();
+      const color = d.divergence < 0.4 ? 'var(--red)' : d.divergence < 0.7 ? 'var(--amber)' : 'var(--green)';
+      document.getElementById('divergence-detail').innerHTML = `
+        <div style="font-size:2rem;font-weight:900;color:${color}">${(d.divergence*100).toFixed(0)}%</div>
+        <div>${d.label} · ${d.signal}</div>
+        <div style="margin-top:4px;font-size:0.8rem;color:var(--text-muted)">
+          看多 ${(d.bullish_ratio*100).toFixed(0)}% | 看空 ${(d.bearish_ratio*100).toFixed(0)}% | 中性 ${(d.neutral_ratio*100).toFixed(0)}% | 趋势: ${d.trend}
+        </div>`;
+    } catch(e) {}
+  },
+
+  async loadDivergenceAll() {
+    try {
+      const r = await fetch('/api/analysis/divergence/all');
+      const data = await r.json();
+      document.getElementById('divergence-all-list').innerHTML = data.map(d => {
+        const color = d.divergence < 0.4 ? 'var(--red)' : d.divergence < 0.7 ? 'var(--amber)' : 'var(--green)';
+        return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span><b>${d.variety}</b> <small style="color:var(--text-muted)">${d.label}</small></span>
+          <span style="color:${color};font-weight:700">${(d.divergence*100).toFixed(0)}%</span></div>`;
+      }).join('');
+
+      // Chart
+      const chart = this._initChart('chart-divergence');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('全品种多空分歧度'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: data.map(d => d.variety), axisLabel: {rotate:45,fontSize:9} },
+        series: [{
+          type: 'bar', data: data.map(d => (d.divergence * 100).toFixed(1)),
+          itemStyle: { color: p => p.value < 40 ? '#ef4444' : p.value < 70 ? '#fbbf24' : '#22c55e' }
+        }]
+      });
+    } catch(e) {}
+  },
+
+  async loadLeadLag(forceV) {
+    const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
+    try {
+      const r = await fetch(`/api/analysis/leadlag/${v}`);
+      const d = await r.json();
+      const winner = d.conclusion === 'sentiment_leads' ? '情绪领先于价格' : '价格领先于情绪';
+      document.getElementById('leadlag-conclusion').innerHTML = `
+        <b style="font-size:1.1rem">${winner}</b><br>
+        <small>情绪→价格 max corr: ${d.max_sent_corr} | 价格→情绪 max corr: ${d.max_price_corr} | n=${d.data_points}</small>`;
+
+      const chart = this._initChart('chart-leadlag');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('领先滞后相关系数'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: Object.keys(d.sentiment_leads_price) },
+        series: [
+          { name: '情绪→价格', type: 'line', data: Object.values(d.sentiment_leads_price), lineStyle: {color:'#22c55e'} },
+          { name: '价格→情绪', type: 'line', data: Object.values(d.price_leads_sentiment), lineStyle: {color:'#ff5a1f'} }
+        ]
+      });
+    } catch(e) {}
+  },
+
+  async loadCompare() {
+    try {
+      const r = await fetch('/api/analysis/compare');
+      const data = await r.json();
+      document.getElementById('compare-table').innerHTML = `<table><thead><tr>
+        <th>品种</th><th>板块</th><th>情绪得分</th><th>标签</th><th>看多%</th><th>看空%</th><th>帖子</th><th>7日趋势</th>
+      </tr></thead><tbody>${data.map(d => `
+        <tr><td><b>${d.variety}</b> ${d.name}</td><td>${d.sector}</td>
+        <td style="color:${d.score>0?'var(--green)':d.score<0?'var(--red)':'var(--text-muted)'}">${d.score.toFixed(3)}</td>
+        <td>${d.label}</td><td>${(d.bullish_ratio*100).toFixed(0)}%</td><td>${(d.bearish_ratio*100).toFixed(0)}%</td>
+        <td>${d.total_posts}</td><td style="color:${d.trend_7d>0?'var(--green)':'var(--red)'}">${d.trend_7d.toFixed(3)}</td></tr>`
+      ).join('')}</tbody></table>`;
+
+      const chart = this._initChart('chart-compare');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('多品种情绪对比'),
+        legend: { bottom: 0 },
+        xAxis: { ...this._baseChartOptions('').xAxis, data: data.map(d => d.variety), axisLabel: {rotate:45,fontSize:9} },
+        series: [
+          { name: '情绪得分', type: 'bar', data: data.map(d => d.score.toFixed(2)),
+            itemStyle: { color: p => p.value >= 0 ? '#22c55e' : '#ef4444' } },
+          { name: '7日趋势', type: 'line', data: data.map(d => d.trend_7d.toFixed(3)),
+            lineStyle: { color: '#ff5a1f' }, showSymbol: false }
+        ]
+      });
+    } catch(e) {}
+  },
+
+  async loadRanking() {
+    try {
+      const r = await fetch('/api/analysis/ranking');
+      const data = await r.json();
+      document.getElementById('ranking-table').innerHTML = `<table><thead><tr>
+        <th>#</th><th>品种</th><th>板块</th><th>得分</th><th>多空</th><th>帖子</th><th>日期</th>
+      </tr></thead><tbody>${data.slice(0,30).map((d,i) => `
+        <tr><td>${i+1}</td><td><b>${d.code}</b> ${d.name}</td><td>${d.sector}</td>
+        <td style="color:${d.score>0?'var(--green)':'var(--red)'}">${d.score.toFixed(3)}</td>
+        <td>${d.bullish}%/${d.bearish}%</td><td>${d.posts}</td><td>${d.date}</td></tr>`
+      ).join('')}</tbody></table>`;
+
+      const chart = this._initChart('chart-ranking');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('情绪得分分布'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: data.slice(0,20).map(d => d.code), axisLabel: {rotate:45,fontSize:9} },
+        series: [{
+          type: 'bar', data: data.slice(0,20).map(d => ({value: d.score.toFixed(3), itemStyle: {color: d.score>=0?'#22c55e':'#ef4444'}}))
+        }]
+      });
+    } catch(e) {}
+  },
+
+  async loadCrossPlatform() {
+    const v = document.getElementById('cp-variety').value;
+    try {
+      const r = await fetch(`/api/analysis/crossplatform/${v}`);
+      const d = await r.json();
+      document.getElementById('crossplat-detail').innerHTML = `<table><thead><tr>
+        <th>平台</th><th>得分</th><th>帖子</th><th>看多%</th><th>看空%</th></tr></thead><tbody>
+        ${Object.entries(d.platforms).map(([p,pd]) => `
+          <tr><td><b>${p}</b></td><td style="color:${pd.avg_score>0?'var(--green)':'var(--red)'}">${pd.avg_score.toFixed(3)}</td>
+          <td>${pd.total_notes}</td><td>${(pd.bullish_ratio*100).toFixed(0)}%</td><td>${(pd.bearish_ratio*100).toFixed(0)}%</td></tr>`
+        ).join('')}</tbody></table>
+        <div style="margin-top:8px">分歧度: <b>${d.spread.toFixed(3)}</b> (${d.conflict_level})</div>`;
+      document.getElementById('crossplat-interp').innerHTML = `<div class="debate-round" style="border-left-color:var(--amber)">${d.interpretation}</div>`;
+
+      const chart = this._initChart('chart-crossplat');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('跨平台情绪对比'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: Object.keys(d.platforms) },
+        series: [{
+          type: 'bar', data: Object.values(d.platforms).map(p => p.avg_score.toFixed(3)),
+          itemStyle: { color: p => p.value>=0?'#22c55e':'#ef4444' }
+        }]
+      });
+    } catch(e) {}
+  },
+
+  async loadAuthors() {
+    try {
+      const r = await fetch('/api/analysis/authors?limit=30');
+      const data = await r.json();
+      document.getElementById('authors-table').innerHTML = `<table><thead><tr>
+        <th>#</th><th>作者</th><th>影响力</th><th>帖子</th><th>粉丝</th><th>互动</th></tr></thead><tbody>
+        ${data.map((a,i) => `
+          <tr><td>${i+1}</td><td><b>${a.name}</b></td><td>${(a.influence||0).toFixed(1)}</td>
+          <td>${a.posts||0}</td><td>${(a.fans||0)>10000?((a.fans||0)/10000).toFixed(1)+'万':(a.fans||0)}</td>
+          <td>${a.avg_engagement||0}</td></tr>`
+        ).join('')}</tbody></table>`;
+    } catch(e) {}
+  },
+
+  async loadEvents() {
+    const v = document.getElementById('event-variety')?.value || '';
+    const days = document.getElementById('event-days')?.value || 7;
+    try {
+      const r = await fetch(`/api/analysis/events?variety=${v}&days=${days}`);
+      const data = await r.json();
+      document.getElementById('events-list').innerHTML = data.length === 0
+        ? '<div style="color:var(--text-muted);padding:12px">未检测到关键词事件</div>'
+        : data.map(e => `
+          <div class="post-card">
+            <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:4px">
+              <span style="font-size:0.75rem;color:var(--text-muted)">${e.date} ${e.platform}</span>
+              <span style="font-size:0.75rem;font-weight:600;color:${(e.sentiment_score||0)>0?'var(--green)':(e.sentiment_score||0)<0?'var(--red)':'var(--text-muted)'}">${(e.sentiment_score||0)>0?'看多':(e.sentiment_score||0)<0?'看空':'中性'}</span>
+            </div>
+            ${e.categories.map(c => `<span class="badge badge-info">${c}</span>`).join(' ')}
+            ${(e.varieties||[]).slice(0,4).map(v => {
+              const s = e.sentiment_score||0;
+              const dir = s > 0.05 ? '↑' : s < -0.05 ? '↓' : '→';
+              const clr = s > 0.05 ? 'var(--green)' : s < -0.05 ? 'var(--red)' : 'var(--text-muted)';
+              return `<span class="badge" style="background:rgba(255,255,255,0.06);border:1px solid ${clr}">${v} <span style="color:${clr}">${dir}</span></span>`;
+            }).join(' ')}
+            ${e.url ? `<a href="${e.url}" target="_blank" rel="noopener" style="color:var(--blue);display:block;margin-top:4px">${e.title}</a>` : `<span style="display:block;margin-top:4px">${e.title}</span>`}
+          </div>`).join('');
+    } catch(e) {}
+  },
+
+  // ═══════════════════════════════════════════════════════
+  // TRADING TAB
+  // ═══════════════════════════════════════════════════════
+  initTradingTab() {
+    this._populateVarietySelects(['trade-variety']);
+    this.fetchLivePrices();
+  },
+
+  async fetchLivePrices() {
+    const ticker = document.getElementById('price-ticker');
+    if (!ticker) return;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 40000);
+      const r = await fetch('/api/live-prices', {signal: controller.signal});
+      clearTimeout(timeout);
+      const d = await r.json();
+      if (d.error) { ticker.innerHTML = '<span style=\"color:var(--amber)\">'+d.error+'</span>'; return; }
+      const items = [];
+      for (const [code, info] of Object.entries(d)) {
+        const color = info.change_pct >= 0 ? 'var(--green)' : 'var(--red)';
+        const arrow = info.change_pct >= 0 ? '↑' : '↓';
+        items.push('<span style=\"margin:0 12px\"><b>'+code+'</b> '+info.price+' <span style=\"color:'+color+'\">'+arrow+Math.abs(info.change_pct*100).toFixed(2)+'%</span></span>');
+      }
+      ticker.innerHTML = items.length ? items.join('') : '<span style=\"color:var(--amber)\">获取中（首次约30秒）...</span>';
+    } catch(e) {
+      if (e.name === 'AbortError') ticker.innerHTML = '<span style=\"color:var(--amber)\">获取超时，点击刷新</span>';
+      else ticker.innerHTML = '<span style=\"color:var(--amber)\">获取中...</span>';
+    }
+  },
+
+  toggleRisk() {
+    const rp = document.getElementById('risk-params');
+    rp.style.display = document.getElementById('risk-enabled').checked ? 'flex' : 'none';
+  },
+  toggleCost() {
+    const cp = document.getElementById('cost-params');
+    cp.style.display = document.getElementById('cost-enabled').checked ? 'flex' : 'none';
+  },
+
+  onStrategyChange() {
+    const strat = document.getElementById('trade-strategy').value;
+    document.getElementById('param-horizon').style.display = (strat === 'fixed' || strat === 'compare') ? 'block' : 'none';
+    document.getElementById('param-maxhold').style.display = strat === 'trailing' ? 'block' : 'none';
+    if (strat === 'compare') {
+      document.querySelector('#param-horizon label').textContent = '持仓天数';
+    }
+  },
+
+  
+  async runTradingBacktest() {
+    const v = document.getElementById('trade-variety').value;
+    const strat = document.getElementById('trade-strategy').value;
+    const out = document.getElementById('trading-summary');
+    const stats = document.getElementById('trading-stats');
+    const detail = document.getElementById('trading-detail');
+
+    const eps = {
+      fixed:         ['/api/trading/run',                  {variety:v, horizon:3, threshold:0.2}],
+      trailing:      ['/api/trading/trailing',             {variety:v, threshold:0.2, max_holding:10}],
+      contrarian:    ['/api/trading/contrarian',           {variety:v||"", horizon:3, trend_window:5}],
+      adaptive_sent: ['/api/trading/adaptive_sentiment',   {variety:v||"", horizon:3, trend_window:5}],
+      momentum_ad:   ['/api/trading/momentum_adaptive',    {variety:v||""}],
+      compare:       ['/api/trading/compare',              {variety:v||"RB", horizon:5, fund_threshold:0.3, sent_threshold:0.2}],
+    };
+    const ep = eps[strat];
+    if (!ep) { this.toast("Unknown: "+strat, "error"); return; }
+
+    try {
+      out.innerHTML = "<span class='node'>Running...</span>";
+      const r = await fetch(ep[0], {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(ep[1])});
+      const d = await r.json();
+
+      if (d.message && !d.curves && (d.total_trades||0)===0) {
+        out.innerHTML = "<span style='color:var(--amber)'>"+d.message+"</span>";
+        stats.innerHTML = detail.innerHTML = "";
+        return;
+      }
+
+      // Collect sub-strategies
+      const subs = [];
+      for (const k of ["adaptive","consensus","contrarian","momentum_baseline"]) {
+        if (d[k] && d[k].trades !== undefined) subs.push({key:k, label:d[k].label||k, trades:d[k].trades, win_rate:d[k].win_rate, total_pnl:d[k].total_pnl, advanced_metrics:d[k].advanced_metrics});
+      }
+      if (subs.length===0 && d.win_rate!==undefined) {
+        subs.push({key:"main", label:d.strategy||strat, trades:d.total_trades||0, win_rate:d.win_rate||0, total_pnl:d.avg_pnl_pct||0, advanced_metrics:d.advanced_metrics});
+      }
+      if (subs.length===0 && d.stats) {
+        for (const [k,v] of Object.entries(d.stats)) {
+          if (v && v.trades!==undefined) subs.push({key:k, label:v.label||k, trades:v.trades, win_rate:v.win_rate, total_pnl:v.total_pnl||v.final_pnl||0, advanced_metrics:v.advanced_metrics});
+        }
+      }
+
+      const m = subs[0] || {};
+      const pnl = m.total_pnl || 0;
+      out.innerHTML = "<div style='font-size:2rem;font-weight:900;color:"+(pnl>=0?"var(--green)":"var(--red)")+"'>"+(pnl>0?"+":"")+pnl+"%</div><div>"+(m.trades||0)+" trades | WR "+((m.win_rate||0)*100).toFixed(0)+"%</div>";
+
+      let cards = "";
+      for (const s of subs) {
+        const am = s.advanced_metrics || {};
+        cards += "<div class='card' style='border-left:3px solid var(--brand)'><h3>"+(s.label||s.key)+"</h3><div style='font-size:1.5rem;font-weight:700;color:"+((s.total_pnl||0)>=0?"var(--green)":"var(--red)")+"'>"+((s.total_pnl||0)>0?"+":"")+(s.total_pnl||0)+"%</div><div style='font-size:0.78rem;color:var(--text-secondary)'>"+(s.trades||0)+" trades | WR "+((s.win_rate||0)*100).toFixed(0)+"%</div><div style='font-size:0.72rem;color:var(--text-muted)'>Sharpe "+(am.sharpe_ratio||"?")+" | PF "+(am.profit_factor||"?")+" | MaxDD "+(am.max_drawdown_pct||"?")+"%</div></div>";
+      }
+      if (d.decisions) {
+        cards += "<div class='card' style='border-left:3px solid var(--amber)'><h3>Decisions</h3><div style='font-size:0.82rem'>"+Object.entries(d.decisions).map(([k,v])=>k+": "+v).join(" | ")+"</div></div>";
+      }
+      stats.innerHTML = cards;
+
+      // Chart
+      const el = document.getElementById("chart-trading-pnl");
+      if (el && typeof echarts !== "undefined" && d.curves) {
+        el.style.display = "block"; el.style.height = "350px";
+        if (this._chartInstances["chart-trading-pnl"]) { try { this._chartInstances["chart-trading-pnl"].dispose(); } catch(e){} }
+        const chart = echarts.init(el);
+        this._chartInstances["chart-trading-pnl"] = chart;
+        const series = Object.entries(d.curves).map(([k, v]) => ({name:k, type:"line", data:v, smooth:true, showSymbol:false, lineStyle:{width:k.includes("baseline")?1.5:2.5}}));
+        chart.setOption({backgroundColor:"transparent", title:{text:d.strategy||"PnL",left:"center",textStyle:{color:"#888",fontSize:12}}, tooltip:{trigger:"axis"}, legend:{data:Object.keys(d.curves),bottom:0,textStyle:{color:"#888"}}, grid:{left:60,right:30,top:40,bottom:35}, xAxis:{type:"category",data:d.dates||[],axisLabel:{show:false}}, yAxis:{type:"value",name:"PnL(%)",axisLabel:{formatter:function(v){return v+"%"}}}, series:series});
+      }
+
+      // Trades table
+      const trades = d.recent_trades || [];
+      detail.innerHTML = trades.length===0 ? "" : "<table><thead><tr><th>Variety</th><th>Entry</th><th>Exit</th><th>Dir</th><th>PnL</th><th>Result</th></tr></thead><tbody>"+trades.slice().reverse().map(function(t){return "<tr><td>"+(t.variety||"")+"</td><td>"+(t.entry||"")+"</td><td>"+(t.exit||"")+"</td><td style='color:"+((t.dir||t.direction)==="long"?"var(--green)":"var(--red)")+"'>"+(t.dir||t.direction||"")+"</td><td style='color:"+((t.pnl||0)>=0?"var(--green)":"var(--red)")+"'>"+((t.pnl||0)>0?"+":"")+(t.pnl||0)+"%</td><td>"+(t.outcome==="win"?"W":t.outcome==="loss"?"L":"=")+"</td></tr>"}).join("")+"</tbody></table>";
+    } catch(e) { this.toast("Failed: "+e.message, "error"); }
+  },
+
+  //   // Kept for backward compat — delegates to unified renderer
+  renderAdaptiveResult(d) { this._renderUnifiedResult(d, 'adaptive_sent'); },
+  renderContrarianResult(d) { this._renderUnifiedResult(d, 'contrarian'); },
+  renderMomAdResult(d) { this._renderUnifiedResult(d, 'momentum_ad'); },
+  renderComparisonResult(d) { this._renderUnifiedResult(d, 'compare'); },
+
+  // // ── Agent Validation ──
+  _valPoll: null,
+
+  async startAgentValidation() {
+    const date = document.getElementById('val-date').value;
+    const varietiesStr = document.getElementById('val-varieties').value.trim();
+    const varieties = varietiesStr ? varietiesStr.split(',').map(v=>v.trim()).filter(Boolean) : [];
+    const btn = document.getElementById('btn-val-start');
+    btn.disabled = true; btn.textContent = 'Running...';
+    document.getElementById('val-progress').innerHTML = '<span class="node">Starting validation...</span>';
+    document.getElementById('val-stats').innerHTML = '';
+    document.getElementById('val-detail').innerHTML = '';
+
+    try {
+      const r = await fetch('/api/agent_validation/start', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({date, varieties})
+      });
+      const d = await r.json();
+      if (d.error) { this.toast(d.error,'error'); btn.disabled=false; return; }
+      document.getElementById('val-progress').innerHTML = `<span class="node">Started: ${d.total} varieties on ${d.date}</span>`;
+      if (this._valPoll) clearInterval(this._valPoll);
+      this._valPoll = setInterval(() => this.pollAgentValidation(), 3000);
+    } catch(e) { this.toast('Failed','error'); btn.disabled=false; }
+  },
+
+  async pollAgentValidation() {
+    try {
+      const r = await fetch('/api/agent_validation/status');
+      const d = await r.json();
+      const pct = d.total > 0 ? (d.done / d.total * 100).toFixed(0) : 0;
+      const stage = d.current_stage || '';
+      const stageMatch = stage.match(/反驳|裁决|研判|情景/);
+      const stagePct = stage.includes('反驳') ? 70 : stage.includes('裁决') ? 80 : stage.includes('研判') ? 90 : stage.includes('情景') ? 95 : stage.includes('情绪') ? 40 : stage.includes('多方') ? 50 : stage.includes('空方') ? 60 : 10;
+      const showPct = Math.max(pct, d.done > 0 ? pct : Math.max(0, Math.min(stagePct, pct || 10)));
+      document.getElementById('val-progress').innerHTML = `
+        <div style="margin:8px 0">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span class="node">${d.running?'🔄':'✅'} ${d.done}/${d.total} completed${d.running?' (current: ~'+stagePct+'%)':''}</span>
+            <span style="font-size:0.8rem;color:var(--amber)">${stage||'initializing...'}</span>
+          </div>
+          <div style="background:var(--bg-input);border-radius:4px;height:8px;overflow:hidden">
+            <div style="background:linear-gradient(90deg,var(--brand),var(--green));height:100%;width:${showPct}%;transition:width 0.5s"></div>
+          </div>
+          <div style="font-size:0.72rem;color:var(--amber);margin-top:2px">⚠ 每个品种约需3-5分钟（4位分析师→3轮辩论→研判→情景）</div>
+          ${d.results && d.results.length > 0 ? d.results.slice(-3).map(r =>
+            `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">${r.variety}: ${r.rating||'?'} | ${r.correct===true?'✅':r.correct===false?'❌':'⏳'} | ${r.elapsed||''}</div>`
+          ).join('') : ''}
+        </div>`;
+
+      if (d.results && d.results.length > 0) {
+        const results = d.results;
+        const valid = results.filter(r => r.correct !== undefined);
+        const correct = valid.filter(r => r.correct).length;
+        const highC = valid.filter(r => r.confidence==='高');
+        const midC = valid.filter(r => r.confidence==='中');
+        const lowC = valid.filter(r => r.confidence==='低');
+
+        // Stats cards
+        document.getElementById('val-stats').innerHTML = `
+          <div class="card"><h3>方向准确率</h3><div style="font-size:2rem;font-weight:700;color:${correct/valid.length>=0.5?'var(--green)':'var(--red)'}">${valid.length>0?(correct/valid.length*100).toFixed(1)+'%':'?'}</div><div style="font-size:0.7rem">${correct}/${valid.length} correct</div></div>
+          <div class="card"><h3>高置信度准确率</h3><div style="font-size:2rem;font-weight:700;color:var(--green)">${highC.length>0?(highC.filter(r=>r.correct).length/highC.length*100).toFixed(1)+'%':'?'}</div><div style="font-size:0.7rem">n=${highC.length}</div></div>
+          <div class="card"><h3>中/低置信度</h3><div>中: ${midC.length>0?(midC.filter(r=>r.correct).length/midC.length*100).toFixed(1)+'%':'?'} (n=${midC.length})</div><div>低: ${lowC.length>0?(lowC.filter(r=>r.correct).length/lowC.length*100).toFixed(1)+'%':'?'} (n=${lowC.length})</div></div>`;
+
+        // Detail table
+        document.getElementById('val-detail').innerHTML = `<table><thead><tr>
+          <th>品种</th><th>RATING</th><th>SCORE</th><th>CONF</th><th>实际方向</th><th>涨幅</th><th>✅</th><th>耗时</th>
+        </tr></thead><tbody>${results.map(r => `
+          <tr><td><b>${r.variety}</b></td>
+          <td style="color:${(r.agent_dir||'')==='BULL'?'var(--green)':(r.agent_dir||'')==='BEAR'?'var(--red)':'var(--text-muted)'}">${r.rating||r.error||'?'}</td>
+          <td>${r.score||'?'}</td><td>${r.confidence||'?'}</td>
+          <td style="color:${(r.actual_dir||'')==='BULL'?'var(--green)':(r.actual_dir||'')==='BEAR'?'var(--red)':'var(--text-muted)'}">${r.actual_dir||'?'}</td>
+          <td>${r.actual_pct!=null?(r.actual_pct>0?'+':'')+r.actual_pct+'%':'?'}</td>
+          <td>${r.correct===true?'✅':r.correct===false?'❌':'?'}</td>
+          <td>${r.elapsed||'?'}</td></tr>`
+        ).join('')}</tbody></table>`;
+
+        // Direction chart
+        const c1 = this._initChart('chart-val-dir');
+        if (c1) c1.setOption({
+          title:{text:'置信度校准',left:'center',textStyle:{color:'#888',fontSize:11}},
+          xAxis:{type:'category',data:['高','中','低']},
+          yAxis:{type:'value',name:'准确率%',max:100},
+          series:[{type:'bar',data:[
+            highC.length>0?+(highC.filter(r=>r.correct).length/highC.length*100).toFixed(1):0,
+            midC.length>0?+(midC.filter(r=>r.correct).length/midC.length*100).toFixed(1):0,
+            lowC.length>0?+(lowC.filter(r=>r.correct).length/lowC.length*100).toFixed(1):0,
+          ],itemStyle:{color:'#22c55e'},label:{show:true,formatter:p=>p.value+'%',color:'#888'}}]
+        },true);
+
+        // Score vs return scatter
+        const c2 = this._initChart('chart-val-score');
+        if (c2) c2.setOption({
+          title:{text:'SCORE vs 实际涨幅',left:'center',textStyle:{color:'#888',fontSize:11}},
+          xAxis:{type:'value',name:'SCORE (0-10)',min:0,max:10},
+          yAxis:{type:'value',name:'涨幅%'},
+          series:[{type:'scatter',data:valid.map(r=>[r.score,r.actual_pct]),
+            symbolSize:15,itemStyle:{color:r=>r.correct?'#22c55e':'#ef4444'}}]
+        },true);
+      }
+
+      if (!d.running) {
+        clearInterval(this._valPoll);
+        document.getElementById('btn-val-start').disabled = false;
+        document.getElementById('btn-val-start').textContent = 'Refresh';
+      }
+    } catch(e) {}
+  },
+
+  // ── Batch Backtest ──
+  _btPollInterval: null,
+
+  async startBatchBacktest() {
+    const date = document.getElementById('bt-date').value;
+    const runAgent = document.getElementById('bt-run-agent').checked;
+    const varietiesStr = document.getElementById('bt-varieties').value.trim();
+    const varieties = varietiesStr ? varietiesStr.split(',').map(v=>v.trim()).filter(Boolean) : [];
+    const btn = document.getElementById('btn-bt-start');
+    btn.disabled = true; btn.textContent = 'Running...';
+
+    document.getElementById('bt-summary').innerHTML = '<span class="node">Starting...</span>';
+    document.getElementById('bt-stats').innerHTML = '';
+    document.getElementById('bt-detail').innerHTML = '';
+
+    try {
+      const r = await fetch('/api/batch_backtest/start', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({date, run_agent:runAgent, varieties})
+      });
+      const d = await r.json();
+      if (d.error) { this.toast(d.error,'error'); btn.disabled=false; return; }
+
+      // Poll for results
+      if (this._btPollInterval) clearInterval(this._btPollInterval);
+      this._btPollInterval = setInterval(() => this.pollBatchBacktest(), 2000);
+    } catch(e) { this.toast('Failed to start','error'); btn.disabled=false; }
+  },
+
+  async pollBatchBacktest() {
+    try {
+      const r = await fetch('/api/batch_backtest/status');
+      const d = await r.json();
+      const done = d.done||0, total = d.total||0;
+
+      document.getElementById('bt-summary').innerHTML = `
+        <span class="node">Processing: ${done}/${total} varieties</span>
+        ${d.summary ? `<br><b>Sentiment accuracy: ${(d.summary.sentiment_accuracy*100).toFixed(1)}%</b> (${d.summary.sentiment_pairs} pairs)
+        ${d.summary.agent_pairs>0 ? ` | <b>Agent accuracy: ${(d.summary.agent_accuracy*100).toFixed(1)}%</b> (${d.summary.agent_pairs} pairs)` : ''}` : ''}`;
+
+      if (d.results && d.results.length > 0) {
+        this.renderBatchBacktestResults(d);
+      }
+
+      if (!d.running) {
+        clearInterval(this._btPollInterval);
+        document.getElementById('btn-bt-start').disabled = false;
+        document.getElementById('btn-bt-start').textContent = 'Refresh';
+      }
+    } catch(e) {}
+  },
+
+  renderBatchBacktestResults(d) {
+    const results = d.results||[];
+    const summary = d.summary||{};
+
+    // Stats cards
+    const sAcc = summary.sentiment_accuracy ? (summary.sentiment_accuracy*100).toFixed(1) : '?';
+    const aAcc = summary.agent_accuracy ? (summary.agent_accuracy*100).toFixed(1) : '?';
+    const agentDelta = summary.agent_accuracy && summary.sentiment_accuracy
+      ? ((summary.agent_accuracy - summary.sentiment_accuracy)*100).toFixed(1) : '?';
+    document.getElementById('bt-stats').innerHTML = `
+      <div class="card"><h3>纯情绪准确率</h3><div style="font-size:1.8rem;color:var(--blue)">${sAcc}%</div><div style="font-size:0.7rem">n=${summary.sentiment_pairs||0}</div></div>
+      <div class="card"><h3>Agent准确率</h3><div style="font-size:1.8rem;color:var(--green)">${aAcc}%</div><div style="font-size:0.7rem">n=${summary.agent_pairs||0}</div></div>
+      <div class="card"><h3>Agent增量</h3><div style="font-size:1.8rem;color:${parseFloat(agentDelta)>0?'var(--green)':'var(--red)'}">${parseFloat(agentDelta)>0?'+':''}${agentDelta}%</div><div style="font-size:0.7rem">vs纯情绪</div></div>`;
+
+    // Detail table
+    document.getElementById('bt-detail').innerHTML = `<table><thead><tr>
+      <th>品种</th><th>情绪方向</th><th>Agent方向</th><th>实际方向</th><th>情绪✅</th><th>Agent✅</th>
+    </tr></thead><tbody>${results.map(r => {
+      const sDir = r.sentiment?.direction||'?';
+      const aDir = r.agent?.direction||'?';
+      const actDir = r.actual?.direction||'?';
+      const sOk = r.sentiment_correct ? '✅' : (r.sentiment_correct===false?'❌':'?');
+      const aOk = r.agent_correct ? '✅' : (r.agent_correct===false?'❌':'?');
+      return `<tr>
+        <td><b>${r.variety}</b></td>
+        <td style="color:${sDir==='BULL'?'var(--green)':sDir==='BEAR'?'var(--red)':'var(--text-muted)'}">${sDir}</td>
+        <td style="color:${aDir.includes('BULL')||aDir.includes('偏多')?'var(--green)':aDir.includes('BEAR')||aDir.includes('偏空')?'var(--red)':'var(--text-muted)'}">${aDir}</td>
+        <td style="color:${actDir==='BULL'?'var(--green)':actDir==='BEAR'?'var(--red)':'var(--text-muted)'}">${actDir} (${r.actual?.pct_change||0}%)</td>
+        <td>${sOk}</td><td>${aOk}</td></tr>`;
+    }).join('')}</tbody></table>`;
+
+    // Chart
+    const chart = this._initChart('chart-bt-compare');
+    if (chart && summary.sentiment_accuracy) {
+      chart.setOption({
+        backgroundColor:'transparent',
+        title:{text:`Direction Accuracy Comparison (${d.date||''})`,left:'center',textStyle:{color:'#888',fontSize:12}},
+        tooltip:{trigger:'axis'},
+        legend:{bottom:0,textStyle:{color:'#888'}},
+        grid:{left:50,right:30,top:40,bottom:35},
+        xAxis:{type:'category',data:['纯情绪','Agent']},
+        yAxis:{type:'value',name:'Accuracy %',min:0,max:100,axisLabel:{formatter:v=>v+'%'}},
+        series:[{
+          type:'bar',
+          data:[
+            {value:summary.sentiment_accuracy*100,itemStyle:{color:'#60a5fa'}},
+            {value:(summary.agent_accuracy||0)*100,itemStyle:{color:'#22c55e'}}
+          ],
+          label:{show:true,position:'top',formatter:p=>p.value.toFixed(1)+'%',color:'#888'}
+        }]
+      });
+    }
+  },
+
+  // ── Multi-Strategy Comparison ──
+  // Simple multi-compare: fetch each strategy separately, plot individual curves
+  async runMultiCompare() {
+    const v = document.getElementById('trade-variety').value;
+    const startDate = document.getElementById('trade-start').value;
+    const endDate = document.getElementById('trade-end').value;
+    const cbs = document.querySelectorAll('.multi-cb:checked');
+    if (cbs.length === 0) { this.toast('Select at least one strategy','error'); return; }
+    const riskOn = document.getElementById('risk-enabled').checked;
+    const stopLoss = riskOn ? parseFloat(document.getElementById('risk-stop').value) || 0 : 0;
+    const trailStop = riskOn ? parseFloat(document.getElementById('risk-trail').value) || 0 : 0;
+    const costOn = document.getElementById('cost-enabled').checked;
+    const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;
+    const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;
+    const strategies = Array.from(cbs).map(cb => cb.value);
+    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)'};
+    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4'};
+    document.getElementById('trading-summary').innerHTML = '<span class="node">Fetching...</span>';
+
+    // Build per-strategy per-date PnL maps for common x-axis
+    const allPnlMaps = {};  // {strategy: {date: pnl_delta}}
+    const allStats = {};
+    const allDatesSet = new Set();
+
+    for (const s of strategies) {
+      try {
+        let url, body;
+        if (s === 'fixed') { url = '/api/trading/run'; body = JSON.stringify({variety:v||'', horizon:3}); }
+        else if (s === 'trailing') { url = '/api/trading/trailing'; body = JSON.stringify({variety:v||'', threshold:0.2, max_holding:10}); }
+        else if (s === 'donchian') { url = '/api/trading/donchian'; body = JSON.stringify({variety:v||''}); }
+        else if (s === 'momentum') { url = '/api/trading/momentum_strat'; body = JSON.stringify({variety:v||''}); }
+        else if (s === 'momentum_ad') { url = '/api/trading/momentum_adaptive'; body = JSON.stringify({variety:v||''}); }
+        else if (s === 'adaptive_sent') { url = '/api/trading/adaptive_sentiment'; body = JSON.stringify({variety:v||'', horizon:3}); }
+        else if (s === 'contrarian') { url = '/api/trading/contrarian'; body = JSON.stringify({variety:v||'', horizon:3}); }
+        else continue;
+
+        const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body});
+        const d = await r.json();
+
+        // Build per-date PnL map
+        let pnlMap = {}; let cum = 0;
+        let trades = d.recent_trades || [];
+
+        // Deduct trading costs (from individual trades)
+        if (costOn && commRate > 0) {
+          const costPerTrade = (commRate * 2) + (slipTick * 0.02);
+          trades = trades.map(t => ({...t, pnl: (t.pnl||0) - costPerTrade}));
+        }
+
+        // Apply risk management via backend (uses real price data)
+        if (stopLoss > 0 || trailStop > 0) {
+          try {
+            const riskR = await fetch('/api/trading/apply_risk', {
+              method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({variety: v||'RB', trades, stop_loss: stopLoss, trail_stop: trailStop})
+            });
+            const riskD = await riskR.json();
+            if (riskD.trades) trades = riskD.trades;
+          } catch(e) {}
+        }
+        // `recent_trades` format: each trade has {entry, exit, pnl}
+        trades.forEach(t => {
+          const dt = t.entry || t.exit || '';
+          if (dt) { allDatesSet.add(dt); pnlMap[dt] = (pnlMap[dt]||0) + (t.pnl||0); }
+        });
+        // `curves` format: has `dates` array and `curves.{key}` array
+        if (Object.keys(pnlMap).length === 0 && d.curves && d.dates) {
+          const prefer = s === 'adaptive_sent' ? 'adaptive' :
+                         s === 'contrarian' ? 'contrarian' :
+                         s === 'momentum_ad' ? 'adaptive' : null;
+          const key = prefer && d.curves[prefer] ? prefer :
+                      Object.keys(d.curves).find(k => k !== 'price' && k !== 'momentum');
+          if (key && d.curves[key] && d.dates) {
+            const curve = d.curves[key]; const dates = d.dates;
+            let prev = 0;
+            for (let i = 0; i < dates.length; i++) {
+              const delta = curve[i] - prev; prev = curve[i];
+              if (delta !== 0) { pnlMap[dates[i]] = delta; allDatesSet.add(dates[i]); }
+            }
+          }
+        }
+        if (Object.keys(pnlMap).length === 0 && d.curves && !d.dates) {
+          const key = Object.keys(d.curves).find(k => k !== 'momentum');
+          if (key && d.curves[key]) {
+            const curve = d.curves[key]; let prev = 0;
+            curve.forEach((val, i) => {
+              const delta = val - prev; prev = val;
+              if (delta !== 0) { const fakeDt = 'd' + i; pnlMap[fakeDt] = delta; allDatesSet.add(fakeDt); }
+            });
+          }
+        }
+        // Apply costs to pnlMap entries
+        if (costOn && commRate > 0) {
+          const costPerTrade = (commRate * 2) + (slipTick * 0.02);
+          for (const d of Object.keys(pnlMap)) {
+            pnlMap[d] = (pnlMap[d] || 0) - costPerTrade;
+          }
+        }
+
+        allPnlMaps[s] = pnlMap;
+        // Extract stats from API response
+        let stTrades = d.total_trades ?? d.adaptive?.trades ?? d.contrarian?.trades ?? d.consensus?.trades ?? d.stats?.weighted?.trades ?? d.hybrid?.trades ?? trades.length;
+        let stWR = d.win_rate ?? d.adaptive?.win_rate ?? d.contrarian?.win_rate ?? d.consensus?.win_rate ?? d.stats?.weighted?.win_rate ?? d.hybrid?.win_rate ?? 0;
+        // Extract advanced metrics
+        let stAdv = d.advanced_metrics ?? d.adaptive?.advanced_metrics ?? d.contrarian?.advanced_metrics ?? d.consensus?.advanced_metrics ?? d.stats?.weighted?.advanced_metrics ?? d.hybrid?.advanced_metrics ?? null;
+        let totalPnl = 0;
+        for (const v of Object.values(pnlMap||{})) { totalPnl += (v||0); }
+        const stopped = stopLoss||trailStop ? trades.filter(t=>t.stopped_out).length : 0;
+        allStats[s] = {trades: stTrades, win_rate: stWR, total_pnl: parseFloat(totalPnl.toFixed(2)), stopped: stopped, advanced: stAdv};
+        const loaded = Object.keys(allPnlMaps).length;
+        document.getElementById('trading-summary').innerHTML =
+          `<span class="node">Loaded ${loaded}/${strategies.length}...</span>`;
+      } catch(e) { allStats[s] = {error: e.message}; }
+    }
+
+    document.getElementById('trading-stats').innerHTML = `
+      <div class="card" style="grid-column:1/-1;background:var(--bg-input);padding:12px 16px;font-size:0.82rem;color:var(--text-secondary);border-left:3px solid var(--amber)">
+        <b>💡 为什么交易次数少？</b> 情绪策略因情绪数据稀疏(29个数据点)且阈值过滤严苛(|score|>0.2)；动量策略使用每日价格信号更频繁。在更长回测区间中交易数会增加。
+      </div>
+      ` + strategies.map(s => {
+      const st = allStats[s]||{};
+      const wr = ((st.win_rate||0)*100).toFixed(0);
+      const pnl = (st.total_pnl||0);
+      const adv = st.advanced || {};
+      const sharpeColor = (adv.sharpe_ratio||0) >= 1 ? 'var(--green)' : (adv.sharpe_ratio||0) >= 0 ? 'var(--amber)' : 'var(--red)';
+      const pf = adv.profit_factor != null ? adv.profit_factor : '—';
+      return `<div class="card" style="border-left:3px solid ${colors[s]}">
+        <h3>${names[s]}</h3>
+        <div style="font-size:1.6rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>0?'+':''}${pnl.toFixed(1)}%</div>
+        <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px">
+          ${st.trades||0}笔 | 胜率 ${wr}% | 夏普 <span style="color:${sharpeColor}">${adv.sharpe_ratio||'—'}</span>
+        </div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">
+          盈亏比${pf} | 回撤${adv.max_drawdown_pct!=null?adv.max_drawdown_pct+'%':'—'}
+        </div>
+      </div>`;
+    }).join('');
+
+    document.getElementById('trading-detail').innerHTML =
+      `<div style="color:var(--text-muted);padding:12px">${strategies.length} strategies loaded. Note: different strategies trade on different dates, curves may differ in length.</div>`;
+
+    // Fetch price data for common date grid (only for specific variety)
+    let commonDates = [];
+    let priceCurve = [];
+    let marketReturn = 0;
+    const priceVariety = v && v.trim() ? v : 'RB';  // Default to RB for market benchmark
+    try {
+      const pr = await fetch('/api/price/' + priceVariety + '?days=365');
+        const pd = await pr.json();
+        const prices = pd.prices || pd;
+        if (prices.length > 1) {
+          const base = prices[0].close;
+          prices.forEach(p => {
+            const d = p.date;
+            if (d >= startDate && d <= endDate) {
+              commonDates.push(d);
+              priceCurve.push(((p.close - base) / base * 100).toFixed(1));
+            }
+          });
+          marketReturn = parseFloat(priceCurve[priceCurve.length-1]) || 0;
+        }
+      } catch(e) {}
+    // Fallback: use collected trade dates
+    if (commonDates.length === 0) {
+      commonDates = [...allDatesSet].sort();
+    }
+
+    // Build aligned curves: forward-fill cumulative PnL across common dates
+    const alignedCurves = {};
+    for (const s of strategies) {
+      const pnlMap = allPnlMaps[s] || {};
+      let cum = 0; const curve = [];
+      for (const d of commonDates) {
+        if (pnlMap[d]) cum += pnlMap[d];
+        curve.push(cum.toFixed(2));
+      }
+      alignedCurves[s] = curve;
+      allStats[s].total_pnl = parseFloat(cum.toFixed(2));
+    }
+
+    // Chart
+    const el = document.getElementById('chart-trading-pnl');
+    if (el) {
+      el.style.display = 'block'; el.style.height = '350px';
+      if (this._chartInstances['chart-trading-pnl']) {
+        try { this._chartInstances['chart-trading-pnl'].dispose(); } catch(e) {}
+      }
+      const chart = echarts.init(el);
+      this._chartInstances['chart-trading-pnl'] = chart;
+      const seriesData = strategies.map(s => ({
+        name:names[s], type:'line', data:alignedCurves[s]||[], smooth:true, showSymbol:false,
+        lineStyle:{color:colors[s],width:3},
+      }));
+      if (priceCurve.length > 0) {
+        seriesData.push({
+          name:'品种价格', type:'line', data:priceCurve.map(Number), smooth:true, showSymbol:false,
+          lineStyle:{color:'#888',width:1,type:'dashed'}, yAxisIndex:1,
+        });
+      }
+      chart.setOption({
+        title:{text: v ? (v + ' Strategy Comparison') : 'Multi-Strategy PnL', left:'center', textStyle:{color:'#888',fontSize:12}},
+        tooltip:{trigger:'axis'},
+        legend:{data:[...strategies.map(s=>names[s]),'品种价格'].filter(Boolean),bottom:0,textStyle:{color:'#888',fontSize:9}},
+        grid:{left:60,right:70,top:40,bottom:35},
+        xAxis:{type:'category', data:commonDates, axisLabel:{show:false}},
+        yAxis:[
+          {type:'value',axisLabel:{formatter:v=>v+'%'}},
+          {type:'value',axisLabel:{formatter:v=>v+'%'},splitLine:{show:false}}
+        ],
+        series: seriesData
+      }, true);
+      chart.resize();
+    }
+
+    // Update summary with aligned values + market comparison
+    document.getElementById('trading-summary').innerHTML =
+      (marketReturn !== 0 ? `<span style=\"display:inline-block;margin:4px 12px 4px 0;padding:6px 12px;border-radius:6px;background:var(--bg-input);border-left:3px solid #888\"><b>市场(买入持有)</b> <span style=\"margin-left:4px;font-size:1.1rem;font-weight:700;color:${marketReturn>=0?'var(--green)':'var(--red)'}\">${marketReturn>0?'+':''}${marketReturn.toFixed(1)}%</span></span>` : '') +
+      strategies.map(s => {
+        const st = allStats[s]||{};
+        const costAdj = costOn ? (st.trades||0) * ((commRate||0)*2 + (slipTick||0)*0.02) : 0;
+        const pnl = (st.total_pnl||0) - costAdj; const vsMkt = pnl - marketReturn;
+        return `<span style=\"display:inline-block;margin:4px 12px 4px 0;padding:6px 12px;border-radius:6px;background:var(--bg-input);border-left:3px solid ${colors[s]}\"><b style=\"color:${colors[s]}\">${names[s]}</b> <span style=\"font-size:1.05rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}\">${pnl>0?'+':''}${pnl.toFixed(1)}%</span> <span style=\"font-size:0.72rem;color:${vsMkt>=0?'var(--green)':'var(--red)'}\">vs市场${vsMkt>0?'+':''}${vsMkt.toFixed(1)}%</span> <span style=\"font-size:0.72rem;color:var(--text-muted)\">${st.trades||0}笔/${((st.win_rate||0)*100).toFixed(0)}%</span></span>`;
+      }).join('');
+  },
+
+  async _old_runMultiCompare() {
+    const v = document.getElementById('trade-variety').value;
+    const startDate = document.getElementById('trade-start').value;
+    const endDate = document.getElementById('trade-end').value;
+    const cbs = document.querySelectorAll('.multi-cb:checked');
+    if (cbs.length === 0) { this.toast('Select at least one strategy','error'); return; }
+
+    const strategies = Array.from(cbs).map(cb => cb.value);
+    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)'};
+    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4'};
+
+    document.getElementById('trading-summary').innerHTML = '<span class="node">Running all strategies...</span>';
+
+    try {
+      const r = await fetch('/api/trading/multi_compare', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({variety:v||'', strategies, horizon:3, start_date:startDate, end_date:endDate})
+      });
+      const d = await r.json();
+
+      // Summary
+      document.getElementById('trading-summary').innerHTML = strategies.map(s => {
+        const st = d.stats[s] || {};
+        const costAdj = costOn ? (st.trades||0) * ((commRate||0)*2 + (slipTick||0)*0.02) : 0;
+        const pnl = (st.total_pnl||0) - costAdj; const vsMkt = pnl - marketReturn;
+      return `<b style="color:${colors[s]}">${names[s]}</b>: ${st.trades||0}t/${((st.win_rate||0)*100).toFixed(0)}%/${pnl>0?'+':''}${pnl.toFixed(1)}% <span style="font-size:0.75rem;color:${vsMkt>=0?'var(--green)':'var(--red)'}">vs市场${vsMkt>0?'+':''}${vsMkt.toFixed(1)}%</span>`;
+      }).join(' | ');
+
+      // Stats cards
+      document.getElementById('trading-stats').innerHTML = strategies.map(s => {
+        const st = d.stats[s] || {};
+        return `<div class="card" style="border-left:3px solid ${colors[s]}"><h3>${names[s]}</h3><div style="font-size:1.3rem;color:${colors[s]}">${((st.win_rate||0)*100).toFixed(0)}%</div><div style="font-size:0.7rem">${st.trades||0}笔</div></div>`;
+      }).join('');
+
+      // Chart
+      const el = document.getElementById('chart-trading-pnl');
+      if (el) {
+        el.style.display = 'block'; el.style.height = '350px';
+        if (this._chartInstances['chart-trading-pnl']) {
+          try { this._chartInstances['chart-trading-pnl'].dispose(); } catch(e) {}
+        }
+        const chart = echarts.init(el);
+        this._chartInstances['chart-trading-pnl'] = chart;
+        chart.setOption({
+          title:{text:'Multi-Strategy Comparison',left:'center',textStyle:{color:'#888',fontSize:12}},
+          tooltip:{trigger:'axis'},
+          legend:{data:[...strategies.map(s=>names[s]),'品种价格'].filter(Boolean),bottom:0,textStyle:{color:'#888',fontSize:9}},
+          backgroundColor:'#0f0f0f',
+          grid:{left:60,right:70,top:45,bottom:35},
+          xAxis:{type:'category',data:d.dates||[],axisLabel:{show:false},
+            axisLine:{lineStyle:{color:'#444'}},axisTick:{show:false}},
+          yAxis:[
+            {type:'value',axisLabel:{formatter:v=>v+'%',color:'#aaa'},
+             splitLine:{lineStyle:{color:'#222'}},axisLine:{lineStyle:{color:'#444'}}},
+            {type:'value',axisLabel:{formatter:v=>v+'%',color:'#aaa'},
+             splitLine:{show:false},axisLine:{lineStyle:{color:'#444'}}}
+          ],
+          series: [
+            ...strategies.map(s => ({
+              name:names[s], type:'line', data:d.curves[s]||[], smooth:true, showSymbol:false,
+              lineStyle:{color:colors[s],width:3},
+              areaStyle:{color:colors[s]+'20'},
+            })),
+            ...(d.price_curve&&d.price_curve.length>0 ? [{
+              name:'品种价格', type:'line', data:d.price_curve, smooth:true, showSymbol:false,
+              lineStyle:{color:'#888',width:1,type:'dashed'}, yAxisIndex:1,
+            }] : []),
+          ]
+        }, true);
+        chart.resize();
+      }
+      // Trade details: first strategy's recent trades
+      document.getElementById('trading-detail').innerHTML = strategies.length > 0
+        ? `<div style="color:var(--text-muted);padding:12px">${strategies.length} strategies compared. Use single-strategy mode for detailed trade list.</div>`
+        : '';
+    } catch(e) { this.toast('Comparison failed','error'); }
+  },
+
+  // ═══════════════════════════════════════════════════════
+  // SYSTEM TAB
+  // ═══════════════════════════════════════════════════════
+  async loadSystemTab() {
+    await Promise.all([this.loadSchedulerStatus(), this.loadDbStats(), this.loadAlerts()]);
+  },
+
+  async loadSchedulerStatus() {
+    try {
+      const r = await fetch('/api/scheduler/status');
+      const d = await r.json();
+      document.getElementById('scheduler-status').innerHTML = d.running
+        ? `<div style="color:var(--green);font-weight:600">● 运行中</div>
+           ${d.jobs.map(j => `<div style="font-size:0.8rem">${j.name}: 下次 ${j.next_run||'?'}</div>`).join('')}`
+        : '<div style="color:var(--text-muted)">○ 未启动</div>';
+    } catch(e) {}
+  },
+
+  async schedulerControl(action) {
+    try {
+      const r = await fetch(`/api/scheduler/${action}`, {method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({schedule_times:['08:00','18:00']})});
+      this.toast(action==='start'?'调度已启动':'调度已停止', 'info');
+      setTimeout(() => this.loadSchedulerStatus(), 1000);
+    } catch(e) { this.toast('操作失败', 'error'); }
+  },
+
+  async loadDbStats() {
+    try {
+      const r = await fetch('/api/db/stats');
+      const d = await r.json();
+      const platforms = d.platforms || {};
+      document.getElementById('db-stats').innerHTML = `
+        <div style="font-size:1.5rem;font-weight:700">${d.total_posts}</div><div>帖子总数</div>
+        ${Object.entries(platforms).map(([p, pd]) =>
+          `<div style="font-size:0.82rem">${p}: ${pd.count} (${pd.earliest}~${pd.latest})</div>`
+        ).join('')}`;
+      document.getElementById('collection-history').innerHTML = `<table><thead><tr>
+        <th>时间</th><th>平台</th><th>收集</th><th>状态</th><th>错误</th></tr></thead><tbody>
+        ${(d.collection_history||[]).map(h => `
+          <tr><td>${(h.started_at||'').substring(0,16)}</td><td>${h.platform}</td>
+          <td>${h.posts_collected||0}</td><td>${h.status==='success'?'✅':'❌'}</td>
+          <td><small>${(h.error_msg||'').substring(0,50)}</small></td></tr>`
+        ).join('')}</tbody></table>`;
+    } catch(e) {}
+  },
+
+  async ackAlert(id) {
+    try {
+      await fetch('/api/db/alerts/' + id + '/ack', {method:'POST'});
+      this.loadAlerts();
+    } catch(e) {}
+  },
+
+  async loadAlerts() {
+    try {
+      const r = await fetch('/api/db/alerts?limit=20');
+      const data = await r.json();
+      const unack = data.filter(a => !a.acknowledged).length;
+      document.getElementById('alert-count').textContent = unack || '';
+      document.getElementById('alerts-list').innerHTML = data.length === 0
+        ? '<div style="color:var(--text-muted)">暂无告警</div>'
+        : data.map(a => `
+          <div style="padding:6px 0;border-bottom:1px solid var(--border);${a.acknowledged?'opacity:0.5':''}">
+            <span style="font-weight:600;color:${a.severity==='error'?'var(--red)':a.severity==='warning'?'var(--amber)':'var(--blue)'}">${a.title}</span>
+            <small style="color:var(--text-muted);float:right">${(a.created_at||'').substring(0,16)}</small>
+            ${a.acknowledged ? '' : '<button class="btn btn-outline btn-sm" onclick="App.ackAlert(' + a.id + ')" style="font-size:0.65rem;padding:2px 6px">确认</button>'}
+          </div>`).join('');
+    } catch(e) {}
+  },
+
+};
+
+// Diagnostic: test ECharts loading
+document.addEventListener('DOMContentLoaded', () => {
+  if (typeof echarts === 'undefined') {
+    document.body.insertAdjacentHTML('afterbegin', '<div style=\"background:red;color:white;padding:10px;text-align:center;position:fixed;top:0;z-index:9999;width:100%\">ERROR: ECharts library failed to load. Charts will not render.</div>');
+  } else {
+    console.log('ECharts loaded OK, version:', echarts.version);
+  }
+  if (typeof marked === 'undefined') {
+    document.body.insertAdjacentHTML('afterbegin', '<div style=\"background:orange;color:white;padding:10px;text-align:center;position:fixed;top:40px;z-index:9999;width:100%\">WARNING: marked.js failed to load.</div>');
+  }
+  App.init();
+});
+</script>
+</body>
+</html>

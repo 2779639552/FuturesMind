@@ -1,0 +1,225 @@
+"""
+sentiment_data.py — Social sentiment data loader for TradingAgents.
+====================================================================
+
+Loads variety-level sentiment JSON from ~/.tradingagents/external_data/{VARIETY}_sentiment.json,
+formats it as a structured text prompt for the Sentiment Analyst LLM.
+
+Data flow:
+  思路2 validate/output/trends/  →  generate_tradingagents_sentiment.py
+  →  ~/.tradingagents/external_data/{VARIETY}_sentiment.json
+  →  this module → formatted text for LLM prompt
+
+JSON schema matches the output of generate_tradingagents_sentiment.py.
+"""
+
+import json
+import logging
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+EXTERNAL_DATA_DIR = Path.home() / ".tradingagents" / "external_data"
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def load_sentiment_data(variety: str) -> Optional[dict]:
+    """Load sentiment JSON for a variety. Returns None if not found or stale.
+
+    Staleness threshold: data older than 48 hours triggers a warning but is still returned.
+    """
+    filepath = EXTERNAL_DATA_DIR / f"{variety}_sentiment.json"
+
+    if not filepath.exists():
+        logger.info("No sentiment data file for %s at %s", variety, filepath)
+        return None
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read sentiment data for %s: %s", variety, e)
+        return None
+
+    # Staleness check
+    updated_str = data.get("updated", "")
+    stale_hours = data.get("stale_after_hours", 48)
+    if updated_str:
+        try:
+            updated = datetime.fromisoformat(updated_str)
+            now = datetime.now(BEIJING_TZ)
+            age_hours = (now - updated).total_seconds() / 3600
+            if age_hours > stale_hours:
+                logger.warning(
+                    "Sentiment data for %s is %.0f hours old (stale threshold: %dh). "
+                    "Data will still be used but LLM will be warned about staleness.",
+                    variety, age_hours, stale_hours,
+                )
+                data["_stale"] = True
+                data["_age_hours"] = round(age_hours, 1)
+        except (ValueError, TypeError):
+            pass
+
+    return data
+
+
+def get_futures_sentiment(symbol: str) -> str:
+    """Format sentiment data as a structured prompt-text for the LLM.
+
+    This is the primary interface used by the @tool wrapper and routed through
+    the commodity_futures vendor system.
+
+    Args:
+        symbol: Commodity variety code, e.g. RB, I, JM.
+
+    Returns:
+        Formatted text ready for LLM consumption, or a message indicating no data.
+    """
+    data = load_sentiment_data(symbol)
+
+    if data is None:
+        return (
+            f"[情绪数据] 品种 {symbol} 暂无社交媒体情绪数据。\n"
+            f"可能原因: (1) 该品种尚未采集足够的社交媒体内容, "
+            f"(2) 数据文件不存在于 {EXTERNAL_DATA_DIR / f'{symbol}_sentiment.json'}\n"
+            f"建议: 跳过情绪维度分析，或使用以下占位评估:\n"
+            f"  - 情绪方向: 无法判断\n"
+            f"  - 置信度: N/A\n"
+            f"  - 情绪-价格背离: 无法检测"
+        )
+
+    d = data.get("data", {})
+    ss = d.get("social_sentiment", {})
+    ds = d.get("daily_series", [])
+    pw = d.get("platform_weights", {})
+    spc = d.get("sentiment_price_correlation", {})
+    idx = d.get("index_summary", {})
+    meth = d.get("methodology", {})
+
+    # --- Build the prompt ---
+    lines = [
+        "=" * 60,
+        f"【社交媒体情绪数据】{data.get('variety_name', symbol)} ({symbol})",
+        f"数据来源: {data.get('source', 'N/A')}",
+        f"覆盖平台: {', '.join(data.get('source_platforms', []))}",
+        f"更新时间: {data.get('updated', 'N/A')}",
+    ]
+
+    # Staleness warning
+    if data.get("_stale"):
+        lines.append(f"⚠️ 数据已过期（{data.get('_age_hours', '?')}小时前），以下信息可能不再反映当前市场情绪。")
+
+    lines.append("=" * 60)
+    lines.append("")
+
+    # --- Section 1: Overall Sentiment ---
+    lines.append("## 1. 整体情绪概览")
+    lines.append(f"  综合情绪: {ss.get('overall_sentiment_label', 'N/A')} "
+                 f"(avg_score={ss.get('avg_score', 'N/A')}, "
+                 f"level={ss.get('overall_sentiment', 'N/A')})")
+    lines.append(f"  多空比: 看多 {ss.get('bullish_ratio', 0):.1%} | "
+                 f"看空 {ss.get('bearish_ratio', 0):.1%} | "
+                 f"中性 {ss.get('neutral_ratio', 0):.1%}")
+    lines.append(f"  分析帖子总数: {ss.get('total_posts_analyzed', 0)}")
+    lines.append(f"  时间范围: {ss.get('date_range', 'N/A')}")
+    lines.append(f"  情绪趋势: {ss.get('trend_label', 'N/A')}")
+
+    if ss.get("is_extreme"):
+        lines.append(f"  {ss.get('extreme_note', '')}")
+
+    # Platform breakdown
+    platforms = ss.get("platforms", {})
+    if platforms:
+        plat_str = " | ".join(f"{p}: {c}条" for p, c in platforms.items())
+        lines.append(f"  平台分布: {plat_str}")
+
+    lines.append("")
+
+    # --- Section 2: Sentiment-Price Correlation ---
+    lines.append("## 2. 情绪-价格相关性（回测）")
+    if spc.get("direction_accuracy") is not None:
+        lines.append(f"  方向准确率: {spc['direction_accuracy']:.1%} "
+                     f"(N={spc.get('data_points', 0)} days)")
+        lines.append(f"  Pearson r: {spc.get('pearson_r', 'N/A')}")
+        lines.append(f"  解读: {spc.get('note', '')}")
+    else:
+        lines.append("  (回测数据不可用 — 该品种数据量不足以计算相关性)")
+    lines.append("")
+
+    # --- Section 3: Daily Time Series ---
+    lines.append("## 3. 每日情绪时序（最近30天）")
+    if ds:
+        lines.append(f"  {'Date':<12} {'Score':>7} {'Notes':>5} {'Bull':>4} {'Bear':>4} {'Platforms'}")
+        lines.append(f"  {'-'*12} {'-'*7} {'-'*5} {'-'*4} {'-'*4} {'-'*20}")
+        for d in ds[-14:]:  # Show last 14 days to keep prompt manageable
+            score = d.get("avg_score", 0)
+            # Visual indicator
+            if score > 0.2:
+                bar = "🟢"
+            elif score > 0.05:
+                bar = "🟡"
+            elif score > -0.05:
+                bar = "⬜"
+            elif score > -0.2:
+                bar = "🟠"
+            else:
+                bar = "🔴"
+            plat_short = ",".join(sorted(d.get("platforms", {}).keys())[:3])
+            lines.append(
+                f"  {d['date']:<12} {bar} {score:+.3f} {d['note_count']:>4} "
+                f"{d['bull_count']:>4} {d['bear_count']:>4} {plat_short}"
+            )
+    else:
+        lines.append("  (无日度数据)")
+    lines.append("")
+
+    # --- Section 4: Platform Weights ---
+    lines.append("## 4. 平台权重（回测优化）")
+    pw_weights = pw.get("weights", {})
+    if pw_weights:
+        for plat, weight in sorted(pw_weights.items(), key=lambda x: -x[1]):
+            lines.append(f"  {plat}: {weight:.3f}")
+        lines.append(f"  权重来源: {pw.get('source', 'N/A')}")
+    lines.append("")
+
+    # --- Section 5: Methodology & Limitations ---
+    lines.append("## 5. 方法论文档")
+    lines.append(f"  情感引擎: {meth.get('sentiment_engine', 'N/A')}")
+    lines.append(f"  NER引擎: {meth.get('ner_engine', 'N/A')}")
+    lines.append(f"  多模态: {meth.get('multimodal', 'N/A')}")
+    lines.append(f"  聚合方法: {meth.get('aggregation', 'N/A')}")
+    lines.append("  已知局限:")
+    for lim in meth.get("limitations", []):
+        lines.append(f"    - {lim}")
+    lines.append("")
+
+    # --- Section 6: Guidance for the Sentiment Analyst ---
+    lines.append("## 6. 分析指引")
+    lines.append("  作为情绪分析师，你应当：")
+    lines.append("  1. **解读多空比**: 当前多空比相对于极端值（>70%看多或>70%看空）的位置，判断是否接近反转阈值。")
+    lines.append("  2. **识别情绪趋势**: 情绪是在改善还是恶化？情绪拐点往往领先价格拐点1-3天。")
+    lines.append("  3. **检测情绪-价格背离** (最重要的信号):")
+    lines.append("     - 价格上涨 + 情绪转弱 → 上涨动力衰竭，可能见顶")
+    lines.append("     - 价格下跌 + 情绪转暖 → 底部信号，关注反弹")
+    lines.append("     - 价格震荡 + 情绪极端 → 即将突破")
+    lines.append("  4. **平台一致性检查**: 多平台情绪一致 → 信号可信度高；平台分化 → 市场分歧大，谨慎。")
+    lines.append("  5. **散户反向指标**: 散户一致性看多往往为顶部信号，散户恐慌看空往往为底部信号。")
+    lines.append("  6. **数据量评估**: 样本量 < 10 条时，降低情绪分析的权重；样本量 < 3 条时，标注'无可靠情绪数据'。")
+    lines.append('  7. **时效性**: 如果数据标注为"已过期"，在分析中明确说明并降低权重。')
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Standalone test
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    import sys
+    logging.basicConfig(level=logging.INFO)
+
+    test_variety = sys.argv[1] if len(sys.argv) > 1 else "RB"
+    print(f"Testing sentiment data for {test_variety}...\n")
+    result = get_futures_sentiment(test_variety)
+    print(result)

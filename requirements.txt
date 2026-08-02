@@ -1,0 +1,10 @@
+# AgentSense v2.9 — Commodity Futures Multi-Agent Research System
+# Install: pip install -e .
+# Main deps are in pyproject.toml
+
+# Web framework
+flask>=3.0
+waitress>=3.0
+
+# Chinese futures data
+akshare>=1.18
