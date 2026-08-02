@@ -41,41 +41,38 @@
 
 ```
                     ┌──────────────────────────────────────────┐
-                    │            START                         │
+                    │               START                      │
                     └──────────┬───┬───┬───┬──────────────────┘
                                │   │   │   │
                     ┌──────────┘   │   │   └──────────┐
                     ▼              ▼   ▼               ▼
-              ┌──────────┐  ┌──────────────┐  ┌──────────────┐
-              │Technical │  │ Fundamental  │  │   Macro/News │
-              │ Analyst  │  │   Analyst    │  │   Analyst    │
-              └────┬─────┘  └──────┬───────┘  └──────┬───────┘
-                   │               │                  │
-                   └───────────────┼──────────────────┘
-                                   │
-                    ┌──────────────┴──────────────┐
-                    │     Sentiment Analyst        │
-                    │  (Social Media + Crowd)      │
-                    └──────────────┬──────────────┘
-                                   │
-                    ┌──────────────┴──────────────┐
-                    │       Bull vs. Bear          │
-                    │    Adversarial Debate        │
-                    │  (6 tools × real-time data)  │
-                    └──────────────┬──────────────┘
-                                   │
-                    ┌──────────────┴──────────────┐
-                    │        Moderator             │
-                    │    Fact-checking & Verdict   │
-                    └──────────────┬──────────────┘
-                                   │
-                    ┌──────────────┴──────────────┐
-                    │    Synthesis → Scenario      │
-                    │  Final Report & Projections  │
-                    └─────────────────────────────┘
+              ┌──────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+              │Technical │ │ Fundamental  │ │   Macro/News │ │  Sentiment   │
+              │ Analyst  │ │   Analyst    │ │   Analyst    │ │  Analyst     │
+              └────┬─────┘ └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+                   │              │                │                │
+                   └──────────────┼────────────────┼────────────────┘
+                                  │                │
+                                  └────────────────┘
+                                           │
+                    ┌──────────────────────┴──────────────────────┐
+                    │           Bull vs. Bear Debate              │
+                    │  Bull Opening → Bear Refute → Bull Rebuttal │
+                    │         (6 tools × real-time data)          │
+                    └──────────────────────┬──────────────────────┘
+                                           │
+                    ┌──────────────────────┴──────────────────────┐
+                    │               Moderator                     │
+                    │         Fact-checking & Verdict             │
+                    └──────────────────────┬──────────────────────┘
+                                           │
+                    ┌──────────────────────┴──────────────────────┐
+                    │          Synthesis → Scenario               │
+                    │      Final Report & Price Projections       │
+                    └─────────────────────────────────────────────┘
 ```
 
-**11 Nodes** — 4 parallel analysts → Sentiment fusion → Adversarial debate (Bull/Bear/Moderator) → Synthesis → Scenario projection
+**11 Nodes** — 4 parallel analysts (Technical ∥ Fundamental ∥ Macro/News ∥ Sentiment) → Adversarial debate (Bull → Bear → Bull rebuttal → Moderator verdict) → Synthesis → Scenario projection
 
 ---
 
