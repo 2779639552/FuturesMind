@@ -14,6 +14,8 @@
   <a href="#-features">Features</a> •
   <a href="#-performance">Performance</a> •
   <a href="#-citation">Citation</a>
+  <br>
+  🌐 <a href="README_CN.md">中文文档</a>
 </p>
 
 ---
