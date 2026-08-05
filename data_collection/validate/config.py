@@ -1,0 +1,210 @@
+"""
+统一配置：期货关键词、请求参数、平台端点
+"""
+
+# ============================================================
+# 期货品种关键词体系
+# ============================================================
+# 每组包含：标准名、简称、别名、合约代码模式
+
+FUTURES_KEYWORDS = {
+    # 黑色系
+    "螺纹钢": ["螺纹钢", "螺纹", "RB", "钢筋"],
+    "铁矿石": ["铁矿石", "铁矿", "矿石", "澳矿", "巴矿"],
+    "热卷": ["热卷", "热轧卷板", "HC"],
+    "焦炭": ["焦炭", "焦", "J"],
+    "焦煤": ["焦煤", "JM", "焦煤期货"],
+    "硅铁": ["硅铁", "SF"],
+    "锰硅": ["锰硅", "SM"],
+    "线材": ["线材", "WR"],
+
+    # 有色金属
+    "铜": ["铜期货", "沪铜", "伦铜", "CU", "电解铜"],
+    "铝": ["铝期货", "沪铝", "伦铝", "AL", "电解铝"],
+    "锌": ["锌期货", "沪锌", "伦锌", "ZN"],
+    "铅": ["铅期货", "沪铅", "PB"],
+    "镍": ["镍期货", "沪镍", "伦镍", "NI"],
+    "锡": ["锡期货", "沪锡", "SN"],
+    "黄金": ["黄金期货", "沪金", "COMEX黄金", "AU", "金价"],
+    "白银": ["白银期货", "沪银", "COMEX白银", "AG", "银价"],
+
+    # 能源化工
+    "原油": ["原油期货", "SC", "WTI", "布伦特", "油价", "上海原油"],
+    "PTA": ["PTA", "精对苯二甲酸", "TA"],
+    "甲醇": ["甲醇", "MA", "甲醇期货"],
+    "PVC": ["PVC", "聚氯乙烯", "V"],
+    "PP": ["PP", "聚丙烯", "PP期货"],
+    "塑料": ["塑料", "LLDPE", "PE", "L"],
+    "橡胶": ["橡胶", "天然橡胶", "RU", "橡胶期货"],
+    "沥青": ["沥青", "BU", "石油沥青"],
+    "尿素": ["尿素", "UR"],
+    "纯碱": ["纯碱", "SA"],
+    "玻璃": ["玻璃期货", "FG"],
+    "乙二醇": ["乙二醇", "EG"],
+    "苯乙烯": ["苯乙烯", "EB"],
+    "短纤": ["短纤", "PF"],
+
+    # 农产品
+    "豆粕": ["豆粕", "M", "豆粕期货"],
+    "豆油": ["豆油", "Y", "豆油期货"],
+    "棕榈油": ["棕榈油", "P", "棕榈"],
+    "菜粕": ["菜粕", "RM"],
+    "菜油": ["菜油", "OI"],
+    "白糖": ["白糖", "SR", "白糖期货"],
+    "棉花": ["棉花", "CF", "棉花期货"],
+    "玉米": ["玉米", "C", "玉米期货"],
+    "淀粉": ["淀粉", "CS", "玉米淀粉"],
+    "鸡蛋": ["鸡蛋期货", "JD"],
+    "生猪": ["生猪", "LH", "猪肉期货"],
+    "苹果": ["苹果期货", "AP"],
+    "红枣": ["红枣期货", "CJ"],
+    "花生": ["花生期货", "PK"],
+
+    # 金融期货
+    "股指期货": ["股指期货", "IF", "沪深300期货", "IH", "IC", "IM"],
+    "国债期货": ["国债期货", "T", "TF", "TS", "TL"],
+}
+
+# 高频搜索关键词（用于验证阶段快速测试）
+SEARCH_KEYWORDS = [
+    "螺纹钢期货",
+    "铁矿石期货",
+    "原油期货",
+    "黄金期货",
+    "豆粕期货",
+    "股指期货",
+    "期货分析",
+    "期货策略",
+    "期货行情",
+    "期货日报",
+]
+
+
+# ============================================================
+# HTTP 请求配置
+# ============================================================
+
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+USER_AGENTS = [
+    # iPhone
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    # Android
+    "Mozilla/5.0 (Linux; Android 14; SM-S9080) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
+    # PC
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
+
+REQUEST_TIMEOUT = 15  # 秒
+MIN_DELAY = 1.0       # 请求最小间隔（秒）
+MAX_DELAY = 3.0       # 请求最大间隔（秒）
+MAX_RETRIES = 3       # 失败重试次数
+BACKOFF_FACTOR = 2.0  # 退避因子
+
+
+# ============================================================
+# 平台 API 端点
+# ============================================================
+
+ENDPOINTS = {
+    "weibo": {
+        "search": "https://m.weibo.cn/api/container/getIndex",
+        "hot": "https://weibo.com/ajax/side/hotSearch",
+        "detail": "https://m.weibo.cn/statuses/extend",
+    },
+    "xueqiu": {
+        "search": "https://xueqiu.com/statuses/search.json",
+        "hot": "https://xueqiu.com/statuses/hots.json",
+        "stock": "https://stock.xueqiu.com/v5/stock/realtime/quotec.json",
+    },
+    "xiaohongshu": {
+        "search": "https://edith.xiaohongshu.com/api/sns/web/v1/search/notes",
+        "detail": "https://edith.xiaohongshu.com/api/sns/web/v1/feed",
+        "comment": "https://edith.xiaohongshu.com/api/sns/web/v2/comment/page",
+    },
+    "douyin": {
+        "search": "https://www.douyin.com/aweme/v1/web/search/item/",
+        "detail": "https://www.douyin.com/aweme/v1/web/aweme/detail/",
+    },
+    "bilibili": {
+        "search": "https://api.bilibili.com/x/web-interface/wbi/search/type",
+    },
+    "zhihu": {
+        "search": "https://www.zhihu.com/api/v4/search_v3",
+        "answer": "https://www.zhihu.com/api/v4/answers/{id}",
+        "question": "https://www.zhihu.com/api/v4/questions/{id}/answers",
+    },
+}
+
+# ============================================================
+# 平台关键词（按平台调优）
+# ============================================================
+
+PLATFORM_KEYWORDS = {
+    "xhs": [
+        # 小红书搜索调优: 大部分带"期货"后缀
+        "螺纹钢期货", "铁矿石期货", "焦炭期货", "焦煤期货",
+        "热卷期货", "硅铁期货", "锰硅期货",
+        "沪铜期货", "沪铝期货", "沪锌期货", "沪镍期货",
+        "黄金期货分析", "白银期货分析", "碳酸锂期货", "工业硅期货",
+        "原油期货分析", "PTA期货", "甲醇期货", "纯碱期货",
+        "PVC期货", "玻璃期货", "尿素期货", "橡胶期货", "沥青期货",
+        "豆粕期货", "豆油期货", "棕榈油期货", "菜粕期货",
+        "白糖期货", "棉花期货", "玉米期货", "生猪期货",
+        "鸡蛋期货", "苹果期货", "红枣期货", "花生期货",
+        "股指期货策略", "国债期货",
+        "期货实盘", "期货技术分析", "期货基本面",
+        "期货日内交易", "期货波段策略",
+    ],
+    "weibo": [
+        # 微博不需要"期货"后缀，自然语言搜索更精准
+        "螺纹钢", "铁矿石", "焦炭", "焦煤", "热卷",
+        "沪铜", "沪铝", "沪锌", "沪镍", "黄金", "白银",
+        "原油", "PTA", "甲醇", "纯碱", "PVC", "玻璃", "尿素", "橡胶",
+        "豆粕", "豆油", "棕榈油", "菜粕", "白糖", "棉花", "玉米", "生猪",
+        "股指期货", "国债期货",
+        "期货实盘", "期货技术分析", "期货基本面",
+    ],
+    "zhihu": [
+        # 知乎搜索偏分析/深度，关键词更泛
+        "期货", "商品期货", "金融期货",
+        "螺纹钢", "铁矿石", "焦炭", "焦煤",
+        "沪铜", "黄金", "白银", "原油",
+        "豆粕", "棕榈油", "白糖",
+        "股指期货", "国债期货",
+        "期货交易策略", "期货技术分析", "期货基本面",
+    ],
+}
+
+# ============================================================
+# 验证标准
+# ============================================================
+
+class ValidationCriteria:
+    """验证通过标准"""
+    MIN_VALID_RESULTS = 10            # 单次搜索至少返回的有效结果数
+    MIN_RELEVANCE_RATE = 0.6          # 最小相关率（相关结果/总结果）
+    MIN_FIELD_COMPLETENESS = 4        # 最少字段数（正文/时间/作者/互动）
+    SUSTAINED_REQUESTS = 20           # 连续请求能力测试次数
+    MIN_SUCCESS_RATE = 0.8            # 连续请求最低成功率
+    MAX_RESPONSE_TIME = 10.0          # 最大响应时间（秒）
+    MAX_DATA_FRESHNESS_MINUTES = 60   # 最新数据的时间延迟上限
+
+
+# ============================================================
+# 输出配置
+# ============================================================
+
+OUTPUT_DIR = "./output"
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+LOG_LEVEL = "INFO"
