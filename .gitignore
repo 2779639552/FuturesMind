@@ -223,7 +223,7 @@ __marimo__/
 reports/
 
 # ============================================================
-# AgentSense — Project-specific ignores
+# FuturesMind — Project-specific ignores
 # ============================================================
 
 # Live price cache (auto-generated, varies per run)
@@ -251,4 +251,4 @@ warm_cache.py
 Thumbs.db
 
 # Project launcher shortcut (Windows-specific, not portable)
-AgentSense Web.lnk
+FuturesMind Web.lnk
