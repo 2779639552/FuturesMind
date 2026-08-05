@@ -1,4 +1,4 @@
-"""AgentSense Scheduler — Automated collection with APScheduler."""
+"""FuturesMind Scheduler — Automated collection with APScheduler."""
 
 import subprocess
 import sys
@@ -12,7 +12,7 @@ from database import get_db
 
 THINK2_DIR = Path(os.environ.get(
     "THINK2_DIR",
-    "C:/Users/19168/Desktop/思路2/validate"
+    os.path.expanduser("~/Desktop/思路2/validate")
 ))
 
 # ── Global scheduler ──────────────────────────────────────────────

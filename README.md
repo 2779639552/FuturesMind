@@ -26,7 +26,7 @@
 
 > ⚡ 11 specialized agents collaborate in a structured debate to produce market analysis reports — covering 21 commodity varieties across ferrous metals, non-ferrous metals, energy/chemicals, and agricultural products.
 
-### Why AgentSense?
+### Why FuturesMind?
 
 | Challenge | FuturesMind Solution |
 |-----------|-------------------|
@@ -225,7 +225,7 @@ Areas where help is especially valued:
 
 ## 📄 License
 
-AgentSense is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for details.
+FuturesMind is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for details.
 
 Based on [TradingAgents](https://github.com/TauricResearch/TradingAgents) by TauricResearch.
 
@@ -233,7 +233,7 @@ Based on [TradingAgents](https://github.com/TauricResearch/TradingAgents) by Tau
 
 ## 📝 Citation
 
-If you use AgentSense in your research, please cite:
+If you use FuturesMind in your research, please cite:
 
 ```bibtex
 @software{futuresmind2026,

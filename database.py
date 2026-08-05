@@ -1,4 +1,4 @@
-"""AgentSense Database Layer — SQLite persistence for posts, sentiment, alerts, users.
+"""FuturesMind Database Layer — SQLite persistence for posts, sentiment, alerts, users.
 
 Usage:
     from database import get_db

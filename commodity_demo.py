@@ -65,26 +65,25 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def console_progress_callback(event_type, data):
-    """Print tool-calling progress to the console in real time.
+    """Print tool-calling progress via the logger (CLI-compatible).
 
     Called by _run_tool_loop inside each analyst node.  Because the three
     analysts run in parallel their output may interleave — the label prefix
     makes it easy to tell which analyst is doing what.
-
-    NOTE: All output uses ASCII-safe characters to avoid Windows GBK crashes.
     """
     label = data.get("label", "?")
 
     if event_type == "tool_call":
-        print(f"  [{label}] R{data.get('iteration', '?')}: {data['tool_name']}({data.get('args_brief', '')})",
-              flush=True)
+        logger.info("[%s] R%s: %s(%s)", label,
+                     data.get('iteration', '?'), data['tool_name'],
+                     data.get('args_brief', ''))
 
     elif event_type == "tool_result":
-        print(f"  [{label}] <- {data['result_length']:,} chars from {data['tool_name']}",
-              flush=True)
+        logger.info("[%s] <- %s chars from %s", label,
+                     data.get('result_length', 0), data['tool_name'])
 
     elif event_type == "report_start":
-        print(f"  [{label}] Writing report...", flush=True)
+        logger.info("[%s] Writing report...", label)
 
     # "iteration" and "llm_thinking" events are intentionally silent in the
     # console callback — they'd be too noisy.  Other callback implementations
@@ -100,23 +99,17 @@ SEP_DOUBLE = "=" * 70
 
 
 def print_banner(symbol, trade_date):
-    print()
-    print(SEP_DOUBLE)
-    print(f"  COMMODITY FUTURES ANALYSIS DEMO")
-    print(f"  Variety: {symbol}  |  Date: {trade_date}")
-    print(SEP_DOUBLE)
-    print()
+    logger.info("FuturesMind Analysis: %s @ %s", symbol, trade_date)
 
 
 def print_stage_header(title):
-    print(f"\n{title}")
-    print(f"{SEP}")
+    logger.info("--- %s ---", title)
 
 
 def print_report_summary(report_text, max_chars=500):
     """Print the first few lines of a report as a summary preview."""
     if not report_text:
-        print("  (no content)")
+        logger.warning("  (no content)")
         return
     # Extract first meaningful paragraph(s)
     lines = report_text.strip().split("\n")
@@ -138,9 +131,8 @@ def print_report_summary(report_text, max_chars=500):
         if char_count >= max_chars:
             break
 
-    for line in preview_lines:
-        print(f"  {line}")
-    print(f"  ... ({len(report_text):,} chars total)")
+    preview = "\n".join(f"  {line}" for line in preview_lines)
+    logger.info("Report preview:\n%s\n  ... (%s chars total)", preview, f"{len(report_text):,}")
 
 
 def safe_print(text, max_chars=2000):
@@ -154,16 +146,12 @@ def safe_print(text, max_chars=2000):
         return
     content = text[:max_chars]
     try:
-        print(content)
+        logger.info(content)
     except (UnicodeEncodeError, UnicodeDecodeError):
-        # Replace non-encodable characters with '?'
         safe = content.encode('ascii', errors='replace').decode('ascii')
-        print(safe)
+        logger.info(safe)
     if len(text) > max_chars:
-        try:
-            print(f"\n... (truncated, {len(text):,} chars total)")
-        except UnicodeEncodeError:
-            print(f"\n... (truncated, {len(text)} chars total)")
+        logger.info("... (truncated, %d chars total)", len(text))
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +251,7 @@ Remember: You are moderating a DISCUSSION, not making the final call. Be fair to
 
         print_stage_header("[Discussion] Roundtable discussion...")
         result = llm.invoke(prompt_text)
-        print("  Discussion done.")
+        logger.info("Discussion done.")
 
         return {
             "discussion_summary": result.content,
@@ -415,7 +403,7 @@ Remember: This is for research/educational purposes only. Do NOT provide specifi
 
         print_stage_header("[Synthesis] Generating final recommendation...")
         result = llm.invoke(prompt_text)
-        print("  Synthesis done.")
+        logger.info("Synthesis done.")
 
         return {
             "investment_plan": result.content,
@@ -505,7 +493,7 @@ Assign probability weights to each scenario (they MUST sum to 100%).
 """
         print_stage_header("[Scenario] Three-scenario stress test...")
         result = llm.invoke(prompt_text)
-        print("  Scenario analysis done.")
+        logger.info("Scenario analysis done.")
 
         return {
             "messages": [HumanMessage(content=f"[Scenario Analysis]\n{result.content}")],

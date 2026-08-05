@@ -44,19 +44,23 @@ MODERATOR_TOOLS = [
     get_futures_price,
 ]
 
-# Helper — print stage header (shared with commodity_demo.py)
-def _print_stage_header(title):
-    print(f"\n{title}")
-    print(f"{'-' * 70}")
+# Helper — stage header (shared with commodity_demo.py)
+# When a progress_callback is provided, output is routed there;
+# otherwise falls back to structured logging.
+def _print_stage_header(title, progress_callback=None):
+    if progress_callback:
+        progress_callback("stage_header", {"title": title})
+    else:
+        logger.info("=== %s ===", title)
 
 
 def _debate_progress_callback(event_type, data):
     """Lightweight progress callback for debate tool calls."""
     label = data.get("label", "Debate")
     if event_type == "tool_call":
-        print(f"  [{label}] {data['tool_name']}({data.get('args_brief', '')})", flush=True)
+        logger.debug("[%s] %s(%s)", label, data["tool_name"], data.get("args_brief", ""))
     elif event_type == "tool_result":
-        print(f"  [{label}] <- {data['result_length']:,} chars from {data['tool_name']}", flush=True)
+        logger.debug("[%s] <- %s chars from %s", label, data.get("result_length", 0), data["tool_name"])
 
 
 def create_bull_debater(llm, label="Bull"):
@@ -116,7 +120,7 @@ Sentiment: {sentiment[:600] if sentiment else 'N/A'}
 
 **Output**: Write 200-400 characters in Chinese. Start with "多方(R{round_num})：". Structure your argument with data, reasoning, and a rebuttal to the bear case.
 """
-        print(f"  [Debate] Bull R{round_num} (with tools)...", flush=True)
+        logger.info("Bull R%d (with tools)...", round_num)
 
         # Build initial message
         initial_msg = HumanMessage(content=system_message)
@@ -136,7 +140,7 @@ Sentiment: {sentiment[:600] if sentiment else 'N/A'}
             result = fallback.content if hasattr(fallback, 'content') else str(fallback)
 
         if not result:
-            print(f"  [!] Bull returned empty — retrying with simpler prompt")
+            logger.warning("Bull returned empty — retrying with simpler prompt")
             fallback = llm.invoke(f"用中文为 {symbol} 商品期货构建最强看涨论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}")
             result = fallback.content if hasattr(fallback, 'content') else str(fallback)
 
@@ -213,7 +217,7 @@ Sentiment: {sentiment[:600] if sentiment else 'N/A'}
 
 **Output**: Write 200-400 characters in Chinese. Start with "空方(R{round_num})：". Structure your argument with data, reasoning, and a rebuttal to the bull case.
 """
-        print(f"  [Debate] Bear R{round_num} (with tools)...", flush=True)
+        logger.info("Bear R%d (with tools)...", round_num)
 
         # Build initial message
         initial_msg = HumanMessage(content=system_message)
@@ -232,7 +236,7 @@ Sentiment: {sentiment[:600] if sentiment else 'N/A'}
             result = fallback.content if hasattr(fallback, 'content') else str(fallback)
 
         if not result:
-            print(f"  [!] Bear returned empty — retrying with simpler prompt")
+            logger.warning("Bear returned empty — retrying with simpler prompt")
             fallback = llm.invoke(f"用中文为 {symbol} 商品期货构建最强看跌论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}")
             result = fallback.content if hasattr(fallback, 'content') else str(fallback)
 
@@ -335,11 +339,11 @@ Macro: {macro[:400] if macro else 'N/A'}
             result = fallback.content if hasattr(fallback, 'content') else str(fallback)
 
         if not result:
-            print(f"  [!] Moderator returned empty — retrying")
+            logger.warning("Moderator returned empty — retrying")
             fallback = llm.invoke(f"Summarize the bull vs bear debate for {symbol}. Bull: {bull_history[:1000]} Bear: {bear_history[:1000]}")
             result = fallback.content if hasattr(fallback, 'content') else str(fallback)
 
-        print("  Moderator done.")
+        logger.info("Moderator done.")
 
         return {
             "discussion_summary": result,

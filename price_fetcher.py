@@ -8,7 +8,9 @@ from typing import Optional
 logger = logging.getLogger("price_fetcher")
 
 # Cache directory for price data
-PRICE_DIR = Path("C:/Users/19168/Desktop/思路2/validate/output/trends")
+PRICE_DIR = Path(os.environ.get(
+    "THINK2_DIR", os.path.expanduser("~/Desktop/思路2/validate")
+)) / "output" / "trends"
 
 # AKShare variety name → TradingAgents code mapping
 NAME_TO_CODE = {

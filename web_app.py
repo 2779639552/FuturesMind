@@ -1,4 +1,4 @@
-"""AgentSense Web Dashboard — Flask + SSE streaming analysis.
+"""FuturesMind Web Dashboard — Flask + SSE streaming analysis.
 
 Enhanced v2.5: ProgressTracker (thread-safe), pause/resume/stop,
 PDF+MD export, LLM config panel, real-time token stats, dynamic paths.
@@ -64,9 +64,9 @@ if _THINK2_ENV:
     THINK2_DIR = Path(_THINK2_ENV)
 else:
     _candidates = [
-        Path("C:/Users/19168/Desktop/思路2/validate"),
         Path(os.path.expanduser("~/Desktop/思路2/validate")),
         Path(os.path.expanduser("~/Desktop/silu2/validate")),
+        Path(os.path.expanduser("~/projects/silu2/validate")),
     ]
     THINK2_DIR = None
     for _c in _candidates:
@@ -74,7 +74,7 @@ else:
             THINK2_DIR = _c
             break
     if THINK2_DIR is None:
-        THINK2_DIR = _candidates[0]  # Default to first candidate
+        THINK2_DIR = _candidates[0]  # Default to first candidate (logs warning on startup)
 
 THINK2_OUTPUT = THINK2_DIR / "output" if THINK2_DIR else None
 THINK2_TRENDS = THINK2_OUTPUT / "trends" if THINK2_OUTPUT else None
@@ -963,7 +963,7 @@ def _generate_pdf(content, filename, rating=None):
 
     # Title
     pdf.set_font_size(18)
-    pdf.cell(0, 12, "AgentSense Analysis Report", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.cell(0, 12, "FuturesMind Analysis Report", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.set_font_size(10)
     pdf.cell(0, 8, f"File: {filename}", new_x="LMARGIN", new_y="NEXT", align="C")
 
@@ -2094,5 +2094,5 @@ if __name__ == "__main__":
         print(f"Scheduler not started: {e}")
 
     from waitress import serve
-    print("AgentSense Dashboard: http://localhost:5000")
+    print("FuturesMind Dashboard: http://localhost:5000")
     serve(app, host="0.0.0.0", port=5000, threads=8, channel_timeout=600)

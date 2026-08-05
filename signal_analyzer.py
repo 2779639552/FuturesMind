@@ -1,4 +1,4 @@
-"""AgentSense Signal Analyzer — P1/P2/P3 analysis features.
+"""FuturesMind Signal Analyzer — P1/P2/P3 analysis features.
 
 Anomaly detection, bull-bear divergence, lead-lag analysis (Granger),
 cross-platform divergence, author profiling, event extraction, simulated trading.
@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 SENTIMENT_DIR = Path(os.path.expanduser("~/.tradingagents/external_data"))
 THINK2_TRENDS = Path(os.environ.get(
-    "THINK2_DIR", "C:/Users/19168/Desktop/思路2/validate"
+    "THINK2_DIR", os.path.expanduser("~/Desktop/思路2/validate")
 )) / "output" / "trends"
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -430,7 +430,7 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
     """Extract key events from recent posts using keyword matching."""
     # Read directly from JSONL batch files (database may not be populated)
     import glob as _glob
-    think2_output = Path(os.environ.get("THINK2_DIR", "C:/Users/19168/Desktop/思路2/validate")) / "output"
+    think2_output = Path(os.environ.get("THINK2_DIR", os.path.expanduser("~/Desktop/思路2/validate"))) / "output"
     if not think2_output.exists():
         return []
 
@@ -468,7 +468,7 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
             varieties_raw = post.get("varieties", [])
             if isinstance(varieties_raw, str):
                 try: varieties_raw = json.loads(varieties_raw)
-                except: varieties_raw = []
+                except (json.JSONDecodeError, TypeError): varieties_raw = []
             variety_names = [v["name"] if isinstance(v, dict) else str(v) for v in varieties_raw] if isinstance(varieties_raw, list) else []
             sentiment_label = post.get("sentiment", "neutral")
             sentiment_score = post.get("sentiment_score", 0)
