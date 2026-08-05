@@ -138,8 +138,8 @@ venv\Scripts\python commodity_demo.py RB 2026-08-02   # Rebar
 - **Author Influence Weighting**: 3D weights (engagement × followers × domain expertise)
 
 ### 📈 Real-Time Data & Backtesting
-- **AKShare Integration**: 24 varieties live pricing with 15-min caching
-- **7 Trading Strategies**: Momentum, Adaptive, DMAC, Donchian, Contrarian, Trailing, Comparison
+- **AKShare Integration**: 24 varieties live pricing (60s cache, 5-min refresh during trading hours)
+- **7 Trading Strategies**: Momentum (price-only), Momentum+Adaptive, Adaptive Sentiment, Contrarian (divergence), Trailing Exit, Fixed Hold (consensus), Fundamental-vs-Sentiment Comparison
 - **13 Backtest Metrics**: Accuracy, Sharpe, Win Rate, Max Drawdown, Cross-platform weights
 
 ### 🖥️ Web Dashboard
@@ -168,7 +168,7 @@ venv\Scripts\python commodity_demo.py RB 2026-08-02   # Rebar
 | Data Collected | **8,966 posts** (2026) |
 | Varieties Covered | **21** (with real-time pricing) |
 | Backtest Accuracy | **52.5%** (author-weighted) |
-| Best Platform Signal | Weibo 34.3% |
+| Best Platform Weight | Xueqiu 0.278 |
 | Strategies | **7** implemented |
 | CLI Tools | **26** commands |
 
