@@ -1,0 +1,1401 @@
+{
+  "10年期国债期货": {
+    "total_days": 6,
+    "total_notes": 6,
+    "avg_sentiment": 0.013,
+    "recent_trend": "偏多",
+    "date_range": "2026-04-16 ~ 2026-07-22",
+    "by_platform": {
+      "zhihu": 3,
+      "weibo": 3
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 6,
+    "authors_with_fans": 5
+  },
+  "2年期国债期货": {},
+  "30年期国债期货": {
+    "total_days": 5,
+    "total_notes": 5,
+    "avg_sentiment": 0.218,
+    "recent_trend": "偏多",
+    "date_range": "2026-01-08 ~ 2026-07-29",
+    "by_platform": {
+      "zhihu": 2,
+      "weibo": 3
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 5,
+    "authors_with_fans": 4
+  },
+  "5年期国债期货": {
+    "total_days": 11,
+    "total_notes": 13,
+    "avg_sentiment": 0.011,
+    "recent_trend": "震荡",
+    "date_range": "2026-03-05 ~ 2026-07-28",
+    "by_platform": {
+      "zhihu": 5,
+      "xhs": 5,
+      "xueqiu": 3
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 12,
+    "authors_with_fans": 9
+  },
+  "PP": {
+    "total_days": 7,
+    "total_notes": 11,
+    "avg_sentiment": 0.029,
+    "recent_trend": "偏多",
+    "date_range": "2026-05-15 ~ 2026-07-20",
+    "by_platform": {
+      "xhs": 4,
+      "xueqiu": 2,
+      "weibo": 3,
+      "zhihu": 2
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5714,
+      "pearson_r": 0.3182,
+      "data_points": 7
+    },
+    "unique_authors": 11,
+    "authors_with_fans": 9
+  },
+  "PTA": {
+    "total_days": 25,
+    "total_notes": 36,
+    "avg_sentiment": 0.002,
+    "recent_trend": "偏空",
+    "date_range": "2026-01-26 ~ 2026-07-23",
+    "by_platform": {
+      "weibo": 13,
+      "xhs": 14,
+      "xueqiu": 5,
+      "zhihu": 4
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.7222,
+      "pearson_r": 0.4147,
+      "data_points": 18
+    },
+    "unique_authors": 26,
+    "authors_with_fans": 16
+  },
+  "PVC": {
+    "total_days": 16,
+    "total_notes": 24,
+    "avg_sentiment": -0.044,
+    "recent_trend": "偏空",
+    "date_range": "2026-01-30 ~ 2026-07-29",
+    "by_platform": {
+      "zhihu": 1,
+      "weibo": 13,
+      "xhs": 10
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.3333,
+      "pearson_r": -0.3694,
+      "data_points": 15
+    },
+    "unique_authors": 20,
+    "authors_with_fans": 12
+  },
+  "上证50股指期货": {
+    "total_days": 10,
+    "total_notes": 12,
+    "avg_sentiment": 0.286,
+    "recent_trend": "偏多",
+    "date_range": "2026-06-17 ~ 2026-07-27",
+    "by_platform": {
+      "xhs": 8,
+      "zhihu": 1,
+      "weibo": 1,
+      "xueqiu": 2
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 8,
+    "authors_with_fans": 6
+  },
+  "中证1000股指期货": {
+    "total_days": 7,
+    "total_notes": 8,
+    "avg_sentiment": 0.213,
+    "recent_trend": "偏多",
+    "date_range": "2026-06-29 ~ 2026-07-28",
+    "by_platform": {
+      "xueqiu": 2,
+      "weibo": 6
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 7,
+    "authors_with_fans": 7
+  },
+  "中证500股指期货": {
+    "total_days": 9,
+    "total_notes": 10,
+    "avg_sentiment": 0.174,
+    "recent_trend": "偏多",
+    "date_range": "2026-05-26 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 5,
+      "zhihu": 3,
+      "xhs": 1,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 10,
+    "authors_with_fans": 10
+  },
+  "乙二醇": {
+    "total_days": 8,
+    "total_notes": 8,
+    "avg_sentiment": 0.333,
+    "recent_trend": "偏多",
+    "date_range": "2026-06-11 ~ 2026-07-20",
+    "by_platform": {
+      "xhs": 3,
+      "weibo": 2,
+      "xueqiu": 3
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5714,
+      "pearson_r": -0.0254,
+      "data_points": 7
+    },
+    "unique_authors": 6,
+    "authors_with_fans": 3
+  },
+  "原油": {
+    "total_days": 35,
+    "total_notes": 76,
+    "avg_sentiment": 0.134,
+    "recent_trend": "偏多",
+    "date_range": "2026-03-05 ~ 2026-07-29",
+    "by_platform": {
+      "zhihu": 26,
+      "xhs": 13,
+      "weibo": 29,
+      "xueqiu": 8
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5217,
+      "pearson_r": 0.0099,
+      "data_points": 23
+    },
+    "unique_authors": 66,
+    "authors_with_fans": 50
+  },
+  "塑料": {
+    "total_days": 7,
+    "total_notes": 8,
+    "avg_sentiment": 0.339,
+    "recent_trend": "偏多",
+    "date_range": "2026-06-20 ~ 2026-07-27",
+    "by_platform": {
+      "zhihu": 1,
+      "weibo": 4,
+      "xhs": 2,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.2553,
+      "data_points": 6
+    },
+    "unique_authors": 7,
+    "authors_with_fans": 4
+  },
+  "对二甲苯": {
+    "total_days": 6,
+    "total_notes": 6,
+    "avg_sentiment": 0.333,
+    "recent_trend": "偏多",
+    "date_range": "2026-03-06 ~ 2026-07-20",
+    "by_platform": {
+      "weibo": 3,
+      "xhs": 2,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 5,
+    "authors_with_fans": 3
+  },
+  "尿素": {
+    "total_days": 15,
+    "total_notes": 19,
+    "avg_sentiment": 0.374,
+    "recent_trend": "震荡",
+    "date_range": "2026-03-05 ~ 2026-07-27",
+    "by_platform": {
+      "zhihu": 3,
+      "weibo": 8,
+      "xhs": 8
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5455,
+      "pearson_r": -0.0707,
+      "data_points": 11
+    },
+    "unique_authors": 17,
+    "authors_with_fans": 10
+  },
+  "工业硅": {
+    "total_days": 16,
+    "total_notes": 18,
+    "avg_sentiment": -0.042,
+    "recent_trend": "偏空",
+    "date_range": "2026-04-21 ~ 2026-07-28",
+    "by_platform": {
+      "xueqiu": 2,
+      "weibo": 2,
+      "xhs": 13,
+      "zhihu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.4545,
+      "pearson_r": 0.0023,
+      "data_points": 11
+    },
+    "unique_authors": 18,
+    "authors_with_fans": 8
+  },
+  "棉花": {
+    "total_days": 22,
+    "total_notes": 31,
+    "avg_sentiment": 0.07,
+    "recent_trend": "偏多",
+    "date_range": "2026-01-26 ~ 2026-07-29",
+    "by_platform": {
+      "weibo": 19,
+      "zhihu": 2,
+      "xhs": 8,
+      "xueqiu": 2
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.3889,
+      "pearson_r": -0.1354,
+      "data_points": 18
+    },
+    "unique_authors": 24,
+    "authors_with_fans": 16
+  },
+  "棕榈油": {
+    "total_days": 35,
+    "total_notes": 56,
+    "avg_sentiment": 0.072,
+    "recent_trend": "震荡",
+    "date_range": "2026-01-26 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 39,
+      "zhihu": 4,
+      "xueqiu": 2,
+      "xhs": 11
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.625,
+      "pearson_r": 0.1175,
+      "data_points": 24
+    },
+    "unique_authors": 40,
+    "authors_with_fans": 32
+  },
+  "橡胶": {
+    "total_days": 26,
+    "total_notes": 43,
+    "avg_sentiment": 0.046,
+    "recent_trend": "震荡",
+    "date_range": "2026-02-03 ~ 2026-07-30",
+    "by_platform": {
+      "zhihu": 3,
+      "weibo": 30,
+      "xhs": 8,
+      "xueqiu": 2
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5909,
+      "pearson_r": -0.0227,
+      "data_points": 22
+    },
+    "unique_authors": 35,
+    "authors_with_fans": 30
+  },
+  "氧化铝": {
+    "total_days": 24,
+    "total_notes": 34,
+    "avg_sentiment": -0.012,
+    "recent_trend": "偏多",
+    "date_range": "2025-12-05 ~ 2026-07-29",
+    "by_platform": {
+      "weibo": 20,
+      "xhs": 7,
+      "zhihu": 3,
+      "xueqiu": 4
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.4,
+      "pearson_r": -0.0438,
+      "data_points": 20
+    },
+    "unique_authors": 29,
+    "authors_with_fans": 21
+  },
+  "沥青": {
+    "total_days": 9,
+    "total_notes": 13,
+    "avg_sentiment": -0.089,
+    "recent_trend": "震荡",
+    "date_range": "2026-04-01 ~ 2026-07-20",
+    "by_platform": {
+      "xhs": 8,
+      "weibo": 4,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.6667,
+      "pearson_r": -0.4346,
+      "data_points": 9
+    },
+    "unique_authors": 10,
+    "authors_with_fans": 6
+  },
+  "沪深300股指期货": {
+    "total_days": 7,
+    "total_notes": 7,
+    "avg_sentiment": 0.003,
+    "recent_trend": "偏多",
+    "date_range": "2026-05-26 ~ 2026-07-27",
+    "by_platform": {
+      "weibo": 4,
+      "zhihu": 1,
+      "xueqiu": 2
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 7,
+    "authors_with_fans": 7
+  },
+  "淀粉": {},
+  "烧碱": {
+    "total_days": 13,
+    "total_notes": 28,
+    "avg_sentiment": -0.155,
+    "recent_trend": "震荡",
+    "date_range": "2026-01-07 ~ 2026-07-29",
+    "by_platform": {
+      "xhs": 9,
+      "weibo": 16,
+      "xueqiu": 3
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 25,
+    "authors_with_fans": 18
+  },
+  "热卷": {
+    "total_days": 26,
+    "total_notes": 46,
+    "avg_sentiment": -0.023,
+    "recent_trend": "偏空",
+    "date_range": "2026-05-06 ~ 2026-07-30",
+    "by_platform": {
+      "xhs": 13,
+      "weibo": 27,
+      "xueqiu": 1,
+      "zhihu": 5
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5556,
+      "pearson_r": 0.33,
+      "data_points": 18
+    },
+    "unique_authors": 32,
+    "authors_with_fans": 22
+  },
+  "焦炭": {
+    "total_days": 43,
+    "total_notes": 79,
+    "avg_sentiment": 0.046,
+    "recent_trend": "偏多",
+    "date_range": "2026-03-05 ~ 2026-07-30",
+    "by_platform": {
+      "xueqiu": 18,
+      "xhs": 10,
+      "weibo": 37,
+      "zhihu": 14
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.3333,
+      "pearson_r": -0.2863,
+      "data_points": 30
+    },
+    "unique_authors": 48,
+    "authors_with_fans": 37
+  },
+  "焦煤": {
+    "total_days": 49,
+    "total_notes": 124,
+    "avg_sentiment": 0.033,
+    "recent_trend": "偏多",
+    "date_range": "2026-01-08 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 66,
+      "zhihu": 14,
+      "xueqiu": 13,
+      "xhs": 31
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5333,
+      "pearson_r": -0.0516,
+      "data_points": 30
+    },
+    "unique_authors": 83,
+    "authors_with_fans": 61
+  },
+  "玉米": {
+    "total_days": 17,
+    "total_notes": 23,
+    "avg_sentiment": -0.022,
+    "recent_trend": "震荡",
+    "date_range": "2026-01-16 ~ 2026-07-29",
+    "by_platform": {
+      "weibo": 6,
+      "zhihu": 5,
+      "xhs": 11,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.4667,
+      "pearson_r": -0.1139,
+      "data_points": 15
+    },
+    "unique_authors": 19,
+    "authors_with_fans": 10
+  },
+  "玻璃": {
+    "total_days": 4,
+    "total_notes": 4,
+    "avg_sentiment": -0.073,
+    "recent_trend": "震荡",
+    "date_range": "2026-06-26 ~ 2026-07-20",
+    "by_platform": {
+      "xhs": 4
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.2943,
+      "data_points": 4
+    },
+    "unique_authors": 3,
+    "authors_with_fans": 2
+  },
+  "生猪": {
+    "total_days": 32,
+    "total_notes": 48,
+    "avg_sentiment": -0.037,
+    "recent_trend": "偏空",
+    "date_range": "2026-01-26 ~ 2026-07-29",
+    "by_platform": {
+      "weibo": 36,
+      "xueqiu": 2,
+      "xhs": 9,
+      "zhihu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.619,
+      "pearson_r": -0.2388,
+      "data_points": 21
+    },
+    "unique_authors": 40,
+    "authors_with_fans": 33
+  },
+  "甲醇": {
+    "total_days": 34,
+    "total_notes": 62,
+    "avg_sentiment": -0.011,
+    "recent_trend": "震荡",
+    "date_range": "2026-03-03 ~ 2026-07-29",
+    "by_platform": {
+      "zhihu": 5,
+      "xhs": 29,
+      "weibo": 27,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.619,
+      "pearson_r": 0.0724,
+      "data_points": 21
+    },
+    "unique_authors": 55,
+    "authors_with_fans": 29
+  },
+  "白糖": {
+    "total_days": 14,
+    "total_notes": 21,
+    "avg_sentiment": 0.063,
+    "recent_trend": "偏多",
+    "date_range": "2026-01-26 ~ 2026-07-29",
+    "by_platform": {
+      "weibo": 13,
+      "zhihu": 3,
+      "xhs": 5
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.4545,
+      "pearson_r": -0.3162,
+      "data_points": 11
+    },
+    "unique_authors": 18,
+    "authors_with_fans": 13
+  },
+  "白银": {
+    "total_days": 21,
+    "total_notes": 39,
+    "avg_sentiment": -0.072,
+    "recent_trend": "震荡",
+    "date_range": "2026-04-23 ~ 2026-07-28",
+    "by_platform": {
+      "weibo": 21,
+      "xhs": 10,
+      "xueqiu": 5,
+      "zhihu": 3
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5882,
+      "pearson_r": -0.0858,
+      "data_points": 17
+    },
+    "unique_authors": 36,
+    "authors_with_fans": 25
+  },
+  "短纤": {},
+  "硅铁": {
+    "total_days": 7,
+    "total_notes": 7,
+    "avg_sentiment": 0.035,
+    "recent_trend": "震荡",
+    "date_range": "2026-06-11 ~ 2026-07-25",
+    "by_platform": {
+      "xhs": 4,
+      "weibo": 2,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.6,
+      "pearson_r": 0.767,
+      "data_points": 5
+    },
+    "unique_authors": 7,
+    "authors_with_fans": 3
+  },
+  "碳酸锂": {
+    "total_days": 18,
+    "total_notes": 32,
+    "avg_sentiment": -0.223,
+    "recent_trend": "偏空",
+    "date_range": "2026-01-16 ~ 2026-07-23",
+    "by_platform": {
+      "weibo": 9,
+      "zhihu": 1,
+      "xhs": 19,
+      "xueqiu": 3
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.4667,
+      "pearson_r": -0.0525,
+      "data_points": 15
+    },
+    "unique_authors": 27,
+    "authors_with_fans": 12
+  },
+  "红枣": {
+    "total_days": 8,
+    "total_notes": 11,
+    "avg_sentiment": -0.195,
+    "recent_trend": "偏空",
+    "date_range": "2026-06-04 ~ 2026-07-17",
+    "by_platform": {
+      "xhs": 8,
+      "weibo": 3
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.8571,
+      "pearson_r": 0.3038,
+      "data_points": 7
+    },
+    "unique_authors": 11,
+    "authors_with_fans": 2
+  },
+  "纯碱": {
+    "total_days": 25,
+    "total_notes": 57,
+    "avg_sentiment": -0.08,
+    "recent_trend": "偏多",
+    "date_range": "2026-05-25 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 40,
+      "xhs": 12,
+      "zhihu": 5
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.4444,
+      "pearson_r": -0.1814,
+      "data_points": 18
+    },
+    "unique_authors": 52,
+    "authors_with_fans": 40
+  },
+  "线材": {},
+  "花生": {
+    "total_days": 3,
+    "total_notes": 3,
+    "avg_sentiment": 0.14,
+    "recent_trend": "偏多",
+    "date_range": "2026-07-03 ~ 2026-07-12",
+    "by_platform": {
+      "xhs": 2,
+      "weibo": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.0,
+      "pearson_r": 0.0,
+      "data_points": 1
+    },
+    "unique_authors": 3,
+    "authors_with_fans": 2
+  },
+  "苯乙烯": {
+    "total_days": 6,
+    "total_notes": 8,
+    "avg_sentiment": -0.001,
+    "recent_trend": "震荡",
+    "date_range": "2026-07-01 ~ 2026-07-28",
+    "by_platform": {
+      "weibo": 4,
+      "xhs": 3,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 1.0,
+      "pearson_r": 0.7477,
+      "data_points": 4
+    },
+    "unique_authors": 8,
+    "authors_with_fans": 6
+  },
+  "苹果": {
+    "total_days": 6,
+    "total_notes": 6,
+    "avg_sentiment": -0.471,
+    "recent_trend": "偏空",
+    "date_range": "2026-03-11 ~ 2026-07-15",
+    "by_platform": {
+      "xhs": 5,
+      "zhihu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.8,
+      "pearson_r": -0.7891,
+      "data_points": 5
+    },
+    "unique_authors": 6,
+    "authors_with_fans": 2
+  },
+  "菜油": {
+    "total_days": 10,
+    "total_notes": 13,
+    "avg_sentiment": 0.194,
+    "recent_trend": "震荡",
+    "date_range": "2026-01-26 ~ 2026-07-23",
+    "by_platform": {
+      "weibo": 11,
+      "xhs": 1,
+      "zhihu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.4,
+      "pearson_r": 0.4999,
+      "data_points": 10
+    },
+    "unique_authors": 10,
+    "authors_with_fans": 9
+  },
+  "菜粕": {
+    "total_days": 23,
+    "total_notes": 30,
+    "avg_sentiment": 0.148,
+    "recent_trend": "偏多",
+    "date_range": "2025-09-12 ~ 2026-07-28",
+    "by_platform": {
+      "weibo": 21,
+      "xhs": 5,
+      "xueqiu": 3,
+      "zhihu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.7647,
+      "pearson_r": 0.4092,
+      "data_points": 17
+    },
+    "unique_authors": 26,
+    "authors_with_fans": 24
+  },
+  "螺纹钢": {
+    "total_days": 36,
+    "total_notes": 87,
+    "avg_sentiment": 0.037,
+    "recent_trend": "偏多",
+    "date_range": "2026-02-11 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 52,
+      "xueqiu": 1,
+      "xhs": 22,
+      "zhihu": 12
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.6087,
+      "pearson_r": 0.1319,
+      "data_points": 23
+    },
+    "unique_authors": 60,
+    "authors_with_fans": 41
+  },
+  "豆油": {
+    "total_days": 26,
+    "total_notes": 35,
+    "avg_sentiment": 0.184,
+    "recent_trend": "偏空",
+    "date_range": "2026-01-14 ~ 2026-07-25",
+    "by_platform": {
+      "xueqiu": 2,
+      "weibo": 22,
+      "zhihu": 3,
+      "xhs": 8
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.3913,
+      "pearson_r": -0.1436,
+      "data_points": 23
+    },
+    "unique_authors": 30,
+    "authors_with_fans": 25
+  },
+  "豆粕": {
+    "total_days": 34,
+    "total_notes": 71,
+    "avg_sentiment": 0.147,
+    "recent_trend": "偏多",
+    "date_range": "2026-01-20 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 55,
+      "xhs": 12,
+      "xueqiu": 3,
+      "zhihu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.4815,
+      "pearson_r": -0.0211,
+      "data_points": 27
+    },
+    "unique_authors": 42,
+    "authors_with_fans": 36
+  },
+  "铁矿石": {
+    "total_days": 33,
+    "total_notes": 62,
+    "avg_sentiment": 0.085,
+    "recent_trend": "偏多",
+    "date_range": "2026-01-30 ~ 2026-07-30",
+    "by_platform": {
+      "zhihu": 8,
+      "weibo": 36,
+      "xhs": 10,
+      "xueqiu": 8
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.3333,
+      "pearson_r": -0.4186,
+      "data_points": 18
+    },
+    "unique_authors": 49,
+    "authors_with_fans": 40
+  },
+  "铅": {
+    "total_days": 3,
+    "total_notes": 4,
+    "avg_sentiment": 0.167,
+    "recent_trend": "偏多",
+    "date_range": "2026-06-30 ~ 2026-07-28",
+    "by_platform": {
+      "xueqiu": 4
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 4,
+    "authors_with_fans": 4
+  },
+  "铜": {
+    "total_days": 37,
+    "total_notes": 62,
+    "avg_sentiment": 0.248,
+    "recent_trend": "偏多",
+    "date_range": "2025-09-03 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 27,
+      "zhihu": 4,
+      "xhs": 14,
+      "xueqiu": 17
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 48,
+    "authors_with_fans": 36
+  },
+  "铝": {
+    "total_days": 31,
+    "total_notes": 55,
+    "avg_sentiment": 0.281,
+    "recent_trend": "偏多",
+    "date_range": "2025-12-05 ~ 2026-07-29",
+    "by_platform": {
+      "weibo": 24,
+      "zhihu": 1,
+      "xhs": 9,
+      "xueqiu": 21
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 47,
+    "authors_with_fans": 34
+  },
+  "锌": {
+    "total_days": 22,
+    "total_notes": 29,
+    "avg_sentiment": 0.061,
+    "recent_trend": "偏多",
+    "date_range": "2026-01-20 ~ 2026-07-28",
+    "by_platform": {
+      "xhs": 5,
+      "weibo": 12,
+      "xueqiu": 12
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 23,
+    "authors_with_fans": 18
+  },
+  "锡": {
+    "total_days": 9,
+    "total_notes": 12,
+    "avg_sentiment": 0.157,
+    "recent_trend": "偏多",
+    "date_range": "2026-06-06 ~ 2026-07-28",
+    "by_platform": {
+      "xhs": 1,
+      "xueqiu": 7,
+      "weibo": 4
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 9,
+    "authors_with_fans": 8
+  },
+  "锰硅": {
+    "total_days": 4,
+    "total_notes": 4,
+    "avg_sentiment": 0.176,
+    "recent_trend": "偏多",
+    "date_range": "2026-05-19 ~ 2026-07-15",
+    "by_platform": {
+      "xhs": 4
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.3333,
+      "pearson_r": -0.2784,
+      "data_points": 3
+    },
+    "unique_authors": 3,
+    "authors_with_fans": 0
+  },
+  "镍": {
+    "total_days": 25,
+    "total_notes": 48,
+    "avg_sentiment": 0.053,
+    "recent_trend": "偏多",
+    "date_range": "2025-12-31 ~ 2026-07-28",
+    "by_platform": {
+      "weibo": 22,
+      "xueqiu": 15,
+      "zhihu": 1,
+      "xhs": 10
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 41,
+    "authors_with_fans": 30
+  },
+  "鸡蛋": {
+    "total_days": 18,
+    "total_notes": 35,
+    "avg_sentiment": -0.211,
+    "recent_trend": "偏空",
+    "date_range": "2026-06-23 ~ 2026-07-28",
+    "by_platform": {
+      "zhihu": 2,
+      "xhs": 20,
+      "weibo": 12,
+      "xueqiu": 1
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5556,
+      "pearson_r": 0.2341,
+      "data_points": 9
+    },
+    "unique_authors": 33,
+    "authors_with_fans": 17
+  },
+  "黄金": {
+    "total_days": 26,
+    "total_notes": 60,
+    "avg_sentiment": 0.11,
+    "recent_trend": "震荡",
+    "date_range": "2025-09-03 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 37,
+      "zhihu": 11,
+      "xueqiu": 7,
+      "xhs": 5
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.3333,
+      "pearson_r": -0.5431,
+      "data_points": 12
+    },
+    "unique_authors": 44,
+    "authors_with_fans": 36
+  }
+}

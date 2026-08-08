@@ -1,0 +1,226 @@
+{
+  "series": [
+    {
+      "date": "2026-05-26",
+      "avg_score": -0.5,
+      "simple_avg": -0.5,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 1,
+      "platform_counts": {
+        "weibo": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": -0.5,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "Value_at_Risk(121万粉)",
+          "weight_contrib": 3.46,
+          "fans": 1207000,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-06-25",
+      "avg_score": -0.5,
+      "simple_avg": -0.5,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 1,
+      "platform_counts": {
+        "weibo": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": -0.5,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "股市风云(79万粉)",
+          "weight_contrib": 3.42,
+          "fans": 787000,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-07-03",
+      "avg_score": -0.5,
+      "simple_avg": -0.5,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 1,
+      "platform_counts": {
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "zhihu": {
+          "avg_score": -0.5,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "趋势那道光啊(1万粉)",
+          "weight_contrib": 2.95,
+          "fans": 9304,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-07-14",
+      "avg_score": 0.5,
+      "simple_avg": 0.5,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "海大lym(15万粉)",
+          "weight_contrib": 3.42,
+          "fans": 152000,
+          "posts": 17
+        }
+      ],
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-20",
+      "avg_score": 0.024,
+      "simple_avg": 0.024,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.024,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "鲲鹏Ai老宋(58万粉)",
+          "weight_contrib": 3.38,
+          "fans": 580000,
+          "posts": 4
+        }
+      ],
+      "weighted_score": 0.024
+    },
+    {
+      "date": "2026-07-21",
+      "avg_score": 0.5,
+      "simple_avg": 0.5,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "xueqiu": 1
+      },
+      "platform_scores": {
+        "xueqiu": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "新浪财经(2万粉)",
+          "weight_contrib": 1.52,
+          "fans": 22549,
+          "posts": 31
+        }
+      ],
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-27",
+      "avg_score": 0.5,
+      "simple_avg": 0.5,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "xueqiu": 1
+      },
+      "platform_scores": {
+        "xueqiu": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "每日经济新闻(13万粉)",
+          "weight_contrib": 1.61,
+          "fans": 128830,
+          "posts": 28
+        }
+      ],
+      "weighted_score": 0.5
+    }
+  ],
+  "stats": {
+    "total_days": 7,
+    "total_notes": 7,
+    "avg_sentiment": 0.003,
+    "recent_trend": "偏多",
+    "date_range": "2026-05-26 ~ 2026-07-27",
+    "by_platform": {
+      "weibo": 4,
+      "zhihu": 1,
+      "xueqiu": 2
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.5,
+      "pearson_r": 0.0,
+      "data_points": 0
+    },
+    "unique_authors": 7,
+    "authors_with_fans": 7
+  }
+}

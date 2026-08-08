@@ -1,0 +1,114 @@
+{
+  "weights": {
+    "xhs": 0.2383,
+    "xueqiu": 0.2553,
+    "weibo": 0.2614,
+    "zhihu": 0.2449
+  },
+  "metrics": {
+    "xhs": {
+      "direction_accuracy": 0.4811,
+      "pearson_r": -0.0707,
+      "data_points": 212
+    },
+    "xueqiu": {
+      "direction_accuracy": 0.4937,
+      "pearson_r": 0.1063,
+      "data_points": 79
+    },
+    "weibo": {
+      "direction_accuracy": 0.5247,
+      "pearson_r": -0.0119,
+      "data_points": 364
+    },
+    "zhihu": {
+      "direction_accuracy": 0.4725,
+      "pearson_r": -0.139,
+      "data_points": 91
+    }
+  },
+  "weight_source": "global_backtest",
+  "signal_comparison": {
+    "simple_avg": {
+      "direction_accuracy": 0.5085,
+      "pearson_r": -0.0463,
+      "data_points": 586
+    },
+    "author_weighted": {
+      "direction_accuracy": 0.5177,
+      "pearson_r": -0.0402,
+      "data_points": 593
+    },
+    "winner": "author_weighted"
+  },
+  "best_horizon": "h1",
+  "updated": "2026-07-30 16:39:33",
+  "all_horizons": {
+    "h1": {
+      "horizon_days": 1,
+      "platform_weights": {
+        "xhs": 0.2383,
+        "xueqiu": 0.2553,
+        "weibo": 0.2614,
+        "zhihu": 0.2449
+      },
+      "signal_comparison": {
+        "simple_avg": {
+          "direction_accuracy": 0.5085,
+          "pearson_r": -0.0463,
+          "data_points": 586
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.5177,
+          "pearson_r": -0.0402,
+          "data_points": 593
+        },
+        "winner": "author_weighted"
+      }
+    },
+    "h3": {
+      "horizon_days": 3,
+      "platform_weights": {
+        "xhs": 0.2466,
+        "xueqiu": 0.2346,
+        "weibo": 0.2492,
+        "zhihu": 0.2696
+      },
+      "signal_comparison": {
+        "simple_avg": {
+          "direction_accuracy": 0.4815,
+          "pearson_r": -0.0406,
+          "data_points": 540
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.4826,
+          "pearson_r": -0.0343,
+          "data_points": 545
+        },
+        "winner": "author_weighted"
+      }
+    },
+    "h5": {
+      "horizon_days": 5,
+      "platform_weights": {
+        "xhs": 0.2393,
+        "xueqiu": 0.2402,
+        "weibo": 0.2176,
+        "zhihu": 0.303
+      },
+      "signal_comparison": {
+        "simple_avg": {
+          "direction_accuracy": 0.4757,
+          "pearson_r": -0.0824,
+          "data_points": 534
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.4777,
+          "pearson_r": -0.0807,
+          "data_points": 538
+        },
+        "winner": "author_weighted"
+      }
+    }
+  }
+}

@@ -1,0 +1,948 @@
+{
+  "series": [
+    {
+      "date": "2025-09-03",
+      "avg_score": 0.75,
+      "simple_avg": 0.75,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.75,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "天津股侠(46万粉)",
+          "weight_contrib": 3.36,
+          "fans": 462000,
+          "posts": 2
+        }
+      ],
+      "weighted_score": 0.75
+    },
+    {
+      "date": "2026-01-30",
+      "avg_score": 1.0,
+      "simple_avg": 1.0,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "zhihu": {
+          "avg_score": 1.0,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "对冲研投(0万粉)",
+          "weight_contrib": 2.72,
+          "fans": 969,
+          "posts": 13
+        }
+      ],
+      "weighted_score": 1.0
+    },
+    {
+      "date": "2026-05-29",
+      "avg_score": 0.5,
+      "simple_avg": 0.5,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "xueqiu": 1
+      },
+      "platform_scores": {
+        "xueqiu": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "铁纪如山(1万粉)",
+          "weight_contrib": 2.94,
+          "fans": 8533,
+          "posts": 1
+        }
+      ],
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-06-23",
+      "avg_score": -0.5,
+      "simple_avg": -0.5,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 1,
+      "platform_counts": {
+        "xueqiu": 1
+      },
+      "platform_scores": {
+        "xueqiu": {
+          "avg_score": -0.5,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "面朝大海冬暖(0万粉)",
+          "weight_contrib": 2.61,
+          "fans": 337,
+          "posts": 2
+        }
+      ],
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-06-25",
+      "avg_score": 0.5,
+      "simple_avg": 0.5,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "zhihu": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "testM(0万粉)",
+          "weight_contrib": 2.39,
+          "fans": 40,
+          "posts": 1
+        }
+      ],
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-03",
+      "avg_score": 0.75,
+      "simple_avg": 0.75,
+      "note_count": 2,
+      "bull_count": 2,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 1,
+        "xueqiu": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.75,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        },
+        "xueqiu": {
+          "avg_score": 0.75,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "7X24快讯(57万粉)",
+          "weight_contrib": 3.68,
+          "fans": 571685,
+          "posts": 30
+        },
+        {
+          "name": "趋势巡航(39万粉)",
+          "weight_contrib": 3.34,
+          "fans": 389000,
+          "posts": 2
+        }
+      ],
+      "weighted_score": 0.75
+    },
+    {
+      "date": "2026-07-05",
+      "avg_score": -0.05,
+      "simple_avg": -0.05,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 0,
+      "platform_counts": {
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "zhihu": {
+          "avg_score": -0.05,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "布得布说(3万粉)",
+          "weight_contrib": 3.07,
+          "fans": 29302,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.05
+    },
+    {
+      "date": "2026-07-06",
+      "avg_score": 0.5,
+      "simple_avg": 0.5,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "zhihu": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "凯撒沙拉(1万粉)",
+          "weight_contrib": 2.91,
+          "fans": 6158,
+          "posts": 4
+        }
+      ],
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-07",
+      "avg_score": 0.5,
+      "simple_avg": 0.5,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "zhihu": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "alex01(5万粉)",
+          "weight_contrib": 3.31,
+          "fans": 53526,
+          "posts": 11
+        }
+      ],
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-09",
+      "avg_score": -0.75,
+      "simple_avg": -0.75,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 1,
+      "platform_counts": {
+        "xueqiu": 1
+      },
+      "platform_scores": {
+        "xueqiu": {
+          "avg_score": -0.75,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "7X24快讯(57万粉)",
+          "weight_contrib": 3.91,
+          "fans": 571685,
+          "posts": 30
+        }
+      ],
+      "weighted_score": -0.75
+    },
+    {
+      "date": "2026-07-10",
+      "avg_score": -0.293,
+      "simple_avg": -0.19,
+      "note_count": 2,
+      "bull_count": 1,
+      "bear_count": 1,
+      "platform_counts": {
+        "xhs": 1,
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "xhs": {
+          "avg_score": 0.121,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        },
+        "zhihu": {
+          "avg_score": -0.5,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "高演",
+          "weight_contrib": 2.0,
+          "fans": 0,
+          "posts": 1
+        },
+        {
+          "name": "陆仁贾",
+          "weight_contrib": 1.0,
+          "fans": 0,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.19
+    },
+    {
+      "date": "2026-07-11",
+      "avg_score": -0.5,
+      "simple_avg": -0.5,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 1,
+      "platform_counts": {
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "zhihu": {
+          "avg_score": -0.5,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "剑锋无尘(1万粉)",
+          "weight_contrib": 3.15,
+          "fans": 12728,
+          "posts": 2
+        }
+      ],
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-07-13",
+      "avg_score": 0.215,
+      "simple_avg": 0.232,
+      "note_count": 2,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 2
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.215,
+          "note_count": 2,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "秦钰恒(62万粉)",
+          "weight_contrib": 2.41,
+          "fans": 622000,
+          "posts": 15
+        },
+        {
+          "name": "黄金六点半",
+          "weight_contrib": 2.11,
+          "fans": 0,
+          "posts": 2
+        }
+      ],
+      "weighted_score": 0.215
+    },
+    {
+      "date": "2026-07-14",
+      "avg_score": 0.017,
+      "simple_avg": -0.083,
+      "note_count": 3,
+      "bull_count": 1,
+      "bear_count": 2,
+      "platform_counts": {
+        "xhs": 2,
+        "weibo": 1
+      },
+      "platform_scores": {
+        "xhs": {
+          "avg_score": 0.231,
+          "note_count": 2,
+          "bull": 1,
+          "bear": 1
+        },
+        "weibo": {
+          "avg_score": -0.5,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "🤔(0万粉)",
+          "weight_contrib": 2.82,
+          "fans": 2596,
+          "posts": 1
+        },
+        {
+          "name": "提车战法(11万粉)",
+          "weight_contrib": 2.0,
+          "fans": 109000,
+          "posts": 2
+        },
+        {
+          "name": "财金豆",
+          "weight_contrib": 2.0,
+          "fans": 0,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.154
+    },
+    {
+      "date": "2026-07-16",
+      "avg_score": -0.402,
+      "simple_avg": -0.399,
+      "note_count": 7,
+      "bull_count": 1,
+      "bear_count": 6,
+      "platform_counts": {
+        "weibo": 7
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": -0.402,
+          "note_count": 7,
+          "bull": 1,
+          "bear": 6
+        }
+      },
+      "top_authors": [
+        {
+          "name": "秦钰恒(62万粉)",
+          "weight_contrib": 2.41,
+          "fans": 622000,
+          "posts": 15
+        },
+        {
+          "name": "黄金六点半",
+          "weight_contrib": 2.11,
+          "fans": 0,
+          "posts": 2
+        },
+        {
+          "name": "玩车豆豆",
+          "weight_contrib": 2.0,
+          "fans": 0,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.402
+    },
+    {
+      "date": "2026-07-17",
+      "avg_score": -0.058,
+      "simple_avg": -0.018,
+      "note_count": 3,
+      "bull_count": 1,
+      "bear_count": 1,
+      "platform_counts": {
+        "weibo": 3
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": -0.058,
+          "note_count": 3,
+          "bull": 1,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "央视财经(3809万粉)",
+          "weight_contrib": 4.16,
+          "fans": 38092000,
+          "posts": 10
+        },
+        {
+          "name": "期货杨清亮(15万粉)",
+          "weight_contrib": 2.0,
+          "fans": 152000,
+          "posts": 33
+        },
+        {
+          "name": "兰州微事",
+          "weight_contrib": 2.0,
+          "fans": 0,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.058
+    },
+    {
+      "date": "2026-07-18",
+      "avg_score": -0.6,
+      "simple_avg": -0.6,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 1,
+      "platform_counts": {
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "zhihu": {
+          "avg_score": -0.6,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "alex01(5万粉)",
+          "weight_contrib": 3.31,
+          "fans": 53526,
+          "posts": 11
+        }
+      ],
+      "weighted_score": -0.6
+    },
+    {
+      "date": "2026-07-19",
+      "avg_score": 0.588,
+      "simple_avg": 0.552,
+      "note_count": 4,
+      "bull_count": 4,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 2,
+        "xhs": 1,
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.632,
+          "note_count": 2,
+          "bull": 2,
+          "bear": 0
+        },
+        "xhs": {
+          "avg_score": 0.209,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        },
+        "zhihu": {
+          "avg_score": 0.75,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "秦钰恒(62万粉)",
+          "weight_contrib": 4.09,
+          "fans": 622000,
+          "posts": 15
+        },
+        {
+          "name": "哈利宝舵主(102万粉)",
+          "weight_contrib": 3.63,
+          "fans": 1018000,
+          "posts": 2
+        },
+        {
+          "name": "你家凉皮哥哥(0万粉)",
+          "weight_contrib": 2.57,
+          "fans": 244,
+          "posts": 1
+        }
+      ],
+      "weighted_score": 0.534
+    },
+    {
+      "date": "2026-07-20",
+      "avg_score": -0.204,
+      "simple_avg": -0.302,
+      "note_count": 4,
+      "bull_count": 1,
+      "bear_count": 2,
+      "platform_counts": {
+        "weibo": 3,
+        "xhs": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": -0.11,
+          "note_count": 3,
+          "bull": 1,
+          "bear": 1
+        },
+        "xhs": {
+          "avg_score": -0.75,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "秦钰恒(62万粉)",
+          "weight_contrib": 8.17,
+          "fans": 622000,
+          "posts": 15
+        },
+        {
+          "name": "东营网官方微博(168万粉)",
+          "weight_contrib": 3.49,
+          "fans": 1676000,
+          "posts": 1
+        },
+        {
+          "name": "绝境战略破局",
+          "weight_contrib": 2.0,
+          "fans": 0,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.413
+    },
+    {
+      "date": "2026-07-21",
+      "avg_score": -0.06,
+      "simple_avg": -0.076,
+      "note_count": 4,
+      "bull_count": 1,
+      "bear_count": 2,
+      "platform_counts": {
+        "weibo": 3,
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": -0.061,
+          "note_count": 3,
+          "bull": 1,
+          "bear": 2
+        },
+        "zhihu": {
+          "avg_score": -0.055,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "秦钰恒(62万粉)",
+          "weight_contrib": 8.17,
+          "fans": 622000,
+          "posts": 15
+        },
+        {
+          "name": "疯子解黄金(122万粉)",
+          "weight_contrib": 3.46,
+          "fans": 1219000,
+          "posts": 2
+        },
+        {
+          "name": "狐锁(0万粉)",
+          "weight_contrib": 2.5,
+          "fans": 119,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.058
+    },
+    {
+      "date": "2026-07-22",
+      "avg_score": 0.547,
+      "simple_avg": 0.542,
+      "note_count": 6,
+      "bull_count": 6,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 5,
+        "zhihu": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.55,
+          "note_count": 5,
+          "bull": 5,
+          "bear": 0
+        },
+        "zhihu": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "央视财经(3809万粉)",
+          "weight_contrib": 4.16,
+          "fans": 38092000,
+          "posts": 10
+        },
+        {
+          "name": "波浪理论学习(41万粉)",
+          "weight_contrib": 3.78,
+          "fans": 408000,
+          "posts": 9
+        },
+        {
+          "name": "哈利宝舵主(102万粉)",
+          "weight_contrib": 3.63,
+          "fans": 1018000,
+          "posts": 2
+        }
+      ],
+      "weighted_score": 0.526
+    },
+    {
+      "date": "2026-07-23",
+      "avg_score": 0.278,
+      "simple_avg": 0.331,
+      "note_count": 5,
+      "bull_count": 4,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 2,
+        "xueqiu": 3
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.059,
+          "note_count": 2,
+          "bull": 1,
+          "bear": 0
+        },
+        "xueqiu": {
+          "avg_score": 0.5,
+          "note_count": 3,
+          "bull": 3,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "秦钰恒(62万粉)",
+          "weight_contrib": 4.09,
+          "fans": 622000,
+          "posts": 15
+        },
+        {
+          "name": "北京快乐李伟(10万粉)",
+          "weight_contrib": 3.2,
+          "fans": 96000,
+          "posts": 2
+        },
+        {
+          "name": "指数情报局(2万粉)",
+          "weight_contrib": 3.06,
+          "fans": 24922,
+          "posts": 1
+        }
+      ],
+      "weighted_score": 0.288
+    },
+    {
+      "date": "2026-07-27",
+      "avg_score": 0.5,
+      "simple_avg": 0.5,
+      "note_count": 1,
+      "bull_count": 1,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.5,
+          "note_count": 1,
+          "bull": 1,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "波浪理论学习(41万粉)",
+          "weight_contrib": 3.78,
+          "fans": 408000,
+          "posts": 9
+        }
+      ],
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-28",
+      "avg_score": 0.167,
+      "simple_avg": 0.147,
+      "note_count": 4,
+      "bull_count": 2,
+      "bear_count": 1,
+      "platform_counts": {
+        "weibo": 4
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": 0.167,
+          "note_count": 4,
+          "bull": 2,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "秦钰恒(62万粉)",
+          "weight_contrib": 4.09,
+          "fans": 622000,
+          "posts": 15
+        },
+        {
+          "name": "波浪理论学习(41万粉)",
+          "weight_contrib": 3.78,
+          "fans": 408000,
+          "posts": 9
+        },
+        {
+          "name": "风云学会陈经(188万粉)",
+          "weight_contrib": 3.51,
+          "fans": 1883000,
+          "posts": 2
+        }
+      ],
+      "weighted_score": 0.167
+    },
+    {
+      "date": "2026-07-29",
+      "avg_score": -0.086,
+      "simple_avg": -0.086,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 0,
+      "platform_counts": {
+        "weibo": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": -0.086,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 0
+        }
+      },
+      "top_authors": [
+        {
+          "name": "秦钰恒(62万粉)",
+          "weight_contrib": 4.09,
+          "fans": 622000,
+          "posts": 15
+        }
+      ],
+      "weighted_score": -0.086
+    },
+    {
+      "date": "2026-07-30",
+      "avg_score": -0.45,
+      "simple_avg": -0.45,
+      "note_count": 1,
+      "bull_count": 0,
+      "bear_count": 1,
+      "platform_counts": {
+        "weibo": 1
+      },
+      "platform_scores": {
+        "weibo": {
+          "avg_score": -0.45,
+          "note_count": 1,
+          "bull": 0,
+          "bear": 1
+        }
+      },
+      "top_authors": [
+        {
+          "name": "财经黄金原油投资-罗老师(94万粉)",
+          "weight_contrib": 3.43,
+          "fans": 944000,
+          "posts": 1
+        }
+      ],
+      "weighted_score": -0.45
+    }
+  ],
+  "stats": {
+    "total_days": 26,
+    "total_notes": 60,
+    "avg_sentiment": 0.11,
+    "recent_trend": "震荡",
+    "date_range": "2025-09-03 ~ 2026-07-30",
+    "by_platform": {
+      "weibo": 37,
+      "zhihu": 11,
+      "xueqiu": 7,
+      "xhs": 5
+    },
+    "platform_weights": {
+      "xhs": 0.2316,
+      "xueqiu": 0.2787,
+      "weibo": 0.2573,
+      "zhihu": 0.2324
+    },
+    "weight_source": "global_backtest",
+    "combined_metrics": {
+      "direction_accuracy": 0.3333,
+      "pearson_r": -0.5431,
+      "data_points": 12
+    },
+    "unique_authors": 44,
+    "authors_with_fans": 36
+  }
+}

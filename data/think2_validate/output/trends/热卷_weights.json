@@ -1,0 +1,167 @@
+{
+  "variety": "热卷",
+  "updated": "2026-07-30 16:39:33",
+  "weights": {
+    "xhs": 0.2383,
+    "xueqiu": 0.2553,
+    "weibo": 0.2614,
+    "zhihu": 0.2449
+  },
+  "weight_source": "global_backtest",
+  "combined_metrics": {
+    "direction_accuracy": 0.5556,
+    "pearson_r": 0.33,
+    "data_points": 18
+  },
+  "variety_backtest": {
+    "name": "热卷",
+    "horizons": {
+      "h1": {
+        "horizon_days": 1,
+        "simple_avg": {
+          "direction_accuracy": 0.4444,
+          "pearson_r": 0.2884,
+          "data_points": 18
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.5556,
+          "pearson_r": 0.33,
+          "data_points": 18
+        }
+      },
+      "h3": {
+        "horizon_days": 3,
+        "simple_avg": {
+          "direction_accuracy": 0.3333,
+          "pearson_r": 0.0337,
+          "data_points": 18
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.4444,
+          "pearson_r": 0.0543,
+          "data_points": 18
+        }
+      },
+      "h5": {
+        "horizon_days": 5,
+        "simple_avg": {
+          "direction_accuracy": 0.2353,
+          "pearson_r": -0.4222,
+          "data_points": 17
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.3529,
+          "pearson_r": -0.3984,
+          "data_points": 17
+        }
+      }
+    },
+    "score": 0.5556
+  },
+  "weighted_sentiment": [
+    {
+      "date": "2026-05-06",
+      "weighted_score": 0.35
+    },
+    {
+      "date": "2026-05-21",
+      "weighted_score": -0.129
+    },
+    {
+      "date": "2026-06-01",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-06-14",
+      "weighted_score": 0.284
+    },
+    {
+      "date": "2026-06-23",
+      "weighted_score": -0.75
+    },
+    {
+      "date": "2026-06-28",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-06-29",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-06-30",
+      "weighted_score": -0.525
+    },
+    {
+      "date": "2026-07-01",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-07-02",
+      "weighted_score": -0.233
+    },
+    {
+      "date": "2026-07-03",
+      "weighted_score": -0.4
+    },
+    {
+      "date": "2026-07-05",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-07",
+      "weighted_score": -0.085
+    },
+    {
+      "date": "2026-07-09",
+      "weighted_score": -0.168
+    },
+    {
+      "date": "2026-07-13",
+      "weighted_score": -0.075
+    },
+    {
+      "date": "2026-07-14",
+      "weighted_score": 0.6
+    },
+    {
+      "date": "2026-07-15",
+      "weighted_score": 0.082
+    },
+    {
+      "date": "2026-07-16",
+      "weighted_score": 0.476
+    },
+    {
+      "date": "2026-07-17",
+      "weighted_score": 0.75
+    },
+    {
+      "date": "2026-07-19",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-20",
+      "weighted_score": -0.122
+    },
+    {
+      "date": "2026-07-21",
+      "weighted_score": 0.059
+    },
+    {
+      "date": "2026-07-22",
+      "weighted_score": -0.117
+    },
+    {
+      "date": "2026-07-23",
+      "weighted_score": 0.408
+    },
+    {
+      "date": "2026-07-29",
+      "weighted_score": -0.3
+    },
+    {
+      "date": "2026-07-30",
+      "weighted_score": -0.75
+    }
+  ]
+}

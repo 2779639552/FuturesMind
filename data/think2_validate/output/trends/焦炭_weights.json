@@ -1,0 +1,235 @@
+{
+  "variety": "焦炭",
+  "updated": "2026-07-30 16:39:33",
+  "weights": {
+    "xhs": 0.2383,
+    "xueqiu": 0.2553,
+    "weibo": 0.2614,
+    "zhihu": 0.2449
+  },
+  "weight_source": "global_backtest",
+  "combined_metrics": {
+    "direction_accuracy": 0.375,
+    "pearson_r": -0.2402,
+    "data_points": 32
+  },
+  "variety_backtest": {
+    "name": "焦炭",
+    "horizons": {
+      "h1": {
+        "horizon_days": 1,
+        "simple_avg": {
+          "direction_accuracy": 0.4062,
+          "pearson_r": -0.2337,
+          "data_points": 32
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.375,
+          "pearson_r": -0.2402,
+          "data_points": 32
+        }
+      },
+      "h3": {
+        "horizon_days": 3,
+        "simple_avg": {
+          "direction_accuracy": 0.4516,
+          "pearson_r": -0.2621,
+          "data_points": 31
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.4516,
+          "pearson_r": -0.2648,
+          "data_points": 31
+        }
+      },
+      "h5": {
+        "horizon_days": 5,
+        "simple_avg": {
+          "direction_accuracy": 0.5333,
+          "pearson_r": -0.0908,
+          "data_points": 30
+        },
+        "author_weighted": {
+          "direction_accuracy": 0.5,
+          "pearson_r": -0.1123,
+          "data_points": 30
+        }
+      }
+    },
+    "score": 0.375
+  },
+  "weighted_sentiment": [
+    {
+      "date": "2026-03-05",
+      "weighted_score": 0.35
+    },
+    {
+      "date": "2026-04-02",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-04-10",
+      "weighted_score": -0.286
+    },
+    {
+      "date": "2026-04-26",
+      "weighted_score": 0.2
+    },
+    {
+      "date": "2026-05-07",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-05-12",
+      "weighted_score": -0.225
+    },
+    {
+      "date": "2026-05-22",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-05-29",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-06-01",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-06-04",
+      "weighted_score": 1.0
+    },
+    {
+      "date": "2026-06-11",
+      "weighted_score": 0.05
+    },
+    {
+      "date": "2026-06-12",
+      "weighted_score": 0.343
+    },
+    {
+      "date": "2026-06-14",
+      "weighted_score": 0.129
+    },
+    {
+      "date": "2026-06-16",
+      "weighted_score": -0.101
+    },
+    {
+      "date": "2026-06-17",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-06-23",
+      "weighted_score": -0.331
+    },
+    {
+      "date": "2026-06-25",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-06-26",
+      "weighted_score": -0.351
+    },
+    {
+      "date": "2026-06-28",
+      "weighted_score": -1.0
+    },
+    {
+      "date": "2026-06-29",
+      "weighted_score": -0.351
+    },
+    {
+      "date": "2026-06-30",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-01",
+      "weighted_score": -0.182
+    },
+    {
+      "date": "2026-07-02",
+      "weighted_score": 0.022
+    },
+    {
+      "date": "2026-07-03",
+      "weighted_score": -0.272
+    },
+    {
+      "date": "2026-07-04",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-05",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-06",
+      "weighted_score": 0.105
+    },
+    {
+      "date": "2026-07-07",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-07-08",
+      "weighted_score": -0.2
+    },
+    {
+      "date": "2026-07-10",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-13",
+      "weighted_score": -0.223
+    },
+    {
+      "date": "2026-07-15",
+      "weighted_score": 0.108
+    },
+    {
+      "date": "2026-07-16",
+      "weighted_score": 0.071
+    },
+    {
+      "date": "2026-07-17",
+      "weighted_score": -0.597
+    },
+    {
+      "date": "2026-07-19",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-20",
+      "weighted_score": 0.102
+    },
+    {
+      "date": "2026-07-21",
+      "weighted_score": -0.394
+    },
+    {
+      "date": "2026-07-22",
+      "weighted_score": 0.231
+    },
+    {
+      "date": "2026-07-23",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-27",
+      "weighted_score": 0.118
+    },
+    {
+      "date": "2026-07-28",
+      "weighted_score": -0.006
+    },
+    {
+      "date": "2026-07-29",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-07-30",
+      "weighted_score": 0.5
+    }
+  ]
+}

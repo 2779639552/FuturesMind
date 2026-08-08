@@ -1,0 +1,167 @@
+{
+  "variety": "铜",
+  "updated": "2026-07-30 16:39:33",
+  "weights": {
+    "xhs": 0.2383,
+    "xueqiu": 0.2553,
+    "weibo": 0.2614,
+    "zhihu": 0.2449
+  },
+  "weight_source": "global_backtest",
+  "combined_metrics": {
+    "direction_accuracy": 0.5,
+    "pearson_r": 0.0,
+    "data_points": 0
+  },
+  "variety_backtest": {},
+  "weighted_sentiment": [
+    {
+      "date": "2025-09-03",
+      "weighted_score": 0.75
+    },
+    {
+      "date": "2025-10-30",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2025-12-19",
+      "weighted_score": 0.75
+    },
+    {
+      "date": "2026-01-13",
+      "weighted_score": 0.35
+    },
+    {
+      "date": "2026-02-03",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-04-14",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-04-28",
+      "weighted_score": 0.75
+    },
+    {
+      "date": "2026-05-12",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-05-21",
+      "weighted_score": 0.094
+    },
+    {
+      "date": "2026-05-29",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-06-01",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-06-24",
+      "weighted_score": -0.137
+    },
+    {
+      "date": "2026-06-25",
+      "weighted_score": -0.094
+    },
+    {
+      "date": "2026-06-26",
+      "weighted_score": -0.191
+    },
+    {
+      "date": "2026-06-27",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-06-30",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-07-03",
+      "weighted_score": 0.09
+    },
+    {
+      "date": "2026-07-04",
+      "weighted_score": -0.104
+    },
+    {
+      "date": "2026-07-06",
+      "weighted_score": 0.35
+    },
+    {
+      "date": "2026-07-07",
+      "weighted_score": 0.476
+    },
+    {
+      "date": "2026-07-09",
+      "weighted_score": 0.017
+    },
+    {
+      "date": "2026-07-10",
+      "weighted_score": 0.073
+    },
+    {
+      "date": "2026-07-13",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-15",
+      "weighted_score": -0.074
+    },
+    {
+      "date": "2026-07-16",
+      "weighted_score": -0.5
+    },
+    {
+      "date": "2026-07-17",
+      "weighted_score": -0.086
+    },
+    {
+      "date": "2026-07-20",
+      "weighted_score": 0.023
+    },
+    {
+      "date": "2026-07-21",
+      "weighted_score": -0.009
+    },
+    {
+      "date": "2026-07-22",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-23",
+      "weighted_score": 0.592
+    },
+    {
+      "date": "2026-07-24",
+      "weighted_score": 0.75
+    },
+    {
+      "date": "2026-07-25",
+      "weighted_score": 0.75
+    },
+    {
+      "date": "2026-07-26",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-27",
+      "weighted_score": 0.454
+    },
+    {
+      "date": "2026-07-28",
+      "weighted_score": 0.156
+    },
+    {
+      "date": "2026-07-29",
+      "weighted_score": 0.5
+    },
+    {
+      "date": "2026-07-30",
+      "weighted_score": 0.231
+    }
+  ]
+}

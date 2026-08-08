@@ -56,9 +56,15 @@ set_config(config)
 
 # ── Dynamic paths ────────────────────────────────────────────────────────────
 
-SENTIMENT_DIR = Path(os.path.expanduser("~/.tradingagents/external_data"))
+# User sentiment dir (real collected data). Falls back to bundled repo samples
+# (data/external_data) when no user data exists yet — lets a fresh clone browse.
+_USER_SENTIMENT_DIR = Path(os.path.expanduser("~/.tradingagents/external_data"))
+_REPO_SENTIMENT_DIR = Path(__file__).parent / "data" / "external_data"
+SENTIMENT_DIR = _USER_SENTIMENT_DIR if any(_USER_SENTIMENT_DIR.glob("*_sentiment.json")) else _REPO_SENTIMENT_DIR
 
-# Auto-detect 思路2 project directory (environment variable or common locations)
+# Auto-detect 思路2 project directory (environment variable or common locations).
+# The last candidate is the bundled repo sample (data/think2_validate), used as a
+# fallback so a fresh clone without the local 思路2 project can still render.
 _THINK2_ENV = os.environ.get("THINK2_DIR", "")
 if _THINK2_ENV:
     THINK2_DIR = Path(_THINK2_ENV)
@@ -67,6 +73,7 @@ else:
         Path(os.path.expanduser("~/Desktop/思路2/validate")),
         Path(os.path.expanduser("~/Desktop/silu2/validate")),
         Path(os.path.expanduser("~/projects/silu2/validate")),
+        Path(__file__).parent / "data" / "think2_validate",  # bundled sample
     ]
     THINK2_DIR = None
     for _c in _candidates:
