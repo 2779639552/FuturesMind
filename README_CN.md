@@ -220,9 +220,18 @@ venv\Scripts\python commodity_demo.py RB 2026-08-02   # 螺纹钢
 ├── scheduler.py              # 定时数据刷新
 ├── pyproject.toml            # 构建配置与依赖
 ├── .env.example              # 配置模板
+├── data/                     # 前端内置样本数据（情绪/帖子流/趋势，供全新克隆直接浏览）
+├── data_collection/          # 多平台社媒采集子项目（FuturesSentiment）
+│   ├── CONFIG_GUIDE.md       # 🔑 采集密钥/配置说明（小红书Cookie、LLM Key 等，克隆后必读）
+│   └── .env.example          # 采集相关密钥模板
 ├── README.md                 # 英文文档
 └── README_CN.md              # 中文文档（本文）
 ```
+
+> 💡 **数据采集配置**：`data_collection/` 采集小红书/微博/知乎/雪球数据需要个人密钥
+> （小红书 `COOKIES`、LLM `API_KEY`、`HF_TOKEN` 等），且不随仓库提交。
+> 克隆后请按 **[`data_collection/CONFIG_GUIDE.md`](data_collection/CONFIG_GUIDE.md)** 配置后再运行采集。
+> 前端 `web_app.py` 已内置仓库 `data/` 样本数据回退，无密钥也能浏览分析界面。
 
 ---
 

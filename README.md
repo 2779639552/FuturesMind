@@ -192,8 +192,16 @@ venv\Scripts\python commodity_demo.py RB 2026-08-02   # Rebar
 ├── database.py               # SQLite persistence layer
 ├── scheduler.py              # Automated data refresh tasks
 ├── pyproject.toml            # Build config & dependencies
-└── .env.example              # Configuration template
+├── .env.example              # Configuration template
+├── data/                     # Bundled sample data (sentiment/posts/trends for fresh clones)
+└── data_collection/          # Social media collection subproject (FuturesSentiment)
+    └── CONFIG_GUIDE.md       # 🔑 Credentials & config guide (XHS cookie, LLM keys — read after clone)
 ```
+
+> 💡 **data_collection credentials**: scraping 小红书/微博/知乎/雪球 requires personal credentials
+> (XHS `COOKIES`, LLM `API_KEY`, `HF_TOKEN` etc.), which are **not committed**.
+> Follow **[`data_collection/CONFIG_GUIDE.md`](data_collection/CONFIG_GUIDE.md)** before running collection.
+> The web dashboard falls back to bundled sample data in `data/` when no local data exists.
 
 ---
 

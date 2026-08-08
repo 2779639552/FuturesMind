@@ -10,6 +10,7 @@
 
 - [核心能力](#核心能力)
 - [全链路 Pipeline](#全链路-pipeline)
+- [🔑 密钥与配置说明（必读）](CONFIG_GUIDE.md)
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
 - [使用说明（分模块）](#使用说明分模块)
@@ -43,12 +44,16 @@
 
 ## 环境要求
 
+> ⚠️ **克隆后必须先配置个人密钥（小红书 Cookie / LLM API Key 等），否则采集与情感分析无法运行。**
+> 完整获取方式、存放位置与安装步骤见 **[🔑 密钥与配置说明](CONFIG_GUIDE.md)**，或参考 [`.env.example`](.env.example)。
+
 - **系统**: Windows 11 / Linux
 - **Python**: 3.12
 - **Node.js**: v22（小红书签名引擎 Spider_XHS 需要）
 - **浏览器**: Playwright (Chromium)，安装后需执行 `playwright install chromium`
 - **Ollama**（多模态分析可选）：本地 VL 模型，见[本地模型池](#本地模型池)
 - **RTX 5060 8GB** 已实测（granite2b + qwen2.5vl:3b 可流畅运行）
+- **必需密钥**: `COOKIES`（小红书）、`DEEPSEEK_API_KEY`（主系统）；可选 `WEIBO_COOKIE` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `HF_TOKEN`
 
 ## 快速开始
 
