@@ -75,7 +75,8 @@ class BuildInstrumentContextTests(unittest.TestCase):
 
     def test_injects_resolved_identity(self):
         context = build_instrument_context(
-            "TOTDY", "stock",
+            "TOTDY",
+            "stock",
             {
                 "company_name": "TOTO LTD.",
                 "sector": "Industrials",
@@ -89,9 +90,7 @@ class BuildInstrumentContextTests(unittest.TestCase):
         self.assertIn("Do not substitute a different company", context)
 
     def test_crypto_uses_name_label_and_keeps_hint(self):
-        context = build_instrument_context(
-            "BTC-USD", "crypto", {"company_name": "Bitcoin USD"}
-        )
+        context = build_instrument_context("BTC-USD", "crypto", {"company_name": "Bitcoin USD"})
         self.assertIn("Name: Bitcoin USD", context)
         self.assertIn("crypto asset rather than a company", context)
 

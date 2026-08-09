@@ -36,9 +36,7 @@ class TestMinimaxReasoningSplit:
         """Coding Plan / MiniMax-Text-01 / any non-M2-prefixed model must NOT
         receive reasoning_split at all (top-level or extra_body) (#826)."""
         for model in ("minimax-text-01", "MiniMax-Coding-Plan"):
-            payload = _client(model)._get_request_payload(
-                [HumanMessage(content="hi")]
-            )
+            payload = _client(model)._get_request_payload([HumanMessage(content="hi")])
             assert "reasoning_split" not in payload
             assert "reasoning_split" not in payload.get("extra_body", {})
 
@@ -68,6 +66,6 @@ class TestMinimaxStructuredOutputDispatch:
     def test_schema_still_bound_as_tool(self):
         bound = _client("MiniMax-M2.7").with_structured_output(self._Pick)
         tools = self._bound_kwargs(bound).get("tools", [])
-        assert any(
-            t.get("function", {}).get("name") == "_Pick" for t in tools
-        ), f"schema not bound: {tools}"
+        assert any(t.get("function", {}).get("name") == "_Pick" for t in tools), (
+            f"schema not bound: {tools}"
+        )

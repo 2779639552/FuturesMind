@@ -145,9 +145,7 @@ class TradingMemoryLog:
                     f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
                 )
                 rest = "\n".join(lines[1:])
-                new_blocks.append(
-                    f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{reflection}"
-                )
+                new_blocks.append(f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{reflection}")
                 updated = True
             else:
                 new_blocks.append(block)

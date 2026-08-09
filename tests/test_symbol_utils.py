@@ -24,7 +24,7 @@ class TestNormalizeSymbol(unittest.TestCase):
 
     def test_metal_aliases_map_to_futures(self):
         self.assertEqual(normalize_symbol("XAUUSD"), "GC=F")
-        self.assertEqual(normalize_symbol("XAUUSD+"), "GC=F")   # broker CFD suffix
+        self.assertEqual(normalize_symbol("XAUUSD+"), "GC=F")  # broker CFD suffix
         self.assertEqual(normalize_symbol("xauusd+"), "GC=F")
         self.assertEqual(normalize_symbol("GOLD"), "GC=F")
         self.assertEqual(normalize_symbol("XAGUSD"), "SI=F")

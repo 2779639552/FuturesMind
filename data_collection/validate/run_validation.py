@@ -22,18 +22,19 @@
     抖音:   需要安装 Playwright 或 MediaCrawler
 """
 
-import json
-import time
-import logging
 import argparse
+import json
+import logging
 import sys
-from pathlib import Path
+import time
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
-from dataclasses import dataclass, field
+from pathlib import Path
 
 from config import (
-    SEARCH_KEYWORDS, OUTPUT_DIR, LOG_FORMAT, LOG_LEVEL,
+    LOG_FORMAT,
+    OUTPUT_DIR,
+    SEARCH_KEYWORDS,
 )
 
 logger = logging.getLogger("futures.collector")
@@ -43,9 +44,11 @@ logger = logging.getLogger("futures.collector")
 # 汇总报告
 # ============================================================
 
+
 @dataclass
 class FeasibilitySummary:
     """全平台可行性汇总"""
+
     timestamp: str
     platforms: dict  # platform_name -> result dict
     overall_score: float  # 0-100
@@ -100,13 +103,11 @@ class FeasibilitySummary:
             )
         elif overall >= 40:
             recommendation = (
-                "部分平台可行，建议分阶段推进。优先开发微博+雪球，"
-                "小红书/抖音需要更多逆向工程投入。"
+                "部分平台可行，建议分阶段推进。优先开发微博+雪球，小红书/抖音需要更多逆向工程投入。"
             )
         else:
             recommendation = (
-                "多数平台采集困难。建议先聚焦微博和雪球的深度优化，"
-                "其他平台关注开源项目进展。"
+                "多数平台采集困难。建议先聚焦微博和雪球的深度优化，其他平台关注开源项目进展。"
             )
 
         return cls(
@@ -147,11 +148,9 @@ class FeasibilitySummary:
                 if "relevant_results" in summary:
                     key_metric = f"期货相关 {summary['relevant_results']}条"
                 if "relevance_rate" in summary:
-                    key_metric += f", 相关率 {summary['relevance_rate']*100:.0f}%"
+                    key_metric += f", 相关率 {summary['relevance_rate'] * 100:.0f}%"
 
-            lines.append(
-                f"  {name:<12} {status_icon:<8} {info['score']:<8.1f} {key_metric}"
-            )
+            lines.append(f"  {name:<12} {status_icon:<8} {info['score']:<8.1f} {key_metric}")
 
         lines.append("  " + "-" * 66)
         lines.append("")
@@ -165,30 +164,32 @@ class FeasibilitySummary:
         lines.append("=" * 70)
         lines.append("")
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 # ============================================================
 # 主流程
 # ============================================================
 
+
 def run_platform_validation(
     platform: str,
-    cookie: Optional[str] = None,
+    cookie: str | None = None,
     quick: bool = False,
-) -> Optional[dict]:
+) -> dict | None:
     """运行单个平台的验证"""
     keywords = SEARCH_KEYWORDS[:3] if quick else SEARCH_KEYWORDS[:5]
 
-    print(f"\n{'#'*60}")
+    print(f"\n{'#' * 60}")
     print(f"#  开始验证: {platform}")
-    print(f"{'#'*60}")
+    print(f"{'#' * 60}")
 
     start = time.time()
 
     try:
         if platform == "weibo":
             from validator_weibo import validate
+
             if not cookie:
                 print("⚠️ 微博需要Cookie才能验证，跳过。")
                 print("  请使用 --cookie 参数或在运行前设置环境变量 WEIBO_COOKIE")
@@ -214,6 +215,7 @@ def run_platform_validation(
 
         elif platform == "xueqiu":
             from validator_xueqiu import validate
+
             result = validate(keywords=keywords, verbose=False)
             return {
                 "platform": "xueqiu",
@@ -237,6 +239,7 @@ def run_platform_validation(
 
         elif platform == "xiaohongshu":
             from validator_xiaohongshu import validate_playwright
+
             result = validate_playwright(keywords=keywords, headless=False)
             return {
                 "platform": "xiaohongshu",
@@ -255,6 +258,7 @@ def run_platform_validation(
 
         elif platform == "douyin":
             from validator_douyin import validate_playwright
+
             result = validate_playwright(keywords=keywords, headless=False)
             return {
                 "platform": "douyin",
@@ -278,13 +282,23 @@ def run_platform_validation(
 
     except ImportError as e:
         print(f"❌ 缺少依赖: {e}")
-        return {"platform": platform, "passed": False, "accessible": False,
-                "metrics": {}, "errors": [f"ImportError: {e}"]}
+        return {
+            "platform": platform,
+            "passed": False,
+            "accessible": False,
+            "metrics": {},
+            "errors": [f"ImportError: {e}"],
+        }
     except Exception as e:
         print(f"❌ 验证异常: {e}")
         logger.exception(f"验证 {platform} 时发生异常")
-        return {"platform": platform, "passed": False, "accessible": False,
-                "metrics": {}, "errors": [f"Exception: {e}"]}
+        return {
+            "platform": platform,
+            "passed": False,
+            "accessible": False,
+            "metrics": {},
+            "errors": [f"Exception: {e}"],
+        }
     finally:
         elapsed = time.time() - start
         print(f"\n{platform} 验证耗时: {elapsed:.0f}s")
@@ -305,27 +319,37 @@ def main():
     )
 
     parser.add_argument(
-        "--platform", type=str, default="all",
+        "--platform",
+        type=str,
+        default="all",
         help="目标平台: all, weibo, xueqiu, xiaohongshu, douyin (逗号分隔多个)",
     )
     parser.add_argument(
-        "--cookie", type=str, default=None,
+        "--cookie",
+        type=str,
+        default=None,
         help="微博Cookie (WEIBO_COOKIE环境变量也可)",
     )
     parser.add_argument(
-        "--quick", action="store_true",
+        "--quick",
+        action="store_true",
         help="快速模式 (减少关键词和请求次数)",
     )
     parser.add_argument(
-        "--skip-playwright", action="store_true",
+        "--skip-playwright",
+        action="store_true",
         help="跳过需要Playwright浏览器的平台 (小红书/抖音)",
     )
     parser.add_argument(
-        "--output", type=str, default=None,
+        "--output",
+        type=str,
+        default=None,
         help="汇总报告JSON输出路径",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true",
+        "--verbose",
+        "-v",
+        action="store_true",
         help="详细日志",
     )
 
@@ -356,6 +380,7 @@ def main():
     cookie = args.cookie
     if not cookie:
         import os
+
         cookie = os.environ.get("WEIBO_COOKIE")
 
     # 前置检查
@@ -377,13 +402,13 @@ def main():
         print("=" * 60)
 
         response = input("\n是否跳过微博继续？(y/n): ").strip().lower()
-        if response == 'y':
+        if response == "y":
             platforms = [p for p in platforms if p != "weibo"]
         else:
             print("已取消。请准备好Cookie后再运行。")
             return 1
 
-    print(f"\n期货社交媒体数据采集 — 可行性验证框架")
+    print("\n期货社交媒体数据采集 — 可行性验证框架")
     print(f"目标平台: {', '.join(platforms)}")
     print(f"模式: {'快速' if args.quick else '完整'}")
     print()

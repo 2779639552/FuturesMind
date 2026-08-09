@@ -11,6 +11,18 @@ from .alpha_vantage import (
     get_news as get_alpha_vantage_news,
     get_stock as get_alpha_vantage_stock,
 )
+from .commodity_futures import (
+    get_futures_basis,
+    get_futures_indicators,
+    get_futures_inventory,
+    get_futures_macro,
+    get_futures_news,
+    get_futures_price,
+    get_futures_sentiment,
+    get_futures_supply_demand,
+    get_variety_info,
+    get_verified_quote,
+)
 from .config import get_config
 from .errors import (
     NoMarketDataError,
@@ -19,18 +31,6 @@ from .errors import (
 )
 from .fred import get_macro_data as get_fred_macro_data
 from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
-from .commodity_futures import (
-    get_futures_price,
-    get_futures_indicators,
-    get_futures_basis,
-    get_futures_inventory,
-    get_futures_news,
-    get_futures_macro,
-    get_futures_supply_demand,
-    get_futures_sentiment,
-    get_verified_quote,
-    get_variety_info,
-)
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -46,26 +46,14 @@ logger = logging.getLogger(__name__)
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
-    "core_stock_apis": {
-        "description": "OHLCV stock price data",
-        "tools": [
-            "get_stock_data"
-        ]
-    },
+    "core_stock_apis": {"description": "OHLCV stock price data", "tools": ["get_stock_data"]},
     "technical_indicators": {
         "description": "Technical analysis indicators",
-        "tools": [
-            "get_indicators"
-        ]
+        "tools": ["get_indicators"],
     },
     "fundamental_data": {
         "description": "Company fundamentals",
-        "tools": [
-            "get_fundamentals",
-            "get_balance_sheet",
-            "get_cashflow",
-            "get_income_statement"
-        ]
+        "tools": ["get_fundamentals", "get_balance_sheet", "get_cashflow", "get_income_statement"],
     },
     "news_data": {
         "description": "News and insider data",
@@ -73,19 +61,19 @@ TOOLS_CATEGORIES = {
             "get_news",
             "get_global_news",
             "get_insider_transactions",
-        ]
+        ],
     },
     "macro_data": {
         "description": "Macroeconomic indicators (rates, inflation, labor, growth)",
         "tools": [
             "get_macro_indicators",
-        ]
+        ],
     },
     "prediction_markets": {
         "description": "Market-implied probabilities for forward-looking events",
         "tools": [
             "get_prediction_markets",
-        ]
+        ],
     },
     # --- Commodity Futures categories ---
     "futures_price": {
@@ -94,49 +82,49 @@ TOOLS_CATEGORIES = {
             "get_futures_price",
             "get_futures_indicators",
             "get_variety_info",
-        ]
+        ],
     },
     "futures_basis": {
         "description": "Spot-futures basis and term structure data",
         "tools": [
             "get_futures_basis",
-        ]
+        ],
     },
     "futures_inventory": {
         "description": "Warehouse inventory and supply-side data",
         "tools": [
             "get_futures_inventory",
-        ]
+        ],
     },
     "futures_news": {
         "description": "Commodity market news and policy updates",
         "tools": [
             "get_futures_news",
-        ]
+        ],
     },
     "futures_macro": {
         "description": "China macroeconomic indicators (GDP, PMI, FAI, real estate, IP)",
         "tools": [
             "get_futures_macro",
-        ]
+        ],
     },
     "futures_supply_demand": {
         "description": "Supply-demand indicators (production, transaction volume, inventory)",
         "tools": [
             "get_futures_supply_demand",
-        ]
+        ],
     },
     "futures_sentiment": {
         "description": "Social media sentiment data (multi-platform: Weibo, Zhihu, XHS)",
         "tools": [
             "get_futures_sentiment",
-        ]
+        ],
     },
     "futures_verified": {
         "description": "Verified price snapshot — single source of truth for numeric claims",
         "tools": [
             "get_verified_quote",
-        ]
+        ],
     },
 }
 
@@ -238,12 +226,14 @@ VENDOR_METHODS = {
     },
 }
 
+
 def get_category_for_method(method: str) -> str:
     """Get the category that contains the specified method."""
     for category, info in TOOLS_CATEGORIES.items():
         if method in info["tools"]:
             return category
     raise ValueError(f"Method '{method}' not found in any category")
+
 
 def get_vendor(category: str, method: str = None) -> str:
     """Get the configured vendor for a data category or specific tool method.
@@ -260,11 +250,12 @@ def get_vendor(category: str, method: str = None) -> str:
     # Fall back to category-level configuration
     return config.get("data_vendors", {}).get(category, "default")
 
+
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
-    primary_vendors = [v.strip() for v in vendor_config.split(',')]
+    primary_vendors = [v.strip() for v in vendor_config.split(",")]
 
     if method not in VENDOR_METHODS:
         raise ValueError(f"Method '{method}' not supported")
@@ -325,7 +316,8 @@ def route_to_vendor(method: str, *args, **kwargs):
             # verdict can't hide a broken primary (network/auth/etc.).
             logger.warning(
                 "Returning NO_DATA for %s, but a vendor errored earlier: %s",
-                method, first_error,
+                method,
+                first_error,
             )
         sym = last_no_data.symbol
         canonical = last_no_data.canonical

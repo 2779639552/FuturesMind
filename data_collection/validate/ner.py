@@ -19,8 +19,7 @@
 """
 
 import re
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass, field
 
 # ================================================================
 # 品种知识库 — 标准名 + 全部别名 + 合约代码模式
@@ -37,8 +36,19 @@ VARIETY_KB = {
         "related": ["热卷", "铁矿石", "焦炭", "线材"],
     },
     "铁矿石": {
-        "aliases": ["铁矿石", "铁矿", "I", "矿石", "iron ore", "澳矿", "巴矿",
-                     "PB粉", "纽曼粉", "麦克粉", "超特粉"],
+        "aliases": [
+            "铁矿石",
+            "铁矿",
+            "I",
+            "矿石",
+            "iron ore",
+            "澳矿",
+            "巴矿",
+            "PB粉",
+            "纽曼粉",
+            "麦克粉",
+            "超特粉",
+        ],
         "exchange": "大商所",
         "sector": "黑色系",
         "contract_pattern": r"[iI]\d{2,4}",
@@ -90,7 +100,6 @@ VARIETY_KB = {
         "contract_pattern": r"[Ww][Rr]\d{2,4}",
         "price_unit": "元/吨",
     },
-
     # ============ 有色金属 ============
     "铜": {
         "aliases": ["铜期货", "沪铜", "伦铜", "CU", "电解铜", "国际铜", "阴极铜", "铜价"],
@@ -135,7 +144,17 @@ VARIETY_KB = {
         "price_unit": "元/吨",
     },
     "黄金": {
-        "aliases": ["黄金期货", "沪金", "COMEX黄金", "AU", "金价", "现货黄金", "伦敦金", "纽约金", "纸黄金"],
+        "aliases": [
+            "黄金期货",
+            "沪金",
+            "COMEX黄金",
+            "AU",
+            "金价",
+            "现货黄金",
+            "伦敦金",
+            "纽约金",
+            "纸黄金",
+        ],
         "exchange": "上期所",
         "sector": "有色金属",
         "contract_pattern": r"[Aa][Uu]\d{2,4}",
@@ -169,11 +188,21 @@ VARIETY_KB = {
         "contract_pattern": r"[Ss][Ii]\d{2,4}",
         "price_unit": "元/吨",
     },
-
     # ============ 能源化工 ============
     "原油": {
-        "aliases": ["原油期货", "SC", "WTI", "布伦特", "油价", "上海原油", "美油", "布油",
-                     "西德克萨斯", "Brent", "OPEC"],
+        "aliases": [
+            "原油期货",
+            "SC",
+            "WTI",
+            "布伦特",
+            "油价",
+            "上海原油",
+            "美油",
+            "布油",
+            "西德克萨斯",
+            "Brent",
+            "OPEC",
+        ],
         "exchange": "上期能源",
         "sector": "能源化工",
         "contract_pattern": r"[Ss][Cc]\d{2,4}",
@@ -284,7 +313,6 @@ VARIETY_KB = {
         "contract_pattern": r"[Ss][Hh]\d{2,4}",
         "price_unit": "元/吨",
     },
-
     # ============ 农产品 ============
     "豆粕": {
         "aliases": ["豆粕", "M", "豆粕期货", "豆粕价格", "豆粕现货", "饲料粕"],
@@ -384,7 +412,6 @@ VARIETY_KB = {
         "contract_pattern": r"[Pp][Kk]\d{2,4}",
         "price_unit": "元/吨",
     },
-
     # ============ 金融期货 ============
     "沪深300股指期货": {
         "aliases": ["沪深300股指期货", "IF", "沪深300期货", "沪深300", "IF期货", "300股指"],
@@ -469,14 +496,46 @@ EXCHANGES = {
 # ================================================================
 
 INSTITUTIONS = [
-    "永安期货", "中信期货", "国泰君安期货", "银河期货", "华泰期货",
-    "海通期货", "广发期货", "招商期货", "光大期货", "申银万国期货",
-    "南华期货", "瑞达期货", "方正中期期货", "宏源期货", "徽商期货",
-    "中粮期货", "五矿期货", "东海期货", "格林大华", "金瑞期货",
-    "高盛", "摩根士丹利", "摩根大通", "花旗", "美银美林",
-    "野村", "瑞银", "巴克莱", "法兴银行", "荷兰国际",
-    "中信建投期货", "东证期货", "中泰期货", "浙商期货", "宝城期货",
-    "前海期货", "国信期货", "中辉期货", "一德期货", "美尔雅期货",
+    "永安期货",
+    "中信期货",
+    "国泰君安期货",
+    "银河期货",
+    "华泰期货",
+    "海通期货",
+    "广发期货",
+    "招商期货",
+    "光大期货",
+    "申银万国期货",
+    "南华期货",
+    "瑞达期货",
+    "方正中期期货",
+    "宏源期货",
+    "徽商期货",
+    "中粮期货",
+    "五矿期货",
+    "东海期货",
+    "格林大华",
+    "金瑞期货",
+    "高盛",
+    "摩根士丹利",
+    "摩根大通",
+    "花旗",
+    "美银美林",
+    "野村",
+    "瑞银",
+    "巴克莱",
+    "法兴银行",
+    "荷兰国际",
+    "中信建投期货",
+    "东证期货",
+    "中泰期货",
+    "浙商期货",
+    "宝城期货",
+    "前海期货",
+    "国信期货",
+    "中辉期货",
+    "一德期货",
+    "美尔雅期货",
 ]
 
 
@@ -484,15 +543,23 @@ INSTITUTIONS = [
 # NER 引擎
 # ================================================================
 
+
 @dataclass
 class NERResult:
     """NER 结果"""
-    varieties: list = field(default_factory=list)      # [{"name":"螺纹钢","matched":"螺纹","sector":"黑色系","exchange":"上期所"}]
-    contracts: list = field(default_factory=list)       # [{"code":"RB2501","variety":"螺纹钢","exchange":"上期所"}]
-    exchanges: list = field(default_factory=list)       # ["上期所", "大商所"]
-    sectors: list = field(default_factory=list)         # ["黑色系", "有色金属"]
-    prices: list = field(default_factory=list)          # [{"value":3860,"unit":"元/吨","context":"3860元/吨"}]
-    institutions: list = field(default_factory=list)    # ["永安期货", "中信期货"]
+
+    varieties: list = field(
+        default_factory=list
+    )  # [{"name":"螺纹钢","matched":"螺纹","sector":"黑色系","exchange":"上期所"}]
+    contracts: list = field(
+        default_factory=list
+    )  # [{"code":"RB2501","variety":"螺纹钢","exchange":"上期所"}]
+    exchanges: list = field(default_factory=list)  # ["上期所", "大商所"]
+    sectors: list = field(default_factory=list)  # ["黑色系", "有色金属"]
+    prices: list = field(
+        default_factory=list
+    )  # [{"value":3860,"unit":"元/吨","context":"3860元/吨"}]
+    institutions: list = field(default_factory=list)  # ["永安期货", "中信期货"]
     variety_count: int = 0
     contract_count: int = 0
 
@@ -511,18 +578,14 @@ class FuturesNER:
                     self._alias_to_info[alias] = info
 
         # 按长度降序排列（优先匹配长别名）
-        self._sorted_aliases = sorted(
-            self._alias_to_variety.keys(), key=len, reverse=True
-        )
+        self._sorted_aliases = sorted(self._alias_to_variety.keys(), key=len, reverse=True)
 
         # 交易所映射
         self._exchange_to_canonical = {}
         for canonical, aliases in EXCHANGES.items():
             for a in aliases:
                 self._exchange_to_canonical[a] = canonical
-        self._sorted_exchanges = sorted(
-            self._exchange_to_canonical.keys(), key=len, reverse=True
-        )
+        self._sorted_exchanges = sorted(self._exchange_to_canonical.keys(), key=len, reverse=True)
 
         # 合约代码正则（聚合所有品种）
         self._contract_patterns = {}
@@ -533,16 +596,16 @@ class FuturesNER:
 
         # 价格正则
         self._price_patterns = [
-            re.compile(r'(\d{2,5})\s*元\s*/\s*吨'),        # 3860元/吨
-            re.compile(r'(\d{2,5})\s*元\s*/\s*桶'),        # 82.5元/桶
-            re.compile(r'(\d{2,5})\s*元\s*/\s*克'),        # 450元/克
-            re.compile(r'(\d{2,5})\s*元\s*/\s*千克'),      # 5200元/千克
-            re.compile(r'\$\s*(\d{1,5}\.?\d*)\s*/桶'),     # $82.5/桶
-            re.compile(r'\$\s*(\d{1,5}\.?\d*)\s*/盎司'),   # $1950/盎司
-            re.compile(r'[+＋-]\s*(\d{1,3}\.?\d*)\s*%'),   # +2.3%, -1.5%
-            re.compile(r'(\d{2,5})\s*点'),                 # 3980点 (股指)
-            re.compile(r'涨\s*(\d{1,5}\.?\d*)\s*%'),      # 涨2.3%
-            re.compile(r'跌\s*(\d{1,5}\.?\d*)\s*%'),      # 跌1.5%
+            re.compile(r"(\d{2,5})\s*元\s*/\s*吨"),  # 3860元/吨
+            re.compile(r"(\d{2,5})\s*元\s*/\s*桶"),  # 82.5元/桶
+            re.compile(r"(\d{2,5})\s*元\s*/\s*克"),  # 450元/克
+            re.compile(r"(\d{2,5})\s*元\s*/\s*千克"),  # 5200元/千克
+            re.compile(r"\$\s*(\d{1,5}\.?\d*)\s*/桶"),  # $82.5/桶
+            re.compile(r"\$\s*(\d{1,5}\.?\d*)\s*/盎司"),  # $1950/盎司
+            re.compile(r"[+＋-]\s*(\d{1,3}\.?\d*)\s*%"),  # +2.3%, -1.5%
+            re.compile(r"(\d{2,5})\s*点"),  # 3980点 (股指)
+            re.compile(r"涨\s*(\d{1,5}\.?\d*)\s*%"),  # 涨2.3%
+            re.compile(r"跌\s*(\d{1,5}\.?\d*)\s*%"),  # 跌1.5%
         ]
 
     def _dedup_varieties(self, varieties: list) -> list:
@@ -579,8 +642,8 @@ class FuturesNER:
 
                 # 单字母别名需要单词边界检查 (如 "I" 不应匹配 "IC")
                 if len(alias) == 1 and alias.isalpha():
-                    before = text[idx - 1:idx] if idx > 0 else " "
-                    after = text[idx + 1:idx + 2] if idx + 1 < len(text) else " "
+                    before = text[idx - 1 : idx] if idx > 0 else " "
+                    after = text[idx + 1 : idx + 2] if idx + 1 < len(text) else " "
                     if before.isalpha() or after.isalpha():
                         idx += 1
                         continue
@@ -590,13 +653,15 @@ class FuturesNER:
                 if not positions & matched_positions:
                     info = self._alias_to_info[alias]
                     std_name = self._alias_to_variety[alias]
-                    result.varieties.append({
-                        "name": std_name,
-                        "matched": alias,
-                        "sector": info["sector"],
-                        "exchange": info["exchange"],
-                        "position": idx,
-                    })
+                    result.varieties.append(
+                        {
+                            "name": std_name,
+                            "matched": alias,
+                            "sector": info["sector"],
+                            "exchange": info["exchange"],
+                            "position": idx,
+                        }
+                    )
                     result.sectors.append(info["sector"])
                     matched_positions |= positions
 
@@ -607,11 +672,13 @@ class FuturesNER:
             for m in pattern.finditer(text):
                 code = m.group(0)
                 info = VARIETY_KB[variety_name]
-                result.contracts.append({
-                    "code": code,
-                    "variety": variety_name,
-                    "exchange": info["exchange"],
-                })
+                result.contracts.append(
+                    {
+                        "code": code,
+                        "variety": variety_name,
+                        "exchange": info["exchange"],
+                    }
+                )
 
         # 3. 交易所识别
         for alias in self._sorted_exchanges:
@@ -626,10 +693,12 @@ class FuturesNER:
             for m in pat.finditer(text):
                 start = max(0, m.start() - price_context_window)
                 end = min(len(text), m.end() + price_context_window)
-                result.prices.append({
-                    "value": m.group(0),
-                    "context": text[start:end].strip(),
-                })
+                result.prices.append(
+                    {
+                        "value": m.group(0),
+                        "context": text[start:end].strip(),
+                    }
+                )
 
         # 5. 机构识别
         for inst in INSTITUTIONS:
@@ -666,8 +735,8 @@ class FuturesNER:
 
                 # 单字母边界检查
                 if len(alias) == 1 and alias.isalpha():
-                    before = text[idx - 1:idx] if idx > 0 else " "
-                    after = text[idx + 1:idx + 2] if idx + 1 < len(text) else " "
+                    before = text[idx - 1 : idx] if idx > 0 else " "
+                    after = text[idx + 1 : idx + 2] if idx + 1 < len(text) else " "
                     if before.isalpha() or after.isalpha():
                         idx += 1
                         continue
@@ -685,27 +754,29 @@ class FuturesNER:
                     if start > 0:
                         first_period = context.find("。")
                         if 0 < first_period < window:
-                            context = context[first_period + 1:]
+                            context = context[first_period + 1 :]
                     if end < len(text):
                         last_period = context.rfind("。")
                         if last_period > window:
-                            context = context[:last_period + 1]
+                            context = context[: last_period + 1]
 
-                    results.append({
-                        "variety": std_name,
-                        "matched_alias": alias,
-                        "context": context.strip(),
-                        "sector": info.get("sector", ""),
-                        "position": idx,
-                    })
+                    results.append(
+                        {
+                            "variety": std_name,
+                            "matched_alias": alias,
+                            "context": context.strip(),
+                            "sector": info.get("sector", ""),
+                            "position": idx,
+                        }
+                    )
 
                 idx += len(alias)
 
         return results
 
-    def enrich_notes(self, notes: list[dict],
-                     text_field: str = "desc",
-                     title_field: str = "title") -> list[dict]:
+    def enrich_notes(
+        self, notes: list[dict], text_field: str = "desc", title_field: str = "title"
+    ) -> list[dict]:
         """
         批量丰富笔记数据：对每条笔记做NER，将结果合并到原dict中。
 
@@ -753,7 +824,7 @@ if __name__ == "__main__":
         r = ner.extract(text)
         print(f"\n  Text: {text[:80]}...")
         if r["varieties"]:
-            names = [f'{v["name"]}(matched:{v["matched"]})' for v in r["varieties"]]
+            names = [f"{v['name']}(matched:{v['matched']})" for v in r["varieties"]]
             print(f"    Varieties: {names}")
         if r["contracts"]:
             codes = [c["code"] for c in r["contracts"]]
@@ -767,7 +838,7 @@ if __name__ == "__main__":
         if r["institutions"]:
             print(f"    Institutions: {r['institutions']}")
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("NER 模块就绪。使用方式:")
     print("  from ner import FuturesNER")
     print("  ner = FuturesNER()")

@@ -14,13 +14,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Shared enums
 # ---------------------------------------------------------------------------
 
+
 class CommodityBias(str, Enum):
     """5-tier directional bias for commodity futures."""
+
     STRONG_BULLISH = "强烈看多"
     SLIGHTLY_BULLISH = "偏多"
     NEUTRAL = "中性"
@@ -37,6 +38,7 @@ class Confidence(str, Enum):
 # ---------------------------------------------------------------------------
 # Analyst Report (4 analysts — same schema, different narratives)
 # ---------------------------------------------------------------------------
+
 
 class AnalystBiasReport(BaseModel):
     """Structured bias header produced by each of the 4 commodity analysts.
@@ -76,6 +78,7 @@ class AnalystBiasReport(BaseModel):
 # Synthesis Report (chief strategist)
 # ---------------------------------------------------------------------------
 
+
 class SynthesisReport(BaseModel):
     """Structured synthesis produced by the chief commodity strategist.
 
@@ -93,7 +96,8 @@ class SynthesisReport(BaseModel):
         description="Overall confidence after reviewing all four dimensions."
     )
     score: float = Field(
-        ge=0.0, le=10.0,
+        ge=0.0,
+        le=10.0,
         description=(
             "Numeric conviction on a 0-10 scale. 0=max bearish, 5=neutral, "
             "10=max bullish. Guideline: 强烈看多~7.5-10, 偏多~5.5-7.4, "
@@ -101,32 +105,20 @@ class SynthesisReport(BaseModel):
         ),
     )
     tech_weight: int = Field(
-        ge=0, le=10,
-        description="Technical analyst weight, 0-10, must sum with others to 10."
+        ge=0, le=10, description="Technical analyst weight, 0-10, must sum with others to 10."
     )
-    fund_weight: int = Field(
-        ge=0, le=10,
-        description="Fundamental analyst weight, 0-10."
-    )
-    macro_weight: int = Field(
-        ge=0, le=10,
-        description="Macro/news analyst weight, 0-10."
-    )
-    sentiment_weight: int = Field(
-        ge=0, le=10,
-        description="Sentiment analyst weight, 0-10."
-    )
+    fund_weight: int = Field(ge=0, le=10, description="Fundamental analyst weight, 0-10.")
+    macro_weight: int = Field(ge=0, le=10, description="Macro/news analyst weight, 0-10.")
+    sentiment_weight: int = Field(ge=0, le=10, description="Sentiment analyst weight, 0-10.")
     key_support: str | None = Field(
         default=None,
-        description="Key support level(s) with price values, e.g. '3050-3053 (前低+布林下轨)'."
+        description="Key support level(s) with price values, e.g. '3050-3053 (前低+布林下轨)'.",
     )
     key_resistance: str | None = Field(
-        default=None,
-        description="Key resistance level(s) with price values."
+        default=None, description="Key resistance level(s) with price values."
     )
     risk_factors: str | None = Field(
-        default=None,
-        description="Primary risk factors that could invalidate the recommendation."
+        default=None, description="Primary risk factors that could invalidate the recommendation."
     )
     narrative: str = Field(
         description=(
@@ -140,6 +132,7 @@ class SynthesisReport(BaseModel):
 # Debate Moderator Report
 # ---------------------------------------------------------------------------
 
+
 class DebateModeratorReport(BaseModel):
     """Structured output from the debate moderator after bull/bear rounds."""
 
@@ -147,30 +140,26 @@ class DebateModeratorReport(BaseModel):
         description="Which side carried the stronger arguments."
     )
     consensus_points: list[str] = Field(
-        default_factory=list,
-        description="Points both sides agreed on (2-4 items)."
+        default_factory=list, description="Points both sides agreed on (2-4 items)."
     )
     divergence_points: list[str] = Field(
         default_factory=list,
-        description="Key disagreements that could not be resolved (2-4 items)."
+        description="Key disagreements that could not be resolved (2-4 items).",
     )
     key_risk: str = Field(
         description="The single most important risk identified during the debate."
     )
-    narrative: str = Field(
-        description="Complete debate summary in Chinese markdown."
-    )
+    narrative: str = Field(description="Complete debate summary in Chinese markdown.")
 
 
 # ---------------------------------------------------------------------------
 # Render helpers — turn Pydantic instances back to markdown
 # ---------------------------------------------------------------------------
 
+
 def render_analyst_bias(report: AnalystBiasReport) -> str:
     """Render analyst structured header + narrative to markdown."""
-    header = (
-        f"BIAS: {report.bias.value} | CONFIDENCE: {report.confidence.value}"
-    )
+    header = f"BIAS: {report.bias.value} | CONFIDENCE: {report.confidence.value}"
     return header + "\n\n" + report.narrative
 
 
@@ -198,10 +187,12 @@ def render_debate_moderator(report: DebateModeratorReport) -> str:
     parts.append("**Divergence Points**:")
     for p in report.divergence_points:
         parts.append(f"- {p}")
-    parts.extend([
-        "",
-        f"**Key Risk**: {report.key_risk}",
-        "",
-        report.narrative,
-    ])
+    parts.extend(
+        [
+            "",
+            f"**Key Risk**: {report.key_risk}",
+            "",
+            report.narrative,
+        ]
+    )
     return "\n".join(parts)

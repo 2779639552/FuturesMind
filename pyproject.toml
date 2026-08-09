@@ -74,7 +74,12 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-extend-exclude = ["results", "worklog"]
+extend-exclude = [
+    "results",
+    "worklog",
+    # Vendored third-party XHS signature engine (Node.js); never lint/format.
+    "data_collection/Spider_XHS",
+]
 
 [tool.ruff.lint]
 # Standard "good defaults" rule set (pyflakes + pycodestyle + isort + bugbear +

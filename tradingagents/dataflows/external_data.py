@@ -66,7 +66,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -74,24 +74,21 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATA_DIR = os.path.join(
-    os.path.expanduser("~"), ".tradingagents", "external_data"
-)
+DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".tradingagents", "external_data")
 MAX_AGE_HOURS = 168  # 7 days — one week, matches Mysteel's weekly cadence
 
 
 def _get_data_dir() -> str:
     """Get external data directory, respecting env override."""
-    return os.environ.get(
-        "TRADINGAGENTS_EXTERNAL_DATA_DIR", DEFAULT_DATA_DIR
-    )
+    return os.environ.get("TRADINGAGENTS_EXTERNAL_DATA_DIR", DEFAULT_DATA_DIR)
 
 
 # ---------------------------------------------------------------------------
 # Core: load & validate external data
 # ---------------------------------------------------------------------------
 
-def load_external_data(variety: str) -> Optional[dict[str, Any]]:
+
+def load_external_data(variety: str) -> dict[str, Any] | None:
     """Load external data for a commodity variety.
 
     Looks for {variety}.json in the external data directory.
@@ -113,10 +110,11 @@ def load_external_data(variety: str) -> Optional[dict[str, Any]]:
             continue
 
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 if ext in (".yaml", ".yml"):
                     try:
                         import yaml
+
                         raw = yaml.safe_load(f)
                     except ImportError:
                         logger.warning("PyYAML not installed, skipping %s", filepath)
@@ -136,7 +134,9 @@ def load_external_data(variety: str) -> Optional[dict[str, Any]]:
         if declared and declared != variety.upper():
             logger.warning(
                 "External data file %s declares variety=%s, expected %s. Ignoring.",
-                filepath, declared, variety,
+                filepath,
+                declared,
+                variety,
             )
             continue
 
@@ -150,7 +150,9 @@ def load_external_data(variety: str) -> Optional[dict[str, Any]]:
                     logger.warning(
                         "External data for %s is %.1f hours old (max %d). "
                         "Treating as stale, will fall through to API.",
-                        variety, age.total_seconds() / 3600, MAX_AGE_HOURS,
+                        variety,
+                        age.total_seconds() / 3600,
+                        MAX_AGE_HOURS,
                     )
                     return None
             except ValueError:
@@ -158,16 +160,16 @@ def load_external_data(variety: str) -> Optional[dict[str, Any]]:
 
         logger.info(
             "Loaded external data for %s from %s (source: %s)",
-            variety, filepath, raw.get("source", "unknown"),
+            variety,
+            filepath,
+            raw.get("source", "unknown"),
         )
         return raw
 
     return None
 
 
-def get_external_field(
-    variety: str, field_path: str, default: Any = None
-) -> Optional[Any]:
+def get_external_field(variety: str, field_path: str, default: Any = None) -> Any | None:
     """Get a specific field from external data by dot-separated path.
 
     Args:
@@ -206,9 +208,7 @@ def get_external_source_label(variety: str) -> str:
     return f"[source: {source}, updated: {updated}]"
 
 
-def annotate_with_source(
-    variety: str, content: str, is_external: bool = False
-) -> str:
+def annotate_with_source(variety: str, content: str, is_external: bool = False) -> str:
     """Prepend data-source annotation to content returned to the LLM.
 
     This is the key transparency mechanism: every data response tells the
@@ -237,10 +237,10 @@ def annotate_with_source(
             return content
     else:
         header = (
-            f"# DATA_SOURCE: FREE_API (AKShare)\n"
-            f"# This data comes from free public APIs. Verify against paid "
-            f"sources (Mysteel, Wind) for critical decisions.\n"
-            f"# ---\n"
+            "# DATA_SOURCE: FREE_API (AKShare)\n"
+            "# This data comes from free public APIs. Verify against paid "
+            "sources (Mysteel, Wind) for critical decisions.\n"
+            "# ---\n"
         )
         return header + content
 
@@ -249,9 +249,8 @@ def annotate_with_source(
 # External data merge helpers for specific data types
 # ---------------------------------------------------------------------------
 
-def merge_inventory_data(
-    variety: str, api_csv: str
-) -> tuple[str, bool]:
+
+def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
     """Merge warehouse receipt data (API) with social inventory data (external).
 
     If external social inventory is available, append it as a separate
@@ -281,34 +280,36 @@ def merge_inventory_data(
 
     # Build the merged output
     parts = [
-        f"# ============================================================",
+        "# ============================================================",
         f"# COMBINED INVENTORY DATA for {variety}",
-        f"# ============================================================",
-        f"",
-        f"## Part 1: Warehouse Receipts (仓单库存) — FREE API",
-        f"# Source: SHFE via AKShare (daily, exchange-registered warrants)",
-        f"# This reflects deliverable supply only, NOT total market inventory.",
-        f"# ---",
+        "# ============================================================",
+        "",
+        "## Part 1: Warehouse Receipts (仓单库存) — FREE API",
+        "# Source: SHFE via AKShare (daily, exchange-registered warrants)",
+        "# This reflects deliverable supply only, NOT total market inventory.",
+        "# ---",
         api_csv,
-        f"",
-        f"## Part 2: Social & Mill Inventory (社会库存+钢厂库存) — EXTERNAL",
+        "",
+        "## Part 2: Social & Mill Inventory (社会库存+钢厂库存) — EXTERNAL",
         f"# {source_label}",
-        f"# WARNING: 仓单库存 ≠ 社会库存. Social inventory covers 35-city",
-        f"# trader holdings; mill inventory covers factory stocks.",
-        f"# Use BOTH together to understand the full inventory picture.",
-        f"# ---",
+        "# WARNING: 仓单库存 ≠ 社会库存. Social inventory covers 35-city",
+        "# trader holdings; mill inventory covers factory stocks.",
+        "# Use BOTH together to understand the full inventory picture.",
+        "# ---",
     ]
 
     if social_inv:
-        parts.append(f"Social Inventory (社会库存):")
+        parts.append("Social Inventory (社会库存):")
         parts.append(f"  Value: {social_inv.get('value')} {social_inv.get('unit', '万吨')}")
-        parts.append(f"  WoW Change: {social_inv.get('change_wow', 'N/A')} ({social_inv.get('change_wow_pct', 'N/A')}%)")
+        parts.append(
+            f"  WoW Change: {social_inv.get('change_wow', 'N/A')} ({social_inv.get('change_wow_pct', 'N/A')}%)"
+        )
         parts.append(f"  Trend: {social_inv.get('trend', 'N/A')}")
         parts.append(f"  Scope: {social_inv.get('note', '35城')}")
         parts.append("")
 
     if mill_inv:
-        parts.append(f"Mill Inventory (钢厂库存):")
+        parts.append("Mill Inventory (钢厂库存):")
         parts.append(f"  Value: {mill_inv.get('value')} {mill_inv.get('unit', '万吨')}")
         parts.append(f"  WoW Change: {mill_inv.get('change_wow', 'N/A')}")
         parts.append(f"  Scope: {mill_inv.get('note', 'N/A')}")
@@ -317,14 +318,14 @@ def merge_inventory_data(
     # Add any supplementary data
     iron_ore = data.get("iron_ore_port_inventory")
     if iron_ore:
-        parts.append(f"Related — Iron Ore Port Inventory (铁矿港口库存):")
+        parts.append("Related — Iron Ore Port Inventory (铁矿港口库存):")
         parts.append(f"  Value: {iron_ore.get('value')} {iron_ore.get('unit', '万吨')}")
         parts.append(f"  WoW Change: {iron_ore.get('change_wow', 'N/A')}")
         parts.append("")
 
     capacity = data.get("capacity_utilization")
     if capacity:
-        parts.append(f"Related — Capacity Utilization (开工率):")
+        parts.append("Related — Capacity Utilization (开工率):")
         parts.append(f"  BF (高炉): {capacity.get('bf_operating_rate', 'N/A')}%")
         parts.append(f"  EAF (电炉): {capacity.get('eaf_operating_rate', 'N/A')}%")
         parts.append(f"  Note: {capacity.get('note', 'N/A')}")
@@ -332,20 +333,24 @@ def merge_inventory_data(
 
     profit = data.get("profit_margin")
     if profit:
-        parts.append(f"Related — Mill Profit Margin (吨钢利润):")
-        parts.append(f"  BF (高炉): {profit.get('bf_mill_profit', 'N/A')} {profit.get('unit', '元/吨')}")
-        parts.append(f"  EAF (电炉): {profit.get('eaf_mill_profit', 'N/A')} {profit.get('unit', '元/吨')}")
+        parts.append("Related — Mill Profit Margin (吨钢利润):")
+        parts.append(
+            f"  BF (高炉): {profit.get('bf_mill_profit', 'N/A')} {profit.get('unit', '元/吨')}"
+        )
+        parts.append(
+            f"  EAF (电炉): {profit.get('eaf_mill_profit', 'N/A')} {profit.get('unit', '元/吨')}"
+        )
         parts.append(f"  Note: {profit.get('note', 'N/A')}")
         parts.append("")
 
     annotate = (
-        f"# ============================================================\n"
-        f"# INTERPRETATION GUIDE for the LLM:\n"
-        f"# - Warehouse receipts UP + Social inventory DOWN = delivery pressure, bearish for nearby\n"
-        f"# - Warehouse receipts FLAT + Social inventory UP = weak demand, bearish medium-term\n"
-        f"# - Both DOWN = tight supply across all channels, strongly bullish\n"
-        f"# - Both UP = oversupply, strongly bearish\n"
-        f"# ============================================================\n"
+        "# ============================================================\n"
+        "# INTERPRETATION GUIDE for the LLM:\n"
+        "# - Warehouse receipts UP + Social inventory DOWN = delivery pressure, bearish for nearby\n"
+        "# - Warehouse receipts FLAT + Social inventory UP = weak demand, bearish medium-term\n"
+        "# - Both DOWN = tight supply across all channels, strongly bullish\n"
+        "# - Both UP = oversupply, strongly bearish\n"
+        "# ============================================================\n"
     )
     parts.append(annotate)
 
@@ -353,9 +358,7 @@ def merge_inventory_data(
     return merged, True
 
 
-def merge_basis_data(
-    variety: str, api_csv: str
-) -> tuple[str, bool]:
+def merge_basis_data(variety: str, api_csv: str) -> tuple[str, bool]:
     """Merge basis data from API with external spot price if available.
 
     Args:

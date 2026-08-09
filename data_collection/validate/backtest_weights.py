@@ -13,10 +13,13 @@ v2 改进:
       python backtest_weights.py --grid-search
 """
 
-import json, os, sys, argparse, math, itertools
-from pathlib import Path
+import argparse
+import json
+import math
+import os
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 TRENDS_DIR = Path(__file__).parent / "output" / "trends"
 
@@ -29,11 +32,12 @@ GRID_SEARCH_STEPS = 11  # 0.0, 0.1, ..., 1.0
 # 数据加载
 # ============================================================
 
+
 def load_sentiment(variety: str) -> dict | None:
     path = TRENDS_DIR / f"{variety}_sentiment.json"
     if not path.exists():
         return None
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -41,7 +45,7 @@ def load_price(variety: str) -> dict | None:
     path = TRENDS_DIR / f"{variety}_price.json"
     if not path.exists():
         return None
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -49,13 +53,14 @@ def load_price(variety: str) -> dict | None:
 # 统计工具
 # ============================================================
 
+
 def pearson_r(x: list[float], y: list[float]) -> float:
     n = len(x)
     if n < 3:
         return 0.0
     mean_x = sum(x) / n
     mean_y = sum(y) / n
-    cov = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(x, y))
+    cov = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(x, y, strict=True))
     std_x = math.sqrt(sum((xi - mean_x) ** 2 for xi in x))
     std_y = math.sqrt(sum((yi - mean_y) ** 2 for yi in y))
     if std_x == 0 or std_y == 0:
@@ -79,7 +84,7 @@ def compute_accuracy(signals: list[float], changes: list[float]) -> dict:
     n = len(signals)
     if n == 0:
         return {"direction_accuracy": 0.5, "pearson_r": 0.0, "data_points": 0}
-    correct = sum(1 for s, c in zip(signals, changes) if (s > 0) == (c > 0))
+    correct = sum(1 for s, c in zip(signals, changes, strict=True) if (s > 0) == (c > 0))
     return {
         "direction_accuracy": round(correct / n, 4),
         "pearson_r": round(pearson_r(signals, changes), 4),
@@ -90,6 +95,7 @@ def compute_accuracy(signals: list[float], changes: list[float]) -> dict:
 # ============================================================
 # 信号提取: 从 series 中提取三种情绪信号
 # ============================================================
+
 
 def extract_signals(series: list[dict], price_map: dict[str, float], horizon: int) -> dict:
     """对单个品种提取三种情绪信号 vs 未来价格变化的配对。
@@ -157,6 +163,7 @@ def extract_signals(series: list[dict], price_map: dict[str, float], horizon: in
 # 全局回测 (所有品种池化)
 # ============================================================
 
+
 def compute_global_backtest(
     varieties: list[str],
     horizons: list[int],
@@ -215,7 +222,9 @@ def compute_global_backtest(
             )
             platform_metrics[plat] = m
             if m["data_points"] >= min_points:
-                score = m["direction_accuracy"] * dir_weight + abs(m["pearson_r"]) * (1 - dir_weight)
+                score = m["direction_accuracy"] * dir_weight + abs(m["pearson_r"]) * (
+                    1 - dir_weight
+                )
                 platform_scores_for_softmax[plat] = score
 
         # Softmax → 平台权重
@@ -246,7 +255,10 @@ def compute_global_backtest(
             "signal_comparison": {
                 "simple_avg": simple_metrics,
                 "author_weighted": author_metrics,
-                "winner": "author_weighted" if author_metrics.get("direction_accuracy", 0) > simple_metrics.get("direction_accuracy", 0) else "simple_avg",
+                "winner": "author_weighted"
+                if author_metrics.get("direction_accuracy", 0)
+                > simple_metrics.get("direction_accuracy", 0)
+                else "simple_avg",
             },
         }
 
@@ -269,6 +281,7 @@ def compute_global_backtest(
 # ============================================================
 # 品种级回测 (每个品种独立)
 # ============================================================
+
 
 def compute_variety_backtests(
     varieties: list[str],
@@ -295,8 +308,12 @@ def compute_variety_backtests(
             signals = extract_signals(series, price_map, horizon)
             vresult["horizons"][f"h{horizon}"] = {
                 "horizon_days": horizon,
-                "simple_avg": compute_accuracy(signals["simple"]["signals"], signals["simple"]["changes"]),
-                "author_weighted": compute_accuracy(signals["author"]["signals"], signals["author"]["changes"]),
+                "simple_avg": compute_accuracy(
+                    signals["simple"]["signals"], signals["simple"]["changes"]
+                ),
+                "author_weighted": compute_accuracy(
+                    signals["author"]["signals"], signals["author"]["changes"]
+                ),
             }
 
         # 取 h1 的作者加权准确率作为排行依据
@@ -310,6 +327,7 @@ def compute_variety_backtests(
 # ============================================================
 # 网格搜索最优 dir_weight
 # ============================================================
+
 
 def grid_search_optimal_weight(
     varieties: list[str],
@@ -329,7 +347,9 @@ def grid_search_optimal_weight(
     for dw in [i / (GRID_SEARCH_STEPS - 1) for i in range(GRID_SEARCH_STEPS)]:
         gb = compute_global_backtest(varieties, horizons, min_points, dir_weight=dw)
         h1 = gb["results_by_horizon"].get("h1", {})
-        acc = h1.get("signal_comparison", {}).get("author_weighted", {}).get("direction_accuracy", 0)
+        acc = (
+            h1.get("signal_comparison", {}).get("author_weighted", {}).get("direction_accuracy", 0)
+        )
         all_results.append({"dir_weight": round(dw, 2), "accuracy": acc})
 
         if acc > best_acc:
@@ -348,6 +368,7 @@ def grid_search_optimal_weight(
 # ============================================================
 # 应用权重 + 保存
 # ============================================================
+
 
 def apply_and_save(
     varieties: list[str],
@@ -408,9 +429,18 @@ def apply_and_save(
             "weights": weights,
             "weight_source": h1.get("weight_source", "global_backtest"),
             "combined_metrics": {
-                "direction_accuracy": vb.get("horizons", {}).get("h1", {}).get("author_weighted", {}).get("direction_accuracy", 0.5),
-                "pearson_r": vb.get("horizons", {}).get("h1", {}).get("author_weighted", {}).get("pearson_r", 0.0),
-                "data_points": vb.get("horizons", {}).get("h1", {}).get("author_weighted", {}).get("data_points", 0),
+                "direction_accuracy": vb.get("horizons", {})
+                .get("h1", {})
+                .get("author_weighted", {})
+                .get("direction_accuracy", 0.5),
+                "pearson_r": vb.get("horizons", {})
+                .get("h1", {})
+                .get("author_weighted", {})
+                .get("pearson_r", 0.0),
+                "data_points": vb.get("horizons", {})
+                .get("h1", {})
+                .get("author_weighted", {})
+                .get("data_points", 0),
             },
             "variety_backtest": vb,
             "weighted_sentiment": weighted_series,
@@ -426,6 +456,7 @@ def apply_and_save(
 # 主流程
 # ============================================================
 
+
 def run_all(
     min_points: int = DEFAULT_MIN_POINTS,
     horizons: list[int] = None,
@@ -437,10 +468,13 @@ def run_all(
     TRENDS_DIR.mkdir(parents=True, exist_ok=True)
 
     # 发现品种
-    varieties = sorted(set(
-        f.replace("_sentiment.json", "")
-        for f in os.listdir(TRENDS_DIR) if f.endswith("_sentiment.json")
-    ))
+    varieties = sorted(
+        {
+            f.replace("_sentiment.json", "")
+            for f in os.listdir(TRENDS_DIR)
+            if f.endswith("_sentiment.json")
+        }
+    )
     print(f"Varieties with sentiment data: {len(varieties)}")
     print(f"Horizons: {horizons}")
     print()
@@ -451,24 +485,32 @@ def run_all(
     print("=" * 60)
     global_backtest = compute_global_backtest(varieties, horizons, min_points)
 
-    for hk, hd in global_backtest["results_by_horizon"].items():
+    for _hk, hd in global_backtest["results_by_horizon"].items():
         print(f"\n  Horizon {hd['horizon_days']}d:")
         print(f"    Pairs: {hd['total_pairs']} ({hd['n_varieties']} varieties)")
         print(f"    Weights ({hd['weight_source']}):")
         for p, w in hd["platform_weights"].items():
             m = hd["platform_metrics"].get(p, {})
-            print(f"      {p}: {w:.4f}  (acc={m.get('direction_accuracy',0):.3f}, "
-                  f"r={m.get('pearson_r',0):.3f}, n={m.get('data_points',0)})")
+            print(
+                f"      {p}: {w:.4f}  (acc={m.get('direction_accuracy', 0):.3f}, "
+                f"r={m.get('pearson_r', 0):.3f}, n={m.get('data_points', 0)})"
+            )
         sc = hd["signal_comparison"]
-        print(f"    Signal comparison:")
-        print(f"      simple_avg:       acc={sc['simple_avg'].get('direction_accuracy',0):.3f}  "
-              f"r={sc['simple_avg'].get('pearson_r',0):.3f}  n={sc['simple_avg'].get('data_points',0)}")
-        print(f"      author_weighted:  acc={sc['author_weighted'].get('direction_accuracy',0):.3f}  "
-              f"r={sc['author_weighted'].get('pearson_r',0):.3f}  n={sc['author_weighted'].get('data_points',0)}")
+        print("    Signal comparison:")
+        print(
+            f"      simple_avg:       acc={sc['simple_avg'].get('direction_accuracy', 0):.3f}  "
+            f"r={sc['simple_avg'].get('pearson_r', 0):.3f}  n={sc['simple_avg'].get('data_points', 0)}"
+        )
+        print(
+            f"      author_weighted:  acc={sc['author_weighted'].get('direction_accuracy', 0):.3f}  "
+            f"r={sc['author_weighted'].get('pearson_r', 0):.3f}  n={sc['author_weighted'].get('data_points', 0)}"
+        )
         print(f"      Winner: {sc['winner']}")
 
-    print(f"\n  Best horizon: {global_backtest['best_horizon']} "
-          f"(acc={global_backtest['best_accuracy']:.3f})")
+    print(
+        f"\n  Best horizon: {global_backtest['best_horizon']} "
+        f"(acc={global_backtest['best_accuracy']:.3f})"
+    )
 
     # ---- 2. 品种级回测 ----
     print(f"\n{'=' * 60}")
@@ -478,20 +520,24 @@ def run_all(
 
     # 排行
     ranked = sorted(variety_backtests.items(), key=lambda x: -x[1].get("score", 0))
-    print(f"\n  Top 10 by author_weighted direction accuracy (h1):")
+    print("\n  Top 10 by author_weighted direction accuracy (h1):")
     for i, (vname, vdata) in enumerate(ranked[:10]):
         h1 = vdata["horizons"].get("h1", {})
         aw = h1.get("author_weighted", {})
         sa = h1.get("simple_avg", {})
-        print(f"  {i+1:>2}. {vname:<12s}  author_acc={aw.get('direction_accuracy',0):.3f}  "
-              f"simple_acc={sa.get('direction_accuracy',0):.3f}  n={aw.get('data_points',0)}")
+        print(
+            f"  {i + 1:>2}. {vname:<12s}  author_acc={aw.get('direction_accuracy', 0):.3f}  "
+            f"simple_acc={sa.get('direction_accuracy', 0):.3f}  n={aw.get('data_points', 0)}"
+        )
 
-    print(f"\n  Bottom 5:")
+    print("\n  Bottom 5:")
     for i, (vname, vdata) in enumerate(ranked[-5:]):
         h1 = vdata["horizons"].get("h1", {})
         aw = h1.get("author_weighted", {})
-        print(f"  {len(ranked)-4+i:>2}. {vname:<12s}  author_acc={aw.get('direction_accuracy',0):.3f}  "
-              f"n={aw.get('data_points',0)}")
+        print(
+            f"  {len(ranked) - 4 + i:>2}. {vname:<12s}  author_acc={aw.get('direction_accuracy', 0):.3f}  "
+            f"n={aw.get('data_points', 0)}"
+        )
 
     # ---- 3. 网格搜索 (可选) ----
     if do_grid_search:
@@ -501,7 +547,7 @@ def run_all(
         gs = grid_search_optimal_weight(varieties, horizons, min_points)
         print(f"  Optimal dir_weight: {gs['optimal_dir_weight']}")
         print(f"  Best accuracy: {gs['optimal_accuracy']:.3f}")
-        print(f"  Top 5 weights:")
+        print("  Top 5 weights:")
         for r in sorted(gs["all_results"], key=lambda x: -x["accuracy"])[:5]:
             print(f"    dir_weight={r['dir_weight']:.2f}  accuracy={r['accuracy']:.3f}")
     else:
@@ -524,7 +570,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="多平台情绪权重回测 v2")
     parser.add_argument("--min-points", type=int, default=DEFAULT_MIN_POINTS)
     parser.add_argument("--horizons", type=int, nargs="+", default=DEFAULT_HORIZONS)
-    parser.add_argument("--grid-search", action="store_true",
-                        help="网格搜索最优 dir_weight")
+    parser.add_argument("--grid-search", action="store_true", help="网格搜索最优 dir_weight")
     args = parser.parse_args()
     run_all(args.min_points, args.horizons, args.grid_search)

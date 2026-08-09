@@ -26,17 +26,15 @@ Data sources (via akshare):
 
 import json
 import logging
-import time
 import random
+import time
 import warnings
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import timedelta
 
 import pandas as pd
 import requests
 
 from tradingagents.dataflows.external_data import (
-    annotate_with_source,
     get_external_source_label,
     load_external_data,
     merge_basis_data,
@@ -47,9 +45,7 @@ logger = logging.getLogger(__name__)
 
 # Suppress AKShare "非交易日" warnings — they're informational
 # (one per weekend/holiday in the date range) and flood the output.
-warnings.filterwarnings(
-    "ignore", message=r".*非交易日.*", category=UserWarning
-)
+warnings.filterwarnings("ignore", message=r".*非交易日.*", category=UserWarning)
 
 # ---------------------------------------------------------------------------
 # Cache
@@ -586,12 +582,8 @@ def _validate_symbol(symbol: str) -> str:
     if symbol.strip() in name_map:
         return name_map[symbol.strip()]
 
-    supported = ", ".join(
-        f"{k}({v['name']})" for k, v in VARIETY_METADATA.items()
-    )
-    raise ValueError(
-        f"Unsupported variety: '{symbol}'. Supported: {supported}"
-    )
+    supported = ", ".join(f"{k}({v['name']})" for k, v in VARIETY_METADATA.items())
+    raise ValueError(f"Unsupported variety: '{symbol}'. Supported: {supported}")
 
 
 def get_variety_info(symbol: str) -> str:
@@ -615,6 +607,7 @@ def get_variety_info(symbol: str) -> str:
 # ---------------------------------------------------------------------------
 # Public data functions (TradingAgents vendor interface)
 # ---------------------------------------------------------------------------
+
 
 def get_futures_price(
     symbol: str,
@@ -646,10 +639,7 @@ def get_futures_price(
     now = time.time()
     if cache_key in _response_cache:
         cached_at, cached_df = _response_cache[cache_key]
-        if now - cached_at < _CACHE_TTL:
-            df = cached_df.copy()
-        else:
-            df = None
+        df = cached_df.copy() if now - cached_at < _CACHE_TTL else None
     else:
         df = None
 
@@ -695,11 +685,16 @@ def get_futures_price(
 
     # Keep only standard columns
     keep_cols = [c for c in col_map.values() if c in df.columns]
-    if "date" not in df.columns:
-        # If column names didn't match, try positional
-        if len(df.columns) >= 7:
-            df.columns = ["date", "open", "high", "low", "close", "volume", "open_interest"][:len(df.columns)]
-            keep_cols = [c for c in ["date", "open", "high", "low", "close", "volume", "open_interest"] if c in df.columns]
+    # If column names didn't match, try positional
+    if "date" not in df.columns and len(df.columns) >= 7:
+        df.columns = ["date", "open", "high", "low", "close", "volume", "open_interest"][
+            : len(df.columns)
+        ]
+        keep_cols = [
+            c
+            for c in ["date", "open", "high", "low", "close", "volume", "open_interest"]
+            if c in df.columns
+        ]
 
     df = df[keep_cols]
 
@@ -770,13 +765,19 @@ def get_futures_indicators(
 
     # Normalize columns
     col_map = {
-        "日期": "date", "开盘价": "open", "最高价": "high",
-        "最低价": "low", "收盘价": "close", "成交量": "volume",
+        "日期": "date",
+        "开盘价": "open",
+        "最高价": "high",
+        "最低价": "low",
+        "收盘价": "close",
+        "成交量": "volume",
         "持仓量": "open_interest",
     }
     full_df = full_df.rename(columns=col_map)
     if "date" not in full_df.columns and len(full_df.columns) >= 7:
-        full_df.columns = ["date", "open", "high", "low", "close", "volume", "open_interest"][:len(full_df.columns)]
+        full_df.columns = ["date", "open", "high", "low", "close", "volume", "open_interest"][
+            : len(full_df.columns)
+        ]
 
     full_df["date"] = pd.to_datetime(full_df["date"])
     full_df = full_df.sort_values("date")
@@ -836,7 +837,9 @@ def get_futures_indicators(
         full_df["oi_sma_5"] = oi.rolling(5).mean()
 
     # --- Price position within range ---
-    full_df["pct_from_sma_20"] = (close - full_df["sma_20"]) / full_df["sma_20"].replace(0, float("nan")) * 100
+    full_df["pct_from_sma_20"] = (
+        (close - full_df["sma_20"]) / full_df["sma_20"].replace(0, float("nan")) * 100
+    )
 
     # Filter to requested date range
     end_dt = pd.to_datetime(end_date)
@@ -845,10 +848,7 @@ def get_futures_indicators(
     result = full_df[full_df["date"] >= start_dt].copy()
 
     if result.empty:
-        return (
-            f"NO_DATA_AVAILABLE: Insufficient data for indicators on "
-            f"{meta['name']}({code})."
-        )
+        return f"NO_DATA_AVAILABLE: Insufficient data for indicators on {meta['name']}({code})."
 
     # Round for readability
     float_cols = result.select_dtypes(include=["float64"]).columns
@@ -897,8 +897,7 @@ def get_futures_basis(
     except Exception as e:
         logger.warning("Failed to fetch basis for %s: %s", code, e)
         return (
-            f"DATA_UNAVAILABLE: Could not fetch basis data for "
-            f"{meta['name']}({code}). Error: {e}"
+            f"DATA_UNAVAILABLE: Could not fetch basis data for {meta['name']}({code}). Error: {e}"
         )
 
     if df.empty:
@@ -921,12 +920,22 @@ def get_futures_basis(
     df = df.rename(columns=col_map)
 
     # Build output: focus on dominant contract basis
-    keep_cols = [c for c in ["date", "spot_price", "dominant_contract",
-                              "dominant_contract_price", "dom_basis",
-                              "dom_basis_rate", "near_contract",
-                              "near_contract_price", "near_basis",
-                              "near_basis_rate"]
-                 if c in df.columns]
+    keep_cols = [
+        c
+        for c in [
+            "date",
+            "spot_price",
+            "dominant_contract",
+            "dominant_contract_price",
+            "dom_basis",
+            "dom_basis_rate",
+            "near_contract",
+            "near_contract_price",
+            "near_basis",
+            "near_basis_rate",
+        ]
+        if c in df.columns
+    ]
     result = df[keep_cols].copy()
 
     # Round numeric cols
@@ -994,10 +1003,7 @@ def get_futures_inventory(
         return "DATA_ERROR: akshare is required."
     except Exception as e:
         logger.warning("Failed to fetch inventory for %s: %s", code, e)
-        return (
-            f"DATA_UNAVAILABLE: Could not fetch inventory for "
-            f"{meta['name']}({code}). Error: {e}"
-        )
+        return f"DATA_UNAVAILABLE: Could not fetch inventory for {meta['name']}({code}). Error: {e}"
 
     if df.empty:
         return f"NO_DATA_AVAILABLE: No inventory data for {meta['name']}({code})."
@@ -1091,30 +1097,35 @@ def get_futures_news(
             title = item.get("title", "")
             summary = item.get("summary", "")[:300]
             pub_time = item.get("showTime", "")
-            all_news.append({
-                "title": title,
-                "content": summary if summary else title,
-                "time": pub_time,
-                "source": "Eastmoney",
-            })
+            all_news.append(
+                {
+                    "title": title,
+                    "content": summary if summary else title,
+                    "time": pub_time,
+                    "source": "Eastmoney",
+                }
+            )
     except Exception as e:
         logger.warning("Eastmoney news fetch failed: %s", e)
 
     # --- Source 3: SHMET (commodity-specific, fallback) ---
     try:
         from akshare import futures_news_shmet
+
         df = futures_news_shmet()
         if not df.empty:
             for _, row in df.head(15).iterrows():
                 time_str = str(row.get("发布时间", ""))
                 content = str(row.get("内容", ""))
                 if content and content != "nan":
-                    all_news.append({
-                        "title": content[:100],
-                        "content": content[:300],
-                        "time": time_str[:16] if time_str else "",
-                        "source": "SHMET",
-                    })
+                    all_news.append(
+                        {
+                            "title": content[:100],
+                            "content": content[:300],
+                            "time": time_str[:16] if time_str else "",
+                            "source": "SHMET",
+                        }
+                    )
     except Exception as e:
         logger.warning("SHMET news fetch failed: %s", e)
 
@@ -1134,34 +1145,125 @@ def get_futures_news(
     # that could affect ANY commodity futures (not just steel-specific)
     commodity_kw = [
         # Black metals
-        "螺纹", "热卷", "铁矿石", "铁矿", "焦炭", "焦煤", "钢材", "钢铁",
-        "钢厂", "高炉", "电炉", "铁水", "废钢", "钢价", "钢市", "钢坯",
+        "螺纹",
+        "热卷",
+        "铁矿石",
+        "铁矿",
+        "焦炭",
+        "焦煤",
+        "钢材",
+        "钢铁",
+        "钢厂",
+        "高炉",
+        "电炉",
+        "铁水",
+        "废钢",
+        "钢价",
+        "钢市",
+        "钢坯",
         # Non-ferrous
-        "铜", "铝", "锌", "镍", "黄金", "白银", "有色金属",
+        "铜",
+        "铝",
+        "锌",
+        "镍",
+        "黄金",
+        "白银",
+        "有色金属",
         # Energy
-        "原油", "OPEC", "天然气", "煤矿", "煤炭",
+        "原油",
+        "OPEC",
+        "天然气",
+        "煤矿",
+        "煤炭",
         # Chemicals
-        "PTA", "甲醇", "聚酯", "烯烃", "MTO", "PX", "纯碱", "玻璃", "尿素",
-        "短纤", "涤纶", "涤短",
+        "PTA",
+        "甲醇",
+        "聚酯",
+        "烯烃",
+        "MTO",
+        "PX",
+        "纯碱",
+        "玻璃",
+        "尿素",
+        "短纤",
+        "涤纶",
+        "涤短",
         # Agriculture
-        "豆粕", "大豆", "USDA", "棕榈油", "生猪", "玉米", "棉花", "白糖",
-        "菜油", "菜粕", "苹果", "红枣", "花生", "硅铁", "锰硅",
+        "豆粕",
+        "大豆",
+        "USDA",
+        "棕榈油",
+        "生猪",
+        "玉米",
+        "棉花",
+        "白糖",
+        "菜油",
+        "菜粕",
+        "苹果",
+        "红枣",
+        "花生",
+        "硅铁",
+        "锰硅",
         # Production & policy
-        "限产", "减产", "停产", "检修", "去产能", "环保限产", "供给侧",
-        "反内卷", "产能置换", "碳达峰",
+        "限产",
+        "减产",
+        "停产",
+        "检修",
+        "去产能",
+        "环保限产",
+        "供给侧",
+        "反内卷",
+        "产能置换",
+        "碳达峰",
         # Real estate & infra
-        "房地产", "地产", "新开工", "保交楼", "基建", "专项债", "固投", "保障房",
+        "房地产",
+        "地产",
+        "新开工",
+        "保交楼",
+        "基建",
+        "专项债",
+        "固投",
+        "保障房",
         # Construction
-        "建材", "水泥", "开工率", "工地",
+        "建材",
+        "水泥",
+        "开工率",
+        "工地",
         # Supply chain
-        "BHP", "FMG", "力拓", "必和必拓", "淡水河谷", "罢工", "台风", "封库",
+        "BHP",
+        "FMG",
+        "力拓",
+        "必和必拓",
+        "淡水河谷",
+        "罢工",
+        "台风",
+        "封库",
         # Trade & macro
-        "大宗商品", "黑色系", "商品期货", "现货", "出口退税", "反倾销",
-        "关税", "贸易摩擦", "PMI", "GDP", "央行", "降准", "LPR",
+        "大宗商品",
+        "黑色系",
+        "商品期货",
+        "现货",
+        "出口退税",
+        "反倾销",
+        "关税",
+        "贸易摩擦",
+        "PMI",
+        "GDP",
+        "央行",
+        "降准",
+        "LPR",
         # Regions
-        "唐山", "邯郸", "山西", "河北",
+        "唐山",
+        "邯郸",
+        "山西",
+        "河北",
         # Inventory & cost
-        "库存", "累库", "去库", "港口库存", "利润", "盈利率",
+        "库存",
+        "累库",
+        "去库",
+        "港口库存",
+        "利润",
+        "盈利率",
     ]
 
     symbol_specific = {
@@ -1213,8 +1315,8 @@ def get_futures_news(
     lines = [
         "# COMMODITY & MACRO NEWS (multi-source)",
         f"# SHMET: {len(shmet_news)} articles | Eastmoney keyword-filtered: {len(em_filtered)}/{len(em_news)}",
-        f"# NOTE: For industry-specific events (限产/罢工/检修), use external data JSON.",
-        f"#       Free APIs provide macro/commodity context, not Mysteel-grade detail.",
+        "# NOTE: For industry-specific events (限产/罢工/检修), use external data JSON.",
+        "#       Free APIs provide macro/commodity context, not Mysteel-grade detail.",
         "",
     ]
 
@@ -1235,6 +1337,7 @@ def get_futures_news(
 # Macro & Industry Data (P0 enhancement)
 # ---------------------------------------------------------------------------
 
+
 def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
     """Fetch key China macroeconomic indicators for commodity analysis.
 
@@ -1250,10 +1353,12 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
     """
     import akshare as ak
 
-    parts = ["# CHINA MACROECONOMIC INDICATORS (for commodity futures analysis)",
-             f"# Data_Source: FREE_API (AKShare / Eastmoney)",
-             f"# Note: latest available data points shown. Some series lag 1-2 months.",
-             ""]
+    parts = [
+        "# CHINA MACROECONOMIC INDICATORS (for commodity futures analysis)",
+        "# Data_Source: FREE_API (AKShare / Eastmoney)",
+        "# Note: latest available data points shown. Some series lag 1-2 months.",
+        "",
+    ]
 
     # --- GDP ---
     try:
@@ -1269,7 +1374,9 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
             parts.append(f"  第三产业同比: {latest.get('第三产业-同比增长', 'N/A')}%")
             # Recent trend
             recent = gdp.tail(4)
-            parts.append(f"  近四个季度趋势: {', '.join(str(x) for x in recent['国内生产总值-同比增长'].tail(4))}")
+            parts.append(
+                f"  近四个季度趋势: {', '.join(str(x) for x in recent['国内生产总值-同比增长'].tail(4))}"
+            )
             parts.append("")
     except Exception as e:
         parts.append(f"## GDP: UNAVAILABLE ({e})")
@@ -1286,9 +1393,13 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
             parts.append(f"  非制造业PMI: {latest.get('非制造业-指数', 'N/A')}")
             # Recent 3 months
             recent = pmi.tail(3)
-            parts.append(f"  近3个月制造业PMI: {', '.join(str(x) for x in recent['制造业-指数'].tail(3))}")
-            below_50 = float(latest.get('制造业-指数', 50)) < 50
-            parts.append(f"  荣枯线判断: {'**低于50荣枯线，经济收缩**' if below_50 else '高于50荣枯线，经济扩张'}")
+            parts.append(
+                f"  近3个月制造业PMI: {', '.join(str(x) for x in recent['制造业-指数'].tail(3))}"
+            )
+            below_50 = float(latest.get("制造业-指数", 50)) < 50
+            parts.append(
+                f"  荣枯线判断: {'**低于50荣枯线，经济收缩**' if below_50 else '高于50荣枯线，经济扩张'}"
+            )
             parts.append("")
     except Exception as e:
         parts.append(f"## PMI: UNAVAILABLE ({e})")
@@ -1306,7 +1417,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
             parts.append(f"  累计值: {latest.get('累计值', 'N/A')} 亿元")
             # Recent trend
             recent = fai.tail(3)
-            trend = [str(x) for x in recent['同比增长'].tail(3) if str(x) != 'nan']
+            trend = [str(x) for x in recent["同比增长"].tail(3) if str(x) != "nan"]
             if trend:
                 parts.append(f"  近3个月同比趋势: {', '.join(trend)}%")
             parts.append("")
@@ -1319,19 +1430,25 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
         re = ak.macro_china_real_estate()
         if not re.empty:
             latest = re.iloc[-1]
-            col_date = next((c for c in re.columns if '日期' in str(c)), re.columns[0])
-            col_val = next((c for c in re.columns if '指数值' in str(c) or '值' in str(c)), re.columns[1])
-            col_chg = next((c for c in re.columns if '涨跌幅' in str(c) and '近' not in str(c)), None)
+            col_date = next((c for c in re.columns if "日期" in str(c)), re.columns[0])
+            col_val = next(
+                (c for c in re.columns if "指数值" in str(c) or "值" in str(c)), re.columns[1]
+            )
+            col_chg = next(
+                (c for c in re.columns if "涨跌幅" in str(c) and "近" not in str(c)), None
+            )
             parts.append("## 房地产景气指数")
             parts.append(f"  最新日期: {latest.get(col_date, 'N/A')}")
-            real_val = latest.get(col_val, 'N/A')
+            real_val = latest.get(col_val, "N/A")
             parts.append(f"  指数值: {real_val}")
             if col_chg:
                 parts.append(f"  涨跌幅: {latest.get(col_chg, 'N/A')}%")
             recent = re.tail(6)
             recent_vals = [str(x) for x in recent[col_val].tail(6)]
             parts.append(f"  近6个月指数走势: {', '.join(recent_vals)}")
-            parts.append(f"  **判断**: 指数持续低迷表明房地产行业仍在筑底，利空螺纹钢需求（房地产占螺纹钢需求约60%）。")
+            parts.append(
+                "  **判断**: 指数持续低迷表明房地产行业仍在筑底，利空螺纹钢需求（房地产占螺纹钢需求约60%）。"
+            )
             parts.append("")
     except Exception as e:
         parts.append(f"## Real Estate: UNAVAILABLE ({e})")
@@ -1347,7 +1464,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
             parts.append(f"  同比增长: {latest.get('同比增长', 'N/A')}%")
             parts.append(f"  累计增长: {latest.get('累计增长', 'N/A')}%")
             recent = ip.tail(3)
-            trend = [str(x) for x in recent['同比增长'].tail(3)]
+            trend = [str(x) for x in recent["同比增长"].tail(3)]
             parts.append(f"  近3个月同比趋势: {', '.join(trend)}%")
             parts.append("")
     except Exception as e:
@@ -1359,8 +1476,10 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
         ci = ak.macro_china_construction_index()
         if not ci.empty:
             latest = ci.iloc[-1]
-            col_date = next((c for c in ci.columns if '日期' in str(c)), ci.columns[0])
-            col_val = next((c for c in ci.columns if '指数值' in str(c) or '值' in str(c)), ci.columns[1])
+            col_date = next((c for c in ci.columns if "日期" in str(c)), ci.columns[0])
+            col_val = next(
+                (c for c in ci.columns if "指数值" in str(c) or "值" in str(c)), ci.columns[1]
+            )
             parts.append("## 建筑业指数 (日度)")
             parts.append(f"  最新日期: {latest.get(col_date, 'N/A')}")
             parts.append(f"  指数值: {latest.get(col_val, 'N/A')}")
@@ -1368,7 +1487,9 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
             recent = ci.tail(5)
             recent_vals = [str(x) for x in recent[col_val].tail(5)]
             parts.append(f"  近5个交易日: {', '.join(recent_vals)}")
-            parts.append(f"  **与钢铁需求关系**: 建筑业是螺纹钢最大下游，指数走势直接反映建筑活动强弱。")
+            parts.append(
+                "  **与钢铁需求关系**: 建筑业是螺纹钢最大下游，指数走势直接反映建筑活动强弱。"
+            )
             parts.append("")
     except Exception as e:
         parts.append(f"## Construction Index: UNAVAILABLE ({e})")
@@ -1400,8 +1521,8 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
     """
     parts = [
         f"# SUPPLY-DEMAND INDICATORS for {variety}",
-        f"# Combines external data (Mysteel, Wind, etc.) with free API data",
-        f"",
+        "# Combines external data (Mysteel, Wind, etc.) with free API data",
+        "",
     ]
 
     # --- External Data Section ---
@@ -1417,7 +1538,9 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
         if wp:
             parts.append("### 螺纹钢周度产量")
             parts.append(f"  产量: {wp.get('value', 'N/A')} {wp.get('unit', '万吨')}")
-            parts.append(f"  环比: {wp.get('change_wow', 'N/A')} ({wp.get('change_wow_pct', 'N/A')}%)")
+            parts.append(
+                f"  环比: {wp.get('change_wow', 'N/A')} ({wp.get('change_wow_pct', 'N/A')}%)"
+            )
             parts.append(f"  备注: {wp.get('note', 'N/A')}")
             parts.append("")
 
@@ -1443,8 +1566,12 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
         profit = data.get("profit_margin")
         if profit:
             parts.append("### 钢厂利润")
-            parts.append(f"  高炉利润: {profit.get('bf_mill_profit', 'N/A')} {profit.get('unit', '元/吨')}")
-            parts.append(f"  电炉利润: {profit.get('eaf_mill_profit', 'N/A')} {profit.get('unit', '元/吨')}")
+            parts.append(
+                f"  高炉利润: {profit.get('bf_mill_profit', 'N/A')} {profit.get('unit', '元/吨')}"
+            )
+            parts.append(
+                f"  电炉利润: {profit.get('eaf_mill_profit', 'N/A')} {profit.get('unit', '元/吨')}"
+            )
             parts.append(f"  备注: {profit.get('note', 'N/A')}")
             parts.append("")
 
@@ -1464,7 +1591,9 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
         if si:
             parts.append("### 社会库存 (35城)")
             parts.append(f"  库存: {si.get('value', 'N/A')} {si.get('unit', '万吨')}")
-            parts.append(f"  环比: {si.get('change_wow', 'N/A')} ({si.get('change_wow_pct', 'N/A')}%)")
+            parts.append(
+                f"  环比: {si.get('change_wow', 'N/A')} ({si.get('change_wow_pct', 'N/A')}%)"
+            )
             parts.append(f"  趋势: {si.get('trend', 'N/A')}")
             parts.append("")
 
@@ -1488,8 +1617,10 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
 
     else:
         parts.append("## External Data: NOT AVAILABLE")
-        parts.append("  (No external data file found. Create ~/.tradingagents/external_data/"
-                     f"{variety}.json to enable supply-demand indicators and key industry events.)")
+        parts.append(
+            "  (No external data file found. Create ~/.tradingagents/external_data/"
+            f"{variety}.json to enable supply-demand indicators and key industry events.)"
+        )
         parts.append("  See RB.json.sample for the file format.")
         parts.append("")
 
@@ -1497,10 +1628,13 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
     parts.append("## Construction Industry Index (FREE API)")
     try:
         import akshare as ak
+
         ci = ak.macro_china_construction_index()
         if not ci.empty:
-            col_date = next((c for c in ci.columns if '日期' in str(c)), ci.columns[0])
-            col_val = next((c for c in ci.columns if '指数值' in str(c) or '值' in str(c)), ci.columns[1])
+            col_date = next((c for c in ci.columns if "日期" in str(c)), ci.columns[0])
+            col_val = next(
+                (c for c in ci.columns if "指数值" in str(c) or "值" in str(c)), ci.columns[1]
+            )
             latest = ci.iloc[-1]
             parts.append(f"  最新日期: {latest.get(col_date, 'N/A')}")
             parts.append(f"  指数值: {latest.get(col_val, 'N/A')}")
@@ -1517,17 +1651,22 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
     parts.append("## Real Estate Climate Index (FREE API)")
     try:
         import akshare as ak
+
         re = ak.macro_china_real_estate()
         if not re.empty:
-            col_date = next((c for c in re.columns if '日期' in str(c)), re.columns[0])
-            col_val = next((c for c in re.columns if '指数值' in str(c) or '值' in str(c)), re.columns[1])
+            col_date = next((c for c in re.columns if "日期" in str(c)), re.columns[0])
+            col_val = next(
+                (c for c in re.columns if "指数值" in str(c) or "值" in str(c)), re.columns[1]
+            )
             latest = re.iloc[-1]
             parts.append(f"  最新日期: {latest.get(col_date, 'N/A')}")
             parts.append(f"  指数值: {latest.get(col_val, 'N/A')}")
             recent = re.tail(6)
             recent_vals = [str(x) for x in recent[col_val].tail(6)]
             parts.append(f"  近6月走势: {', '.join(recent_vals)}")
-            parts.append(f"  **与钢铁需求关系**: 房地产是螺纹钢最大下游(约60%)，该指数持续低迷意味着螺纹钢需求端缺乏支撑。")
+            parts.append(
+                "  **与钢铁需求关系**: 房地产是螺纹钢最大下游(约60%)，该指数持续低迷意味着螺纹钢需求端缺乏支撑。"
+            )
         else:
             parts.append("  No data available.")
     except Exception as e:
@@ -1541,7 +1680,10 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
 # Verified Quote Snapshot — deterministic source of truth for price/indicator values
 # ---------------------------------------------------------------------------
 
-def get_verified_quote(symbol: str, date: str = "", start_date: str = "", end_date: str = "") -> str:
+
+def get_verified_quote(
+    symbol: str, date: str = "", start_date: str = "", end_date: str = ""
+) -> str:
     """Get a deterministic, verified OHLCV + key indicator snapshot for a specific date.
 
     This is the SINGLE SOURCE OF TRUTH for numeric price/indicator claims.
@@ -1569,7 +1711,8 @@ def get_verified_quote(symbol: str, date: str = "", start_date: str = "", end_da
         return "VERIFIED_SNAPSHOT_ERROR: date parameter is required."
 
     # Fetch a window around the target date (30 days before, 5 days after)
-    from datetime import datetime as dt, timedelta
+    from datetime import datetime as dt
+
     try:
         target_dt = dt.strptime(date, "%Y-%m-%d")
     except ValueError:
@@ -1609,7 +1752,7 @@ def get_verified_quote(symbol: str, date: str = "", start_date: str = "", end_da
     # Step 3: Compute key indicators
     o = float(target_row[1]) if len(target_row) > 1 else 0.0
     h = float(target_row[2]) if len(target_row) > 2 else 0.0
-    l = float(target_row[3]) if len(target_row) > 3 else 0.0
+    low = float(target_row[3]) if len(target_row) > 3 else 0.0
     c = float(target_row[4]) if len(target_row) > 4 else 0.0
     v = float(target_row[5]) if len(target_row) > 5 else 0.0
     oi = float(target_row[6]) if len(target_row) > 6 else 0.0
@@ -1637,7 +1780,7 @@ def get_verified_quote(symbol: str, date: str = "", start_date: str = "", end_da
     lines_out = [
         "=" * 50,
         f"VERIFIED_SNAPSHOT | {meta['name']}({code}) | {target_row[0]} {date_note}",
-        f"Source: AKShare / Sina Finance | Status: TRUSTED — use for exact numeric claims",
+        "Source: AKShare / Sina Finance | Status: TRUSTED — use for exact numeric claims",
         "=" * 50,
         "",
         f"Exchange: {meta['exchange_cn']} | Unit: {meta['unit']}",
@@ -1646,7 +1789,7 @@ def get_verified_quote(symbol: str, date: str = "", start_date: str = "", end_da
         "--- Exact OHLCV ---",
         f"Open:       {o:>12.2f}",
         f"High:       {h:>12.2f}",
-        f"Low:        {l:>12.2f}",
+        f"Low:        {low:>12.2f}",
         f"Close:      {c:>12.2f}",
         f"Volume:     {v:>12.0f}",
         f"Open Int:   {oi:>12.0f}",
@@ -1655,7 +1798,7 @@ def get_verified_quote(symbol: str, date: str = "", start_date: str = "", end_da
         "--- Key Levels ---",
         f"SMA(5):     {sma5:>12.2f}  (short-term trend)",
         f"SMA(20):    {sma20:>12.2f}  (medium-term trend)",
-        f"Price vs SMA20: {'ABOVE' if c > sma20 else 'BELOW'} by {abs(c-sma20):.2f}",
+        f"Price vs SMA20: {'ABOVE' if c > sma20 else 'BELOW'} by {abs(c - sma20):.2f}",
         "",
         "--- Guidelines ---",
         "1. Use ONLY the values above for any numeric claims about price/levels.",
@@ -1671,6 +1814,7 @@ def get_verified_quote(symbol: str, date: str = "", start_date: str = "", end_da
 # Sentiment data (social media — from 思路2 project)
 # ---------------------------------------------------------------------------
 
+
 def get_futures_sentiment(symbol: str, start_date: str = "", end_date: str = "") -> str:
     """Get social media sentiment data for a commodity variety.
 
@@ -1685,6 +1829,7 @@ def get_futures_sentiment(symbol: str, start_date: str = "", end_date: str = "")
         Formatted sentiment report text or "no data" message.
     """
     from tradingagents.dataflows.sentiment_data import get_futures_sentiment as _impl
+
     return _impl(symbol)
 
 

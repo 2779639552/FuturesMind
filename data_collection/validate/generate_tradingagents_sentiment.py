@@ -13,10 +13,9 @@ Usage:
 """
 
 import json
-import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
 
 # --- Paths ---
 TRENDS_DIR = Path(__file__).parent / "output" / "trends"
@@ -24,29 +23,64 @@ OUTPUT_DIR = Path.home() / ".tradingagents" / "external_data"
 
 # TradingAgents variety code mapping (Chinese name → symbol)
 VARIETY_NAME_TO_SYMBOL = {
-    "螺纹钢": "RB",     "热卷": "HC",       "铁矿石": "I",
-    "焦炭": "J",        "焦煤": "JM",       "硅铁": "SF",
-    "锰硅": "SM",       "线材": "WR",
-    "铜": "CU",         "铝": "AL",         "锌": "ZN",
-    "铅": "PB",         "镍": "NI",         "锡": "SN",
-    "黄金": "AU",       "白银": "AG",
-    "原油": "SC",       "PTA": "TA",        "甲醇": "MA",
-    "PVC": "V",         "PP": "PP",         "塑料": "L",
-    "橡胶": "RU",       "沥青": "BU",       "尿素": "UR",
-    "纯碱": "SA",       "玻璃": "FG",       "乙二醇": "EG",
-    "苯乙烯": "EB",     "短纤": "PF",
-    "豆粕": "M",        "豆油": "Y",        "棕榈油": "P",
-    "菜粕": "RM",       "菜油": "OI",       "白糖": "SR",
-    "棉花": "CF",       "玉米": "C",        "淀粉": "CS",
-    "鸡蛋": "JD",       "生猪": "LH",       "苹果": "AP",
-    "红枣": "CJ",       "花生": "PK",
-    "工业硅": "SI",     "碳酸锂": "LC",     "氧化铝": "AO",
-    "烧碱": "SH",       "对二甲苯": "PX",
+    "螺纹钢": "RB",
+    "热卷": "HC",
+    "铁矿石": "I",
+    "焦炭": "J",
+    "焦煤": "JM",
+    "硅铁": "SF",
+    "锰硅": "SM",
+    "线材": "WR",
+    "铜": "CU",
+    "铝": "AL",
+    "锌": "ZN",
+    "铅": "PB",
+    "镍": "NI",
+    "锡": "SN",
+    "黄金": "AU",
+    "白银": "AG",
+    "原油": "SC",
+    "PTA": "TA",
+    "甲醇": "MA",
+    "PVC": "V",
+    "PP": "PP",
+    "塑料": "L",
+    "橡胶": "RU",
+    "沥青": "BU",
+    "尿素": "UR",
+    "纯碱": "SA",
+    "玻璃": "FG",
+    "乙二醇": "EG",
+    "苯乙烯": "EB",
+    "短纤": "PF",
+    "豆粕": "M",
+    "豆油": "Y",
+    "棕榈油": "P",
+    "菜粕": "RM",
+    "菜油": "OI",
+    "白糖": "SR",
+    "棉花": "CF",
+    "玉米": "C",
+    "淀粉": "CS",
+    "鸡蛋": "JD",
+    "生猪": "LH",
+    "苹果": "AP",
+    "红枣": "CJ",
+    "花生": "PK",
+    "工业硅": "SI",
+    "碳酸锂": "LC",
+    "氧化铝": "AO",
+    "烧碱": "SH",
+    "对二甲苯": "PX",
     # Financial futures
-    "上证50股指期货": "IH",     "沪深300股指期货": "IF",
-    "中证500股指期货": "IC",    "中证1000股指期货": "IM",
-    "2年期国债期货": "TS",      "5年期国债期货": "TF",
-    "10年期国债期货": "T",      "30年期国债期货": "TL",
+    "上证50股指期货": "IH",
+    "沪深300股指期货": "IF",
+    "中证500股指期货": "IC",
+    "中证1000股指期货": "IM",
+    "2年期国债期货": "TS",
+    "5年期国债期货": "TF",
+    "10年期国债期货": "T",
+    "30年期国债期货": "TL",
 }
 
 # Reverse mapping for fuzzy lookup
@@ -54,21 +88,63 @@ SYMBOL_TO_CHINESE = {v: k for k, v in VARIETY_NAME_TO_SYMBOL.items()}
 
 # Sector classification
 SECTOR_MAP = {
-    "RB": "黑色系", "HC": "黑色系", "I": "黑色系", "J": "黑色系",
-    "JM": "黑色系", "SF": "黑色系", "SM": "黑色系", "WR": "黑色系",
-    "CU": "有色金属", "AL": "有色金属", "ZN": "有色金属", "PB": "有色金属",
-    "NI": "有色金属", "SN": "有色金属", "AU": "贵金属", "AG": "贵金属",
-    "SC": "能源化工", "TA": "能源化工", "MA": "能源化工", "V": "能源化工",
-    "PP": "能源化工", "L": "能源化工", "RU": "能源化工", "BU": "能源化工",
-    "UR": "能源化工", "SA": "能源化工", "FG": "能源化工", "EG": "能源化工",
-    "EB": "能源化工", "PF": "能源化工", "SI": "能源化工", "LC": "能源化工",
-    "AO": "有色金属", "SH": "能源化工", "PX": "能源化工",
-    "M": "农产品", "Y": "农产品", "P": "农产品", "RM": "农产品",
-    "OI": "农产品", "SR": "农产品", "CF": "农产品", "C": "农产品",
-    "CS": "农产品", "JD": "农产品", "LH": "农产品", "AP": "农产品",
-    "CJ": "农产品", "PK": "农产品",
-    "IF": "金融期货", "IH": "金融期货", "IC": "金融期货", "IM": "金融期货",
-    "T": "金融期货", "TF": "金融期货", "TS": "金融期货", "TL": "金融期货",
+    "RB": "黑色系",
+    "HC": "黑色系",
+    "I": "黑色系",
+    "J": "黑色系",
+    "JM": "黑色系",
+    "SF": "黑色系",
+    "SM": "黑色系",
+    "WR": "黑色系",
+    "CU": "有色金属",
+    "AL": "有色金属",
+    "ZN": "有色金属",
+    "PB": "有色金属",
+    "NI": "有色金属",
+    "SN": "有色金属",
+    "AU": "贵金属",
+    "AG": "贵金属",
+    "SC": "能源化工",
+    "TA": "能源化工",
+    "MA": "能源化工",
+    "V": "能源化工",
+    "PP": "能源化工",
+    "L": "能源化工",
+    "RU": "能源化工",
+    "BU": "能源化工",
+    "UR": "能源化工",
+    "SA": "能源化工",
+    "FG": "能源化工",
+    "EG": "能源化工",
+    "EB": "能源化工",
+    "PF": "能源化工",
+    "SI": "能源化工",
+    "LC": "能源化工",
+    "AO": "有色金属",
+    "SH": "能源化工",
+    "PX": "能源化工",
+    "M": "农产品",
+    "Y": "农产品",
+    "P": "农产品",
+    "RM": "农产品",
+    "OI": "农产品",
+    "SR": "农产品",
+    "CF": "农产品",
+    "C": "农产品",
+    "CS": "农产品",
+    "JD": "农产品",
+    "LH": "农产品",
+    "AP": "农产品",
+    "CJ": "农产品",
+    "PK": "农产品",
+    "IF": "金融期货",
+    "IH": "金融期货",
+    "IC": "金融期货",
+    "IM": "金融期货",
+    "T": "金融期货",
+    "TF": "金融期货",
+    "TS": "金融期货",
+    "TL": "金融期货",
 }
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -83,18 +159,18 @@ def load_trends_data(trends_dir) -> dict:
 
     index = {}
     if index_path.exists():
-        with open(index_path, "r", encoding="utf-8") as f:
+        with open(index_path, encoding="utf-8") as f:
             index = json.load(f)
 
     global_weights = {}
     if global_weights_path.exists():
-        with open(global_weights_path, "r", encoding="utf-8") as f:
+        with open(global_weights_path, encoding="utf-8") as f:
             global_weights = json.load(f)
 
     varieties = {}
     for fpath in sorted(trends_dir.glob("*_sentiment.json")):
         name = fpath.stem.replace("_sentiment", "")
-        with open(fpath, "r", encoding="utf-8") as f:
+        with open(fpath, encoding="utf-8") as f:
             data = json.load(f)
         varieties[name] = {"sentiment": data}
 
@@ -102,7 +178,7 @@ def load_trends_data(trends_dir) -> dict:
     for fpath in sorted(trends_dir.glob("*_weights.json")):
         name = fpath.stem.replace("_weights", "")
         if name in varieties:
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 varieties[name]["weights"] = json.load(f)
 
     return varieties, index, global_weights
@@ -130,8 +206,8 @@ def compute_summary(series: list) -> dict:
 
     # Trend direction
     if len(scores) >= 3:
-        first_half = sum(scores[:len(scores)//2]) / (len(scores)//2)
-        second_half = sum(scores[len(scores)//2:]) / (len(scores) - len(scores)//2)
+        first_half = sum(scores[: len(scores) // 2]) / (len(scores) // 2)
+        second_half = sum(scores[len(scores) // 2 :]) / (len(scores) - len(scores) // 2)
         if second_half > first_half + 0.1:
             trend = "bullish_improving"
             trend_cn = "情绪转暖 ↑"
@@ -199,8 +275,9 @@ def compute_summary(series: list) -> dict:
     }
 
 
-def generate_sentiment_json(variety_name: str, trends_data: dict,
-                            index_data: dict, weights_data: dict) -> dict | None:
+def generate_sentiment_json(
+    variety_name: str, trends_data: dict, index_data: dict, weights_data: dict
+) -> dict | None:
     """Generate TradingAgents-format sentiment JSON for one variety."""
     symbol = VARIETY_NAME_TO_SYMBOL.get(variety_name)
     if not symbol:
@@ -221,17 +298,19 @@ def generate_sentiment_json(variety_name: str, trends_data: dict,
     # Daily series (last 30 days for LLM prompt size)
     daily_series = []
     for d in series[-30:]:
-        daily_series.append({
-            "date": d.get("date", ""),
-            "avg_score": round(d.get("avg_score", 0), 3),
-            "simple_avg": round(d.get("simple_avg", 0), 3),
-            "note_count": d.get("note_count", 0),
-            "bull_count": d.get("bull_count", 0),
-            "bear_count": d.get("bear_count", 0),
-            "weighted_score": round(d.get("weighted_score", 0), 3),
-            "platforms": d.get("platform_counts", {}),
-            "top_authors": d.get("top_authors", []),
-        })
+        daily_series.append(
+            {
+                "date": d.get("date", ""),
+                "avg_score": round(d.get("avg_score", 0), 3),
+                "simple_avg": round(d.get("simple_avg", 0), 3),
+                "note_count": d.get("note_count", 0),
+                "bull_count": d.get("bull_count", 0),
+                "bear_count": d.get("bear_count", 0),
+                "weighted_score": round(d.get("weighted_score", 0), 3),
+                "platforms": d.get("platform_counts", {}),
+                "top_authors": d.get("top_authors", []),
+            }
+        )
 
     # Platform weights from backtest
     platform_weights = weights.get("platform_weights", {})
@@ -316,10 +395,12 @@ def generate_sentiment_json(variety_name: str, trends_data: dict,
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Generate TradingAgents sentiment JSONs")
     parser.add_argument("--variety", type=str, help="Specific variety name (Chinese)")
-    parser.add_argument("--min-notes", type=int, default=1,
-                        help="Minimum total notes to generate (default: 1)")
+    parser.add_argument(
+        "--min-notes", type=int, default=1, help="Minimum total notes to generate (default: 1)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Preview only, don't write")
     args = parser.parse_args()
 
@@ -347,7 +428,9 @@ def main():
             continue
 
         if output["data"]["social_sentiment"]["total_posts_analyzed"] < args.min_notes:
-            print(f"  SKIP {vname} ({output['data']['social_sentiment']['total_posts_analyzed']} notes < {args.min_notes})")
+            print(
+                f"  SKIP {vname} ({output['data']['social_sentiment']['total_posts_analyzed']} notes < {args.min_notes})"
+            )
             skipped += 1
             continue
 
@@ -355,18 +438,22 @@ def main():
         out_path = OUTPUT_DIR / f"{symbol}_sentiment.json"
 
         if args.dry_run:
-            print(f"  WOULD WRITE {vname} → {out_path} "
-                  f"({output['data']['social_sentiment']['total_posts_analyzed']} notes, "
-                  f"sentiment={output['data']['social_sentiment']['overall_sentiment_label']})")
+            print(
+                f"  WOULD WRITE {vname} → {out_path} "
+                f"({output['data']['social_sentiment']['total_posts_analyzed']} notes, "
+                f"sentiment={output['data']['social_sentiment']['overall_sentiment_label']})"
+            )
             generated += 1
             continue
 
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
 
-        print(f"  WROTE {vname} → {out_path} "
-              f"({output['data']['social_sentiment']['total_posts_analyzed']} notes, "
-              f"sentiment={output['data']['social_sentiment']['overall_sentiment_label']})")
+        print(
+            f"  WROTE {vname} → {out_path} "
+            f"({output['data']['social_sentiment']['total_posts_analyzed']} notes, "
+            f"sentiment={output['data']['social_sentiment']['overall_sentiment_label']})"
+        )
         generated += 1
 
     print(f"\nDone. Generated: {generated}, Skipped: {skipped}")

@@ -3,11 +3,12 @@ Dashboard: futures sentiment vs price comparison
 Output: output/trends/dashboard.html (self-contained, no server needed)
 """
 
-import json, os, sys
-from pathlib import Path
+import json
+import os
 from datetime import datetime
+from pathlib import Path
+
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 TRENDS_DIR = Path(__file__).parent / "output" / "trends"
 
@@ -16,11 +17,11 @@ def load_all_data():
     all_data = {}
     for f in sorted(TRENDS_DIR.glob("*_sentiment.json")):
         variety = f.stem.replace("_sentiment", "")
-        with open(f, "r", encoding="utf-8") as fh:
+        with open(f, encoding="utf-8") as fh:
             all_data.setdefault(variety, {})["sentiment"] = json.load(fh)
     for f in sorted(TRENDS_DIR.glob("*_price.json")):
         variety = f.stem.replace("_price", "")
-        with open(f, "r", encoding="utf-8") as fh:
+        with open(f, encoding="utf-8") as fh:
             all_data.setdefault(variety, {})["price"] = json.load(fh)
     return all_data
 
@@ -30,9 +31,11 @@ def build_dashboard():
     all_data = load_all_data()
 
     # Rank by data richness
-    ranked = sorted(all_data.keys(),
-                    key=lambda v: len(all_data[v].get("sentiment", {}).get("series", [])),
-                    reverse=True)
+    ranked = sorted(
+        all_data.keys(),
+        key=lambda v: len(all_data[v].get("sentiment", {}).get("series", [])),
+        reverse=True,
+    )
     default_variety = ranked[0] if ranked else "螺纹钢"
 
     # Extract lightweight data for JS embedding (strip heavy fields)
@@ -43,19 +46,25 @@ def build_dashboard():
         # Only keep what JS needs for chart rendering
         js_data[v] = {
             "sentiment": {
-                "series": [{"date": s["date"], "avg_score": s["avg_score"],
-                            "weighted_score": s.get("weighted_score"),
-                            "note_count": s["note_count"],
-                            "bull_count": s.get("bull_count", 0),
-                            "bear_count": s.get("bear_count", 0)}
-                           for s in sent_series],
+                "series": [
+                    {
+                        "date": s["date"],
+                        "avg_score": s["avg_score"],
+                        "weighted_score": s.get("weighted_score"),
+                        "note_count": s["note_count"],
+                        "bull_count": s.get("bull_count", 0),
+                        "bear_count": s.get("bear_count", 0),
+                    }
+                    for s in sent_series
+                ],
                 "stats": d.get("sentiment", {}).get("stats", {}),
             },
             "price": {
-                "prices": [{"date": p["date"], "close": p["close"],
-                            "change_pct": p.get("change_pct", 0)}
-                           for p in price_series[-90:]],  # last 90 days
-            }
+                "prices": [
+                    {"date": p["date"], "close": p["close"], "change_pct": p.get("change_pct", 0)}
+                    for p in price_series[-90:]
+                ],  # last 90 days
+            },
         }
 
     # Pre-render mini overview charts for all varieties (keep these server-rendered)
@@ -65,15 +74,22 @@ def build_dashboard():
         if len(sent) < 2:
             continue
         colors = ["#e74c3c" if s["avg_score"] >= 0 else "#27ae60" for s in sent]
-        fig = go.Figure(go.Bar(
-            x=[s["date"] for s in sent], y=[s["avg_score"] for s in sent],
-            marker=dict(color=colors),
-        ))
+        fig = go.Figure(
+            go.Bar(
+                x=[s["date"] for s in sent],
+                y=[s["avg_score"] for s in sent],
+                marker={"color": colors},
+            )
+        )
         fig.update_layout(
-            title=v, plot_bgcolor="#161b22", paper_bgcolor="#161b22",
-            font=dict(color="#8b949e", size=10), height=200,
-            margin=dict(l=30, r=10, t=30, b=30),
-            xaxis=dict(showgrid=False), yaxis=dict(range=[-1, 1], showgrid=False),
+            title=v,
+            plot_bgcolor="#161b22",
+            paper_bgcolor="#161b22",
+            font={"color": "#8b949e", "size": 10},
+            height=200,
+            margin={"l": 30, "r": 10, "t": 30, "b": 30},
+            xaxis={"showgrid": False},
+            yaxis={"range": [-1, 1], "showgrid": False},
             showlegend=False,
         )
         mini_charts += f'<div class="card" style="cursor:pointer" onclick="switchTo(\'{v}\')">{fig.to_html(full_html=False, include_plotlyjs=False)}</div>'
@@ -83,8 +99,9 @@ def build_dashboard():
 
     # Embed plotly.js
     import plotly
+
     js_path = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
-    with open(js_path, "r", encoding="utf-8") as f:
+    with open(js_path, encoding="utf-8") as f:
         plotly_js = f.read()
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -94,7 +111,7 @@ def build_dashboard():
     gw_path = TRENDS_DIR / "_global_weights.json"
     global_metrics = {}
     if gw_path.exists():
-        with open(gw_path, "r", encoding="utf-8") as f:
+        with open(gw_path, encoding="utf-8") as f:
             gw = json.load(f)
         global_metrics = {
             "weights": gw.get("weights", {}),
@@ -130,7 +147,7 @@ body {{ font-family: -apple-system, sans-serif; background: #0d1117; color: #c9d
 <body>
 <div class="header">
   <h1>Futures Sentiment vs Price Dashboard</h1>
-  <div class="meta">多平台 (小红书/微博/知乎) + Sina Futures | {ts} | {len(ranked)} varieties | {global_metrics.get('total_points', 0)} 回测数据点</div>
+  <div class="meta">多平台 (小红书/微博/知乎) + Sina Futures | {ts} | {len(ranked)} varieties | {global_metrics.get("total_points", 0)} 回测数据点</div>
 </div>
 
 <div id="metrics_panel" style="display:flex;gap:16px;padding:12px 32px;background:#161b22;border-bottom:1px solid #30363d;flex-wrap:wrap;align-items:center">
@@ -339,7 +356,7 @@ window.onload = function() {{
         f.write(html)
 
     print(f"Dashboard: {out_path}")
-    print(f"Size: {os.path.getsize(out_path)/1024:.0f}KB")
+    print(f"Size: {os.path.getsize(out_path) / 1024:.0f}KB")
     print(f"Varieties: {len(ranked)}, Default: {default_variety}")
     return str(out_path)
 

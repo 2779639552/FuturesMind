@@ -7,6 +7,7 @@ complete path map (`RISK_ANALYSIS_PATH_MAP` / `DEBATE_PATH_MAP`), so a
 fall-through return can never hit a missing entry -- which would crash LangGraph
 mid-run on prompt/i18n/refactor drift in the speaker labels.
 """
+
 import pytest
 
 from tradingagents.graph.conditional_logic import ConditionalLogic
@@ -22,14 +23,20 @@ def _debate_state(current_response, count=0):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("latest_speaker", [
-    "Aggressive", "Aggressive Analyst",
-    "Conservative", "Conservative Analyst",
-    "Neutral", "Neutral Analyst",
-    "",                          # drift: empty label
-    "Aggressive Risk Analyst",   # drift: node renamed
-    "Agresivo",                  # drift: i18n / translated label
-])
+@pytest.mark.parametrize(
+    "latest_speaker",
+    [
+        "Aggressive",
+        "Aggressive Analyst",
+        "Conservative",
+        "Conservative Analyst",
+        "Neutral",
+        "Neutral Analyst",
+        "",  # drift: empty label
+        "Aggressive Risk Analyst",  # drift: node renamed
+        "Agresivo",  # drift: i18n / translated label
+    ],
+)
 def test_router_return_always_routable(latest_speaker):
     logic = ConditionalLogic(max_risk_discuss_rounds=1)
     target = logic.should_continue_risk_analysis(_state(latest_speaker))
@@ -58,11 +65,17 @@ def test_path_map_covers_full_router_range():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("current_response", [
-    "Bull", "Bull Researcher", "Bear", "Bear Researcher",
-    "",                       # drift: empty label
-    "Optimista",              # drift: i18n / translated label
-])
+@pytest.mark.parametrize(
+    "current_response",
+    [
+        "Bull",
+        "Bull Researcher",
+        "Bear",
+        "Bear Researcher",
+        "",  # drift: empty label
+        "Optimista",  # drift: i18n / translated label
+    ],
+)
 def test_debate_router_return_always_routable(current_response):
     logic = ConditionalLogic(max_debate_rounds=1)
     target = logic.should_continue_debate(_debate_state(current_response))

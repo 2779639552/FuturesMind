@@ -58,9 +58,7 @@ class GraphSetup:
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
 
-    def setup_graph(
-        self, selected_analysts=("market", "social", "news", "fundamentals")
-    ):
+    def setup_graph(self, selected_analysts=("market", "social", "news", "fundamentals")):
         """Set up and compile the agent workflow graph.
 
         Args:

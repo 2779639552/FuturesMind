@@ -14,7 +14,8 @@ from tradingagents.llm_clients import anthropic_client as mod
 def _capture_kwargs(monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(
-        mod, "NormalizedChatAnthropic",
+        mod,
+        "NormalizedChatAnthropic",
         lambda **kwargs: captured.setdefault("kwargs", kwargs),
     )
     return captured
@@ -25,9 +26,12 @@ class TestEffortGate:
     @pytest.mark.parametrize(
         "model",
         [
-            "claude-haiku-4-5", "claude-haiku-5-0", "claude-haiku-4-7-preview",
+            "claude-haiku-4-5",
+            "claude-haiku-5-0",
+            "claude-haiku-4-7-preview",
             # Sonnet 4.5 (and earlier) 400 on effort — only Sonnet 4.6+ supports it.
-            "claude-sonnet-4-5", "claude-sonnet-4-0",
+            "claude-sonnet-4-5",
+            "claude-sonnet-4-0",
         ],
     )
     def test_unsupported_models_do_not_receive_effort(self, monkeypatch, model):
@@ -38,7 +42,9 @@ class TestEffortGate:
     @pytest.mark.parametrize(
         "model",
         [
-            "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7",
+            "claude-opus-4-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
             "claude-sonnet-4-6",
         ],
     )
@@ -69,17 +75,13 @@ class TestEffortGate:
 
     def test_mythos_preview_receives_effort(self, monkeypatch):
         captured = _capture_kwargs(monkeypatch)
-        mod.AnthropicClient(
-            model="claude-mythos-preview", effort="medium", api_key="x"
-        ).get_llm()
+        mod.AnthropicClient(model="claude-mythos-preview", effort="medium", api_key="x").get_llm()
         assert captured["kwargs"]["effort"] == "medium"
 
     def test_unknown_anthropic_model_does_not_receive_effort(self, monkeypatch):
         """Default is conservative — unknown models don't get effort to avoid 400s."""
         captured = _capture_kwargs(monkeypatch)
-        mod.AnthropicClient(
-            model="claude-experimental-x", effort="medium", api_key="x"
-        ).get_llm()
+        mod.AnthropicClient(model="claude-experimental-x", effort="medium", api_key="x").get_llm()
         assert "effort" not in captured["kwargs"]
 
     def test_other_kwargs_still_forwarded_when_effort_skipped(self, monkeypatch):

@@ -10,7 +10,8 @@
 Cookie 有效期 7-30 天, 过期后重新运行此脚本。
 """
 
-import sys, time
+import sys
+import time
 from pathlib import Path
 
 CREDENTIALS_DIR = Path(__file__).parent / "credentials"
@@ -70,9 +71,7 @@ def main():
             sys.exit(1)
 
         # 提取 + 保存
-        cookie_str = "; ".join(
-            f"{c['name']}={c['value']}" for c in context.cookies()
-        )
+        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in context.cookies())
 
         if "SUB" not in cookie_str:
             print("\nSUB cookie not found after login detection!")
@@ -81,7 +80,7 @@ def main():
 
         COOKIE_FILE.write_text(cookie_str, encoding="utf-8")
         print(f"\nDone! Cookie saved to: {COOKIE_FILE}")
-        print(f"  SUB: present")
+        print("  SUB: present")
         print(f"  Length: {len(cookie_str)} chars")
         browser.close()
 

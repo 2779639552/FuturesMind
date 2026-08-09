@@ -13,27 +13,33 @@
     python validator_weibo.py --cookie "YOUR_SUB=..."  # 指定Cookie
 """
 
-import json
-import time
-import random
-import hashlib
-import logging
 import argparse
+import json
+import logging
+import random
 import sys
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import requests
+from config import (
+    BACKOFF_FACTOR,
+    ENDPOINTS,
+    LOG_FORMAT,
+    LOG_LEVEL,
+    MAX_DELAY,
+    MAX_RETRIES,
+    MIN_DELAY,
+    OUTPUT_DIR,
+    REQUEST_HEADERS,
+    REQUEST_TIMEOUT,
+    SEARCH_KEYWORDS,
+    ValidationCriteria,
+)
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-from config import (
-    SEARCH_KEYWORDS, REQUEST_HEADERS, USER_AGENTS,
-    REQUEST_TIMEOUT, MIN_DELAY, MAX_DELAY, MAX_RETRIES, BACKOFF_FACTOR,
-    ENDPOINTS, ValidationCriteria, OUTPUT_DIR, LOG_FORMAT, LOG_LEVEL,
-)
 
 logger = logging.getLogger("weibo.validator")
 
@@ -42,18 +48,20 @@ logger = logging.getLogger("weibo.validator")
 # 数据结构
 # ============================================================
 
+
 @dataclass
 class WeiboPost:
     """微博帖子"""
+
     mid: str
     text: str
-    created_at: Optional[str] = None
-    user_name: Optional[str] = None
-    user_id: Optional[str] = None
+    created_at: str | None = None
+    user_name: str | None = None
+    user_id: str | None = None
     reposts_count: int = 0
     comments_count: int = 0
     attitudes_count: int = 0
-    source: Optional[str] = None
+    source: str | None = None
     pics: list = field(default_factory=list)
     raw: dict = field(default_factory=dict)
 
@@ -61,6 +69,7 @@ class WeiboPost:
 @dataclass
 class ValidationResult:
     """单个平台的验证结果"""
+
     platform: str
     accessible: bool
     total_requests: int
@@ -68,7 +77,7 @@ class ValidationResult:
     total_results: int
     relevant_results: int
     avg_response_time: float
-    max_freshness_minutes: Optional[float]
+    max_freshness_minutes: float | None
     sustained_success_rate: float
     errors: list = field(default_factory=list)
     sample_posts: list = field(default_factory=list)
@@ -93,29 +102,33 @@ class ValidationResult:
     def to_report(self) -> str:
         status = "✅ 通过" if self.passed else "❌ 未通过"
         lines = [
-            f"\n{'='*60}",
+            f"\n{'=' * 60}",
             f"微博 (m.weibo.cn) 验证结果: {status}",
-            f"{'='*60}",
+            f"{'=' * 60}",
             f"  可接入性:     {'✅' if self.accessible else '❌'}",
-            f"  请求成功率:   {self.successful_requests}/{self.total_requests} ({self.successful_requests/self.total_requests*100:.0f}%)",
+            f"  请求成功率:   {self.successful_requests}/{self.total_requests} ({self.successful_requests / self.total_requests * 100:.0f}%)",
             f"  总结果数:     {self.total_results}",
             f"  相关结果数:   {self.relevant_results}",
-            f"  相关率:       {self.relevance_rate*100:.0f}% (要求 ≥ {ValidationCriteria.MIN_RELEVANCE_RATE*100:.0f}%)",
+            f"  相关率:       {self.relevance_rate * 100:.0f}% (要求 ≥ {ValidationCriteria.MIN_RELEVANCE_RATE * 100:.0f}%)",
             f"  平均响应时间: {self.avg_response_time:.2f}s",
-            f"  数据新鲜度:   {self.max_freshness_minutes:.0f}min 前" if self.max_freshness_minutes else "  数据新鲜度:   N/A",
-            f"  持续请求成功率: {self.sustained_success_rate*100:.0f}%",
+            f"  数据新鲜度:   {self.max_freshness_minutes:.0f}min 前"
+            if self.max_freshness_minutes
+            else "  数据新鲜度:   N/A",
+            f"  持续请求成功率: {self.sustained_success_rate * 100:.0f}%",
         ]
         if self.sample_posts:
-            lines.append(f"\n  样本帖子 (前5条):")
+            lines.append("\n  样本帖子 (前5条):")
             for i, post in enumerate(self.sample_posts[:5], 1):
-                text_preview = post.text[:80].replace('\n', ' ')
+                text_preview = post.text[:80].replace("\n", " ")
                 lines.append(f"  {i}. [{post.user_name}] {text_preview}...")
-                lines.append(f"     转发:{post.reposts_count} 评论:{post.comments_count} 赞:{post.attitudes_count}")
+                lines.append(
+                    f"     转发:{post.reposts_count} 评论:{post.comments_count} 赞:{post.attitudes_count}"
+                )
         if self.errors:
-            lines.append(f"\n  错误列表:")
+            lines.append("\n  错误列表:")
             for err in self.errors[:5]:
                 lines.append(f"  - {err}")
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 # ============================================================
@@ -125,32 +138,122 @@ class ValidationResult:
 # 期货相关术语词典
 FUTURES_TERMS = {
     # 品种
-    "螺纹", "螺纹钢", "铁矿石", "铁矿", "热卷", "焦炭", "焦煤",
-    "铜", "沪铜", "铝", "沪铝", "锌", "沪锌", "镍", "沪镍",
-    "黄金", "沪金", "白银", "沪银",
-    "原油", "PTA", "甲醇", "PVC", "PP", "塑料", "橡胶", "沥青",
-    "豆粕", "豆油", "棕榈油", "菜粕", "白糖", "棉花", "玉米",
-    "生猪", "鸡蛋",
-    "股指期货", "国债期货", "IF", "IC", "IH", "IM",
+    "螺纹",
+    "螺纹钢",
+    "铁矿石",
+    "铁矿",
+    "热卷",
+    "焦炭",
+    "焦煤",
+    "铜",
+    "沪铜",
+    "铝",
+    "沪铝",
+    "锌",
+    "沪锌",
+    "镍",
+    "沪镍",
+    "黄金",
+    "沪金",
+    "白银",
+    "沪银",
+    "原油",
+    "PTA",
+    "甲醇",
+    "PVC",
+    "PP",
+    "塑料",
+    "橡胶",
+    "沥青",
+    "豆粕",
+    "豆油",
+    "棕榈油",
+    "菜粕",
+    "白糖",
+    "棉花",
+    "玉米",
+    "生猪",
+    "鸡蛋",
+    "股指期货",
+    "国债期货",
+    "IF",
+    "IC",
+    "IH",
+    "IM",
     # 通用期货术语
-    "期货", "期市", "商品期货", "金融期货",
-    "多头", "空头", "做多", "做空", "开仓", "平仓", "持仓",
-    "止损", "止盈", "套利", "对冲", "基差", "升水", "贴水",
-    "主力合约", "远月合约", "交割", "移仓", "换月",
-    "上期所", "大商所", "郑商所", "中金所", "上期能源",
-    "CME", "LME", "COMEX", "CBOT", "ICE",
-    "K线", "均线", "MACD", "布林带", "成交量", "持仓量",
-    "逼仓", "爆仓", "穿仓", "强平",
+    "期货",
+    "期市",
+    "商品期货",
+    "金融期货",
+    "多头",
+    "空头",
+    "做多",
+    "做空",
+    "开仓",
+    "平仓",
+    "持仓",
+    "止损",
+    "止盈",
+    "套利",
+    "对冲",
+    "基差",
+    "升水",
+    "贴水",
+    "主力合约",
+    "远月合约",
+    "交割",
+    "移仓",
+    "换月",
+    "上期所",
+    "大商所",
+    "郑商所",
+    "中金所",
+    "上期能源",
+    "CME",
+    "LME",
+    "COMEX",
+    "CBOT",
+    "ICE",
+    "K线",
+    "均线",
+    "MACD",
+    "布林带",
+    "成交量",
+    "持仓量",
+    "逼仓",
+    "爆仓",
+    "穿仓",
+    "强平",
     # 行情描述
-    "涨", "跌", "震荡", "突破", "回调", "反弹", "跳水",
-    "高开", "低开", "收涨", "收跌",
+    "涨",
+    "跌",
+    "震荡",
+    "突破",
+    "回调",
+    "反弹",
+    "跳水",
+    "高开",
+    "低开",
+    "收涨",
+    "收跌",
 }
 
 # 噪声过滤词（含这些词但非期货相关的）
 NOISE_TERMS = {
-    "期货交易平台", "期货配资", "喊单", "带单", "入金", "出金",
-    "期货骗局", "杀猪盘", "稳赚", "暴富", "日赚",
-    "美女", "相亲", "恋爱",  # 垃圾营销
+    "期货交易平台",
+    "期货配资",
+    "喊单",
+    "带单",
+    "入金",
+    "出金",
+    "期货骗局",
+    "杀猪盘",
+    "稳赚",
+    "暴富",
+    "日赚",
+    "美女",
+    "相亲",
+    "恋爱",  # 垃圾营销
 }
 
 
@@ -177,21 +280,44 @@ def is_futures_related(text: str) -> bool:
                 return True
 
     # 如果只匹配1个术语，对于短文本（<50字）也可以接受
-    if match_count == 1 and len(text) < 50 and any(t in text for t in [
-        "螺纹", "铁矿石", "焦炭", "焦煤", "铜", "铝", "原油", "PTA",
-        "期货", "多头", "空头", "做多", "做空", "开仓", "平仓", "持仓",
-        "交割", "上期所", "大商所", "郑商所", "主力合约",
-    ]):
-        return True
-
-    return False
+    return bool(
+        match_count == 1
+        and len(text) < 50
+        and any(
+            t in text
+            for t in [
+                "螺纹",
+                "铁矿石",
+                "焦炭",
+                "焦煤",
+                "铜",
+                "铝",
+                "原油",
+                "PTA",
+                "期货",
+                "多头",
+                "空头",
+                "做多",
+                "做空",
+                "开仓",
+                "平仓",
+                "持仓",
+                "交割",
+                "上期所",
+                "大商所",
+                "郑商所",
+                "主力合约",
+            ]
+        )
+    )
 
 
 # ============================================================
 # HTTP 会话构建
 # ============================================================
 
-def build_session(cookie: Optional[str] = None) -> requests.Session:
+
+def build_session(cookie: str | None = None) -> requests.Session:
     """构建带重试机制和Cookie的HTTP会话"""
     session = requests.Session()
 
@@ -223,6 +349,7 @@ def build_session(cookie: Optional[str] = None) -> requests.Session:
 # ============================================================
 # 核心采集逻辑
 # ============================================================
+
 
 def search_weibo(
     session: requests.Session,
@@ -268,7 +395,8 @@ def search_weibo(
 
         # 去除HTML标签
         import re
-        text = re.sub(r'<[^>]+>', '', text)
+
+        text = re.sub(r"<[^>]+>", "", text)
 
         post = WeiboPost(
             mid=mblog.get("mid", ""),
@@ -300,20 +428,23 @@ def extract_posts(response_json: dict) -> list[dict]:
         if mblog:
             text = mblog.get("text", "")
             import re
-            text = re.sub(r'<[^>]+>', '', text)
-            posts.append({
-                "mid": mblog.get("mid", ""),
-                "text": text,
-                "created_at": mblog.get("created_at"),
-                "user_name": mblog.get("user", {}).get("screen_name", ""),
-                "reposts_count": mblog.get("reposts_count", 0),
-                "comments_count": mblog.get("comments_count", 0),
-                "attitudes_count": mblog.get("attitudes_count", 0),
-            })
+
+            text = re.sub(r"<[^>]+>", "", text)
+            posts.append(
+                {
+                    "mid": mblog.get("mid", ""),
+                    "text": text,
+                    "created_at": mblog.get("created_at"),
+                    "user_name": mblog.get("user", {}).get("screen_name", ""),
+                    "reposts_count": mblog.get("reposts_count", 0),
+                    "comments_count": mblog.get("comments_count", 0),
+                    "attitudes_count": mblog.get("attitudes_count", 0),
+                }
+            )
     return posts
 
 
-def parse_created_at(created_at: str) -> Optional[datetime]:
+def parse_created_at(created_at: str) -> datetime | None:
     """解析微博时间格式：'Tue Jul 15 10:30:00 +0800 2026' 或 '2分钟前' 等"""
     if not created_at:
         return None
@@ -331,9 +462,7 @@ def parse_created_at(created_at: str) -> Optional[datetime]:
         return now - timedelta(days=1)
     elif "前天" in created_at:
         return now - timedelta(days=2)
-    elif "秒前" in created_at:
-        return now
-    elif "刚刚" in created_at:
+    elif "秒前" in created_at or "刚刚" in created_at:
         return now
 
     # 绝对时间：Tue Jul 15 10:30:00 +0800 2026
@@ -355,9 +484,10 @@ def parse_created_at(created_at: str) -> Optional[datetime]:
 # 验证主流程
 # ============================================================
 
+
 def validate(
-    cookie: Optional[str] = None,
-    keywords: Optional[list[str]] = None,
+    cookie: str | None = None,
+    keywords: list[str] | None = None,
     verbose: bool = False,
 ) -> ValidationResult:
     """
@@ -389,9 +519,9 @@ def validate(
     # ========================================
     # Phase 1: 可接入性 + 内容覆盖
     # ========================================
-    print(f"\n{'─'*50}")
+    print(f"\n{'─' * 50}")
     print("Phase 1: 可接入性与内容覆盖验证")
-    print(f"{'─'*50}")
+    print(f"{'─' * 50}")
 
     response_times = []
     all_posts = []
@@ -419,17 +549,23 @@ def validate(
                 # 时效性
                 post_time = parse_created_at(post.created_at)
                 if post_time:
-                    fresh = datetime.now(post_time.tzinfo) - post_time if post_time.tzinfo else datetime.now() - post_time
+                    fresh = (
+                        datetime.now(post_time.tzinfo) - post_time
+                        if post_time.tzinfo
+                        else datetime.now() - post_time
+                    )
                     if fresh < max_freshness:
                         max_freshness = fresh
 
             result.total_results += len(posts)
 
             if verbose:
-                related_count = sum(1 for _, r in all_posts[-len(posts):] if r)
+                related_count = sum(1 for _, r in all_posts[-len(posts) :] if r)
                 print(f"  '{keyword}': {len(posts)}条结果, {related_count}条相关, {elapsed:.2f}s")
             else:
-                print(f"  ✅ '{keyword}': {len(posts)}条结果, {sum(1 for _, r in all_posts[-len(posts):] if r)}条相关 ({elapsed:.2f}s)")
+                print(
+                    f"  ✅ '{keyword}': {len(posts)}条结果, {sum(1 for _, r in all_posts[-len(posts) :] if r)}条相关 ({elapsed:.2f}s)"
+                )
 
             result.accessible = True
 
@@ -452,7 +588,7 @@ def validate(
     # ========================================
     # Phase 2: 频率限制验证
     # ========================================
-    print(f"\n{'─'*50}")
+    print(f"\n{'─' * 50}")
     print("Phase 2: 频率限制验证 (连续{0}次请求)")
 
     sustained = 0
@@ -467,36 +603,40 @@ def validate(
                 sustained += 1
             sustained_total += 1
             if verbose or i % 5 == 0:
-                print(f"  请求 #{i+1}: ✅ ({len(posts)}条)")
+                print(f"  请求 #{i + 1}: ✅ ({len(posts)}条)")
         except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if hasattr(e, 'response') else '?'
-            print(f"  请求 #{i+1}: ❌ HTTP {status}")
-            result.errors.append(f"Sustained request #{i+1}: HTTP {status}")
+            status = e.response.status_code if hasattr(e, "response") else "?"
+            print(f"  请求 #{i + 1}: ❌ HTTP {status}")
+            result.errors.append(f"Sustained request #{i + 1}: HTTP {status}")
             if status == 418 or status == 403:
-                logger.warning(f"触发反爬，停止压力测试 (请求#{i+1})")
+                logger.warning(f"触发反爬，停止压力测试 (请求#{i + 1})")
                 break
         except Exception as e:
-            print(f"  请求 #{i+1}: ❌ {str(e)[:50]}")
-            result.errors.append(f"Sustained request #{i+1}: {str(e)[:50]}")
+            print(f"  请求 #{i + 1}: ❌ {str(e)[:50]}")
+            result.errors.append(f"Sustained request #{i + 1}: {str(e)[:50]}")
 
     if sustained_total > 0:
         result.sustained_success_rate = sustained / sustained_total
-    print(f"  结果: {sustained}/{sustained_total} 成功 (成功率 {result.sustained_success_rate*100:.0f}%)")
+    print(
+        f"  结果: {sustained}/{sustained_total} 成功 (成功率 {result.sustained_success_rate * 100:.0f}%)"
+    )
 
     # ========================================
     # Phase 3: 结果展示
     # ========================================
-    print(f"\n{'─'*50}")
+    print(f"\n{'─' * 50}")
     print("Phase 3: 样本数据展示")
-    print(f"{'─'*50}")
+    print(f"{'─' * 50}")
 
     if result.sample_posts:
         print(f"\n期货相关的微博样本 ({len(result.sample_posts)}条):")
         for i, post in enumerate(result.sample_posts[:5], 1):
-            text_preview = post.text[:100].replace('\n', ' ').replace('\r', '')
+            text_preview = post.text[:100].replace("\n", " ").replace("\r", "")
             print(f"\n  [{i}] @{post.user_name} ({post.created_at})")
             print(f"  📝 {text_preview}...")
-            print(f"  📊 转发:{post.reposts_count} 评论:{post.comments_count} 赞:{post.attitudes_count}")
+            print(
+                f"  📊 转发:{post.reposts_count} 评论:{post.comments_count} 赞:{post.attitudes_count}"
+            )
     else:
         print("\n  ⚠️ 未找到期货相关的微博（可能需要更新Cookie或关键词）")
 
@@ -510,16 +650,15 @@ def validate(
 # CLI入口
 # ============================================================
 
+
 def main():
     parser = argparse.ArgumentParser(description="微博数据采集可行性验证")
-    parser.add_argument("--cookie", type=str, default=None,
-                        help="微博Cookie (必须包含SUB字段)")
-    parser.add_argument("--keyword", type=str, nargs="+", default=None,
-                        help="测试关键词（默认使用配置中的前5个）")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="详细输出")
-    parser.add_argument("--output", type=str, default=None,
-                        help="结果输出JSON文件路径")
+    parser.add_argument("--cookie", type=str, default=None, help="微博Cookie (必须包含SUB字段)")
+    parser.add_argument(
+        "--keyword", type=str, nargs="+", default=None, help="测试关键词（默认使用配置中的前5个）"
+    )
+    parser.add_argument("--verbose", "-v", action="store_true", help="详细输出")
+    parser.add_argument("--output", type=str, default=None, help="结果输出JSON文件路径")
 
     args = parser.parse_args()
 

@@ -4,6 +4,7 @@ A single transient 429 burst used to kill an otherwise-healthy multi-agent run
 because each provider SDK's max_retries (default 2) was not exposed. This adds an
 opt-in llm_max_retries knob forwarded to every provider chat client.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -14,6 +15,7 @@ import tradingagents.default_config as default_config_module
 from tradingagents.graph.trading_graph import TradingAgentsGraph, _coerce_max_retries
 
 # --- coercion / validation -------------------------------------------------
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize("value,expected", [(0, 0), (2, 2), (10, 10), ("6", 6)])
@@ -43,6 +45,7 @@ def test_coerce_rejects_non_integers(bad):
 
 
 # --- forwarding into provider kwargs --------------------------------------
+
 
 def _bare_graph(config):
     g = object.__new__(TradingAgentsGraph)
@@ -77,6 +80,7 @@ def test_invalid_config_value_fails_loudly():
 
 
 # --- env overlay -----------------------------------------------------------
+
 
 def _reload_with_env(monkeypatch, **overrides):
     for key in list(default_config_module._ENV_OVERRIDES):

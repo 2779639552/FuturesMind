@@ -8,7 +8,6 @@
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 
 def load_unique_records(
@@ -41,7 +40,7 @@ def load_unique_records(
             continue
 
         file_lines = 0
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -94,7 +93,7 @@ def load_unique_records_with_platform_fallback(
             continue
 
         file_lines = 0
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:

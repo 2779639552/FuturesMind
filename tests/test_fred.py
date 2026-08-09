@@ -3,6 +3,7 @@ missing-value handling, lookahead-safe windowing, and router integration.
 
 All API access is mocked, so these run without a network connection or a key.
 """
+
 import copy
 import unittest
 from unittest import mock
@@ -29,7 +30,7 @@ _OBS = {
     "observations": [
         {"date": "2025-06-01", "value": "4.1"},
         {"date": "2025-07-01", "value": "4.3"},
-        {"date": "2025-08-01", "value": "."},   # missing -> skipped
+        {"date": "2025-08-01", "value": "."},  # missing -> skipped
         {"date": "2025-09-01", "value": "4.4"},
     ]
 }
@@ -37,12 +38,14 @@ _OBS = {
 
 def _request_stub(meta=_META, obs=_OBS):
     """Build a _request replacement that dispatches on the endpoint path."""
+
     def _impl(path, params):
         if path == "series":
             return meta
         if path == "series/observations":
             return obs
         raise AssertionError(f"unexpected FRED path: {path}")
+
     return _impl
 
 
@@ -78,8 +81,10 @@ class FredResolutionTests(unittest.TestCase):
 @pytest.mark.unit
 class FredConfigTests(unittest.TestCase):
     def test_missing_key_raises_not_configured(self):
-        with mock.patch.dict("os.environ", {}, clear=True), \
-                self.assertRaises(fred.FredNotConfiguredError):
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            self.assertRaises(fred.FredNotConfiguredError),
+        ):
             fred.get_api_key()
 
     def test_not_configured_is_a_value_error(self):
@@ -160,9 +165,7 @@ class FredRoutingTests(unittest.TestCase):
         config_module._config = copy.deepcopy(default_config.DEFAULT_CONFIG)
 
     def test_macro_category_routes_to_fred(self):
-        self.assertEqual(
-            interface.get_category_for_method("get_macro_indicators"), "macro_data"
-        )
+        self.assertEqual(interface.get_category_for_method("get_macro_indicators"), "macro_data")
         set_config({"data_vendors": {"macro_data": "fred"}})
         with mock.patch.dict(
             interface.VENDOR_METHODS,

@@ -22,20 +22,19 @@
     python xhs_scraper.py --no-login --headless
 """
 
-import json
-import time
-import random
-import logging
 import argparse
-import sys
+import json
+import logging
+import random
 import re
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
+import sys
+import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote, urljoin
 
-from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout, Page, Browser
+from playwright.sync_api import Browser, Page, TimeoutError as PwTimeout, sync_playwright
 
 # --- 配置 ---
 logger = logging.getLogger("xhs.scraper")
@@ -110,7 +109,8 @@ XHS_HOME_URL = "https://www.xiaohongshu.com/explore"
 # 工具函数
 # ============================================================
 
-def decode_objectid_timestamp(note_id: str) -> Optional[str]:
+
+def decode_objectid_timestamp(note_id: str) -> str | None:
     """
     从 MongoDB ObjectId (24位hex) 的前8位解码时间戳。
     小红书 note_id 使用 MongoDB ObjectId 格式，
@@ -149,7 +149,7 @@ def parse_like_count(raw: str) -> int:
         except ValueError:
             return 0
     # 去掉非数字字符（除了负号）
-    digits = re.sub(r'[^\d]', '', raw)
+    digits = re.sub(r"[^\d]", "", raw)
     try:
         return int(digits) if digits else 1
     except ValueError:
@@ -167,41 +167,157 @@ def parse_interaction_count(raw: str) -> int:
 
 # 强信号词（命中1个即可判断为期货相关）
 STRONG_FUTURES_SIGNALS = {
-    "期货", "期市", "上期所", "大商所", "郑商所", "中金所", "上期能源",
-    "主力合约", "交割", "开仓", "平仓", "持仓", "多头", "空头",
-    "CME", "COMEX", "LME", "CBOT", "ICE",
+    "期货",
+    "期市",
+    "上期所",
+    "大商所",
+    "郑商所",
+    "中金所",
+    "上期能源",
+    "主力合约",
+    "交割",
+    "开仓",
+    "平仓",
+    "持仓",
+    "多头",
+    "空头",
+    "CME",
+    "COMEX",
+    "LME",
+    "CBOT",
+    "ICE",
 }
 
 # 品种词（需要命中2个或配合强信号）
 VARIETY_NAMES = {
-    "螺纹钢", "螺纹", "铁矿石", "铁矿", "热卷", "焦炭", "焦煤", "硅铁", "锰硅",
-    "铜", "沪铜", "伦铜", "沪铝", "沪锌", "沪镍", "沪锡", "沪铅",
-    "黄金", "沪金", "沪银", "白银", "金价",
-    "原油", "油价", "PTA", "甲醇", "PVC", "聚丙烯", "塑料", "橡胶", "沥青",
-    "尿素", "纯碱", "玻璃", "乙二醇", "苯乙烯",
-    "豆粕", "豆油", "棕榈油", "棕榈", "菜粕", "菜油", "白糖", "棉花", "玉米",
-    "生猪", "鸡蛋", "苹果", "红枣", "花生",
-    "股指期货", "国债期货", "IF", "IC", "IH", "IM",
-    "黑色系", "有色金属", "农产品", "能化", "能源化工",
+    "螺纹钢",
+    "螺纹",
+    "铁矿石",
+    "铁矿",
+    "热卷",
+    "焦炭",
+    "焦煤",
+    "硅铁",
+    "锰硅",
+    "铜",
+    "沪铜",
+    "伦铜",
+    "沪铝",
+    "沪锌",
+    "沪镍",
+    "沪锡",
+    "沪铅",
+    "黄金",
+    "沪金",
+    "沪银",
+    "白银",
+    "金价",
+    "原油",
+    "油价",
+    "PTA",
+    "甲醇",
+    "PVC",
+    "聚丙烯",
+    "塑料",
+    "橡胶",
+    "沥青",
+    "尿素",
+    "纯碱",
+    "玻璃",
+    "乙二醇",
+    "苯乙烯",
+    "豆粕",
+    "豆油",
+    "棕榈油",
+    "棕榈",
+    "菜粕",
+    "菜油",
+    "白糖",
+    "棉花",
+    "玉米",
+    "生猪",
+    "鸡蛋",
+    "苹果",
+    "红枣",
+    "花生",
+    "股指期货",
+    "国债期货",
+    "IF",
+    "IC",
+    "IH",
+    "IM",
+    "黑色系",
+    "有色金属",
+    "农产品",
+    "能化",
+    "能源化工",
 }
 
 # 期货市场术语（配合品种词使用）
 FUTURES_MARKET_TERMS = {
-    "回调", "反弹", "突破", "震荡", "涨跌", "涨停", "跌停",
-    "做多", "做空", "止损", "止盈", "套利", "对冲", "基差", "升水", "贴水",
-    "K线", "均线", "MACD", "布林带", "成交量", "持仓量", "增仓", "减仓",
-    "逼仓", "爆仓", "强平", "穿仓",
-    "移仓", "换月", "近月", "远月",
-    "实盘", "复盘", "盘面", "行情", "走势", "趋势",
-    "夜盘", "日盘", "收盘", "开盘",
+    "回调",
+    "反弹",
+    "突破",
+    "震荡",
+    "涨跌",
+    "涨停",
+    "跌停",
+    "做多",
+    "做空",
+    "止损",
+    "止盈",
+    "套利",
+    "对冲",
+    "基差",
+    "升水",
+    "贴水",
+    "K线",
+    "均线",
+    "MACD",
+    "布林带",
+    "成交量",
+    "持仓量",
+    "增仓",
+    "减仓",
+    "逼仓",
+    "爆仓",
+    "强平",
+    "穿仓",
+    "移仓",
+    "换月",
+    "近月",
+    "远月",
+    "实盘",
+    "复盘",
+    "盘面",
+    "行情",
+    "走势",
+    "趋势",
+    "夜盘",
+    "日盘",
+    "收盘",
+    "开盘",
 }
 
 # 噪声检测（这些词出现通常意味着营销/喊单/非期货内容）
 NOISE_PATTERNS = [
-    r"配资", r"喊单", r"带单", r"暴富", r"稳赚", r"日赚",
-    r"恋爱", r"相亲", r"脱单", r"交友",
-    r"加微信", r"加V", r"私信", r"咨询\s*免费",
-    r"薅羊毛", r"福利", r"抽奖",
+    r"配资",
+    r"喊单",
+    r"带单",
+    r"暴富",
+    r"稳赚",
+    r"日赚",
+    r"恋爱",
+    r"相亲",
+    r"脱单",
+    r"交友",
+    r"加微信",
+    r"加V",
+    r"私信",
+    r"咨询\s*免费",
+    r"薅羊毛",
+    r"福利",
+    r"抽奖",
 ]
 
 
@@ -253,21 +369,10 @@ def is_futures_related_xhs(title: str, desc: str = "", tags: list = None) -> tup
     return is_related, normalized
 
 
-def filter_futures_notes(notes: list) -> list:
-    """从笔记列表中过滤出期货相关的"""
-    relevant = []
-    for note in notes:
-        is_rel, confidence = is_futures_related_xhs(note.title, note.desc, note.tags)
-        if is_rel:
-            # 把置信度存到 desc 里用于调试（后续可改成独立字段）
-            note._futures_confidence = confidence
-            relevant.append(note)
-    return relevant
-
-
 @dataclass
 class XHSNote:
     """小红书笔记"""
+
     note_id: str = ""
     title: str = ""
     desc: str = ""
@@ -277,11 +382,11 @@ class XHSNote:
     comment_count: str = ""
     collect_count: str = ""
     tags: list = field(default_factory=list)
-    note_type: str = ""       # normal / video
+    note_type: str = ""  # normal / video
     cover_url: str = ""
-    publish_time: str = ""    # 格式化时间字符串
+    publish_time: str = ""  # 格式化时间字符串
     url: str = ""
-    keyword: str = ""         # 搜索用哪个关键词找到的
+    keyword: str = ""  # 搜索用哪个关键词找到的
     # 以下为计算字段
     like_count_int: int = 0
     comment_count_int: int = 0
@@ -296,8 +401,8 @@ class XHSScraper:
         self.headless = headless
         self.debug = debug
         self.playwright = None
-        self.browser: Optional[Browser] = None
-        self.page: Optional[Page] = None
+        self.browser: Browser | None = None
+        self.page: Page | None = None
         self.results: list[XHSNote] = []
 
     def start(self):
@@ -315,10 +420,12 @@ class XHSScraper:
         ]
 
         if not self.headless:
-            launch_args.extend([
-                "--window-size=1280,900",
-                "--window-position=100,100",
-            ])
+            launch_args.extend(
+                [
+                    "--window-size=1280,900",
+                    "--window-position=100,100",
+                ]
+            )
 
         self.browser = self.playwright.chromium.launch(
             headless=self.headless,
@@ -343,7 +450,7 @@ class XHSScraper:
         # 加载已保存的登录状态
         if STORAGE_STATE_FILE.exists():
             try:
-                with open(STORAGE_STATE_FILE, "r") as f:
+                with open(STORAGE_STATE_FILE) as f:
                     storage_state = json.load(f)
                 context_options["storage_state"] = storage_state
                 logger.info("Loaded saved login state")
@@ -476,14 +583,13 @@ class XHSScraper:
                 return notes
 
         # 滚动加载更多内容
-        for i in range(max_scroll):
+        for _i in range(max_scroll):
             self._human_scroll()
             time.sleep(random.uniform(1.5, 3))
 
             # 检查 "没有更多内容" 的提示
             no_more = self.page.query_selector(
-                '.no-more, [class*="noMore"], [class*="no-more"], '
-                '.empty-text, [class*="empty"]'
+                '.no-more, [class*="noMore"], [class*="no-more"], .empty-text, [class*="empty"]'
             )
             if no_more:
                 logger.info("  已到页面底部")
@@ -506,13 +612,20 @@ class XHSScraper:
     def _check_captcha(self) -> bool:
         """检查是否出现验证码"""
         captcha_selectors = [
-            '.captcha', '[class*="captcha"]',
-            '.verify', '[class*="verify"]',
-            '.slider', '[class*="slide"]',
-            '#captcha', '#verify',
-            'iframe[src*="captcha"]', 'iframe[src*="verify"]',
-            '.geetest', '[class*="geetest"]',
-            'text=请完成安全验证', 'text=验证',
+            ".captcha",
+            '[class*="captcha"]',
+            ".verify",
+            '[class*="verify"]',
+            ".slider",
+            '[class*="slide"]',
+            "#captcha",
+            "#verify",
+            'iframe[src*="captcha"]',
+            'iframe[src*="verify"]',
+            ".geetest",
+            '[class*="geetest"]',
+            "text=请完成安全验证",
+            "text=验证",
         ]
         for selector in captcha_selectors:
             try:
@@ -546,10 +659,10 @@ class XHSScraper:
 
         # 方法1: 查找所有笔记卡片
         note_selectors = [
-            '.note-item',
+            ".note-item",
             '[class*="noteItem"]',
-            'section.note-item',
-            '.search-result-item',
+            "section.note-item",
+            ".search-result-item",
             'a[href*="/explore/"]',
             '[class*="feeds-page"] a[href*="/explore/"]',
         ]
@@ -564,8 +677,7 @@ class XHSScraper:
         if not note_elements:
             # 尝试更宽泛的选择器
             note_elements = self.page.query_selector_all(
-                'div[class*="note"], div[class*="card"], '
-                'div[class*="item"], section'
+                'div[class*="note"], div[class*="card"], div[class*="item"], section'
             )
 
         logger.debug(f"  找到 {len(note_elements)} 个潜在笔记元素")
@@ -580,7 +692,7 @@ class XHSScraper:
 
         return notes
 
-    def _parse_note_element(self, elem, keyword: str) -> Optional[XHSNote]:
+    def _parse_note_element(self, elem, keyword: str) -> XHSNote | None:
         """解析单个笔记元素"""
         note = XHSNote(keyword=keyword)
 
@@ -592,15 +704,15 @@ class XHSScraper:
         if link:
             href = link.get_attribute("href") or ""
             note.url = urljoin("https://www.xiaohongshu.com", href)
-            note_id_match = re.search(r'/explore/([a-f0-9]{24})', href)
+            note_id_match = re.search(r"/explore/([a-f0-9]{24})", href)
             if not note_id_match:
-                note_id_match = re.search(r'/discovery/item/([a-f0-9]{24})', href)
+                note_id_match = re.search(r"/discovery/item/([a-f0-9]{24})", href)
             if note_id_match:
                 note.note_id = note_id_match.group(1)
 
         if not note.note_id:
             note_id_attr = elem.get_attribute("data-id") or elem.get_attribute("id") or ""
-            if re.match(r'^[a-f0-9]{24}$', note_id_attr):
+            if re.match(r"^[a-f0-9]{24}$", note_id_attr):
                 note.note_id = note_id_attr
 
         # --- 从 note_id 解码时间戳 ---
@@ -609,9 +721,13 @@ class XHSScraper:
 
         # --- 标题 ---
         for title_sel in [
-            '.title', '[class*="title"]', '.note-title',
-            'span[class*="title"]', 'a[class*="title"]',
-            'h3', 'h4',
+            ".title",
+            '[class*="title"]',
+            ".note-title",
+            'span[class*="title"]',
+            'a[class*="title"]',
+            "h3",
+            "h4",
         ]:
             title_el = elem.query_selector(title_sel)
             if title_el:
@@ -621,8 +737,11 @@ class XHSScraper:
 
         # --- 描述文本 ---
         for desc_sel in [
-            '.desc', '[class*="desc"]', '.note-desc',
-            'p[class*="desc"]', 'span[class*="desc"]',
+            ".desc",
+            '[class*="desc"]',
+            ".note-desc",
+            'p[class*="desc"]',
+            'span[class*="desc"]',
         ]:
             desc_el = elem.query_selector(desc_sel)
             if desc_el:
@@ -632,9 +751,13 @@ class XHSScraper:
 
         # --- 作者 ---
         for author_sel in [
-            '.author .name', '.name', '[class*="author"] [class*="name"]',
-            '.nickname', '[class*="nickname"]',
-            '.username', '[class*="username"]',
+            ".author .name",
+            ".name",
+            '[class*="author"] [class*="name"]',
+            ".nickname",
+            '[class*="nickname"]',
+            ".username",
+            '[class*="username"]',
         ]:
             author_el = elem.query_selector(author_sel)
             if author_el:
@@ -660,8 +783,10 @@ class XHSScraper:
         # --- 如果互动数据未提取到，尝试遍历获取 ---
         if note.like_count_int == 0:
             for selector in [
-                '[class*="like"] span', '[class*="like"] [class*="count"]',
-                '.like-wrapper [class*="count"]', '.likes [class*="count"]',
+                '[class*="like"] span',
+                '[class*="like"] [class*="count"]',
+                '.like-wrapper [class*="count"]',
+                '.likes [class*="count"]',
             ]:
                 el = elem.query_selector(selector)
                 if el:
@@ -673,7 +798,7 @@ class XHSScraper:
                         break
 
         # --- 封面图 ---
-        for img_sel in ['img[class*="cover"]', 'img[class*="note"]', 'img']:
+        for img_sel in ['img[class*="cover"]', 'img[class*="note"]', "img"]:
             img_el = elem.query_selector(img_sel)
             if img_el:
                 src = img_el.get_attribute("src") or ""
@@ -683,15 +808,14 @@ class XHSScraper:
 
         # --- 笔记类型 ---
         video_icon = elem.query_selector(
-            '[class*="video"], [class*="play"], '
-            'svg[class*="play"], .duration'
+            '[class*="video"], [class*="play"], svg[class*="play"], .duration'
         )
         note.note_type = "video" if video_icon else "normal"
 
         # 如果标题和描述都为空，尝试获取元素全部文本
         if not note.title and not note.desc:
             all_text = (elem.inner_text() or "").strip()
-            lines = [l for l in all_text.split('\n') if len(l) > 3]
+            lines = [line for line in all_text.split("\n") if len(line) > 3]
             for line in lines:
                 if len(line) > 10:
                     note.title = line[:100]
@@ -746,13 +870,14 @@ class XHSScraper:
 
                 # 检查浮层是否已经打开
                 overlay_selectors = [
-                    '.note-detail-mask', '[class*="noteDetail"]',
-                    '.close-circle', '[class*="closeCircle"]',
-                    '[class*="note-container"]', '.note-detail',
+                    ".note-detail-mask",
+                    '[class*="noteDetail"]',
+                    ".close-circle",
+                    '[class*="closeCircle"]',
+                    '[class*="note-container"]',
+                    ".note-detail",
                 ]
-                overlay_opened = any(
-                    self.page.query_selector(s) for s in overlay_selectors
-                )
+                overlay_opened = any(self.page.query_selector(s) for s in overlay_selectors)
 
                 if not overlay_opened:
                     logger.debug(f"Overlay did not open for {note_id[:8]}...")
@@ -776,9 +901,12 @@ class XHSScraper:
 
         # 正文: 在浮层或详情页中查找长文本块
         content_selectors = [
-            '#detail-desc', '.desc[class*="detail"]',
-            '.note-scroller .note-text', '.note-text',
-            '[class*="noteText"]', '.note-content',
+            "#detail-desc",
+            '.desc[class*="detail"]',
+            ".note-scroller .note-text",
+            ".note-text",
+            '[class*="noteText"]',
+            ".note-content",
             '[class*="note-scroller"] [class*="content"]',
             '[id*="detail"] [class*="desc"]',
         ]
@@ -806,12 +934,15 @@ class XHSScraper:
                 else:
                     body_text = self.page.inner_text("body")
 
-                paras = [p.strip() for p in (body_text or "").split("\n")
-                         if len(p.strip()) > 30
-                         and "你可能感兴趣" not in p
-                         and "相关笔记" not in p
-                         and "评论" not in p[:5]
-                         and "举报" not in p]
+                paras = [
+                    p.strip()
+                    for p in (body_text or "").split("\n")
+                    if len(p.strip()) > 30
+                    and "你可能感兴趣" not in p
+                    and "相关笔记" not in p
+                    and "评论" not in p[:5]
+                    and "举报" not in p
+                ]
                 if paras:
                     detail["desc"] = paras[0][:2000]
             except Exception:
@@ -830,8 +961,11 @@ class XHSScraper:
         for sel in tag_selectors:
             try:
                 els = self.page.query_selector_all(sel)
-                tags = [t.inner_text().strip() for t in els
-                        if t.inner_text().strip() and len(t.inner_text().strip()) < 30]
+                tags = [
+                    t.inner_text().strip()
+                    for t in els
+                    if t.inner_text().strip() and len(t.inner_text().strip()) < 30
+                ]
                 if tags:
                     detail["tags"] = list(dict.fromkeys(tags))
                     break
@@ -842,13 +976,13 @@ class XHSScraper:
         interact_containers = []
         if card_clicked:
             interact_containers = [
-                '.note-detail .interact-item',
+                ".note-detail .interact-item",
                 '[class*="detail"] [class*="interact"] [class*="item"]',
                 '[class*="note-container"] [class*="action"] span',
             ]
         if not interact_containers:
             interact_containers = [
-                '.interact-item',
+                ".interact-item",
                 '[class*="interact"] [class*="item"]',
                 '[class*="engage"] [class*="item"]',
                 '[class*="like-wrapper"]',
@@ -878,7 +1012,7 @@ class XHSScraper:
             author_link = self.page.query_selector(a_sel)
             if author_link:
                 href = author_link.get_attribute("href") or ""
-                uid_match = re.search(r'/user/profile/([a-f0-9]{24})', href)
+                uid_match = re.search(r"/user/profile/([a-f0-9]{24})", href)
                 if uid_match:
                     detail["author_id"] = uid_match.group(1)
         except Exception:
@@ -899,7 +1033,9 @@ class XHSScraper:
             except Exception:
                 pass
 
-        logger.debug(f"Detail: {note_id[:8]}... body={len(detail['desc'])}chars tags={len(detail['tags'])}")
+        logger.debug(
+            f"Detail: {note_id[:8]}... body={len(detail['desc'])}chars tags={len(detail['tags'])}"
+        )
         return detail
 
     def run(
@@ -986,26 +1122,29 @@ class XHSScraper:
             filename = f"xhs_results_{timestamp}.json"
 
         filepath = OUTPUT_DIR / filename
-        data = [{
-            "note_id": n.note_id,
-            "title": n.title,
-            "desc": n.desc[:500] if n.desc else "",
-            "author_name": n.author_name,
-            "author_id": n.author_id,
-            "like_count": n.like_count,
-            "like_count_int": n.like_count_int,
-            "comment_count": n.comment_count,
-            "comment_count_int": n.comment_count_int,
-            "collect_count": n.collect_count,
-            "collect_count_int": n.collect_count_int,
-            "tags": n.tags,
-            "note_type": n.note_type,
-            "cover_url": n.cover_url,
-            "publish_time": n.publish_time,
-            "url": n.url,
-            "keyword": n.keyword,
-            "futures_confidence": n._futures_confidence,
-        } for n in self.results]
+        data = [
+            {
+                "note_id": n.note_id,
+                "title": n.title,
+                "desc": n.desc[:500] if n.desc else "",
+                "author_name": n.author_name,
+                "author_id": n.author_id,
+                "like_count": n.like_count,
+                "like_count_int": n.like_count_int,
+                "comment_count": n.comment_count,
+                "comment_count_int": n.comment_count_int,
+                "collect_count": n.collect_count,
+                "collect_count_int": n.collect_count_int,
+                "tags": n.tags,
+                "note_type": n.note_type,
+                "cover_url": n.cover_url,
+                "publish_time": n.publish_time,
+                "url": n.url,
+                "keyword": n.keyword,
+                "futures_confidence": n._futures_confidence,
+            }
+            for n in self.results
+        ]
 
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1033,7 +1172,7 @@ def print_results_summary(notes: list[XHSNote]):
         print(f"\n[{kw}]: {len(kw_notes)} 条笔记")
         for i, note in enumerate(kw_notes[:3], 1):
             title = note.title or note.desc or "(无文本)"
-            title = title[:80].replace('\n', ' ')
+            title = title[:80].replace("\n", " ")
             author = note.author_name or "?"
             time_str = f" | {note.publish_time}" if note.publish_time else ""
             like_str = f"L{note.like_count_int}" if note.like_count_int > 0 else ""
@@ -1046,7 +1185,7 @@ def print_results_summary(notes: list[XHSNote]):
             if note.tags:
                 print(f"     标签: {', '.join(note.tags[:5])}")
             if note.desc:
-                desc_preview = note.desc[:120].replace('\n', ' ')
+                desc_preview = note.desc[:120].replace("\n", " ")
                 print(f"     正文: {desc_preview}...")
 
 
@@ -1054,23 +1193,94 @@ def print_results_summary(notes: list[XHSNote]):
 # 期货相关性过滤器
 # ============================================================
 
+
 def filter_futures_notes(notes: list) -> list:
     """过滤出与期货相关的笔记"""
     FUTURES_TERMS = {
-        "期货", "期市", "商品", "黑色系", "有色", "农产品", "能化",
-        "螺纹", "螺纹钢", "铁矿石", "铁矿", "热卷", "焦炭", "焦煤",
-        "铜", "沪铜", "铝", "沪铝", "锌", "镍", "沪镍",
-        "黄金", "沪金", "白银", "沪银", "金价", "银价",
-        "原油", "油价", "PTA", "甲醇", "PVC", "PP",
-        "塑料", "橡胶", "沥青", "尿素", "纯碱", "玻璃",
-        "豆粕", "豆油", "棕榈油", "菜粕", "白糖", "棉花", "玉米",
-        "生猪", "鸡蛋", "苹果", "红枣",
-        "股指", "国债", "IF", "IC", "IH",
-        "多头", "空头", "做多", "做空", "开仓", "平仓", "多头",
-        "止损", "止盈", "套利", "对冲", "基差", "升水", "贴水",
-        "主力合约", "交割", "上期所", "大商所", "郑商所",
-        "K线", "均线", "MACD", "成交量", "持仓量",
-        "回调", "突破", "震荡", "涨跌", "涨停", "跌停",
+        "期货",
+        "期市",
+        "商品",
+        "黑色系",
+        "有色",
+        "农产品",
+        "能化",
+        "螺纹",
+        "螺纹钢",
+        "铁矿石",
+        "铁矿",
+        "热卷",
+        "焦炭",
+        "焦煤",
+        "铜",
+        "沪铜",
+        "铝",
+        "沪铝",
+        "锌",
+        "镍",
+        "沪镍",
+        "黄金",
+        "沪金",
+        "白银",
+        "沪银",
+        "金价",
+        "银价",
+        "原油",
+        "油价",
+        "PTA",
+        "甲醇",
+        "PVC",
+        "PP",
+        "塑料",
+        "橡胶",
+        "沥青",
+        "尿素",
+        "纯碱",
+        "玻璃",
+        "豆粕",
+        "豆油",
+        "棕榈油",
+        "菜粕",
+        "白糖",
+        "棉花",
+        "玉米",
+        "生猪",
+        "鸡蛋",
+        "苹果",
+        "红枣",
+        "股指",
+        "国债",
+        "IF",
+        "IC",
+        "IH",
+        "多头",
+        "空头",
+        "做多",
+        "做空",
+        "开仓",
+        "平仓",
+        "止损",
+        "止盈",
+        "套利",
+        "对冲",
+        "基差",
+        "升水",
+        "贴水",
+        "主力合约",
+        "交割",
+        "上期所",
+        "大商所",
+        "郑商所",
+        "K线",
+        "均线",
+        "MACD",
+        "成交量",
+        "持仓量",
+        "回调",
+        "突破",
+        "震荡",
+        "涨跌",
+        "涨停",
+        "跌停",
     }
 
     # 噪声词
@@ -1092,6 +1302,7 @@ def filter_futures_notes(notes: list) -> list:
 # CLI
 # ============================================================
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="小红书期货信息采集器 (Playwright方案)",
@@ -1106,22 +1317,22 @@ def main():
   python xhs_scraper.py --filter-futures                 # 只保留期货相关笔记
         """,
     )
-    parser.add_argument("--keywords", type=str, nargs="+",
-                        help="搜索关键词 (默认使用期货关键词列表)")
-    parser.add_argument("--no-login", action="store_true",
-                        help="不需要登录（使用之前保存的登录状态）")
-    parser.add_argument("--headless", action="store_true",
-                        help="无头模式（隐藏浏览器窗口，需要已有登录状态）")
-    parser.add_argument("--fetch-details", action="store_true",
-                        help="获取笔记详情页内容")
-    parser.add_argument("--output", type=str, default=None,
-                        help="输出文件名")
-    parser.add_argument("--filter-futures", action="store_true",
-                        help="只保留期货相关的笔记（过滤无关内容）")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="详细日志")
-    parser.add_argument("--debug", action="store_true",
-                        help="调试模式（浏览器可视化每一步）")
+    parser.add_argument(
+        "--keywords", type=str, nargs="+", help="搜索关键词 (默认使用期货关键词列表)"
+    )
+    parser.add_argument(
+        "--no-login", action="store_true", help="不需要登录（使用之前保存的登录状态）"
+    )
+    parser.add_argument(
+        "--headless", action="store_true", help="无头模式（隐藏浏览器窗口，需要已有登录状态）"
+    )
+    parser.add_argument("--fetch-details", action="store_true", help="获取笔记详情页内容")
+    parser.add_argument("--output", type=str, default=None, help="输出文件名")
+    parser.add_argument(
+        "--filter-futures", action="store_true", help="只保留期货相关的笔记（过滤无关内容）"
+    )
+    parser.add_argument("--verbose", "-v", action="store_true", help="详细日志")
+    parser.add_argument("--debug", action="store_true", help="调试模式（浏览器可视化每一步）")
     args = parser.parse_args()
 
     # 日志配置

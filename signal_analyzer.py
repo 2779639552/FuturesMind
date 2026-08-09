@@ -7,23 +7,24 @@ cross-platform divergence, author profiling, event extraction, simulated trading
 import json
 import math
 import os
-from pathlib import Path
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from collections import defaultdict, Counter
-from dataclasses import dataclass, field
+from pathlib import Path
+
+from path_utils import resolve_think2_dir
 
 SENTIMENT_DIR = Path(os.path.expanduser("~/.tradingagents/external_data"))
-THINK2_TRENDS = Path(os.environ.get(
-    "THINK2_DIR", os.path.expanduser("~/Desktop/思路2/validate")
-)) / "output" / "trends"
+THINK2_TRENDS = resolve_think2_dir() / "output" / "trends"
 
 # ── Helpers ────────────────────────────────────────────────────────
+
 
 def _load_sentiment(variety: str) -> dict | None:
     path = SENTIMENT_DIR / f"{variety}_sentiment.json"
     if not path.exists():
         return None
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -32,18 +33,19 @@ def _load_trends(variety: str) -> dict | None:
     # Try direct code match first
     path = THINK2_TRENDS / f"{variety}_sentiment.json"
     if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
 
     # Try looking up Chinese name from VARIETY_METADATA
     try:
         from tradingagents.dataflows.commodity_futures import VARIETY_METADATA
+
         meta = VARIETY_METADATA.get(variety, {})
         chinese_name = meta.get("name", "")
         if chinese_name:
             path = THINK2_TRENDS / f"{chinese_name}_sentiment.json"
             if path.exists():
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     return json.load(f)
     except ImportError:
         pass
@@ -51,7 +53,7 @@ def _load_trends(variety: str) -> dict | None:
     # Try glob search
     for f in THINK2_TRENDS.glob("*_sentiment.json"):
         if variety in f.stem or f.stem.startswith(variety):
-            with open(f, "r", encoding="utf-8") as fp:
+            with open(f, encoding="utf-8") as fp:
                 return json.load(fp)
 
     return None
@@ -61,18 +63,19 @@ def _load_price(variety: str) -> dict | None:
     """Load price JSON, trying multiple naming conventions."""
     path = THINK2_TRENDS / f"{variety}_price.json"
     if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
 
     # Try Chinese name
     try:
         from tradingagents.dataflows.commodity_futures import VARIETY_METADATA
+
         meta = VARIETY_METADATA.get(variety, {})
         chinese_name = meta.get("name", "")
         if chinese_name:
             path = THINK2_TRENDS / f"{chinese_name}_price.json"
             if path.exists():
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     return json.load(f)
     except ImportError:
         pass
@@ -80,7 +83,7 @@ def _load_price(variety: str) -> dict | None:
     # Try glob
     for f in THINK2_TRENDS.glob("*_price.json"):
         if variety in f.stem or f.stem.startswith(variety):
-            with open(f, "r", encoding="utf-8") as fp:
+            with open(f, encoding="utf-8") as fp:
                 return json.load(fp)
 
     return None
@@ -92,7 +95,7 @@ def pearson_r(x, y):
         return 0.0
     mx = sum(x) / n
     my = sum(y) / n
-    cov = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+    cov = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y, strict=True))
     sx = math.sqrt(sum((xi - mx) ** 2 for xi in x))
     sy = math.sqrt(sum((yi - my) ** 2 for yi in y))
     if sx == 0 or sy == 0:
@@ -103,6 +106,7 @@ def pearson_r(x, y):
 # ═══════════════════════════════════════════════════════════════════
 # P1-1: Sentiment Anomaly Detection
 # ═══════════════════════════════════════════════════════════════════
+
 
 def detect_anomalies(variety: str, threshold_std: float = 2.0) -> list[dict]:
     """Detect days where sentiment deviates significantly from its moving average.
@@ -122,21 +126,23 @@ def detect_anomalies(variety: str, threshold_std: float = 2.0) -> list[dict]:
     anomalies = []
 
     for i in range(7, len(scores)):
-        window = scores[i - 7:i]
+        window = scores[i - 7 : i]
         ma = sum(window) / 7
         std = math.sqrt(sum((x - ma) ** 2 for x in window) / 7)
         if std == 0:
             continue
         z = (scores[i] - ma) / std
         if abs(z) > threshold_std:
-            anomalies.append({
-                "date": dates[i],
-                "score": round(scores[i], 3),
-                "ma_7d": round(ma, 3),
-                "z_score": round(z, 2),
-                "direction": "bullish" if z > 0 else "bearish",
-                "type": "spike_up" if z > 0 else "spike_down",
-            })
+            anomalies.append(
+                {
+                    "date": dates[i],
+                    "score": round(scores[i], 3),
+                    "ma_7d": round(ma, 3),
+                    "z_score": round(z, 2),
+                    "direction": "bullish" if z > 0 else "bearish",
+                    "type": "spike_up" if z > 0 else "spike_down",
+                }
+            )
 
     return anomalies
 
@@ -144,6 +150,7 @@ def detect_anomalies(variety: str, threshold_std: float = 2.0) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════
 # P1-2: Bull-Bear Divergence Index
 # ═══════════════════════════════════════════════════════════════════
+
 
 def compute_divergence(variety: str) -> dict | None:
     """Compute bull-bear divergence: how split is market sentiment?
@@ -213,6 +220,7 @@ def compute_divergence(variety: str) -> dict | None:
 # P1-3: Lead-Lag Analysis (simplified Granger-style)
 # ═══════════════════════════════════════════════════════════════════
 
+
 def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
     """Test if sentiment leads price or vice versa.
 
@@ -268,12 +276,12 @@ def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
             p_lead.append((price_changes[i], scores[i + lag]))
 
         if len(s_lead) >= 5:
-            sent_leads[f"lag_{lag}d"] = round(pearson_r(
-                [x[0] for x in s_lead], [x[1] for x in s_lead]
-            ), 4)
-            price_leads[f"lag_{lag}d"] = round(pearson_r(
-                [x[0] for x in p_lead], [x[1] for x in p_lead]
-            ), 4)
+            sent_leads[f"lag_{lag}d"] = round(
+                pearson_r([x[0] for x in s_lead], [x[1] for x in s_lead]), 4
+            )
+            price_leads[f"lag_{lag}d"] = round(
+                pearson_r([x[0] for x in p_lead], [x[1] for x in p_lead]), 4
+            )
 
     # Determine which leads
     max_sent = max(sent_leads.values(), key=abs) if sent_leads else 0
@@ -295,6 +303,7 @@ def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
 # ═══════════════════════════════════════════════════════════════════
 # P2-1: Cross-Platform Sentiment Divergence
 # ═══════════════════════════════════════════════════════════════════
+
 
 def analyze_cross_platform(variety: str) -> dict | None:
     """Compare sentiment across platforms. Weibo=retail, Zhihu=informed, XHS=social.
@@ -367,13 +376,14 @@ def _interpret_cross_platform(platforms: dict, conflict: str) -> str:
 # P1-4: Author Profiling
 # ═══════════════════════════════════════════════════════════════════
 
+
 def get_top_authors(limit: int = 20) -> list[dict]:
     """Get top authors ranked by influence (posts * engagement * log(fans))."""
     index_path = THINK2_TRENDS / "_author_index.json"
     if not index_path.exists():
         return []
 
-    with open(index_path, "r", encoding="utf-8") as f:
+    with open(index_path, encoding="utf-8") as f:
         authors = json.load(f)
 
     result = []
@@ -397,14 +407,16 @@ def get_top_authors(limit: int = 20) -> list[dict]:
         else:
             influence = 0.0
 
-        result.append({
-            "name": name,
-            "uid": uid,
-            "posts": posts,
-            "fans": fans,
-            "avg_engagement": round(engagement, 1),
-            "influence": influence,
-        })
+        result.append(
+            {
+                "name": name,
+                "uid": uid,
+                "posts": posts,
+                "fans": fans,
+                "avg_engagement": round(engagement, 1),
+                "influence": influence,
+            }
+        )
 
     result.sort(key=lambda x: -x["influence"])
     return result[:limit]
@@ -430,7 +442,8 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
     """Extract key events from recent posts using keyword matching."""
     # Read directly from JSONL batch files (database may not be populated)
     import glob as _glob
-    think2_output = Path(os.environ.get("THINK2_DIR", os.path.expanduser("~/Desktop/思路2/validate"))) / "output"
+
+    think2_output = resolve_think2_dir() / "output"
     if not think2_output.exists():
         return []
 
@@ -439,20 +452,27 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
     seen = set()
     for fpath in sorted(_glob.glob(str(think2_output / "batch_*.jsonl"))):
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 for line in f:
-                    if not line.strip(): continue
+                    if not line.strip():
+                        continue
                     d = json.loads(line)
                     nid = d.get("note_id", "")
-                    if nid in seen: continue
+                    if nid in seen:
+                        continue
                     seen.add(nid)
                     t = (d.get("publish_time", "") or "")[:10]
-                    if t < since: continue
-                    if variety and variety not in json.dumps(d.get("varieties", [])): continue
+                    if t < since:
+                        continue
+                    if variety and variety not in json.dumps(d.get("varieties", [])):
+                        continue
                     posts.append(d)
-                    if len(posts) >= 500: break
-        except Exception: pass
-        if len(posts) >= 500: break
+                    if len(posts) >= 500:
+                        break
+        except Exception:
+            pass
+        if len(posts) >= 500:
+            break
 
     events = []
     for post in posts:
@@ -467,22 +487,32 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
             # Extract variety names and sentiment
             varieties_raw = post.get("varieties", [])
             if isinstance(varieties_raw, str):
-                try: varieties_raw = json.loads(varieties_raw)
-                except (json.JSONDecodeError, TypeError): varieties_raw = []
-            variety_names = [v["name"] if isinstance(v, dict) else str(v) for v in varieties_raw] if isinstance(varieties_raw, list) else []
+                try:
+                    varieties_raw = json.loads(varieties_raw)
+                except (json.JSONDecodeError, TypeError):
+                    varieties_raw = []
+            variety_names = (
+                [v["name"] if isinstance(v, dict) else str(v) for v in varieties_raw]
+                if isinstance(varieties_raw, list)
+                else []
+            )
             sentiment_label = post.get("sentiment", "neutral")
             sentiment_score = post.get("sentiment_score", 0)
 
-            events.append({
-                "date": (post.get("publish_time", "") or "")[:10],
-                "platform": post.get("platform", "?"),
-                "title": (post.get("title", "") or "")[:120],
-                "categories": matched_categories,
-                "url": post.get("url", ""),
-                "varieties": variety_names[:5],
-                "sentiment": sentiment_label,
-                "sentiment_score": round(sentiment_score, 2) if isinstance(sentiment_score, (int, float)) else 0,
-            })
+            events.append(
+                {
+                    "date": (post.get("publish_time", "") or "")[:10],
+                    "platform": post.get("platform", "?"),
+                    "title": (post.get("title", "") or "")[:120],
+                    "categories": matched_categories,
+                    "url": post.get("url", ""),
+                    "varieties": variety_names[:5],
+                    "sentiment": sentiment_label,
+                    "sentiment_score": round(sentiment_score, 2)
+                    if isinstance(sentiment_score, (int, float))
+                    else 0,
+                }
+            )
 
     # Deduplicate similar events
     seen_titles = set()
@@ -503,6 +533,7 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════
 # Contrarian Sentiment Strategy
 # ═══════════════════════════════════════════════════════════════════
+
 
 def run_contrarian_sentiment(
     variety: str = "",
@@ -539,10 +570,12 @@ def run_contrarian_sentiment(
         raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}
         sd_sorted = sorted(raw_sent.keys())
         sent_map = {}
-        last_s = 0; si = 0
+        last_s = 0
+        si = 0
         for d in sorted(str(x["date"])[:10] for x in px):
             while si < len(sd_sorted) and sd_sorted[si] <= d:
-                last_s = raw_sent[sd_sorted[si]]; si += 1
+                last_s = raw_sent[sd_sorted[si]]
+                si += 1
             sent_map[d] = last_s
 
         closes = [float(x["close"]) for x in px]
@@ -550,8 +583,12 @@ def run_contrarian_sentiment(
         n = len(closes)
 
         # Positions: 0=flat, 1=long, -1=short. Tracks last entry for both strategies
-        pos_c = 0; entry_px_c = 0; entry_d_c = ""  # contrarian
-        pos_m = 0; entry_px_m = 0; entry_d_m = ""  # momentum
+        pos_c = 0
+        entry_px_c = 0
+        entry_d_c = ""  # contrarian
+        pos_m = 0
+        entry_px_m = 0
+        entry_d_m = ""  # momentum
 
         for i in range(trend_window, n - horizon):
             d = dates[i]
@@ -559,7 +596,11 @@ def run_contrarian_sentiment(
                 continue
             ss = sent_map.get(d, 0)
             px_now = closes[i]
-            trend = (closes[i] - closes[i - trend_window]) / closes[i - trend_window] if closes[i - trend_window] else 0
+            trend = (
+                (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
+                if closes[i - trend_window]
+                else 0
+            )
 
             # --- Contrarian Entry ---
             # Price down + sentiment up → potential bottom → LONG
@@ -583,18 +624,30 @@ def run_contrarian_sentiment(
                     pnl = (exit_px - entry_px_c) / entry_px_c * 100
                 else:
                     pnl = (entry_px_c - exit_px) / entry_px_c * 100
-                all_contrarian.append({"variety": var, "entry": entry_d_c, "exit": d,
-                                       "direction": "long" if pos_c == 1 else "short",
-                                       "pnl": round(pnl, 2),
-                                       "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
-                                       "signal": "contrarian"})
+                all_contrarian.append(
+                    {
+                        "variety": var,
+                        "entry": entry_d_c,
+                        "exit": d,
+                        "direction": "long" if pos_c == 1 else "short",
+                        "pnl": round(pnl, 2),
+                        "outcome": "win"
+                        if pnl > 0.15
+                        else ("loss" if pnl < -0.15 else "breakeven"),
+                        "signal": "contrarian",
+                    }
+                )
                 pos_c = 0
 
             if pos_c == 0:
                 if c_long:
-                    pos_c = 1; entry_px_c = px_now; entry_d_c = d
+                    pos_c = 1
+                    entry_px_c = px_now
+                    entry_d_c = d
                 elif c_short:
-                    pos_c = -1; entry_px_c = px_now; entry_d_c = d
+                    pos_c = -1
+                    entry_px_c = px_now
+                    entry_d_c = d
 
             # Process momentum
             if pos_m != 0 and entry_d_m and i >= dates.index(entry_d_m) + horizon:
@@ -603,61 +656,104 @@ def run_contrarian_sentiment(
                     pnl = (exit_px_m - entry_px_m) / entry_px_m * 100
                 else:
                     pnl = (entry_px_m - exit_px_m) / entry_px_m * 100
-                all_momentum.append({"variety": var, "entry": entry_d_m, "exit": d,
-                                     "direction": "long" if pos_m == 1 else "short",
-                                     "pnl": round(pnl, 2),
-                                     "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
-                                     "signal": "momentum"})
+                all_momentum.append(
+                    {
+                        "variety": var,
+                        "entry": entry_d_m,
+                        "exit": d,
+                        "direction": "long" if pos_m == 1 else "short",
+                        "pnl": round(pnl, 2),
+                        "outcome": "win"
+                        if pnl > 0.15
+                        else ("loss" if pnl < -0.15 else "breakeven"),
+                        "signal": "momentum",
+                    }
+                )
                 pos_m = 0
 
             if pos_m == 0:
                 if m_long:
-                    pos_m = 1; entry_px_m = px_now; entry_d_m = d
+                    pos_m = 1
+                    entry_px_m = px_now
+                    entry_d_m = d
                 elif m_short:
-                    pos_m = -1; entry_px_m = px_now; entry_d_m = d
+                    pos_m = -1
+                    entry_px_m = px_now
+                    entry_d_m = d
 
     if not all_contrarian and not all_momentum:
         return {"total_trades": 0, "message": "No signals"}
 
     # Build curves
-    all_dates = sorted(set(t["entry"] for t in all_contrarian + all_momentum))
-    c_map = {}; m_map = {}
-    for t in all_contrarian: c_map[t["entry"]] = c_map.get(t["entry"], 0) + t["pnl"]
-    for t in all_momentum: m_map[t["entry"]] = m_map.get(t["entry"], 0) + t["pnl"]
+    all_dates = sorted({t["entry"] for t in all_contrarian + all_momentum})
+    c_map = {}
+    m_map = {}
+    for t in all_contrarian:
+        c_map[t["entry"]] = c_map.get(t["entry"], 0) + t["pnl"]
+    for t in all_momentum:
+        m_map[t["entry"]] = m_map.get(t["entry"], 0) + t["pnl"]
 
-    c_curve = []; m_curve = []; cum_c = 0; cum_m = 0
+    c_curve = []
+    m_curve = []
+    cum_c = 0
+    cum_m = 0
     for d in all_dates:
-        cum_c += c_map.get(d, 0); cum_m += m_map.get(d, 0)
-        c_curve.append(round(cum_c, 2)); m_curve.append(round(cum_m, 2))
+        cum_c += c_map.get(d, 0)
+        cum_m += m_map.get(d, 0)
+        c_curve.append(round(cum_c, 2))
+        m_curve.append(round(cum_m, 2))
 
-    def wr(ts): return round(sum(1 for t in ts if t["outcome"]=="win")/len(ts), 3) if ts else 0
+    def wr(ts):
+        return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
 
     # Compute advanced metrics per sub-strategy
     c_pnls = [t["pnl"] for t in all_contrarian]
     m_pnls = [t["pnl"] for t in all_momentum]
-    all_entry_dates = sorted(set(t["entry"] for t in all_contrarian + all_momentum))
-    td = max((datetime.strptime(all_entry_dates[-1],"%Y-%m-%d")-datetime.strptime(all_entry_dates[0],"%Y-%m-%d")).days*252//365, 20) if len(all_entry_dates)>=2 else 252
+    all_entry_dates = sorted({t["entry"] for t in all_contrarian + all_momentum})
+    td = (
+        max(
+            (
+                datetime.strptime(all_entry_dates[-1], "%Y-%m-%d")
+                - datetime.strptime(all_entry_dates[0], "%Y-%m-%d")
+            ).days
+            * 252
+            // 365,
+            20,
+        )
+        if len(all_entry_dates) >= 2
+        else 252
+    )
     adv_c = compute_advanced_metrics(trade_pnls=c_pnls, total_trading_days=td) if c_pnls else {}
     adv_m = compute_advanced_metrics(trade_pnls=m_pnls, total_trading_days=td) if m_pnls else {}
 
     return {
         "strategy": "contrarian_sentiment",
-        "contrarian": {"trades": len(all_contrarian), "win_rate": wr(all_contrarian),
-                        "total_pnl": round(c_curve[-1], 2) if c_curve else 0,
-                        "label": "逆情绪(背离)", "advanced_metrics": adv_c},
-        "consensus": {"trades": len(all_momentum), "win_rate": wr(all_momentum),
-                      "total_pnl": round(m_curve[-1], 2) if m_curve else 0,
-                      "label": "情绪共识", "advanced_metrics": adv_m},
+        "contrarian": {
+            "trades": len(all_contrarian),
+            "win_rate": wr(all_contrarian),
+            "total_pnl": round(c_curve[-1], 2) if c_curve else 0,
+            "label": "逆情绪(背离)",
+            "advanced_metrics": adv_c,
+        },
+        "consensus": {
+            "trades": len(all_momentum),
+            "win_rate": wr(all_momentum),
+            "total_pnl": round(m_curve[-1], 2) if m_curve else 0,
+            "label": "情绪共识",
+            "advanced_metrics": adv_m,
+        },
         "dates": all_dates,
         "curves": {"contrarian": c_curve, "consensus": m_curve},
         "variety": variety or "all",
-        "horizon": horizon, "trend_window": trend_window,
+        "horizon": horizon,
+        "trend_window": trend_window,
     }
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Adaptive Sentiment Strategy (auto-choose contrarian vs momentum)
 # ═══════════════════════════════════════════════════════════════════
+
 
 def run_adaptive_sentiment(
     variety: str = "",
@@ -692,18 +788,24 @@ def run_adaptive_sentiment(
         raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}
         sd_sorted = sorted(raw_sent.keys())
         sent_map = {}
-        last_s = 0; si = 0
+        last_s = 0
+        si = 0
         for d in sorted(str(x["date"])[:10] for x in px):
             while si < len(sd_sorted) and sd_sorted[si] <= d:
-                last_s = raw_sent[sd_sorted[si]]; si += 1
+                last_s = raw_sent[sd_sorted[si]]
+                si += 1
             sent_map[d] = last_s
 
         closes = [float(x["close"]) for x in px]
         dates = [str(x["date"])[:10] for x in px]
         n = len(closes)
 
-        pos_a = 0; entry_px_a = 0; entry_d_a = ""  # adaptive
-        pos_m = 0; entry_px_m = 0; entry_d_m = ""  # momentum baseline
+        pos_a = 0
+        entry_px_a = 0
+        entry_d_a = ""  # adaptive
+        pos_m = 0
+        entry_px_m = 0
+        entry_d_m = ""  # momentum baseline
 
         for i in range(trend_window, n - horizon):
             d = dates[i]
@@ -711,16 +813,19 @@ def run_adaptive_sentiment(
                 continue
             ss = sent_map.get(d, 0)
             px_now = closes[i]
-            trend = (closes[i] - closes[i - trend_window]) / closes[i - trend_window] if closes[i - trend_window] else 0
+            trend = (
+                (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
+                if closes[i - trend_window]
+                else 0
+            )
             trend_pct = abs(trend) * 100
-            divergence = (trend > 0.01 and ss < -0.1) or (trend < -0.01 and ss > 0.1)
 
             # Adaptive: choose contrarian or momentum based on conditions
             # Distinguish two types of divergence (empirically validated):
             #   Type A (涨+看空): 60% accuracy → HIGH confidence contrarian (top signal)
             #   Type B (跌+看多): 21% accuracy → SKIP (catching falling knife)
-            diverge_bearish = (trend > 0.01 and ss < -0.1)  # price up + bearish = top signal
-            diverge_bullish = (trend < -0.01 and ss > 0.1)  # price down + bullish = bottom fishing
+            diverge_bearish = trend > 0.01 and ss < -0.1  # price up + bearish = top signal
+            diverge_bullish = trend < -0.01 and ss > 0.1  # price down + bullish = bottom fishing
 
             if diverge_bearish:
                 # Price up + crowd bearish → SHORT (60% accurate across all varieties)
@@ -732,12 +837,14 @@ def run_adaptive_sentiment(
                 if trend_pct > 3:
                     # Strong crash + bullish = denial phase → skip
                     use_contrarian = False
-                    a_long = False; a_short = False
+                    a_long = False
+                    a_short = False
                     decisions["skipped"] = decisions.get("skipped", 0) + 1
                 else:
                     # Moderate dip + bullish = potential bottom → CONTRARIAN long
                     use_contrarian = True
-                    a_long = True; a_short = False
+                    a_long = True
+                    a_short = False
             elif trend_pct > 2:
                 # Strong trend → MOMENTUM (follow the crowd)
                 use_contrarian = False
@@ -748,9 +855,7 @@ def run_adaptive_sentiment(
                 # Default: MOMENTUM
                 use_contrarian = False
 
-            if diverge_bearish:
-                decisions["contrarian"] += 1
-            elif diverge_bullish and use_contrarian:
+            if diverge_bearish or diverge_bullish and use_contrarian:
                 decisions["contrarian"] += 1
             elif diverge_bullish:
                 decisions["skipped"] = decisions.get("skipped", 0) + 1
@@ -776,18 +881,30 @@ def run_adaptive_sentiment(
                     pnl = (exit_px - entry_px_a) / entry_px_a * 100
                 else:
                     pnl = (entry_px_a - exit_px) / entry_px_a * 100
-                all_adaptive.append({"variety": var, "entry": entry_d_a, "exit": d,
-                                     "direction": "long" if pos_a == 1 else "short",
-                                     "pnl": round(pnl, 2),
-                                     "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
-                                     "signal": "adaptive"})
+                all_adaptive.append(
+                    {
+                        "variety": var,
+                        "entry": entry_d_a,
+                        "exit": d,
+                        "direction": "long" if pos_a == 1 else "short",
+                        "pnl": round(pnl, 2),
+                        "outcome": "win"
+                        if pnl > 0.15
+                        else ("loss" if pnl < -0.15 else "breakeven"),
+                        "signal": "adaptive",
+                    }
+                )
                 pos_a = 0
 
             if pos_a == 0:
                 if a_long:
-                    pos_a = 1; entry_px_a = px_now; entry_d_a = d
+                    pos_a = 1
+                    entry_px_a = px_now
+                    entry_d_a = d
                 elif a_short:
-                    pos_a = -1; entry_px_a = px_now; entry_d_a = d
+                    pos_a = -1
+                    entry_px_a = px_now
+                    entry_d_a = d
 
             # Process momentum
             if pos_m != 0 and entry_d_m and i >= dates.index(entry_d_m) + horizon:
@@ -796,61 +913,104 @@ def run_adaptive_sentiment(
                     pnl = (exit_px_m - entry_px_m) / entry_px_m * 100
                 else:
                     pnl = (entry_px_m - exit_px_m) / entry_px_m * 100
-                all_momentum.append({"variety": var, "entry": entry_d_m, "exit": d,
-                                     "direction": "long" if pos_m == 1 else "short",
-                                     "pnl": round(pnl, 2),
-                                     "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
-                                     "signal": "momentum"})
+                all_momentum.append(
+                    {
+                        "variety": var,
+                        "entry": entry_d_m,
+                        "exit": d,
+                        "direction": "long" if pos_m == 1 else "short",
+                        "pnl": round(pnl, 2),
+                        "outcome": "win"
+                        if pnl > 0.15
+                        else ("loss" if pnl < -0.15 else "breakeven"),
+                        "signal": "momentum",
+                    }
+                )
                 pos_m = 0
 
             if pos_m == 0:
                 if m_long:
-                    pos_m = 1; entry_px_m = px_now; entry_d_m = d
+                    pos_m = 1
+                    entry_px_m = px_now
+                    entry_d_m = d
                 elif m_short:
-                    pos_m = -1; entry_px_m = px_now; entry_d_m = d
+                    pos_m = -1
+                    entry_px_m = px_now
+                    entry_d_m = d
 
     if not all_adaptive and not all_momentum:
         return {"total_trades": 0, "message": "No signals"}
 
-    all_dates = sorted(set(t["entry"] for t in all_adaptive + all_momentum))
-    a_map = {}; m_map = {}
-    for t in all_adaptive: a_map[t["entry"]] = a_map.get(t["entry"], 0) + t["pnl"]
-    for t in all_momentum: m_map[t["entry"]] = m_map.get(t["entry"], 0) + t["pnl"]
+    all_dates = sorted({t["entry"] for t in all_adaptive + all_momentum})
+    a_map = {}
+    m_map = {}
+    for t in all_adaptive:
+        a_map[t["entry"]] = a_map.get(t["entry"], 0) + t["pnl"]
+    for t in all_momentum:
+        m_map[t["entry"]] = m_map.get(t["entry"], 0) + t["pnl"]
 
-    a_curve = []; m_curve = []; cum_a = 0; cum_m = 0
+    a_curve = []
+    m_curve = []
+    cum_a = 0
+    cum_m = 0
     for d in all_dates:
-        cum_a += a_map.get(d, 0); cum_m += m_map.get(d, 0)
-        a_curve.append(round(cum_a, 2)); m_curve.append(round(cum_m, 2))
+        cum_a += a_map.get(d, 0)
+        cum_m += m_map.get(d, 0)
+        a_curve.append(round(cum_a, 2))
+        m_curve.append(round(cum_m, 2))
 
-    def wr(ts): return round(sum(1 for t in ts if t["outcome"]=="win")/len(ts), 3) if ts else 0
+    def wr(ts):
+        return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
 
     # Compute advanced metrics per sub-strategy
     a_pnls = [t["pnl"] for t in all_adaptive]
     m_pnls = [t["pnl"] for t in all_momentum]
-    all_entry_dates2 = sorted(set(t["entry"] for t in all_adaptive + all_momentum))
-    td2 = max((datetime.strptime(all_entry_dates2[-1],"%Y-%m-%d")-datetime.strptime(all_entry_dates2[0],"%Y-%m-%d")).days*252//365, 20) if len(all_entry_dates2)>=2 else 252
+    all_entry_dates2 = sorted({t["entry"] for t in all_adaptive + all_momentum})
+    td2 = (
+        max(
+            (
+                datetime.strptime(all_entry_dates2[-1], "%Y-%m-%d")
+                - datetime.strptime(all_entry_dates2[0], "%Y-%m-%d")
+            ).days
+            * 252
+            // 365,
+            20,
+        )
+        if len(all_entry_dates2) >= 2
+        else 252
+    )
     adv_a = compute_advanced_metrics(trade_pnls=a_pnls, total_trading_days=td2) if a_pnls else {}
     adv_m2 = compute_advanced_metrics(trade_pnls=m_pnls, total_trading_days=td2) if m_pnls else {}
 
     return {
         "strategy": "adaptive_sentiment",
-        "adaptive": {"trades": len(all_adaptive), "win_rate": wr(all_adaptive),
-                      "total_pnl": round(a_curve[-1], 2) if a_curve else 0,
-                      "label": "自适应情绪", "advanced_metrics": adv_a},
-        "consensus": {"trades": len(all_momentum), "win_rate": wr(all_momentum),
-                      "total_pnl": round(m_curve[-1], 2) if m_curve else 0,
-                      "label": "情绪共识", "advanced_metrics": adv_m2},
+        "adaptive": {
+            "trades": len(all_adaptive),
+            "win_rate": wr(all_adaptive),
+            "total_pnl": round(a_curve[-1], 2) if a_curve else 0,
+            "label": "自适应情绪",
+            "advanced_metrics": adv_a,
+        },
+        "consensus": {
+            "trades": len(all_momentum),
+            "win_rate": wr(all_momentum),
+            "total_pnl": round(m_curve[-1], 2) if m_curve else 0,
+            "label": "情绪共识",
+            "advanced_metrics": adv_m2,
+        },
         "decisions": decisions,
         "dates": all_dates,
         "curves": {"adaptive": a_curve, "consensus": m_curve},
         "variety": variety or "all",
-        "horizon": horizon, "trend_window": trend_window,
+        "horizon": horizon,
+        "trend_window": trend_window,
     }
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Donchian Channel Breakout (Turtle-style)
 # ═══════════════════════════════════════════════════════════════════
+
 
 def run_donchian_strategy(variety="", period=20, start_date="2025-01-01"):
     """Donchian Channel Breakout — Turtle Trading classic.
@@ -861,64 +1021,139 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01"):
     vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
     for var in vlist:
         p = _load_price(var)
-        if not p or len(p.get("prices",[])) < period + 5: continue
-        px = p["prices"]; closes = [float(x["close"]) for x in px]
+        if not p or len(p.get("prices", [])) < period + 5:
+            continue
+        px = p["prices"]
+        closes = [float(x["close"]) for x in px]
         highs = [float(x["high"]) for x in px]
         lows = [float(x["low"]) for x in px]
-        dates = [str(x["date"])[:10] for x in px]; n = len(closes)
+        dates = [str(x["date"])[:10] for x in px]
+        n = len(closes)
 
-        pos = 0; entry_px = 0; entry_d = ""
+        pos = 0
+        entry_px = 0
+        entry_d = ""
         for i in range(period, n):
             d = dates[i]
-            if d < start_date: continue
-            hh = max(highs[i-period:i])
-            ll = min(lows[i-period:i])
+            if d < start_date:
+                continue
+            hh = max(highs[i - period : i])
+            ll = min(lows[i - period : i])
             cu = closes[i] > hh  # Breakout up
             cd = closes[i] < ll  # Breakout down
 
             if pos == 1 and cd and entry_px:
                 pnl = (closes[i] - entry_px) / entry_px * 100
-                all_trades.append({"variety": var, "entry": entry_d, "exit": d, "direction": "long",
-                                   "pnl": round(pnl,2), "outcome": "win" if pnl>0.15 else ("loss" if pnl<-0.15 else "breakeven"), "signal": "donchian"})
+                all_trades.append(
+                    {
+                        "variety": var,
+                        "entry": entry_d,
+                        "exit": d,
+                        "direction": "long",
+                        "pnl": round(pnl, 2),
+                        "outcome": "win"
+                        if pnl > 0.15
+                        else ("loss" if pnl < -0.15 else "breakeven"),
+                        "signal": "donchian",
+                    }
+                )
                 pos = 0
             elif pos == -1 and cu and entry_px:
                 pnl = (entry_px - closes[i]) / entry_px * 100
-                all_trades.append({"variety": var, "entry": entry_d, "exit": d, "direction": "short",
-                                   "pnl": round(pnl,2), "outcome": "win" if pnl>0.15 else ("loss" if pnl<-0.15 else "breakeven"), "signal": "donchian"})
+                all_trades.append(
+                    {
+                        "variety": var,
+                        "entry": entry_d,
+                        "exit": d,
+                        "direction": "short",
+                        "pnl": round(pnl, 2),
+                        "outcome": "win"
+                        if pnl > 0.15
+                        else ("loss" if pnl < -0.15 else "breakeven"),
+                        "signal": "donchian",
+                    }
+                )
                 pos = 0
 
             if pos == 0:
-                if cu: pos = 1; entry_px = closes[i]; entry_d = d
-                elif cd: pos = -1; entry_px = closes[i]; entry_d = d
+                if cu:
+                    pos = 1
+                    entry_px = closes[i]
+                    entry_d = d
+                elif cd:
+                    pos = -1
+                    entry_px = closes[i]
+                    entry_d = d
 
         if pos != 0 and entry_px:
             final = closes[-1]
-            pnl = (final-entry_px)/entry_px*100 if pos==1 else (entry_px-final)/entry_px*100
-            all_trades.append({"variety": var, "entry": entry_d, "exit": dates[-1], "direction": "long" if pos==1 else "short",
-                               "pnl": round(pnl,2), "outcome": "win" if pnl>0.15 else ("loss" if pnl<-0.15 else "breakeven"), "signal": "donchian"})
+            pnl = (
+                (final - entry_px) / entry_px * 100
+                if pos == 1
+                else (entry_px - final) / entry_px * 100
+            )
+            all_trades.append(
+                {
+                    "variety": var,
+                    "entry": entry_d,
+                    "exit": dates[-1],
+                    "direction": "long" if pos == 1 else "short",
+                    "pnl": round(pnl, 2),
+                    "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
+                    "signal": "donchian",
+                }
+            )
 
-    if not all_trades: return {"total_trades": 0}
-    wins = [t for t in all_trades if t["outcome"]=="win"]
-    pnls = [t["pnl"] for t in all_trades]; avg = sum(pnls)/len(pnls)
-    std = (sum((x-avg)**2 for x in pnls)/len(pnls))**0.5 if len(pnls)>1 else 1
-    cum = 0; peak = 0; dd = 0
-    for p in pnls: cum+=p; peak=max(peak,cum); dd=max(dd,peak-cum)
+    if not all_trades:
+        return {"total_trades": 0}
+    wins = [t for t in all_trades if t["outcome"] == "win"]
+    pnls = [t["pnl"] for t in all_trades]
+    avg = sum(pnls) / len(pnls)
+    (sum((x - avg) ** 2 for x in pnls) / len(pnls)) ** 0.5 if len(pnls) > 1 else 1
+    cum = 0
+    peak = 0
+    dd = 0
+    for p in pnls:
+        cum += p
+        peak = max(peak, cum)
+        dd = max(dd, peak - cum)
     # Estimate trading days
-    entry_dates = sorted(set(t["entry"] for t in all_trades))
-    td = max((datetime.strptime(entry_dates[-1],"%Y-%m-%d")-datetime.strptime(entry_dates[0],"%Y-%m-%d")).days*252//365, len(pnls)*period) if len(entry_dates)>=2 else len(pnls)*period
+    entry_dates = sorted({t["entry"] for t in all_trades})
+    td = (
+        max(
+            (
+                datetime.strptime(entry_dates[-1], "%Y-%m-%d")
+                - datetime.strptime(entry_dates[0], "%Y-%m-%d")
+            ).days
+            * 252
+            // 365,
+            len(pnls) * period,
+        )
+        if len(entry_dates) >= 2
+        else len(pnls) * period
+    )
     advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)
-    return {"strategy":"donchian","total_trades":len(all_trades),
-            "win_count":len(wins),"loss_count":len(all_trades)-len(wins),
-            "win_rate":round(len(wins)/len(all_trades),3) if all_trades else 0,
-            "avg_pnl_pct":round(avg,2),"sharpe_like":advanced["sharpe_like"],"max_drawdown_pct":advanced["max_drawdown_pct"],
-            "long_trades":len([t for t in all_trades if t["direction"]=="long"]),
-            "short_trades":len([t for t in all_trades if t["direction"]=="short"]),
-            "period":period,"advanced_metrics":advanced,"recent_trades":all_trades}
+    return {
+        "strategy": "donchian",
+        "total_trades": len(all_trades),
+        "win_count": len(wins),
+        "loss_count": len(all_trades) - len(wins),
+        "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
+        "avg_pnl_pct": round(avg, 2),
+        "sharpe_like": advanced["sharpe_like"],
+        "max_drawdown_pct": advanced["max_drawdown_pct"],
+        "long_trades": len([t for t in all_trades if t["direction"] == "long"]),
+        "short_trades": len([t for t in all_trades if t["direction"] == "short"]),
+        "period": period,
+        "advanced_metrics": advanced,
+        "recent_trades": all_trades,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Time-Series Momentum (Moskowitz et al. 2012)
 # ═══════════════════════════════════════════════════════════════════
+
 
 def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01"):
     """Time-series momentum: go long if N-day return > 0, short if < 0, hold M days.
@@ -928,54 +1163,125 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
     vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
     for var in vlist:
         p = _load_price(var)
-        if not p or len(p.get("prices",[])) < lookback + hold + 5: continue
-        px = p["prices"]; closes = [float(x["close"]) for x in px]
-        dates = [str(x["date"])[:10] for x in px]; n = len(closes)
+        if not p or len(p.get("prices", [])) < lookback + hold + 5:
+            continue
+        px = p["prices"]
+        closes = [float(x["close"]) for x in px]
+        dates = [str(x["date"])[:10] for x in px]
+        n = len(closes)
 
-        pos = 0; entry_px = 0; entry_d = ""; entry_i = 0
+        pos = 0
+        entry_px = 0
+        entry_d = ""
+        entry_i = 0
         for i in range(lookback, n):
             d = dates[i]
-            if d < start_date: continue
-            ret = (closes[i] - closes[i-lookback]) / closes[i-lookback] if closes[i-lookback] else 0
+            if d < start_date:
+                continue
+            ret = (
+                (closes[i] - closes[i - lookback]) / closes[i - lookback]
+                if closes[i - lookback]
+                else 0
+            )
             sig = 1 if ret > 0.005 else (-1 if ret < -0.005 else 0)
 
             # Exit after holding `hold` days
             if pos != 0 and entry_i > 0 and i - entry_i >= hold:
                 exit_px = closes[i]
-                pnl = (exit_px-entry_px)/entry_px*100 if pos==1 else (entry_px-exit_px)/entry_px*100
-                all_trades.append({"variety": var, "entry": entry_d, "exit": d, "direction": "long" if pos==1 else "short",
-                                   "pnl": round(pnl,2), "outcome": "win" if pnl>0.15 else ("loss" if pnl<-0.15 else "breakeven"), "signal": "momentum"})
+                pnl = (
+                    (exit_px - entry_px) / entry_px * 100
+                    if pos == 1
+                    else (entry_px - exit_px) / entry_px * 100
+                )
+                all_trades.append(
+                    {
+                        "variety": var,
+                        "entry": entry_d,
+                        "exit": d,
+                        "direction": "long" if pos == 1 else "short",
+                        "pnl": round(pnl, 2),
+                        "outcome": "win"
+                        if pnl > 0.15
+                        else ("loss" if pnl < -0.15 else "breakeven"),
+                        "signal": "momentum",
+                    }
+                )
                 pos = 0
 
             # Entry
             if pos == 0 and sig != 0:
-                pos = sig; entry_px = closes[i]; entry_d = d; entry_i = i
+                pos = sig
+                entry_px = closes[i]
+                entry_d = d
+                entry_i = i
 
         if pos != 0 and entry_px:
             final = closes[-1]
-            pnl = (final-entry_px)/entry_px*100 if pos==1 else (entry_px-final)/entry_px*100
-            all_trades.append({"variety": var, "entry": entry_d, "exit": dates[-1], "direction": "long" if pos==1 else "short",
-                               "pnl": round(pnl,2), "outcome": "win" if pnl>0.15 else ("loss" if pnl<-0.15 else "breakeven"), "signal": "momentum"})
+            pnl = (
+                (final - entry_px) / entry_px * 100
+                if pos == 1
+                else (entry_px - final) / entry_px * 100
+            )
+            all_trades.append(
+                {
+                    "variety": var,
+                    "entry": entry_d,
+                    "exit": dates[-1],
+                    "direction": "long" if pos == 1 else "short",
+                    "pnl": round(pnl, 2),
+                    "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
+                    "signal": "momentum",
+                }
+            )
 
-    if not all_trades: return {"total_trades": 0}
-    wins = [t for t in all_trades if t["outcome"]=="win"]
-    pnls = [t["pnl"] for t in all_trades]; avg = sum(pnls)/len(pnls)
-    std = (sum((x-avg)**2 for x in pnls)/len(pnls))**0.5 if len(pnls)>1 else 1
-    cum = 0; peak = 0; dd = 0
-    for p in pnls: cum+=p; peak=max(peak,cum); dd=max(dd,peak-cum)
-    entry_dates = sorted(set(t["entry"] for t in all_trades))
-    td = max((datetime.strptime(entry_dates[-1],"%Y-%m-%d")-datetime.strptime(entry_dates[0],"%Y-%m-%d")).days*252//365, len(pnls)*hold) if len(entry_dates)>=2 else len(pnls)*hold
+    if not all_trades:
+        return {"total_trades": 0}
+    wins = [t for t in all_trades if t["outcome"] == "win"]
+    pnls = [t["pnl"] for t in all_trades]
+    avg = sum(pnls) / len(pnls)
+    (sum((x - avg) ** 2 for x in pnls) / len(pnls)) ** 0.5 if len(pnls) > 1 else 1
+    cum = 0
+    peak = 0
+    dd = 0
+    for p in pnls:
+        cum += p
+        peak = max(peak, cum)
+        dd = max(dd, peak - cum)
+    entry_dates = sorted({t["entry"] for t in all_trades})
+    td = (
+        max(
+            (
+                datetime.strptime(entry_dates[-1], "%Y-%m-%d")
+                - datetime.strptime(entry_dates[0], "%Y-%m-%d")
+            ).days
+            * 252
+            // 365,
+            len(pnls) * hold,
+        )
+        if len(entry_dates) >= 2
+        else len(pnls) * hold
+    )
     advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)
-    return {"strategy":"momentum","total_trades":len(all_trades),
-            "win_count":len(wins),"loss_count":len(all_trades)-len(wins),
-            "win_rate":round(len(wins)/len(all_trades),3) if all_trades else 0,
-            "avg_pnl_pct":round(avg,2),"sharpe_like":advanced["sharpe_like"],"max_drawdown_pct":advanced["max_drawdown_pct"],
-            "lookback":lookback,"hold":hold,"advanced_metrics":advanced,"recent_trades":all_trades}
+    return {
+        "strategy": "momentum",
+        "total_trades": len(all_trades),
+        "win_count": len(wins),
+        "loss_count": len(all_trades) - len(wins),
+        "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
+        "avg_pnl_pct": round(avg, 2),
+        "sharpe_like": advanced["sharpe_like"],
+        "max_drawdown_pct": advanced["max_drawdown_pct"],
+        "lookback": lookback,
+        "hold": hold,
+        "advanced_metrics": advanced,
+        "recent_trades": all_trades,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Momentum + Adaptive Sentiment Fusion
 # ═══════════════════════════════════════════════════════════════════
+
 
 def run_momentum_adaptive(
     variety: str = "",
@@ -1004,8 +1310,8 @@ def run_momentum_adaptive(
         momentum_baseline: pure momentum only (same as run_momentum_strategy)
         curves, stats, decisions count
     """
-    all_adaptive = []     # Momentum + adaptive overlay
-    all_baseline = []     # Pure momentum baseline
+    all_adaptive = []  # Momentum + adaptive overlay
+    all_baseline = []  # Pure momentum baseline
     decisions = {"momentum": 0, "contrarian": 0, "skipped": 0, "quality_skip": 0}
 
     vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
@@ -1024,18 +1330,26 @@ def run_momentum_adaptive(
         raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}
         sd_sorted = sorted(raw_sent.keys())
         sent_map = {}
-        last_s = 0; si = 0
+        last_s = 0
+        si = 0
         for d in sorted(str(x["date"])[:10] for x in px):
             while si < len(sd_sorted) and sd_sorted[si] <= d:
-                last_s = raw_sent[sd_sorted[si]]; si += 1
+                last_s = raw_sent[sd_sorted[si]]
+                si += 1
             sent_map[d] = last_s
 
         closes = [float(x["close"]) for x in px]
         dates = [str(x["date"])[:10] for x in px]
         n = len(closes)
 
-        pos_a = 0; entry_px_a = 0; entry_d_a = ""; entry_i_a = 0  # adaptive
-        pos_b = 0; entry_px_b = 0; entry_d_b = ""; entry_i_b = 0  # baseline
+        pos_a = 0
+        entry_px_a = 0
+        entry_d_a = ""
+        entry_i_a = 0  # adaptive
+        pos_b = 0
+        entry_px_b = 0
+        entry_d_b = ""
+        entry_i_b = 0  # baseline
 
         # Rolling baseline quality tracker (last N closed trades)
         baseline_recent_pnls = []  # stores PnL of last 10 closed baseline trades
@@ -1049,83 +1363,134 @@ def run_momentum_adaptive(
             px_now = closes[i]
 
             # Pure momentum signal (lookback return)
-            mom_ret = (closes[i] - closes[i - lookback]) / closes[i - lookback] if closes[i - lookback] else 0
+            mom_ret = (
+                (closes[i] - closes[i - lookback]) / closes[i - lookback]
+                if closes[i - lookback]
+                else 0
+            )
             mom_sig = 1 if mom_ret > 0.005 else (-1 if mom_ret < -0.005 else 0)
 
             # Trend and divergence
-            trend = (closes[i] - closes[i - trend_window]) / closes[i - trend_window] if closes[i - trend_window] else 0
+            trend = (
+                (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
+                if closes[i - trend_window]
+                else 0
+            )
             trend_pct = abs(trend) * 100
 
-            diverge_bearish = (trend > 0.01 and ss < -0.1)   # price up + bearish = top signal
-            diverge_bullish = (trend < -0.01 and ss > 0.1)   # price down + bullish = bottom signal
+            diverge_bearish = trend > 0.01 and ss < -0.1  # price up + bearish = top signal
+            diverge_bullish = trend < -0.01 and ss > 0.1  # price down + bullish = bottom signal
 
             # ── Baseline quality check ──
             baseline_is_good = False
             if len(baseline_recent_pnls) >= 5:
-                recent_wr = sum(1 for p in baseline_recent_pnls if p > 0.15) / len(baseline_recent_pnls)
+                recent_wr = sum(1 for p in baseline_recent_pnls if p > 0.15) / len(
+                    baseline_recent_pnls
+                )
                 recent_total = sum(baseline_recent_pnls)
                 baseline_is_good = recent_total > 0 and recent_wr >= 0.45
 
             # ── Adaptive decision (quality-gated) ──
             if diverge_bearish:
                 # Type A (涨+看空): always contrarian — empirically 60% accurate
-                a_long = False; a_short = True
+                a_long = False
+                a_short = True
                 decisions["contrarian"] += 1
             elif diverge_bullish:
                 if baseline_is_good:
                     # Baseline is profitable → trust it, don't fade
-                    a_long = mom_sig == 1; a_short = mom_sig == -1
+                    a_long = mom_sig == 1
+                    a_short = mom_sig == -1
                     decisions["quality_skip"] += 1
                 elif trend_pct > 3:
                     # Strong crash + bullish + baseline losing = denial → skip
-                    a_long = False; a_short = False
+                    a_long = False
+                    a_short = False
                     decisions["skipped"] += 1
                 else:
                     # Moderate dip + bullish + baseline losing → contrarian LONG
-                    a_long = True; a_short = False
+                    a_long = True
+                    a_short = False
                     decisions["contrarian"] += 1
             elif trend_pct > 2:
                 # Strong trend: always pure momentum
-                a_long = mom_sig == 1; a_short = mom_sig == -1
+                a_long = mom_sig == 1
+                a_short = mom_sig == -1
                 decisions["momentum"] += 1
             elif baseline_is_good:
                 # Weak/moderate trend + baseline healthy → stick to momentum
-                a_long = mom_sig == 1; a_short = mom_sig == -1
+                a_long = mom_sig == 1
+                a_short = mom_sig == -1
                 decisions["momentum"] += 1
             else:
                 # Weak/moderate trend + baseline struggling → contrarian (fade sentiment)
-                a_long = ss < -0.1; a_short = ss > 0.1
+                a_long = ss < -0.1
+                a_short = ss > 0.1
                 decisions["contrarian"] += 1
 
             # ── Baseline: pure momentum only ──
-            b_long = mom_sig == 1; b_short = mom_sig == -1
+            b_long = mom_sig == 1
+            b_short = mom_sig == -1
 
             # Exit after holding `hold` days
             exit_idx = min(i + hold, n - 1)
             exit_px = closes[exit_idx]
 
-            def _close(pos, entry_px, entry_d, entry_i, px_now, d, direction, trades_list, label):
+            def _close(
+                pos,
+                entry_px,
+                entry_d,
+                entry_i,
+                px_now,
+                d,
+                direction,
+                trades_list,
+                label,
+                variety=var,
+            ):
                 if pos == 1:
                     pnl = (px_now - entry_px) / entry_px * 100
                 else:
                     pnl = (entry_px - px_now) / entry_px * 100
-                trades_list.append({
-                    "variety": var, "entry": entry_d, "exit": d,
-                    "direction": direction, "pnl": round(pnl, 2),
-                    "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
-                    "signal": label,
-                })
+                trades_list.append(
+                    {
+                        "variety": variety,
+                        "entry": entry_d,
+                        "exit": d,
+                        "direction": direction,
+                        "pnl": round(pnl, 2),
+                        "outcome": "win"
+                        if pnl > 0.15
+                        else ("loss" if pnl < -0.15 else "breakeven"),
+                        "signal": label,
+                    }
+                )
 
             # Process adaptive
             if pos_a != 0 and entry_d_a and i - entry_i_a >= hold:
-                _close(pos_a, entry_px_a, entry_d_a, entry_i_a, exit_px, d,
-                       "long" if pos_a == 1 else "short", all_adaptive, "mom_ad")
+                _close(
+                    pos_a,
+                    entry_px_a,
+                    entry_d_a,
+                    entry_i_a,
+                    exit_px,
+                    d,
+                    "long" if pos_a == 1 else "short",
+                    all_adaptive,
+                    "mom_ad",
+                )
                 pos_a = 0
             if pos_a == 0:
                 if a_long:
-                    pos_a = 1; entry_px_a = px_now; entry_d_a = d; entry_i_a = i
+                    pos_a = 1
+                    entry_px_a = px_now
+                    entry_d_a = d
+                    entry_i_a = i
                 elif a_short:
-                    pos_a = -1; entry_px_a = px_now; entry_d_a = d; entry_i_a = i
+                    pos_a = -1
+                    entry_px_a = px_now
+                    entry_d_a = d
+                    entry_i_a = i
 
             # Process baseline — also track PnL for quality gating
             if pos_b != 0 and entry_d_b and i - entry_i_b >= hold:
@@ -1133,13 +1498,19 @@ def run_momentum_adaptive(
                     bl_pnl = (exit_px - entry_px_b) / entry_px_b * 100
                 else:
                     bl_pnl = (entry_px_b - exit_px) / entry_px_b * 100
-                all_baseline.append({
-                    "variety": var, "entry": entry_d_b, "exit": d,
-                    "direction": "long" if pos_b == 1 else "short",
-                    "pnl": round(bl_pnl, 2),
-                    "outcome": "win" if bl_pnl > 0.15 else ("loss" if bl_pnl < -0.15 else "breakeven"),
-                    "signal": "momentum",
-                })
+                all_baseline.append(
+                    {
+                        "variety": var,
+                        "entry": entry_d_b,
+                        "exit": d,
+                        "direction": "long" if pos_b == 1 else "short",
+                        "pnl": round(bl_pnl, 2),
+                        "outcome": "win"
+                        if bl_pnl > 0.15
+                        else ("loss" if bl_pnl < -0.15 else "breakeven"),
+                        "signal": "momentum",
+                    }
+                )
                 # Track for quality gating
                 baseline_recent_pnls.append(bl_pnl)
                 if len(baseline_recent_pnls) > BASELINE_WINDOW:
@@ -1147,70 +1518,128 @@ def run_momentum_adaptive(
                 pos_b = 0
             if pos_b == 0:
                 if b_long:
-                    pos_b = 1; entry_px_b = px_now; entry_d_b = d; entry_i_b = i
+                    pos_b = 1
+                    entry_px_b = px_now
+                    entry_d_b = d
+                    entry_i_b = i
                 elif b_short:
-                    pos_b = -1; entry_px_b = px_now; entry_d_b = d; entry_i_b = i
+                    pos_b = -1
+                    entry_px_b = px_now
+                    entry_d_b = d
+                    entry_i_b = i
 
         # Close final positions
         final_px = closes[-1]
         if pos_a != 0 and entry_px_a:
-            pnl = (final_px - entry_px_a) / entry_px_a * 100 if pos_a == 1 else (entry_px_a - final_px) / entry_px_a * 100
-            all_adaptive.append({"variety": var, "entry": entry_d_a, "exit": dates[-1],
-                                "direction": "long" if pos_a == 1 else "short",
-                                "pnl": round(pnl, 2),
-                                "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
-                                "signal": "mom_ad"})
+            pnl = (
+                (final_px - entry_px_a) / entry_px_a * 100
+                if pos_a == 1
+                else (entry_px_a - final_px) / entry_px_a * 100
+            )
+            all_adaptive.append(
+                {
+                    "variety": var,
+                    "entry": entry_d_a,
+                    "exit": dates[-1],
+                    "direction": "long" if pos_a == 1 else "short",
+                    "pnl": round(pnl, 2),
+                    "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
+                    "signal": "mom_ad",
+                }
+            )
         if pos_b != 0 and entry_px_b:
-            pnl = (final_px - entry_px_b) / entry_px_b * 100 if pos_b == 1 else (entry_px_b - final_px) / entry_px_b * 100
-            all_baseline.append({"variety": var, "entry": entry_d_b, "exit": dates[-1],
-                                "direction": "long" if pos_b == 1 else "short",
-                                "pnl": round(pnl, 2),
-                                "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
-                                "signal": "momentum"})
+            pnl = (
+                (final_px - entry_px_b) / entry_px_b * 100
+                if pos_b == 1
+                else (entry_px_b - final_px) / entry_px_b * 100
+            )
+            all_baseline.append(
+                {
+                    "variety": var,
+                    "entry": entry_d_b,
+                    "exit": dates[-1],
+                    "direction": "long" if pos_b == 1 else "short",
+                    "pnl": round(pnl, 2),
+                    "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
+                    "signal": "momentum",
+                }
+            )
 
     if not all_adaptive and not all_baseline:
         return {"total_trades": 0, "message": "No signals"}
 
     # Build cumulative curves
-    all_dates = sorted(set(t["entry"] for t in all_adaptive + all_baseline))
-    a_map = {}; b_map = {}
-    for t in all_adaptive: a_map[t["entry"]] = a_map.get(t["entry"], 0) + t["pnl"]
-    for t in all_baseline: b_map[t["entry"]] = b_map.get(t["entry"], 0) + t["pnl"]
+    all_dates = sorted({t["entry"] for t in all_adaptive + all_baseline})
+    a_map = {}
+    b_map = {}
+    for t in all_adaptive:
+        a_map[t["entry"]] = a_map.get(t["entry"], 0) + t["pnl"]
+    for t in all_baseline:
+        b_map[t["entry"]] = b_map.get(t["entry"], 0) + t["pnl"]
 
-    a_curve = []; b_curve = []; cum_a = 0; cum_b = 0
+    a_curve = []
+    b_curve = []
+    cum_a = 0
+    cum_b = 0
     for d in all_dates:
-        cum_a += a_map.get(d, 0); cum_b += b_map.get(d, 0)
-        a_curve.append(round(cum_a, 2)); b_curve.append(round(cum_b, 2))
+        cum_a += a_map.get(d, 0)
+        cum_b += b_map.get(d, 0)
+        a_curve.append(round(cum_a, 2))
+        b_curve.append(round(cum_b, 2))
 
-    def wr(ts): return round(sum(1 for t in ts if t["outcome"]=="win")/len(ts), 3) if ts else 0
+    def wr(ts):
+        return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
 
     # Compute advanced metrics per sub-strategy
     a_pnls = [t["pnl"] for t in all_adaptive]
     b_pnls = [t["pnl"] for t in all_baseline]
-    all_eds = sorted(set(t["entry"] for t in all_adaptive + all_baseline))
-    td_ma = max((datetime.strptime(all_eds[-1],"%Y-%m-%d")-datetime.strptime(all_eds[0],"%Y-%m-%d")).days*252//365, 20) if len(all_eds)>=2 else 252
+    all_eds = sorted({t["entry"] for t in all_adaptive + all_baseline})
+    td_ma = (
+        max(
+            (
+                datetime.strptime(all_eds[-1], "%Y-%m-%d")
+                - datetime.strptime(all_eds[0], "%Y-%m-%d")
+            ).days
+            * 252
+            // 365,
+            20,
+        )
+        if len(all_eds) >= 2
+        else 252
+    )
     adv_a = compute_advanced_metrics(trade_pnls=a_pnls, total_trading_days=td_ma) if a_pnls else {}
     adv_b = compute_advanced_metrics(trade_pnls=b_pnls, total_trading_days=td_ma) if b_pnls else {}
 
     return {
         "strategy": "momentum_adaptive",
-        "adaptive": {"trades": len(all_adaptive), "win_rate": wr(all_adaptive),
-                      "total_pnl": round(a_curve[-1], 2) if a_curve else 0,
-                      "label": "动量+自适应", "advanced_metrics": adv_a},
-        "momentum_baseline": {"trades": len(all_baseline), "win_rate": wr(all_baseline),
-                              "total_pnl": round(b_curve[-1], 2) if b_curve else 0,
-                              "label": "纯动量(基线)", "advanced_metrics": adv_b},
+        "adaptive": {
+            "trades": len(all_adaptive),
+            "win_rate": wr(all_adaptive),
+            "total_pnl": round(a_curve[-1], 2) if a_curve else 0,
+            "label": "动量+自适应",
+            "advanced_metrics": adv_a,
+        },
+        "momentum_baseline": {
+            "trades": len(all_baseline),
+            "win_rate": wr(all_baseline),
+            "total_pnl": round(b_curve[-1], 2) if b_curve else 0,
+            "label": "纯动量(基线)",
+            "advanced_metrics": adv_b,
+        },
         "decisions": decisions,
         "dates": all_dates,
         "curves": {"adaptive": a_curve, "momentum_baseline": b_curve},
         "variety": variety or "all",
-        "lookback": lookback, "hold": hold, "trend_window": trend_window,
+        "lookback": lookback,
+        "hold": hold,
+        "trend_window": trend_window,
     }
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Risk Management wrapper for any strategy
 # ═══════════════════════════════════════════════════════════════════
+
 
 def apply_risk_management(
     trades: list,
@@ -1250,7 +1679,7 @@ def apply_risk_management(
 
         # Check if price hit stop-loss before original exit
         exit_d = t.get("exit", "")
-        exit_px = price_map.get(exit_d, entry_px)
+        price_map.get(exit_d, entry_px)
         dates = sorted([d for d in price_map if entry_d <= d <= exit_d])
         peak_px = entry_px
         stopped_out = False
@@ -1261,7 +1690,10 @@ def apply_risk_management(
             if direction == "long":
                 # Fixed stop: exit if price drops below entry * (1 - stop_loss%)
                 if stop_loss_pct and px <= entry_px * (1 - stop_loss_pct / 100):
-                    stopped_out = True; stop_px = px; exit_d = d; break
+                    stopped_out = True
+                    stop_px = px
+                    exit_d = d
+                    break
                 # Trailing stop: update peak, exit if falls below peak * (1 - trailing%)
                 if px > peak_px:
                     peak_px = px
@@ -1269,17 +1701,26 @@ def apply_risk_management(
                 # Never let trailing stop go below entry (protect breakeven)
                 trail_level = max(trail_level, entry_px)
                 if trailing_stop_pct and px <= trail_level:
-                    stopped_out = True; stop_px = px; exit_d = d; break
+                    stopped_out = True
+                    stop_px = px
+                    exit_d = d
+                    break
             else:  # short
                 if stop_loss_pct and px >= entry_px * (1 + stop_loss_pct / 100):
-                    stopped_out = True; stop_px = px; exit_d = d; break
+                    stopped_out = True
+                    stop_px = px
+                    exit_d = d
+                    break
                 if px < peak_px:
                     peak_px = px
                 trail_level = peak_px * (1 + trailing_stop_pct / 100)
                 # Never let trailing stop go above entry (protect breakeven)
                 trail_level = min(trail_level, entry_px)
                 if trailing_stop_pct and px >= trail_level:
-                    stopped_out = True; stop_px = px; exit_d = d; break
+                    stopped_out = True
+                    stop_px = px
+                    exit_d = d
+                    break
 
         if stopped_out:
             if direction == "long":
@@ -1301,6 +1742,7 @@ def apply_risk_management(
 # P3: Simulated Trading Backtest
 # ═══════════════════════════════════════════════════════════════════
 
+
 @dataclass
 @dataclass
 class TradeRecord:
@@ -1319,6 +1761,7 @@ class TradeRecord:
 # ═══════════════════════════════════════════════════════════════════
 # Shared Advanced Metrics Calculator
 # ═══════════════════════════════════════════════════════════════════
+
 
 def compute_advanced_metrics(
     trade_pnls: list[float],
@@ -1344,17 +1787,25 @@ def compute_advanced_metrics(
 
     if n == 0:
         return {
-            "sharpe_ratio": 0.0, "sortino_ratio": 0.0, "calmar_ratio": 0.0,
-            "annualized_return": 0.0, "annualized_volatility": 0.0,
-            "max_drawdown_pct": 0.0, "max_drawdown_duration": 0,
-            "profit_factor": 0.0, "avg_win_pct": 0.0, "avg_loss_pct": 0.0,
-            "win_loss_ratio": 0.0, "volatility_pct": 0.0, "sharpe_like": 0.0,
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "calmar_ratio": 0.0,
+            "annualized_return": 0.0,
+            "annualized_volatility": 0.0,
+            "max_drawdown_pct": 0.0,
+            "max_drawdown_duration": 0,
+            "profit_factor": 0.0,
+            "avg_win_pct": 0.0,
+            "avg_loss_pct": 0.0,
+            "win_loss_ratio": 0.0,
+            "volatility_pct": 0.0,
+            "sharpe_like": 0.0,
         }
 
     # ── Basic stats ──
     wins = [p for p in trade_pnls if p > 0.1]
     losses = [p for p in trade_pnls if p < -0.1]
-    breakevens = [p for p in trade_pnls if -0.1 <= p <= 0.1]
+    [p for p in trade_pnls if -0.1 <= p <= 0.1]
 
     avg_win = sum(wins) / len(wins) if wins else 0.0
     avg_loss = sum(losses) / len(losses) if losses else 0.0
@@ -1362,7 +1813,11 @@ def compute_advanced_metrics(
 
     gross_profit = sum(wins) if wins else 0.0
     gross_loss = abs(sum(losses)) if losses else 0.0
-    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (99.0 if gross_profit > 0 else 0.0)
+    profit_factor = (
+        round(gross_profit / gross_loss, 2)
+        if gross_loss > 0
+        else (99.0 if gross_profit > 0 else 0.0)
+    )
 
     total_return_pct = sum(trade_pnls)
     avg_pnl = total_return_pct / n
@@ -1382,24 +1837,34 @@ def compute_advanced_metrics(
 
     # Volatility: use daily returns if available, otherwise scale from trade PnLs
     if daily_returns and len(daily_returns) > 1:
-        daily_std = math.sqrt(sum((r - sum(daily_returns) / len(daily_returns)) ** 2
-                                  for r in daily_returns) / len(daily_returns))
+        daily_std = math.sqrt(
+            sum((r - sum(daily_returns) / len(daily_returns)) ** 2 for r in daily_returns)
+            / len(daily_returns)
+        )
         annualized_vol = daily_std * math.sqrt(252) * 100  # convert to %
     else:
         annualized_vol = std_pnl * math.sqrt(trades_per_year) if trades_per_year > 0 else 0.0
 
     # ── Sharpe Ratio ──
-    sharpe = ((annualized_return - RISK_FREE_RATE) / annualized_vol
-              if annualized_vol > 0 else (9.99 if annualized_return > RISK_FREE_RATE else 0.0))
+    sharpe = (
+        (annualized_return - RISK_FREE_RATE) / annualized_vol
+        if annualized_vol > 0
+        else (9.99 if annualized_return > RISK_FREE_RATE else 0.0)
+    )
 
     # ── Sortino Ratio (downside deviation only) ──
     downside_returns = [p for p in trade_pnls if p < 0]
     if downside_returns:
-        downside_var = sum(p ** 2 for p in downside_returns) / len(trade_pnls)
+        downside_var = sum(p**2 for p in downside_returns) / len(trade_pnls)
         downside_std_trade = math.sqrt(downside_var)
-        downside_std_annual = downside_std_trade * math.sqrt(trades_per_year) if trades_per_year > 0 else 0.0
-        sortino = ((annualized_return - RISK_FREE_RATE) / downside_std_annual
-                   if downside_std_annual > 0 else (9.99 if annualized_return > RISK_FREE_RATE else 0.0))
+        downside_std_annual = (
+            downside_std_trade * math.sqrt(trades_per_year) if trades_per_year > 0 else 0.0
+        )
+        sortino = (
+            (annualized_return - RISK_FREE_RATE) / downside_std_annual
+            if downside_std_annual > 0
+            else (9.99 if annualized_return > RISK_FREE_RATE else 0.0)
+        )
     else:
         sortino = 9.99 if annualized_return > RISK_FREE_RATE else 0.0
 
@@ -1423,8 +1888,7 @@ def compute_advanced_metrics(
             max_dd = dd
 
     # ── Calmar Ratio ──
-    calmar = (annualized_return / max_dd
-              if max_dd > 0 else (99.0 if annualized_return > 0 else 0.0))
+    calmar = annualized_return / max_dd if max_dd > 0 else (99.0 if annualized_return > 0 else 0.0)
 
     # ── Legacy sharpe_like for backward compat ──
     sharpe_like = round(avg_pnl / std_pnl, 2) if std_pnl > 0 else 0.0
@@ -1509,13 +1973,20 @@ def run_simulated_trading(
                 pnl = (entry_px - exit_px) / entry_px * 100
                 outcome = "win" if pnl > 0.1 else ("loss" if pnl < -0.1 else "breakeven")
 
-            all_trades.append(TradeRecord(
-                variety=var, entry_date=entry_date, exit_date=exit_date,
-                direction=direction, signal_value=round(signal, 3),
-                entry_price=round(entry_px, 2), exit_price=round(exit_px, 2),
-                pnl_pct=round(pnl, 2), outcome=outcome,
-                horizon=(dates.index(exit_date) - dates.index(entry_date)),
-            ))
+            all_trades.append(
+                TradeRecord(
+                    variety=var,
+                    entry_date=entry_date,
+                    exit_date=exit_date,
+                    direction=direction,
+                    signal_value=round(signal, 3),
+                    entry_price=round(entry_px, 2),
+                    exit_price=round(exit_px, 2),
+                    pnl_pct=round(pnl, 2),
+                    outcome=outcome,
+                    horizon=(dates.index(exit_date) - dates.index(entry_date)),
+                )
+            )
 
     if not all_trades:
         return {"total_trades": 0, "message": "No trades generated"}
@@ -1529,7 +2000,7 @@ def run_simulated_trading(
     pnls = [t.pnl_pct for t in all_trades]
 
     # Estimate trading days from trade date range
-    all_entry_dates = sorted(set(t.entry_date for t in all_trades))
+    all_entry_dates = sorted({t.entry_date for t in all_trades})
     if len(all_entry_dates) >= 2:
         d0 = datetime.strptime(all_entry_dates[0], "%Y-%m-%d")
         d1 = datetime.strptime(all_entry_dates[-1], "%Y-%m-%d")
@@ -1548,9 +2019,11 @@ def run_simulated_trading(
         if t.outcome == "win":
             by_variety[t.variety]["wins"] += 1
     for v in by_variety:
-        by_variety[v]["win_rate"] = round(
-            by_variety[v]["wins"] / by_variety[v]["trades"], 3
-        ) if by_variety[v]["trades"] else 0
+        by_variety[v]["win_rate"] = (
+            round(by_variety[v]["wins"] / by_variety[v]["trades"], 3)
+            if by_variety[v]["trades"]
+            else 0
+        )
 
     return {
         "total_trades": len(all_trades),
@@ -1564,17 +2037,27 @@ def run_simulated_trading(
         "short_trades": len(short_trades),
         "long_win_rate": round(
             len([t for t in long_trades if t.outcome == "win"]) / len(long_trades), 3
-        ) if long_trades else 0,
+        )
+        if long_trades
+        else 0,
         "short_win_rate": round(
             len([t for t in short_trades if t.outcome == "win"]) / len(short_trades), 3
-        ) if short_trades else 0,
+        )
+        if short_trades
+        else 0,
         "horizon": horizon,
         "signal_threshold": signal_threshold,
         "by_variety": dict(by_variety),
         "advanced_metrics": advanced,
         "recent_trades": [
-            {"variety": t.variety, "entry": t.entry_date, "exit": t.exit_date,
-             "dir": t.direction, "pnl": t.pnl_pct, "outcome": t.outcome}
+            {
+                "variety": t.variety,
+                "entry": t.entry_date,
+                "exit": t.exit_date,
+                "dir": t.direction,
+                "pnl": t.pnl_pct,
+                "outcome": t.outcome,
+            }
             for t in all_trades
         ],
     }
@@ -1585,6 +2068,7 @@ def run_simulated_trading(
 # ═══════════════════════════════════════════════════════════════════
 # Factor builders
 # ═══════════════════════════════════════════════════════════════════
+
 
 def _compute_fundamental_factors(prices: list[dict]) -> dict[str, list]:
     """Compute fundamental/technical factors from OHLCV price data.
@@ -1611,11 +2095,11 @@ def _compute_fundamental_factors(prices: list[dict]) -> dict[str, list]:
     for i in range(n):
         # MA
         if i >= 4:
-            ma_5.append(sum(closes[i-4:i+1]) / 5)
+            ma_5.append(sum(closes[i - 4 : i + 1]) / 5)
         else:
             ma_5.append(closes[i])
         if i >= 19:
-            ma_20.append(sum(closes[i-19:i+1]) / 20)
+            ma_20.append(sum(closes[i - 19 : i + 1]) / 20)
         else:
             ma_20.append(closes[i])
 
@@ -1624,14 +2108,14 @@ def _compute_fundamental_factors(prices: list[dict]) -> dict[str, list]:
 
         # Momentum
         if i >= 5:
-            momentum_5.append((closes[i] - closes[i-5]) / closes[i-5] if closes[i-5] else 0)
+            momentum_5.append((closes[i] - closes[i - 5]) / closes[i - 5] if closes[i - 5] else 0)
         else:
             momentum_5.append(0.0)
 
         # Volume
         if volumes[i] > 0:
             if i >= 20:
-                avg_vol = sum(volumes[i-19:i+1]) / 20
+                avg_vol = sum(volumes[i - 19 : i + 1]) / 20
                 vr = volumes[i] / avg_vol if avg_vol > 0 else 1.0
             else:
                 vr = 1.0
@@ -1650,15 +2134,20 @@ def _compute_fundamental_factors(prices: list[dict]) -> dict[str, list]:
         fund_score.append(round(fs, 3))
 
     return {
-        "ma_5": ma_5, "ma_20": ma_20, "ma_signal": ma_signal,
-        "momentum_5": momentum_5, "vol_ratio": vol_ratio,
-        "vol_signal": vol_signal, "fund_score": fund_score,
+        "ma_5": ma_5,
+        "ma_20": ma_20,
+        "ma_signal": ma_signal,
+        "momentum_5": momentum_5,
+        "vol_ratio": vol_ratio,
+        "vol_signal": vol_signal,
+        "fund_score": fund_score,
     }
 
 
 # ═══════════════════════════════════════════════════════════════════
 # P3-C: Multi-Strategy Comparison (Fundamental / Sentiment / Combined)
 # ═══════════════════════════════════════════════════════════════════
+
 
 def run_strategy_comparison(
     variety: str = "RB",
@@ -1745,10 +2234,14 @@ def run_strategy_comparison(
         else:
             pnl = (entry_px - exit_px) / entry_px * 100
         outcome = "win" if pnl > 0.1 else ("loss" if pnl < -0.1 else "breakeven")
-        all_trades_fund.append({
-            "date": dates[i], "direction": direction,
-            "pnl": round(pnl, 2), "outcome": outcome,
-        })
+        all_trades_fund.append(
+            {
+                "date": dates[i],
+                "direction": direction,
+                "pnl": round(pnl, 2),
+                "outcome": outcome,
+            }
+        )
 
     # --- Strategy 2: Fundamental + Sentiment ---
     for i in range(n - horizon):
@@ -1772,15 +2265,19 @@ def run_strategy_comparison(
         else:
             pnl = (entry_px - exit_px) / entry_px * 100
         outcome = "win" if pnl > 0.1 else ("loss" if pnl < -0.1 else "breakeven")
-        all_trades_combo.append({
-            "date": dates[i], "direction": direction,
-            "pnl": round(pnl, 2), "outcome": outcome,
-        })
+        all_trades_combo.append(
+            {
+                "date": dates[i],
+                "direction": direction,
+                "pnl": round(pnl, 2),
+                "outcome": outcome,
+            }
+        )
 
     # --- Build PnL curves (cumulative) ---
     def build_pnl_curve(trades: list, n_days: int, start_idx: int) -> list[float]:
         """Map trades to daily cumulative PnL curve."""
-        curve = [0.0] * n_days
+        [0.0] * n_days
         cum = 0.0
         trade_idx = 0
         for i in range(n_days):
@@ -1830,8 +2327,16 @@ def run_strategy_comparison(
     sc_td = max(len(dates) * 252 // 365, 30) if dates else 252
     fund_pnls = [t["pnl"] for t in all_trades_fund]
     combo_pnls = [t["pnl"] for t in all_trades_combo]
-    adv_fund = compute_advanced_metrics(trade_pnls=fund_pnls, total_trading_days=sc_td) if fund_pnls else {}
-    adv_combo = compute_advanced_metrics(trade_pnls=combo_pnls, total_trading_days=sc_td) if combo_pnls else {}
+    adv_fund = (
+        compute_advanced_metrics(trade_pnls=fund_pnls, total_trading_days=sc_td)
+        if fund_pnls
+        else {}
+    )
+    adv_combo = (
+        compute_advanced_metrics(trade_pnls=combo_pnls, total_trading_days=sc_td)
+        if combo_pnls
+        else {}
+    )
 
     return {
         "variety": variety,
@@ -1930,27 +2435,25 @@ def run_trailing_strategy(
             # --- FIND EXIT ---
             exit_date = None
             exit_px = None
-            exit_reason = "max_holding"
 
             for j in range(i + 1, min(i + max_holding + 1, len(dates))):
                 later_score = scores[j]
                 later_date = dates[j]
 
                 # Check sentiment reversal
-                if direction == "long" and later_score < 0:
+                if (
+                    direction == "long"
+                    and later_score < 0
+                    or direction == "short"
+                    and later_score > 0
+                ):
                     exit_date = later_date
-                    exit_reason = "sentiment_flip"
-                    break
-                elif direction == "short" and later_score > 0:
-                    exit_date = later_date
-                    exit_reason = "sentiment_flip"
                     break
 
             # If no flip within max_holding, exit at max_holding day
             if exit_date is None:
                 exit_idx = min(i + max_holding, len(dates) - 1)
                 exit_date = dates[exit_idx]
-                exit_reason = "max_holding"
 
             exit_px = price_map.get(exit_date, 0)
             if not exit_px:
@@ -1966,13 +2469,20 @@ def run_trailing_strategy(
             outcome = "win" if pnl > 0.1 else ("loss" if pnl < -0.1 else "breakeven")
             holding_days = dates.index(exit_date) - dates.index(entry_date)
 
-            all_trades.append(TradeRecord(
-                variety=var, entry_date=entry_date, exit_date=exit_date,
-                direction=direction, signal_value=round(signal, 3),
-                entry_price=round(entry_px, 2), exit_price=round(exit_px, 2),
-                pnl_pct=round(pnl, 2), outcome=outcome,
-                horizon=holding_days,
-            ))
+            all_trades.append(
+                TradeRecord(
+                    variety=var,
+                    entry_date=entry_date,
+                    exit_date=exit_date,
+                    direction=direction,
+                    signal_value=round(signal, 3),
+                    entry_price=round(entry_px, 2),
+                    exit_price=round(exit_px, 2),
+                    pnl_pct=round(pnl, 2),
+                    outcome=outcome,
+                    horizon=holding_days,
+                )
+            )
 
             # Move to the day after exit (no overlapping trades)
             i = dates.index(exit_date) + 1
@@ -1989,7 +2499,7 @@ def run_trailing_strategy(
     pnls = [t.pnl_pct for t in all_trades]
 
     # Estimate trading days
-    all_entry_dates = sorted(set(t.entry_date for t in all_trades))
+    all_entry_dates = sorted({t.entry_date for t in all_trades})
     if len(all_entry_dates) >= 2:
         d0 = datetime.strptime(all_entry_dates[0], "%Y-%m-%d")
         d1 = datetime.strptime(all_entry_dates[-1], "%Y-%m-%d")
@@ -2001,7 +2511,7 @@ def run_trailing_strategy(
     avg_pnl = sum(pnls) / len(pnls) if pnls else 0
 
     # Exit reason stats
-    flip_exits = [t for t in all_trades if getattr(t, 'horizon', 0) < max_holding]
+    flip_exits = [t for t in all_trades if getattr(t, "horizon", 0) < max_holding]
     flip_count = len(flip_exits)
 
     # By variety
@@ -2015,7 +2525,9 @@ def run_trailing_strategy(
         by_variety[v]["win_rate"] = round(by_variety[v]["wins"] / n, 3) if n else 0
 
     # Avg holding period
-    avg_holding = round(sum(t.horizon for t in all_trades) / len(all_trades), 1) if all_trades else 0
+    avg_holding = (
+        round(sum(t.horizon for t in all_trades) / len(all_trades), 1) if all_trades else 0
+    )
 
     return {
         "strategy": "trailing_sentiment",
@@ -2030,10 +2542,14 @@ def run_trailing_strategy(
         "short_trades": len(short_trades),
         "long_win_rate": round(
             len([t for t in long_trades if t.outcome == "win"]) / len(long_trades), 3
-        ) if long_trades else 0,
+        )
+        if long_trades
+        else 0,
         "short_win_rate": round(
             len([t for t in short_trades if t.outcome == "win"]) / len(short_trades), 3
-        ) if short_trades else 0,
+        )
+        if short_trades
+        else 0,
         "signal_threshold": signal_threshold,
         "max_holding": max_holding,
         "avg_holding_days": avg_holding,
@@ -2042,9 +2558,15 @@ def run_trailing_strategy(
         "by_variety": dict(by_variety),
         "advanced_metrics": advanced,
         "recent_trades": [
-            {"variety": t.variety, "entry": t.entry_date, "exit": t.exit_date,
-             "dir": t.direction, "pnl": t.pnl_pct, "outcome": t.outcome,
-             "days": t.horizon}
+            {
+                "variety": t.variety,
+                "entry": t.entry_date,
+                "exit": t.exit_date,
+                "dir": t.direction,
+                "pnl": t.pnl_pct,
+                "outcome": t.outcome,
+                "days": t.horizon,
+            }
             for t in all_trades
         ],
     }
@@ -2062,6 +2584,7 @@ def _get_all_varieties_with_data() -> list[str]:
 # Variety Comparison (multi-variety radar)
 # ═══════════════════════════════════════════════════════════════════
 
+
 def compare_varieties(varieties: list[str]) -> list[dict]:
     """Compare sentiment metrics across multiple varieties."""
     result = []
@@ -2071,7 +2594,7 @@ def compare_varieties(varieties: list[str]) -> list[dict]:
             continue
         ss = sent.get("data", {}).get("social_sentiment", {})
         series = sent.get("data", {}).get("daily_series", [])
-        latest = series[-1] if series else {}
+        series[-1] if series else {}
 
         # 7-day trend
         if len(series) >= 7:
@@ -2093,18 +2616,20 @@ def compare_varieties(varieties: list[str]) -> list[dict]:
             elif raw_score < -0.1:
                 label = "偏空"
 
-        result.append({
-            "variety": var,
-            "name": sent.get("variety_name", var),
-            "sector": sent.get("sector", ""),
-            "score": raw_score,
-            "label": label,
-            "bullish_ratio": round(bull, 3),
-            "bearish_ratio": round(bear, 3),
-            "total_posts": ss.get("total_posts_analyzed", 0),
-            "trend_7d": trend_7d,
-            "trend_label": ss.get("trend_label", ""),
-        })
+        result.append(
+            {
+                "variety": var,
+                "name": sent.get("variety_name", var),
+                "sector": sent.get("sector", ""),
+                "score": raw_score,
+                "label": label,
+                "bullish_ratio": round(bull, 3),
+                "bearish_ratio": round(bear, 3),
+                "total_posts": ss.get("total_posts_analyzed", 0),
+                "trend_7d": trend_7d,
+                "trend_label": ss.get("trend_label", ""),
+            }
+        )
 
     result.sort(key=lambda x: -abs(x["score"]))
     return result
@@ -2132,19 +2657,21 @@ def get_all_variety_scores() -> list[dict]:
         label = ss.get("overall_sentiment_label", "neutral")
         if not label or label == "neutral":
             if raw_score > 0.15:
-                label = u"偏多"
+                label = "偏多"
             elif raw_score < -0.15:
-                label = u"偏空"
+                label = "偏空"
 
-        varieties.append({
-            "code": var,
-            "name": sent.get("variety_name", var),
-            "sector": sent.get("sector", ""),
-            "score": raw_score,
-            "label": label,
-            "bullish": round(bull * 100),
-            "bearish": round(bear * 100),
-            "posts": ss.get("total_posts_analyzed", 0),
-            "date": latest.get("date", ""),
-        })
+        varieties.append(
+            {
+                "code": var,
+                "name": sent.get("variety_name", var),
+                "sector": sent.get("sector", ""),
+                "score": raw_score,
+                "label": label,
+                "bullish": round(bull * 100),
+                "bearish": round(bear * 100),
+                "posts": ss.get("total_posts_analyzed", 0),
+                "date": latest.get("date", ""),
+            }
+        )
     return sorted(varieties, key=lambda x: -abs(x["score"]))

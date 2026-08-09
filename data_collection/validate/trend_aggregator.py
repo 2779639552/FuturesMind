@@ -9,10 +9,11 @@ v3: 作者影响力加权 — 粉丝数(log压缩) + 领域发帖量 + 互动数
 输出: output/trends/{variety}_sentiment.json
 """
 
-import json, math, os, sys
-from pathlib import Path
+import json
+import math
+import sys
 from collections import defaultdict
-from datetime import datetime
+from pathlib import Path
 
 from dedupe import load_unique_records_with_platform_fallback
 
@@ -32,9 +33,9 @@ def _build_author_index(records: list[dict]) -> dict:
             continue
 
         engagement = (
-            (note.get("like_count") or 0) +
-            (note.get("comment_count") or 0) * 2 +
-            (note.get("share_count") or 0) * 0.5
+            (note.get("like_count") or 0)
+            + (note.get("comment_count") or 0) * 2
+            + (note.get("share_count") or 0) * 0.5
         )
         fans = note.get("author_fans", 0) or 0
 
@@ -54,7 +55,9 @@ def _build_author_index(records: list[dict]) -> dict:
         if isinstance(varieties, list):
             for v in varieties:
                 vname = v["name"] if isinstance(v, dict) else str(v)
-                author_index[aid]["variety_posts"][vname] = author_index[aid]["variety_posts"].get(vname, 0) + 1
+                author_index[aid]["variety_posts"][vname] = (
+                    author_index[aid]["variety_posts"].get(vname, 0) + 1
+                )
         # 取多次出现的最大粉丝数 (防止单次未取到)
         if fans > author_index[aid]["total_fans"]:
             author_index[aid]["total_fans"] = fans
@@ -63,8 +66,7 @@ def _build_author_index(records: list[dict]) -> dict:
     for aid in author_index:
         info = author_index[aid]
         info["avg_engagement"] = (
-            info["total_engagement"] / info["total_posts"]
-            if info["total_posts"] > 0 else 0
+            info["total_engagement"] / info["total_posts"] if info["total_posts"] > 0 else 0
         )
 
     return author_index
@@ -81,11 +83,11 @@ def _compute_note_weight(
     """
     # --- 1. 互动权重 (per-post buzz, capped to prevent viral dominance) ---
     engagement = (
-        (note.get("like_count") or 0) +
-        (note.get("comment_count") or 0) * 2 +
-        (note.get("share_count") or 0) * 0.5
+        (note.get("like_count") or 0)
+        + (note.get("comment_count") or 0) * 2
+        + (note.get("share_count") or 0) * 0.5
     )
-    engagement_weight = 1.0 + (engagement ** 0.25)  # gentler exponent
+    engagement_weight = 1.0 + (engagement**0.25)  # gentler exponent
     engagement_weight = min(engagement_weight, 2.0)  # cap at 2x
 
     # --- 2. 作者粉丝权重 (log10, 更高区分度) ---
@@ -134,6 +136,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
 
     # 数据清洗: 缺失值/异常值处理
     from data_cleaner import clean_records
+
     records = clean_records(records, verbose=True)
 
     # 构建作者画像索引 (全数据集, 一次扫描)
@@ -143,9 +146,11 @@ def aggregate(jsonl_paths: list[str]) -> dict:
     total_authors = len(author_index)
     authors_with_fans = sum(1 for a in author_index.values() if a["total_fans"] > 0)
     multi_post_authors = sum(1 for a in author_index.values() if a["total_posts"] > 1)
-    print(f"Author index: {total_authors} unique authors, "
-          f"{authors_with_fans} with fan data, "
-          f"{multi_post_authors} with >1 posts")
+    print(
+        f"Author index: {total_authors} unique authors, "
+        f"{authors_with_fans} with fan data, "
+        f"{multi_post_authors} with >1 posts"
+    )
 
     # {variety: {date: [scores]}}
     daily = defaultdict(lambda: defaultdict(list))
@@ -153,9 +158,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
     platform_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 
     # 作者维度统计 (用于 audit trail)
-    author_variety_sentiment: dict[str, dict[str, list]] = defaultdict(
-        lambda: defaultdict(list)
-    )
+    author_variety_sentiment: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
 
     for note in records:
         date = (note.get("publish_time", "") or "")[:10]
@@ -173,18 +176,19 @@ def aggregate(jsonl_paths: list[str]) -> dict:
             vname = vs.get("variety", "")
             score = vs.get("score", 0)
             if vname and score != 0:
-                daily[vname][date].append({
-                    "score": score,
-                    "weight": weight,
-                    "sentiment": vs.get("sentiment", "neutral"),
-                    "engagement": (
-                        (note.get("like_count") or 0) +
-                        (note.get("comment_count") or 0) * 2
-                    ),
-                    "author_fans": note.get("author_fans", 0) or 0,
-                    "author_id": aid,
-                    "platform": platform,
-                })
+                daily[vname][date].append(
+                    {
+                        "score": score,
+                        "weight": weight,
+                        "sentiment": vs.get("sentiment", "neutral"),
+                        "engagement": (
+                            (note.get("like_count") or 0) + (note.get("comment_count") or 0) * 2
+                        ),
+                        "author_fans": note.get("author_fans", 0) or 0,
+                        "author_id": aid,
+                        "platform": platform,
+                    }
+                )
                 note_counts[vname][date] += 1
                 platform_counts[vname][date][platform] += 1
 
@@ -203,7 +207,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
         combined_metrics: dict = {}
         if global_weights_path.exists():
             try:
-                with open(global_weights_path, "r", encoding="utf-8") as wf:
+                with open(global_weights_path, encoding="utf-8") as wf:
                     wdata = json.load(wf)
                 platform_weights = wdata.get("weights", {})
                 weight_source = wdata.get("weight_source", "equal")
@@ -211,7 +215,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
                 pass
         if variety_weights_path.exists():
             try:
-                with open(variety_weights_path, "r", encoding="utf-8") as vf:
+                with open(variety_weights_path, encoding="utf-8") as vf:
                     vdata = json.load(vf)
                 combined_metrics = vdata.get("combined_metrics", {})
             except Exception:
@@ -225,7 +229,8 @@ def aggregate(jsonl_paths: list[str]) -> dict:
             total_weight = sum(it["weight"] for it in items)
             avg_score = (
                 sum(it["score"] * it["weight"] for it in items) / total_weight
-                if total_weight > 0 else 0
+                if total_weight > 0
+                else 0
             )
 
             # 简单平均 (对照, 不加权)
@@ -245,8 +250,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
             for p, pitems in by_platform.items():
                 pw_total = sum(i["weight"] for i in pitems)
                 pw_avg = (
-                    sum(i["score"] * i["weight"] for i in pitems) / pw_total
-                    if pw_total > 0 else 0
+                    sum(i["score"] * i["weight"] for i in pitems) / pw_total if pw_total > 0 else 0
                 )
                 p_sents = [i["sentiment"] for i in pitems]
                 platform_scores[p] = {
@@ -283,9 +287,15 @@ def aggregate(jsonl_paths: list[str]) -> dict:
                 name = info.get("name", aid[:8])
                 fans = info.get("total_fans", 0)
                 posts = info.get("total_posts", 0)
-                label = f"{name}" if not fans else f"{name}({fans/10000:.0f}万粉)"
-                author_names.append({"name": label, "weight_contrib": round(contrib, 2),
-                                     "fans": fans, "posts": posts})
+                label = f"{name}" if not fans else f"{name}({fans / 10000:.0f}万粉)"
+                author_names.append(
+                    {
+                        "name": label,
+                        "weight_contrib": round(contrib, 2),
+                        "fans": fans,
+                        "posts": posts,
+                    }
+                )
 
             entry = {
                 "date": date,
@@ -305,8 +315,11 @@ def aggregate(jsonl_paths: list[str]) -> dict:
         # 计算趋势指标
         if len(series) >= 3:
             recent = [s["avg_score"] for s in series[-5:]]
-            trend = "偏多" if sum(recent) / len(recent) > 0.1 else (
-                "偏空" if sum(recent) / len(recent) < -0.1 else "震荡")
+            trend = (
+                "偏多"
+                if sum(recent) / len(recent) > 0.1
+                else ("偏空" if sum(recent) / len(recent) < -0.1 else "震荡")
+            )
 
             total_by_platform: dict[str, int] = {}
             for s in series:
@@ -326,9 +339,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
                 "stats": {
                     "total_days": len(series),
                     "total_notes": sum(s["note_count"] for s in series),
-                    "avg_sentiment": round(
-                        sum(s["avg_score"] for s in series) / len(series), 3
-                    ),
+                    "avg_sentiment": round(sum(s["avg_score"] for s in series) / len(series), 3),
                     "recent_trend": trend,
                     "date_range": f"{series[0]['date']} ~ {series[-1]['date']}",
                     "by_platform": total_by_platform,
@@ -337,10 +348,11 @@ def aggregate(jsonl_paths: list[str]) -> dict:
                     "combined_metrics": combined_metrics,
                     "unique_authors": len(variety_authors),
                     "authors_with_fans": sum(
-                        1 for a in variety_authors
+                        1
+                        for a in variety_authors
                         if author_index.get(a, {}).get("total_fans", 0) > 0
                     ),
-                }
+                },
             }
         else:
             result[variety] = {"series": series}
@@ -358,8 +370,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
     # 写作者画像索引 (audit trail)
     # 仅保留有粉丝数据的作者, 压缩输出
     author_export = {}
-    for aid, info in sorted(author_index.items(),
-                             key=lambda x: -x[1]["total_fans"]):
+    for aid, info in sorted(author_index.items(), key=lambda x: -x[1]["total_fans"]):
         if info["total_posts"] >= 2 or info["total_fans"] > 0:
             author_export[aid] = {
                 "name": info["name"],
@@ -381,19 +392,18 @@ def aggregate(jsonl_paths: list[str]) -> dict:
     print(f"Platform distribution: {plat_summary}")
 
     # 权重来源说明
-    print(f"Weight formula: engagement_weight × fans_weight × volume_weight")
-    print(f"  engagement = 1 + (likes + comments×2 + shares×0.5) ^ 0.3")
-    print(f"  fans       = 1 + ln(1 + followers) × 0.03  (max 1.5x)")
-    print(f"  volume     = 1 + ln(total_posts) × 0.08    (max 1.4x)")
+    print("Weight formula: engagement_weight × fans_weight × volume_weight")
+    print("  engagement = 1 + (likes + comments×2 + shares×0.5) ^ 0.3")
+    print("  fans       = 1 + ln(1 + followers) × 0.03  (max 1.5x)")
+    print("  volume     = 1 + ln(total_posts) × 0.08    (max 1.4x)")
 
     return result
 
 
 if __name__ == "__main__":
     import glob
-    paths = sorted(glob.glob(
-        str(Path(__file__).parent / "output" / "batch_*.jsonl")
-    ))
+
+    paths = sorted(glob.glob(str(Path(__file__).parent / "output" / "batch_*.jsonl")))
     if not paths:
         print("No batch JSONL files found!")
         sys.exit(1)

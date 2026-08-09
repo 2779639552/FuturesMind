@@ -5,6 +5,7 @@ the news path: a broker symbol like XAUUSD must resolve to the same Yahoo symbol
 (GC=F) that the price path uses, so identity, realized-return, and news lookups
 hit the right instrument instead of failing/mismatching.
 """
+
 import pandas as pd
 
 import tradingagents.agents.utils.agent_utils as au
@@ -51,7 +52,7 @@ def test_fetch_returns_normalizes_symbol(monkeypatch):
     )
 
     assert queried[0] == "GC=F"  # stock symbol normalized (#984)
-    assert queried[1] == "SPY"   # benchmark left as the canonical symbol
+    assert queried[1] == "SPY"  # benchmark left as the canonical symbol
     assert raw is not None and days is not None
 
 
@@ -70,6 +71,6 @@ def test_news_lookup_normalizes_symbol(monkeypatch):
 
     out = ynews.get_news_yfinance("XAUUSD", "2025-01-01", "2025-01-10")
 
-    assert seen["symbol"] == "GC=F"   # news queried with the canonical symbol
-    assert "XAUUSD" in out            # the user's ticker stays in the report
-    assert "GC=F" in out              # provenance noted
+    assert seen["symbol"] == "GC=F"  # news queried with the canonical symbol
+    assert "XAUUSD" in out  # the user's ticker stays in the report
+    assert "GC=F" in out  # provenance noted

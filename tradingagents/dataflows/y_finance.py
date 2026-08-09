@@ -38,9 +38,7 @@ def get_YFin_data_online(
     # instead of returning prose: the routing layer turns it into a single
     # unambiguous "no data" signal so the agent never fabricates a price.
     if data.empty:
-        raise NoMarketDataError(
-            symbol, canonical, f"no rows between {start_date} and {end_date}"
-        )
+        raise NoMarketDataError(symbol, canonical, f"no rows between {start_date} and {end_date}")
 
     # Remove timezone info from index for cleaner output
     if data.index.tz is not None:
@@ -69,12 +67,11 @@ def get_YFin_data_online(
 
     return header + csv_string
 
+
 def get_stock_stats_indicators_window(
     symbol: Annotated[str, "ticker symbol of the company"],
     indicator: Annotated[str, "technical indicator to get the analysis and report of"],
-    curr_date: Annotated[
-        str, "The current trading date you are trading on, YYYY-mm-dd"
-    ],
+    curr_date: Annotated[str, "The current trading date you are trading on, YYYY-mm-dd"],
     look_back_days: Annotated[int, "how many days to look back"],
 ) -> str:
 
@@ -169,7 +166,7 @@ def get_stock_stats_indicators_window(
         date_values = []
 
         while current_dt >= before:
-            date_str = current_dt.strftime('%Y-%m-%d')
+            date_str = current_dt.strftime("%Y-%m-%d")
 
             # Look up the indicator value for this date
             if date_str in indicator_data:
@@ -212,7 +209,7 @@ def get_stock_stats_indicators_window(
 def _get_stock_stats_bulk(
     symbol: Annotated[str, "ticker symbol of the company"],
     indicator: Annotated[str, "technical indicator to calculate"],
-    curr_date: Annotated[str, "current date for reference"]
+    curr_date: Annotated[str, "current date for reference"],
 ) -> dict:
     """
     Optimized bulk calculation of stock stats indicators.
@@ -246,9 +243,7 @@ def _get_stock_stats_bulk(
 def get_stockstats_indicator(
     symbol: Annotated[str, "ticker symbol of the company"],
     indicator: Annotated[str, "technical indicator to get the analysis and report of"],
-    curr_date: Annotated[
-        str, "The current trading date you are trading on, YYYY-mm-dd"
-    ],
+    curr_date: Annotated[str, "The current trading date you are trading on, YYYY-mm-dd"],
 ) -> str:
 
     curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
@@ -273,7 +268,7 @@ def get_stockstats_indicator(
 
 def get_fundamentals(
     ticker: Annotated[str, "ticker symbol of the company"],
-    curr_date: Annotated[str, "current date (not used for yfinance)"] = None
+    curr_date: Annotated[str, "current date (not used for yfinance)"] = None,
 ):
     """Get company fundamentals overview from yfinance."""
     canonical = normalize_symbol(ticker)
@@ -341,7 +336,7 @@ def get_fundamentals(
 def get_balance_sheet(
     ticker: Annotated[str, "ticker symbol of the company"],
     freq: Annotated[str, "frequency of data: 'annual' or 'quarterly'"] = "quarterly",
-    curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None
+    curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ):
     """Get balance sheet data from yfinance."""
     canonical = normalize_symbol(ticker)
@@ -376,7 +371,7 @@ def get_balance_sheet(
 def get_cashflow(
     ticker: Annotated[str, "ticker symbol of the company"],
     freq: Annotated[str, "frequency of data: 'annual' or 'quarterly'"] = "quarterly",
-    curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None
+    curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ):
     """Get cash flow data from yfinance."""
     canonical = normalize_symbol(ticker)
@@ -411,7 +406,7 @@ def get_cashflow(
 def get_income_statement(
     ticker: Annotated[str, "ticker symbol of the company"],
     freq: Annotated[str, "frequency of data: 'annual' or 'quarterly'"] = "quarterly",
-    curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None
+    curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ):
     """Get income statement data from yfinance."""
     canonical = normalize_symbol(ticker)
@@ -443,9 +438,7 @@ def get_income_statement(
         return f"Error retrieving income statement for {ticker}: {str(e)}"
 
 
-def get_insider_transactions(
-    ticker: Annotated[str, "ticker symbol of the company"]
-):
+def get_insider_transactions(ticker: Annotated[str, "ticker symbol of the company"]):
     """Get insider transactions data from yfinance."""
     canonical = normalize_symbol(ticker)
     try:

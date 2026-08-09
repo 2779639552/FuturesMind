@@ -37,7 +37,8 @@ def bind_structured_commodity(llm: Any, schema: type[BaseModel]) -> Any:
         except Exception as e:
             logger.warning(
                 "with_structured_output failed for %s: %s. Falling back to manual mode.",
-                schema_name, e,
+                schema_name,
+                e,
             )
 
     # Manual fallback: inject json_schema into the request
@@ -87,7 +88,8 @@ def bind_structured_commodity(llm: Any, schema: type[BaseModel]) -> Any:
             except Exception as e:
                 logger.warning(
                     "Structured output parse failed for %s: %s. Returning raw content.",
-                    self._schema_name, e,
+                    self._schema_name,
+                    e,
                 )
                 # Return a minimal valid instance with the raw content as narrative
                 try:

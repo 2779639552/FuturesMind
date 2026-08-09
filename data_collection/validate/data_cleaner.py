@@ -4,8 +4,6 @@
 在聚合之前调用: cleaned = clean_records(raw_records)
 """
 
-import json
-import re
 from datetime import datetime, timedelta
 
 
@@ -37,9 +35,7 @@ def clean_records(records: list[dict], verbose: bool = True) -> list[dict]:
     max_future = now + timedelta(days=1)  # Allow 1 day ahead for timezone
     min_valid_date = "2015-01-01"  # No Chinese social media futures content before 2015
 
-    for i, rec in enumerate(records):
-        skip = False
-
+    for _i, rec in enumerate(records):
         # --- 1. Date validation ---
         pub_time = (rec.get("publish_time", "") or "").strip()
         if not pub_time or len(pub_time) < 8:

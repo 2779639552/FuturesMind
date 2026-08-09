@@ -32,8 +32,10 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
             return func()
         except YFRateLimitError:
             if attempt < max_retries:
-                delay = base_delay * (2 ** attempt)
-                logger.warning(f"Yahoo Finance rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
+                delay = base_delay * (2**attempt)
+                logger.warning(
+                    f"Yahoo Finance rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})"
+                )
                 time.sleep(delay)
             else:
                 raise
@@ -163,20 +165,20 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             data = cached
 
     if data is None:
-        downloaded = yf_retry(lambda: yf.download(
-            canonical,
-            start=start_str,
-            end=end_str,
-            multi_level_index=False,
-            progress=False,
-            auto_adjust=True,
-        ))
+        downloaded = yf_retry(
+            lambda: yf.download(
+                canonical,
+                start=start_str,
+                end=end_str,
+                multi_level_index=False,
+                progress=False,
+                auto_adjust=True,
+            )
+        )
         downloaded = _ensure_date_column(downloaded.reset_index())
         # Only cache real data — never persist an empty frame.
         if downloaded.empty or "Close" not in downloaded.columns:
-            raise NoMarketDataError(
-                symbol, canonical, "Yahoo Finance returned no rows"
-            )
+            raise NoMarketDataError(symbol, canonical, "Yahoo Finance returned no rows")
         downloaded.to_csv(data_file, index=False, encoding="utf-8")
         data = downloaded
 
@@ -213,9 +215,7 @@ class StockstatsUtils:
         indicator: Annotated[
             str, "quantitative indicators based off of the stock data for the company"
         ],
-        curr_date: Annotated[
-            str, "curr date for retrieving stock price data, YYYY-mm-dd"
-        ],
+        curr_date: Annotated[str, "curr date for retrieving stock price data, YYYY-mm-dd"],
     ):
         data = load_ohlcv(symbol, curr_date)
         df = wrap(data)

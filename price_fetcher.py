@@ -1,40 +1,101 @@
 """Real-time & historical futures price fetcher via AKShare."""
+
 import json
 import logging
-import os
 from datetime import datetime
-from pathlib import Path
+
+from path_utils import resolve_think2_dir
 
 logger = logging.getLogger("price_fetcher")
 
 # Cache directory for price data
-PRICE_DIR = Path(os.environ.get(
-    "THINK2_DIR", os.path.expanduser("~/Desktop/思路2/validate")
-)) / "output" / "trends"
+PRICE_DIR = resolve_think2_dir() / "output" / "trends"
 
 # AKShare variety name → TradingAgents code mapping
 NAME_TO_CODE = {
-    "螺纹钢": "RB", "热轧卷板": "HC", "铁矿石": "I", "焦炭": "J", "焦煤": "JM",
-    "硅铁": "SF", "锰硅": "SM", "不锈钢": "SS",
-    "沪铜": "CU", "沪铝": "AL", "沪锌": "ZN", "沪镍": "NI", "沪铅": "PB", "沪锡": "SN",
-    "黄金": "AU", "白银": "AG",
-    "原油": "SC", "燃油": "FU", "沥青": "BU", "PTA": "TA", "甲醇": "MA",
-    "纯碱": "SA", "PVC": "V", "玻璃": "FG", "尿素": "UR", "橡胶": "RU",
-    "塑料": "L", "PP": "PP", "乙二醇": "EG", "苯乙烯": "EB", "短纤": "PF",
-    "豆粕": "M", "豆油": "Y", "棕榈油": "P", "菜粕": "RM", "菜油": "OI",
-    "白糖": "SR", "棉花": "CF", "玉米": "C", "淀粉": "CS",
-    "生猪": "LH", "鸡蛋": "JD", "苹果": "AP", "红枣": "CJ", "花生": "PK",
-    "上证50": "IH", "沪深300": "IF", "中证500": "IC", "中证1000": "IM",
-    "二年国债": "TS", "五年国债": "TF", "十年国债": "T", "三十年国债": "TL",
+    "螺纹钢": "RB",
+    "热轧卷板": "HC",
+    "铁矿石": "I",
+    "焦炭": "J",
+    "焦煤": "JM",
+    "硅铁": "SF",
+    "锰硅": "SM",
+    "不锈钢": "SS",
+    "沪铜": "CU",
+    "沪铝": "AL",
+    "沪锌": "ZN",
+    "沪镍": "NI",
+    "沪铅": "PB",
+    "沪锡": "SN",
+    "黄金": "AU",
+    "白银": "AG",
+    "原油": "SC",
+    "燃油": "FU",
+    "沥青": "BU",
+    "PTA": "TA",
+    "甲醇": "MA",
+    "纯碱": "SA",
+    "PVC": "V",
+    "玻璃": "FG",
+    "尿素": "UR",
+    "橡胶": "RU",
+    "塑料": "L",
+    "PP": "PP",
+    "乙二醇": "EG",
+    "苯乙烯": "EB",
+    "短纤": "PF",
+    "豆粕": "M",
+    "豆油": "Y",
+    "棕榈油": "P",
+    "菜粕": "RM",
+    "菜油": "OI",
+    "白糖": "SR",
+    "棉花": "CF",
+    "玉米": "C",
+    "淀粉": "CS",
+    "生猪": "LH",
+    "鸡蛋": "JD",
+    "苹果": "AP",
+    "红枣": "CJ",
+    "花生": "PK",
+    "上证50": "IH",
+    "沪深300": "IF",
+    "中证500": "IC",
+    "中证1000": "IM",
+    "二年国债": "TS",
+    "五年国债": "TF",
+    "十年国债": "T",
+    "三十年国债": "TL",
 }
 
 
 # Default major varieties for live ticker (keep < 24 for speed)
 DEFAULT_LIVE_VARIETIES = [
-    "RB", "J", "JM", "I", "HC", "SM", "SF",  # 黑色系(含合金)
-    "CU", "AU", "AG",  # 有色/贵金属
-    "SC", "TA", "MA", "SA", "FG", "UR", "RU",  # 能化
-    "M", "Y", "P", "SR", "CF", "RM", "OI", "C",  # 农产品
+    "RB",
+    "J",
+    "JM",
+    "I",
+    "HC",
+    "SM",
+    "SF",  # 黑色系(含合金)
+    "CU",
+    "AU",
+    "AG",  # 有色/贵金属
+    "SC",
+    "TA",
+    "MA",
+    "SA",
+    "FG",
+    "UR",
+    "RU",  # 能化
+    "M",
+    "Y",
+    "P",
+    "SR",
+    "CF",
+    "RM",
+    "OI",
+    "C",  # 农产品
 ]
 
 
@@ -139,15 +200,17 @@ def _update_single_price(code: str, name: str) -> dict:
             dt = str(row["date"])[:10]
             if dt in existing_dates:
                 continue
-            existing_prices.append({
-                "date": dt,
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-                "volume": int(row["volume"]),
-                "change_pct": 0,
-            })
+            existing_prices.append(
+                {
+                    "date": dt,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": int(row["volume"]),
+                    "change_pct": 0,
+                }
+            )
             existing_dates.add(dt)
             new_count += 1
 
@@ -181,6 +244,7 @@ CACHE_TTL = 60  # seconds
 def get_cached_prices(varieties: list[str] | None = None) -> dict:
     """Get live prices. Sync fetch on first call (~15s), instant thereafter (60s cache)."""
     import time
+
     global _last_fetch
     now = time.time()
     if not _live_cache or (now - _last_fetch) > CACHE_TTL:

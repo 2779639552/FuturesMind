@@ -26,25 +26,22 @@
     python validator_douyin.py --method pure_api             # 了解API方案
 """
 
-import json
-import time
-import random
-import logging
 import argparse
-import sys
+import json
+import logging
+import random
 import subprocess
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
+import sys
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import quote
 
-import requests
-
 from config import (
-    SEARCH_KEYWORDS, REQUEST_HEADERS, USER_AGENTS,
-    REQUEST_TIMEOUT, MIN_DELAY, MAX_DELAY,
-    ENDPOINTS, ValidationCriteria, OUTPUT_DIR, LOG_FORMAT, LOG_LEVEL,
+    LOG_FORMAT,
+    LOG_LEVEL,
+    OUTPUT_DIR,
+    SEARCH_KEYWORDS,
 )
 
 logger = logging.getLogger("douyin.validator")
@@ -75,23 +72,19 @@ class DouyinValidationResult:
 
     @property
     def passed(self) -> bool:
-        return (
-            self.accessible
-            and self.relevant_results >= 5
-            and self.relevance_rate >= 0.5
-        )
+        return self.accessible and self.relevant_results >= 5 and self.relevance_rate >= 0.5
 
     def to_report(self) -> str:
         status = "✅ 通过" if self.passed else "❌ 未通过"
         lines = [
-            f"\n{'='*60}",
+            f"\n{'=' * 60}",
             f"抖音 (douyin.com) 验证结果: {status}",
-            f"{'='*60}",
+            f"{'=' * 60}",
             f"  采集方式:     {self.method}",
             f"  可接入性:     {'✅' if self.accessible else '❌'}",
             f"  总结果数:     {self.total_results}",
             f"  相关结果数:   {self.relevant_results}",
-            f"  相关率:       {self.relevance_rate*100:.0f}%",
+            f"  相关率:       {self.relevance_rate * 100:.0f}%",
             f"  平均响应时间: {self.avg_response_time:.2f}s",
             f"  平均点赞:     {self.avg_like_count:.0f}",
             f"  平均评论:     {self.avg_comment_count:.0f}",
@@ -99,26 +92,29 @@ class DouyinValidationResult:
             f"  作者数:       {self.user_count}",
         ]
         if self.sample_posts:
-            lines.append(f"\n  样本视频:")
+            lines.append("\n  样本视频:")
             for i, post in enumerate(self.sample_posts[:5], 1):
                 title = post.get("desc", post.get("title", ""))[:80]
                 author = post.get("author", {}).get("nickname", post.get("user_name", "?"))
                 stats = post.get("statistics", post.get("stats", {}))
                 lines.append(f"  {i}. @{author} | {title}")
-                lines.append(f"     ❤️{stats.get('digg_count',0)} 💬{stats.get('comment_count',0)} 🔄{stats.get('share_count',0)}")
+                lines.append(
+                    f"     ❤️{stats.get('digg_count', 0)} 💬{stats.get('comment_count', 0)} 🔄{stats.get('share_count', 0)}"
+                )
         if self.errors:
-            lines.append(f"\n  错误:")
+            lines.append("\n  错误:")
             for err in self.errors[:5]:
                 lines.append(f"  - {err}")
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 # ============================================================
 # 方案A: Playwright 浏览器方案
 # ============================================================
 
+
 def validate_playwright(
-    keywords: Optional[list[str]] = None,
+    keywords: list[str] | None = None,
     headless: bool = False,
 ) -> DouyinValidationResult:
     """
@@ -138,9 +134,11 @@ def validate_playwright(
         keywords = SEARCH_KEYWORDS[:3]
 
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+        from playwright.sync_api import TimeoutError as PwTimeout, sync_playwright
     except ImportError:
-        result.errors.append("playwright 未安装: pip install playwright && playwright install chromium")
+        result.errors.append(
+            "playwright 未安装: pip install playwright && playwright install chromium"
+        )
         print(result.to_report())
         return result
 
@@ -196,8 +194,6 @@ def validate_playwright(
             response_times = []
             all_posts = []
             all_likes = []
-            all_comments = []
-            all_shares = []
             unique_users = set()
 
             for keyword in keywords:
@@ -243,11 +239,13 @@ def validate_playwright(
                         page_text = page.inner_text("body")
                         if keyword in page_text:
                             result.total_results += 10  # 粗略估计
-                            print(f"  ✅ 页面包含 '{keyword}' 相关内容 (无法精确定位元素, {elapsed:.2f}s)")
+                            print(
+                                f"  ✅ 页面包含 '{keyword}' 相关内容 (无法精确定位元素, {elapsed:.2f}s)"
+                            )
                             result.accessible = True
                             continue
                         else:
-                            print(f"  ⚠️ 页面可能未加载搜索结果")
+                            print("  ⚠️ 页面可能未加载搜索结果")
                             continue
 
                     posts_count = len(video_elements)
@@ -259,8 +257,11 @@ def validate_playwright(
                             # 尝试提取标题
                             desc = ""
                             for selector in [
-                                '[class*="desc"]', '[class*="title"]',
-                                '[class*="text"]', 'p', 'span',
+                                '[class*="desc"]',
+                                '[class*="title"]',
+                                '[class*="text"]',
+                                "p",
+                                "span",
                             ]:
                                 el = elem.query_selector(selector)
                                 if el:
@@ -274,7 +275,11 @@ def validate_playwright(
 
                             # 提取作者名
                             author = ""
-                            for selector in ['[class*="author"]', '[class*="name"]', '[class*="nickname"]']:
+                            for selector in [
+                                '[class*="author"]',
+                                '[class*="name"]',
+                                '[class*="nickname"]',
+                            ]:
                                 el = elem.query_selector(selector)
                                 if el:
                                     author = el.inner_text() or ""
@@ -283,26 +288,33 @@ def validate_playwright(
 
                             # 提取互动数据
                             likes = 0
-                            for selector in ['[class*="like"]', '[class*="digg"]', '[class*="count"]']:
+                            for selector in [
+                                '[class*="like"]',
+                                '[class*="digg"]',
+                                '[class*="count"]',
+                            ]:
                                 el = elem.query_selector(selector)
                                 if el:
                                     try:
                                         likes_text = el.inner_text()
-                                        likes = int(''.join(filter(str.isdigit, likes_text)) or 0)
+                                        likes = int("".join(filter(str.isdigit, likes_text)) or 0)
                                     except (ValueError, AttributeError):
                                         pass
                                     if likes > 0:
                                         break
 
                             from validator_weibo import is_futures_related
+
                             is_related = is_futures_related(desc)
 
-                            all_posts.append({
-                                "desc": desc[:200],
-                                "author_name": author,
-                                "likes": likes,
-                                "is_related": is_related,
-                            })
+                            all_posts.append(
+                                {
+                                    "desc": desc[:200],
+                                    "author_name": author,
+                                    "likes": likes,
+                                    "is_related": is_related,
+                                }
+                            )
 
                             if is_related:
                                 batch_related += 1
@@ -315,11 +327,13 @@ def validate_playwright(
                         except Exception:
                             pass
 
-                    print(f"  ✅ 获取到 {posts_count} 个视频元素, {batch_related}个期货相关 ({elapsed:.2f}s)")
+                    print(
+                        f"  ✅ 获取到 {posts_count} 个视频元素, {batch_related}个期货相关 ({elapsed:.2f}s)"
+                    )
                     result.accessible = True
 
                 except PwTimeout:
-                    print(f"  ⚠️ 加载超时")
+                    print("  ⚠️ 加载超时")
                     result.errors.append(f"Timeout for '{keyword}'")
                 except Exception as e:
                     print(f"  ❌ 失败: {e}")
@@ -349,8 +363,9 @@ def validate_playwright(
 # 方案C: MediaCrawler 集成
 # ============================================================
 
+
 def validate_mediacrawler(
-    keywords: Optional[list[str]] = None,
+    keywords: list[str] | None = None,
 ) -> DouyinValidationResult:
     """
     使用 MediaCrawler 开源项目进行采集。
@@ -393,12 +408,18 @@ def validate_mediacrawler(
         try:
             proc = subprocess.run(
                 [
-                    sys.executable, "main.py",
-                    "--platform", "dy",
-                    "--type", "search",
-                    "--keywords", keyword,
-                    "--max_count", "20",
-                    "--output", "json",
+                    sys.executable,
+                    "main.py",
+                    "--platform",
+                    "dy",
+                    "--type",
+                    "search",
+                    "--keywords",
+                    keyword,
+                    "--max_count",
+                    "20",
+                    "--output",
+                    "json",
                 ],
                 capture_output=True,
                 text=True,
@@ -419,7 +440,7 @@ def validate_mediacrawler(
                 result.errors.append(f"MediaCrawler error: {proc.stderr[:200]}")
 
         except subprocess.TimeoutExpired:
-            print(f"  ❌ 超时")
+            print("  ❌ 超时")
             result.errors.append(f"Timeout for '{keyword}'")
         except Exception as e:
             print(f"  ❌ 失败: {e}")
@@ -490,7 +511,9 @@ def main():
         """,
     )
     parser.add_argument(
-        "--method", type=str, default="playwright",
+        "--method",
+        type=str,
+        default="playwright",
         choices=["playwright", "mediacrawler", "pure_api"],
         help="采集方案",
     )

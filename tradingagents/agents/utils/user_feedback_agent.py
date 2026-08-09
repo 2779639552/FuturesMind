@@ -18,7 +18,8 @@ against data — not as an authority whose word is automatically accepted.
 
 import logging
 import sys
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from langchain_core.messages import HumanMessage
 
@@ -214,9 +215,7 @@ def create_user_feedback_node(
 
         symbol = state.get("company_of_interest", "?")
         trade_date = state.get("trade_date", "?")
-        synthesis = state.get("investment_plan", "") or state.get(
-            "final_trade_decision", ""
-        )
+        synthesis = state.get("investment_plan", "") or state.get("final_trade_decision", "")
 
         # Check if we are in an interactive terminal
         if not sys.stdout.isatty():
@@ -248,18 +247,10 @@ def create_user_feedback_node(
         _safe_print("")
 
         # Q1: Direction agreement
-        _safe_print(
-            "Q1: Do you agree with the direction judgment?"
-        )
-        _safe_print(
-            "    [1] Fully agree  [2] Agree but more conservative"
-        )
-        _safe_print(
-            "    [3] Agree but more aggressive  [4] Partially disagree"
-        )
-        _safe_print(
-            "    [5] Completely disagree  [/skip] Skip all feedback"
-        )
+        _safe_print("Q1: Do you agree with the direction judgment?")
+        _safe_print("    [1] Fully agree  [2] Agree but more conservative")
+        _safe_print("    [3] Agree but more aggressive  [4] Partially disagree")
+        _safe_print("    [5] Completely disagree  [/skip] Skip all feedback")
         q1 = _safe_input("> ").strip()
 
         if q1.lower() in ("/skip", "skip", "s"):
@@ -278,12 +269,8 @@ def create_user_feedback_node(
 
         # Q2: Under/over-weighted factors
         _safe_print("")
-        _safe_print(
-            "Q2: Which factors were under-weighted or over-weighted?"
-        )
-        _safe_print(
-            "    (Type your answer, multi-line OK. Empty line to finish.)"
-        )
+        _safe_print("Q2: Which factors were under-weighted or over-weighted?")
+        _safe_print("    (Type your answer, multi-line OK. Empty line to finish.)")
         q2_lines = []
         while True:
             line = _safe_input("> ")
@@ -294,12 +281,8 @@ def create_user_feedback_node(
 
         # Q3: Missing information
         _safe_print("")
-        _safe_print(
-            "Q3: Any key information we missed?"
-        )
-        _safe_print(
-            "    (Type your answer, empty line to finish.)"
-        )
+        _safe_print("Q3: Any key information we missed?")
+        _safe_print("    (Type your answer, empty line to finish.)")
         q3_lines = []
         while True:
             line = _safe_input("> ")
@@ -331,8 +314,7 @@ def create_user_feedback_node(
         evolution_note = ""
         if evolution_ctx:
             evolution_note = (
-                "\n**Historical User Preferences (from past debates):**\n"
-                f"{evolution_ctx[:1500]}\n"
+                f"\n**Historical User Preferences (from past debates):**\n{evolution_ctx[:1500]}\n"
             )
 
         # Initial debate prompt
@@ -387,11 +369,7 @@ def create_user_feedback_node(
 
             try:
                 response = llm.invoke(cont_prompt)
-                agent_msg = (
-                    response.content
-                    if hasattr(response, "content")
-                    else str(response)
-                )
+                agent_msg = response.content if hasattr(response, "content") else str(response)
             except Exception as e:
                 logger.error("Debate continuation LLM call failed: %s", e)
                 agent_msg = "I see. Thank you for sharing your perspective."
@@ -422,11 +400,7 @@ def create_user_feedback_node(
         )
         try:
             response = llm.invoke(summary_prompt)
-            debate_summary = (
-                response.content
-                if hasattr(response, "content")
-                else str(response)
-            )
+            debate_summary = response.content if hasattr(response, "content") else str(response)
         except Exception as e:
             logger.error("Debate summary LLM call failed: %s", e)
             debate_summary = (
@@ -471,9 +445,7 @@ def create_user_feedback_node(
             save_debate(symbol, debate_record)
             update_profile_from_debate(symbol, debate_record)
             _safe_print("[Evolution] Debate saved to evolution memory.")
-            _safe_print(
-                f"           Next analysis of {symbol} will incorporate these lessons."
-            )
+            _safe_print(f"           Next analysis of {symbol} will incorporate these lessons.")
         except Exception as e:
             logger.error("Failed to save evolution memory: %s", e)
             _safe_print(f"[Evolution] Warning: Could not save debate: {e}")
@@ -484,11 +456,7 @@ def create_user_feedback_node(
 
         return {
             "user_feedback_summary": debate_summary,
-            "messages": [
-                HumanMessage(
-                    content=f"[User Feedback Session]\n{debate_summary}"
-                )
-            ],
+            "messages": [HumanMessage(content=f"[User Feedback Session]\n{debate_summary}")],
         }
 
     return node
@@ -543,10 +511,7 @@ def _extract_lessons(summary: str) -> list[str]:
     in_section = False
     for line in summary.split("\n"):
         stripped = line.strip()
-        if any(
-            kw in stripped
-            for kw in ("经验教训", "Lessons", "调整建议", "改进")
-        ):
+        if any(kw in stripped for kw in ("经验教训", "Lessons", "调整建议", "改进")):
             in_section = True
             continue
         if in_section and stripped.startswith(("-", "*", "•", "1.", "2.", "3.")):
@@ -558,9 +523,7 @@ def _extract_lessons(summary: str) -> list[str]:
     return lessons[:5]
 
 
-def _determine_resolution(
-    debate_rounds: list[dict[str, str]], user_direction: str
-) -> str:
+def _determine_resolution(debate_rounds: list[dict[str, str]], user_direction: str) -> str:
     """Determine how the debate resolved — objectively, not assuming user is right.
 
     Resolution types:
@@ -575,16 +538,10 @@ def _determine_resolution(
         return "no_debate"
 
     agent_text = " ".join(
-        r["content"]
-        for r in debate_rounds
-        if r.get("speaker") == "agent"
+        r["content"] for r in debate_rounds if r.get("speaker") == "agent"
     ).lower()
 
-    user_text = " ".join(
-        r["content"]
-        for r in debate_rounds
-        if r.get("speaker") == "user"
-    ).lower()
+    user_text = " ".join(r["content"] for r in debate_rounds if r.get("speaker") == "user").lower()
 
     # Count agent acknowledgments (substantive, not platitudes)
     substantive_ack = sum(
@@ -645,9 +602,7 @@ def _determine_resolution(
         return "mutual_understanding"
 
 
-def _infer_factor_deltas(
-    user_factors: str, user_missing: str
-) -> dict[str, str]:
+def _infer_factor_deltas(user_factors: str, user_missing: str) -> dict[str, str]:
     """Heuristically infer factor weight adjustments from user feedback.
 
     IMPORTANT: These deltas are marked as TENTATIVE. They only become active
@@ -687,10 +642,7 @@ def _infer_factor_deltas(
             ):
                 # Mark as tentative — only confirmed after debate resolution
                 deltas[factor] = "+1 (tentative — pending debate confirmation)"
-            elif any(
-                w in combined
-                for w in ("overweight", "高估", "过度", "太重")
-            ):
+            elif any(w in combined for w in ("overweight", "高估", "过度", "太重")):
                 deltas[factor] = "-1 (tentative — pending debate confirmation)"
 
     return deltas

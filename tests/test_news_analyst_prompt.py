@@ -3,6 +3,7 @@
 The prompt used to advertise ``get_news(query, ...)`` while the tool takes a
 ``ticker``, tricking the LLM into hallucinating free-text query calls.
 """
+
 import inspect
 
 import pytest

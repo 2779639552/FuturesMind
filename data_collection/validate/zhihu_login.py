@@ -10,7 +10,9 @@
 知乎登录态持久化: cookies + localStorage (storage_state)
 """
 
-import sys, time, json
+import json
+import sys
+import time
 from pathlib import Path
 
 CREDENTIALS_DIR = Path(__file__).parent / "credentials"

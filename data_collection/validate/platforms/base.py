@@ -12,7 +12,7 @@ BatchCollector 只依赖 PlatformAdapter 接口，不感知平台实现细节。
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 # ============================================================
 # 统一输出 Schema 字段定义
@@ -20,40 +20,33 @@ from typing import Any, Optional
 
 UNIFIED_SCHEMA_FIELDS = [
     # 标识
-    "platform",        # str  — "xhs" | "weibo" | "zhihu"
-    "note_id",         # str  — 平台内唯一 ID（新平台加前缀: "wb:{mid}", "zh:{type}:{id}"）
-    "url",             # str  — 帖子公开链接
-
+    "platform",  # str  — "xhs" | "weibo" | "zhihu"
+    "note_id",  # str  — 平台内唯一 ID（新平台加前缀: "wb:{mid}", "zh:{type}:{id}"）
+    "url",  # str  — 帖子公开链接
     # 内容
-    "title",           # str  — 标题（微博无标题时截取正文前60字）
-    "desc",            # str  — 正文/摘要
-    "note_type",       # str  — "normal" | "video" | "weibo" | "answer" | "article"
-    "tags",            # list[str] — 标签/话题
-
+    "title",  # str  — 标题（微博无标题时截取正文前60字）
+    "desc",  # str  — 正文/摘要
+    "note_type",  # str  — "normal" | "video" | "weibo" | "answer" | "article"
+    "tags",  # list[str] — 标签/话题
     # 作者
-    "author_name",     # str
-    "author_id",       # str
-
+    "author_name",  # str
+    "author_id",  # str
     # 互动 (缺省为 0)
-    "like_count",      # int
-    "comment_count",   # int
-    "collect_count",   # int
-    "share_count",     # int
-
+    "like_count",  # int
+    "comment_count",  # int
+    "collect_count",  # int
+    "share_count",  # int
     # 时间
-    "publish_time",    # str  — "YYYY-MM-DD HH:MM:SS"
-
+    "publish_time",  # str  — "YYYY-MM-DD HH:MM:SS"
     # 地理位置
-    "ip_location",     # str
-
+    "ip_location",  # str
     # 图片
-    "image_urls",      # list[str]
-    "image_count",     # int
-    "is_video",        # bool
-
+    "image_urls",  # list[str]
+    "image_count",  # int
+    "is_video",  # bool
     # 元数据
-    "keyword",         # str  — 搜索关键词
-    "desc_length",     # int
+    "keyword",  # str  — 搜索关键词
+    "desc_length",  # int
 ]
 
 
@@ -61,75 +54,76 @@ UNIFIED_SCHEMA_FIELDS = [
 # 格式: 统一字段 → 平台原始路径描述
 FIELD_MAPPING_TABLE = {
     "xhs": {
-        "platform":       '"xhs"',
-        "note_id":        "item.id (24hex ObjectId)",
-        "title":          "note_card.title / display_title",
-        "desc":           "note_card.desc",
-        "author_name":    "user.nickname / nick_name",
-        "author_id":      "user.user_id",
-        "like_count":     "interact_info.liked_count",
-        "comment_count":  "interact_info.comment_count",
-        "collect_count":  "interact_info.collected_count",
-        "share_count":    "interact_info.share_count",
-        "publish_time":   "decode_objectid_timestamp(note_id)",
-        "ip_location":    "note_card.ip_location",
-        "image_urls":     "image_list[].url (info_list 可选)",
-        "url":            "xiaohongshu.com/explore/{id}",
+        "platform": '"xhs"',
+        "note_id": "item.id (24hex ObjectId)",
+        "title": "note_card.title / display_title",
+        "desc": "note_card.desc",
+        "author_name": "user.nickname / nick_name",
+        "author_id": "user.user_id",
+        "like_count": "interact_info.liked_count",
+        "comment_count": "interact_info.comment_count",
+        "collect_count": "interact_info.collected_count",
+        "share_count": "interact_info.share_count",
+        "publish_time": "decode_objectid_timestamp(note_id)",
+        "ip_location": "note_card.ip_location",
+        "image_urls": "image_list[].url (info_list 可选)",
+        "url": "xiaohongshu.com/explore/{id}",
     },
     "weibo": {
-        "platform":       '"weibo"',
-        "note_id":        '"wb:" + mblog.mid',
-        "title":          'text_raw 前60字（微博无标题）',
-        "desc":           "text_raw (去HTML) / longTextContent",
-        "author_name":    "user.screen_name",
-        "author_id":      "user.id",
-        "like_count":     "attitudes_count",
-        "comment_count":  "comments_count",
-        "collect_count":  "0 (无此概念)",
-        "share_count":    "reposts_count",
-        "publish_time":   "parse_created_at(created_at)",
-        "ip_location":    "region_name 去'发布于'前缀",
-        "image_urls":     "pics[].url",
-        "url":            "m.weibo.cn/detail/{mid}",
+        "platform": '"weibo"',
+        "note_id": '"wb:" + mblog.mid',
+        "title": "text_raw 前60字（微博无标题）",
+        "desc": "text_raw (去HTML) / longTextContent",
+        "author_name": "user.screen_name",
+        "author_id": "user.id",
+        "like_count": "attitudes_count",
+        "comment_count": "comments_count",
+        "collect_count": "0 (无此概念)",
+        "share_count": "reposts_count",
+        "publish_time": "parse_created_at(created_at)",
+        "ip_location": "region_name 去'发布于'前缀",
+        "image_urls": "pics[].url",
+        "url": "m.weibo.cn/detail/{mid}",
     },
     "zhihu": {
-        "platform":       '"zhihu"',
-        "note_id":        '"zh:answer:" + id 或 "zh:article:" + id',
-        "title":          "question.name / article.title",
-        "desc":           "excerpt / content (前2000字)",
-        "author_name":    "author.name",
-        "author_id":      "author.url_token",
-        "like_count":     "voteup_count (赞同)",
-        "comment_count":  "comment_count",
-        "collect_count":  "0",
-        "share_count":    "0",
-        "publish_time":   "created_time (unix ts) → datetime",
-        "ip_location":    '"" (不支持)',
-        "image_urls":     "content 内 img 标签提取",
-        "url":            "zhihu.com/question/{qid}/answer/{aid}",
+        "platform": '"zhihu"',
+        "note_id": '"zh:answer:" + id 或 "zh:article:" + id',
+        "title": "question.name / article.title",
+        "desc": "excerpt / content (前2000字)",
+        "author_name": "author.name",
+        "author_id": "author.url_token",
+        "like_count": "voteup_count (赞同)",
+        "comment_count": "comment_count",
+        "collect_count": "0",
+        "share_count": "0",
+        "publish_time": "created_time (unix ts) → datetime",
+        "ip_location": '"" (不支持)',
+        "image_urls": "content 内 img 标签提取",
+        "url": "zhihu.com/question/{qid}/answer/{aid}",
     },
     "xueqiu": {
-        "platform":       '"xueqiu"',
-        "note_id":        '"xq:" + status.id',
-        "title":          "status.title 或 text 前60字",
-        "desc":           "status.description / status.text (去HTML)",
-        "author_name":    "user.screen_name",
-        "author_id":      "user.id",
-        "author_fans":    "user.followers_count",
-        "like_count":     "like_count",
-        "comment_count":  "reply_count",
-        "collect_count":  "0 (无此概念)",
-        "share_count":    "retweet_count",
-        "publish_time":   "created_at (ms ts) → datetime",
-        "ip_location":    '"" (不支持)',
-        "image_urls":     "pics[].url",
-        "url":            "xueqiu.com/{id} / target",
+        "platform": '"xueqiu"',
+        "note_id": '"xq:" + status.id',
+        "title": "status.title 或 text 前60字",
+        "desc": "status.description / status.text (去HTML)",
+        "author_name": "user.screen_name",
+        "author_id": "user.id",
+        "author_fans": "user.followers_count",
+        "like_count": "like_count",
+        "comment_count": "reply_count",
+        "collect_count": "0 (无此概念)",
+        "share_count": "retweet_count",
+        "publish_time": "created_at (ms ts) → datetime",
+        "ip_location": '"" (不支持)',
+        "image_urls": "pics[].url",
+        "url": "xueqiu.com/{id} / target",
     },
 }
 
 
 class CredentialError(Exception):
     """凭证缺失/过期异常。消息应包含获取指引。"""
+
     pass
 
 
@@ -141,9 +135,9 @@ class PlatformAdapter(ABC):
     子类可选覆盖: get_detail(), needs_detail_fetch, classify_error(), close()
     """
 
-    name: str = ""              # 内部标识: "xhs" | "weibo" | "zhihu"
-    display_name: str = ""      # 展示名: "小红书" | "微博" | "知乎"
-    id_prefix: str = ""         # note_id 前缀（xhs 留空保持兼容，weibo="wb:", zhihu="zh:"）
+    name: str = ""  # 内部标识: "xhs" | "weibo" | "zhihu"
+    display_name: str = ""  # 展示名: "小红书" | "微博" | "知乎"
+    id_prefix: str = ""  # note_id 前缀（xhs 留空保持兼容，weibo="wb:", zhihu="zh:"）
 
     # ============================================================
     # 抽象方法（子类必须实现）
@@ -175,9 +169,7 @@ class PlatformAdapter(ABC):
         ...
 
     @abstractmethod
-    def normalize(
-        self, raw_item: Any, detail: Optional[dict], keyword: str
-    ) -> Optional[dict]:
+    def normalize(self, raw_item: Any, detail: dict | None, keyword: str) -> dict | None:
         """
         将平台原生 item + 可选详情 → 统一 Schema dict。
 
@@ -196,7 +188,7 @@ class PlatformAdapter(ABC):
     # 可选覆盖
     # ============================================================
 
-    def get_detail(self, raw_item: Any) -> Optional[dict]:
+    def get_detail(self, raw_item: Any) -> dict | None:
         """
         获取单条详情。默认返回 None（该平台搜索已含全文时不需要）。
         微博: 搜索返回短文全文，长文才调 extend API。
@@ -218,6 +210,6 @@ class PlatformAdapter(ABC):
         """
         return "other"
 
-    def close(self) -> None:
-        """释放资源（关闭浏览器/Session）。"""
+    def close(self) -> None:  # noqa: B027  intentional no-op default for adapters without resources
+        """释放资源（关闭浏览器/Session）。默认无操作，子类按需覆盖。"""
         pass

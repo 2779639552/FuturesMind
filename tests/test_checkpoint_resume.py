@@ -104,7 +104,6 @@ class TestCheckpointResume(unittest.TestCase):
 
         self.assertEqual(result["count"], 11)
 
-
     def test_different_date_starts_fresh(self):
         """A different date must NOT resume from an existing checkpoint."""
         global _should_crash
@@ -159,9 +158,9 @@ class TestCheckpointSignature(unittest.TestCase):
         legacy = thread_id(self.ticker, self.date)
         sig_a = thread_id(self.ticker, self.date, "analysts=market,news|asset=stock")
         sig_b = thread_id(self.ticker, self.date, "analysts=market|asset=stock")
-        self.assertNotEqual(sig_a, sig_b)          # different graph shapes differ
-        self.assertNotEqual(legacy, sig_a)         # signature-keyed differs from legacy
-        self.assertEqual(                          # same inputs are stable
+        self.assertNotEqual(sig_a, sig_b)  # different graph shapes differ
+        self.assertNotEqual(legacy, sig_a)  # signature-keyed differs from legacy
+        self.assertEqual(  # same inputs are stable
             sig_a, thread_id(self.ticker, self.date, "analysts=market,news|asset=stock")
         )
 
@@ -169,7 +168,7 @@ class TestCheckpointSignature(unittest.TestCase):
         global _should_crash
         builder = _build_graph()
         sig1 = "analysts=market,news,fundamentals|asset=stock"
-        sig2 = "analysts=market|asset=stock"       # dropped analysts -> different graph
+        sig2 = "analysts=market|asset=stock"  # dropped analysts -> different graph
 
         _should_crash = True
         tid1 = thread_id(self.ticker, self.date, sig1)
@@ -201,14 +200,14 @@ class TestCheckpointSignature(unittest.TestCase):
         g.config = {"max_debate_rounds": 1, "max_risk_discuss_rounds": 1}
         base = g._run_signature("stock")
 
-        self.assertNotEqual(base, g._run_signature("crypto"))     # asset mode
+        self.assertNotEqual(base, g._run_signature("crypto"))  # asset mode
         g.selected_analysts = ("market",)
-        self.assertNotEqual(base, g._run_signature("stock"))      # analyst selection
+        self.assertNotEqual(base, g._run_signature("stock"))  # analyst selection
         g.selected_analysts = ("market", "news")
         g.config = {"max_debate_rounds": 3, "max_risk_discuss_rounds": 1}
-        self.assertNotEqual(base, g._run_signature("stock"))      # debate depth
+        self.assertNotEqual(base, g._run_signature("stock"))  # debate depth
         g.config = {"max_debate_rounds": 1, "max_risk_discuss_rounds": 5}
-        self.assertNotEqual(base, g._run_signature("stock"))      # risk depth
+        self.assertNotEqual(base, g._run_signature("stock"))  # risk depth
         # Stable for identical inputs.
         g.config = {"max_debate_rounds": 1, "max_risk_discuss_rounds": 1}
         self.assertEqual(base, g._run_signature("stock"))

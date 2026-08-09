@@ -3,61 +3,104 @@
 """
 
 import json
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from pathlib import Path
 from datetime import datetime
-from collections import Counter
-from typing import Optional
+from pathlib import Path
+
+import pandas as pd
 
 # ============================================================
 # 常量
 # ============================================================
 
 SENTIMENT_ORDER = [
-    "strong_bullish", "bullish", "slightly_bullish",
+    "strong_bullish",
+    "bullish",
+    "slightly_bullish",
     "neutral",
-    "slightly_bearish", "bearish", "strong_bearish"
+    "slightly_bearish",
+    "bearish",
+    "strong_bearish",
 ]
 
 SENTIMENT_LABELS = {
-    "strong_bullish": "强烈看多", "bullish": "看多", "slightly_bullish": "略看多",
+    "strong_bullish": "强烈看多",
+    "bullish": "看多",
+    "slightly_bullish": "略看多",
     "neutral": "中性",
-    "slightly_bearish": "略看空", "bearish": "看空", "strong_bearish": "强烈看空"
+    "slightly_bearish": "略看空",
+    "bearish": "看空",
+    "strong_bearish": "强烈看空",
 }
 
 SENTIMENT_COLORS = {
-    "strong_bullish": "#e74c3c", "bullish": "#e67e73", "slightly_bullish": "#f5b7b1",
+    "strong_bullish": "#e74c3c",
+    "bullish": "#e67e73",
+    "slightly_bullish": "#f5b7b1",
     "neutral": "#95a5a6",
-    "slightly_bearish": "#a0d2a0", "bearish": "#5cb85c", "strong_bearish": "#2e7d32"
+    "slightly_bearish": "#a0d2a0",
+    "bearish": "#5cb85c",
+    "strong_bearish": "#2e7d32",
 }
 
 SECTOR_COLORS = {
-    "黑色系": "#e74c3c", "有色金属": "#f39c12", "能源化工": "#3498db",
-    "农产品": "#27ae60", "金融期货": "#9b59b6", "其他": "#95a5a6"
+    "黑色系": "#e74c3c",
+    "有色金属": "#f39c12",
+    "能源化工": "#3498db",
+    "农产品": "#27ae60",
+    "金融期货": "#9b59b6",
+    "其他": "#95a5a6",
 }
 
 # 品种→板块映射 (从 config 提取)
 VARIETY_SECTOR_MAP = {
-    "螺纹钢": "黑色系", "铁矿石": "黑色系", "热卷": "黑色系",
-    "焦炭": "黑色系", "焦煤": "黑色系", "硅铁": "黑色系",
-    "锰硅": "黑色系", "线材": "黑色系",
-    "铜": "有色金属", "铝": "有色金属", "锌": "有色金属",
-    "铅": "有色金属", "镍": "有色金属", "锡": "有色金属",
-    "黄金": "有色金属", "白银": "有色金属", "碳酸锂": "有色金属",
+    "螺纹钢": "黑色系",
+    "铁矿石": "黑色系",
+    "热卷": "黑色系",
+    "焦炭": "黑色系",
+    "焦煤": "黑色系",
+    "硅铁": "黑色系",
+    "锰硅": "黑色系",
+    "线材": "黑色系",
+    "铜": "有色金属",
+    "铝": "有色金属",
+    "锌": "有色金属",
+    "铅": "有色金属",
+    "镍": "有色金属",
+    "锡": "有色金属",
+    "黄金": "有色金属",
+    "白银": "有色金属",
+    "碳酸锂": "有色金属",
     "工业硅": "有色金属",
-    "原油": "能源化工", "PTA": "能源化工", "甲醇": "能源化工",
-    "PVC": "能源化工", "PP": "能源化工", "塑料": "能源化工",
-    "橡胶": "能源化工", "沥青": "能源化工", "尿素": "能源化工",
-    "纯碱": "能源化工", "玻璃": "能源化工", "乙二醇": "能源化工",
-    "苯乙烯": "能源化工", "短纤": "能源化工",
-    "豆粕": "农产品", "豆油": "农产品", "棕榈油": "农产品",
-    "菜粕": "农产品", "菜油": "农产品", "白糖": "农产品",
-    "棉花": "农产品", "玉米": "农产品", "淀粉": "农产品",
-    "鸡蛋": "农产品", "生猪": "农产品", "苹果": "农产品",
-    "红枣": "农产品", "花生": "农产品",
-    "股指期货": "金融期货", "国债期货": "金融期货",
+    "原油": "能源化工",
+    "PTA": "能源化工",
+    "甲醇": "能源化工",
+    "PVC": "能源化工",
+    "PP": "能源化工",
+    "塑料": "能源化工",
+    "橡胶": "能源化工",
+    "沥青": "能源化工",
+    "尿素": "能源化工",
+    "纯碱": "能源化工",
+    "玻璃": "能源化工",
+    "乙二醇": "能源化工",
+    "苯乙烯": "能源化工",
+    "短纤": "能源化工",
+    "豆粕": "农产品",
+    "豆油": "农产品",
+    "棕榈油": "农产品",
+    "菜粕": "农产品",
+    "菜油": "农产品",
+    "白糖": "农产品",
+    "棉花": "农产品",
+    "玉米": "农产品",
+    "淀粉": "农产品",
+    "鸡蛋": "农产品",
+    "生猪": "农产品",
+    "苹果": "农产品",
+    "红枣": "农产品",
+    "花生": "农产品",
+    "股指期货": "金融期货",
+    "国债期货": "金融期货",
 }
 
 OUTPUT_DIR = Path(__file__).parent / "output"
@@ -74,10 +117,11 @@ def get_sector(name: str) -> str:
 # 数据加载
 # ============================================================
 
+
 def load_data(jsonl_path: str) -> pd.DataFrame:
     """加载 JSONL → DataFrame, 展开嵌套字段"""
     records = []
-    with open(jsonl_path, "r", encoding="utf-8") as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -92,9 +136,7 @@ def load_data(jsonl_path: str) -> pd.DataFrame:
 
             # 展开 variety_sentiments
             var_sents = rec.get("variety_sentiments", []) or []
-            rec["var_sent_map"] = {
-                vs.get("variety", ""): vs for vs in var_sents
-            }
+            rec["var_sent_map"] = {vs.get("variety", ""): vs for vs in var_sents}
 
             # 平台兼容: 旧数据无 platform 字段默认 xhs
             rec.setdefault("platform", "xhs")
@@ -111,10 +153,10 @@ def load_data(jsonl_path: str) -> pd.DataFrame:
 
             # 互动总分
             rec["engagement"] = (
-                (rec.get("like_count") or 0) +
-                (rec.get("comment_count") or 0) * 2 +
-                (rec.get("collect_count") or 0) * 3 +
-                (rec.get("share_count") or 0) * 4
+                (rec.get("like_count") or 0)
+                + (rec.get("comment_count") or 0) * 2
+                + (rec.get("collect_count") or 0) * 3
+                + (rec.get("share_count") or 0) * 4
             )
 
             records.append(rec)
@@ -135,32 +177,36 @@ def expand_varieties(df: pd.DataFrame) -> pd.DataFrame:
         sent_map = {vs.get("variety", ""): vs for vs in var_sents}
 
         if not varieties:
-            rows.append({
-                **row.to_dict(),
-                "variety_name": "",
-                "variety_sector": "",
-                "variety_matched": "",
-                "var_sentiment": row.get("sentiment", "neutral"),
-                "var_sentiment_score": row.get("sentiment_score", 0),
-                "var_confidence": row.get("sentiment_confidence", 0),
-                "var_certainty": 0,
-                "var_time_horizon": "",
-            })
+            rows.append(
+                {
+                    **row.to_dict(),
+                    "variety_name": "",
+                    "variety_sector": "",
+                    "variety_matched": "",
+                    "var_sentiment": row.get("sentiment", "neutral"),
+                    "var_sentiment_score": row.get("sentiment_score", 0),
+                    "var_confidence": row.get("sentiment_confidence", 0),
+                    "var_certainty": 0,
+                    "var_time_horizon": "",
+                }
+            )
         else:
             for v in varieties:
                 vname = v.get("name", "")
                 vs = sent_map.get(vname, {})
-                rows.append({
-                    **row.to_dict(),
-                    "variety_name": vname,
-                    "variety_sector": v.get("sector", get_sector(vname)),
-                    "variety_matched": v.get("matched", vname),
-                    "var_sentiment": vs.get("sentiment", row.get("sentiment", "neutral")),
-                    "var_sentiment_score": vs.get("score", row.get("sentiment_score", 0)),
-                    "var_confidence": vs.get("confidence", row.get("sentiment_confidence", 0)),
-                    "var_certainty": vs.get("certainty", 0),
-                    "var_time_horizon": vs.get("time_horizon", ""),
-                })
+                rows.append(
+                    {
+                        **row.to_dict(),
+                        "variety_name": vname,
+                        "variety_sector": v.get("sector", get_sector(vname)),
+                        "variety_matched": v.get("matched", vname),
+                        "var_sentiment": vs.get("sentiment", row.get("sentiment", "neutral")),
+                        "var_sentiment_score": vs.get("score", row.get("sentiment_score", 0)),
+                        "var_confidence": vs.get("confidence", row.get("sentiment_confidence", 0)),
+                        "var_certainty": vs.get("certainty", 0),
+                        "var_time_horizon": vs.get("time_horizon", ""),
+                    }
+                )
 
     return pd.DataFrame(rows)
 
@@ -169,14 +215,16 @@ def expand_varieties(df: pd.DataFrame) -> pd.DataFrame:
 # 终端输出工具
 # ============================================================
 
-def terminal_table(headers: list[str], rows: list[list[str]],
-                   title: str = "", col_widths: list[int] = None) -> str:
+
+def terminal_table(
+    headers: list[str], rows: list[list[str]], title: str = "", col_widths: list[int] = None
+) -> str:
     """生成对齐的终端表格"""
     lines = []
     if title:
-        lines.append(f"\n{'='*70}")
+        lines.append(f"\n{'=' * 70}")
         lines.append(f"  {title}")
-        lines.append(f"{'='*70}")
+        lines.append(f"{'=' * 70}")
 
     if not col_widths:
         col_widths = []
@@ -198,7 +246,7 @@ def terminal_table(headers: list[str], rows: list[list[str]],
         for i in range(len(headers)):
             val = str(row[i]) if i < len(row) else ""
             if len(val) > col_widths[i]:
-                val = val[:col_widths[i]-3] + "..."
+                val = val[: col_widths[i] - 3] + "..."
             parts.append(f"{val:<{col_widths[i]}}")
         lines.append("  " + "  ".join(parts))
 
@@ -266,8 +314,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </html>"""
 
 
-def generate_html_report(sections: list[dict], total_notes: int,
-                         output_path: Optional[str] = None) -> str:
+def generate_html_report(
+    sections: list[dict], total_notes: int, output_path: str | None = None
+) -> str:
     """
     生成完整HTML报告
     sections: [{"title": "...", "content": html_string}, ...]
@@ -279,7 +328,7 @@ def generate_html_report(sections: list[dict], total_notes: int,
     html = _HTML_TEMPLATE.format(
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
         total_notes=total_notes,
-        body="\n".join(body_parts)
+        body="\n".join(body_parts),
     )
 
     if output_path:
@@ -294,9 +343,11 @@ def generate_html_report(sections: list[dict], total_notes: int,
 def chart_to_html(fig, chart_id: str = "", height: int = 400) -> str:
     """Plotly figure → HTML div (不依赖 plotly HTML, 直接用 JSON+JS)"""
     fig.update_layout(
-        height=height, margin=dict(l=20, r=20, t=40, b=20),
-        plot_bgcolor="#fff", paper_bgcolor="#fff",
-        font=dict(family="-apple-system, BlinkMacSystemFont, sans-serif", size=12)
+        height=height,
+        margin={"l": 20, "r": 20, "t": 40, "b": 20},
+        plot_bgcolor="#fff",
+        paper_bgcolor="#fff",
+        font={"family": "-apple-system, BlinkMacSystemFont, sans-serif", "size": 12},
     )
     chart_json = fig.to_json()
     div_id = chart_id or f"chart_{id(fig)}"
@@ -314,16 +365,20 @@ def chart_to_html(fig, chart_id: str = "", height: int = 400) -> str:
 # 快捷统计卡片
 # ============================================================
 
+
 def stat_cards_html(stats: dict[str, str]) -> str:
     """生成统计卡片行"""
     cards = []
     for label, value in stats.items():
-        cards.append(f'<div class="stat"><div class="value">{value}</div><div class="label">{label}</div></div>')
+        cards.append(
+            f'<div class="stat"><div class="value">{value}</div><div class="label">{label}</div></div>'
+        )
     return f'<div class="stat-row">{"".join(cards)}</div>'
 
 
 def dataframe_to_html(df: pd.DataFrame, max_rows: int = 50) -> str:
     """DataFrame → HTML table"""
-    html = df.head(max_rows).to_html(index=False, border=0, classes="dataframe",
-                                      escape=False, justify="left")
+    html = df.head(max_rows).to_html(
+        index=False, border=0, classes="dataframe", escape=False, justify="left"
+    )
     return html.replace('class="dataframe"', 'style="width:100%;border-collapse:collapse"')

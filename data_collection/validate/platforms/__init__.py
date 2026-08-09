@@ -11,10 +11,10 @@
 """
 
 from .base import PlatformAdapter
-from .xhs_adapter import XHSAdapter
 from .weibo_adapter import WeiboAdapter
-from .zhihu_adapter import ZhihuAdapter
+from .xhs_adapter import XHSAdapter
 from .xueqiu_adapter import XueqiuAdapter
+from .zhihu_adapter import ZhihuAdapter
 
 # 注册表
 ADAPTERS: dict[str, type[PlatformAdapter]] = {

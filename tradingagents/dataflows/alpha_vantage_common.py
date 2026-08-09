@@ -22,6 +22,7 @@ class AlphaVantageNotConfiguredError(VendorNotConfiguredError):
     layer's "vendor unavailable" handling and existing ValueError callers both
     keep working.
     """
+
     pass
 
 
@@ -34,11 +35,12 @@ def get_api_key() -> str:
         )
     return api_key
 
+
 def format_datetime_for_api(date_input) -> str:
     """Convert various date formats to YYYYMMDDTHHMM format required by Alpha Vantage API."""
     if isinstance(date_input, str):
         # If already in correct format, return as-is
-        if len(date_input) == 13 and 'T' in date_input:
+        if len(date_input) == 13 and "T" in date_input:
             return date_input
         # Try to parse common date formats
         try:
@@ -55,9 +57,12 @@ def format_datetime_for_api(date_input) -> str:
     else:
         raise ValueError(f"Date must be string or datetime object, got {type(date_input)}")
 
+
 class AlphaVantageRateLimitError(VendorRateLimitError):
     """Raised when the Alpha Vantage API rate limit is exceeded."""
+
     pass
+
 
 def _make_api_request(function_name: str, params: dict) -> dict | str:
     """Helper function to make API requests and handle responses.
@@ -67,14 +72,16 @@ def _make_api_request(function_name: str, params: dict) -> dict | str:
     """
     # Create a copy of params to avoid modifying the original
     api_params = params.copy()
-    api_params.update({
-        "function": function_name,
-        "apikey": get_api_key(),
-        "source": "trading_agents",
-    })
+    api_params.update(
+        {
+            "function": function_name,
+            "apikey": get_api_key(),
+            "source": "trading_agents",
+        }
+    )
 
     # Handle entitlement parameter if present in params or global variable
-    current_entitlement = globals().get('_current_entitlement')
+    current_entitlement = globals().get("_current_entitlement")
     entitlement = api_params.get("entitlement") or current_entitlement
 
     if entitlement:
@@ -107,10 +114,11 @@ def _make_api_request(function_name: str, params: dict) -> dict | str:
         if "api key" in low or "apikey" in low:
             # Reuse the existing "not configured" error so a bad key surfaces as
             # a real, actionable failure rather than a mislabeled rate limit (#991).
-            raise AlphaVantageNotConfiguredError(f"Alpha Vantage API key invalid or missing: {notice}")
+            raise AlphaVantageNotConfiguredError(
+                f"Alpha Vantage API key invalid or missing: {notice}"
+            )
 
     return response_text
-
 
 
 def _filter_csv_by_date_range(csv_data: str, start_date: str, end_date: str) -> str:

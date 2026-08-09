@@ -15,7 +15,11 @@ import re
 
 # Canonical, ordered 5-tier scale (most bullish to most bearish).
 RATINGS_5_TIER: tuple[str, ...] = (
-    "Buy", "Overweight", "Hold", "Underweight", "Sell",
+    "Buy",
+    "Overweight",
+    "Hold",
+    "Underweight",
+    "Sell",
 )
 
 _RATING_SET = {r.lower() for r in RATINGS_5_TIER}

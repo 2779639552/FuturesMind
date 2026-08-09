@@ -11,12 +11,15 @@
 依赖: playwright (Chromium)
 """
 
-import json, re, time, logging
-from pathlib import Path
+import json
+import logging
+import re
+import time
 from datetime import datetime
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
 
-from .base import PlatformAdapter, CredentialError
+from .base import CredentialError, PlatformAdapter
 
 logger = logging.getLogger("platforms.zhihu")
 
@@ -25,8 +28,8 @@ STATE_FILE = CREDENTIALS_DIR / "zhihu_login_state.json"
 
 # 搜索配置
 SEARCH_TIMEOUT = 30  # 等待 API 响应的秒数
-PAGE_WAIT = 5        # 页面加载后额外等待秒数
-MAX_PAGES = 5        # 最大翻页数
+PAGE_WAIT = 5  # 页面加载后额外等待秒数
+MAX_PAGES = 5  # 最大翻页数
 
 
 class ZhihuAdapter(PlatformAdapter):
@@ -55,19 +58,16 @@ class ZhihuAdapter(PlatformAdapter):
             raise CredentialError(
                 "Playwright not installed.\n"
                 "Run: pip install playwright && playwright install chromium"
-            )
+            ) from None
 
         if not STATE_FILE.exists():
-            raise CredentialError(
-                "Zhihu login state not found.\n"
-                "Run: python zhihu_login.py"
-            )
+            raise CredentialError("Zhihu login state not found.\nRun: python zhihu_login.py")
 
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(headless=True)
 
         # 加载已保存的登录态
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
+        with open(STATE_FILE, encoding="utf-8") as f:
             storage_state = json.load(f)
 
         self._context = self._browser.new_context(
@@ -120,10 +120,7 @@ class ZhihuAdapter(PlatformAdapter):
         try:
             # 导航到搜索页（PC 端）
             encoded_q = keyword.replace(" ", "+")
-            search_url = (
-                f"https://www.zhihu.com/search"
-                f"?type=content&q={encoded_q}"
-            )
+            search_url = f"https://www.zhihu.com/search?type=content&q={encoded_q}"
             self._page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
 
             # 等待 API 响应到达
@@ -186,6 +183,7 @@ class ZhihuAdapter(PlatformAdapter):
         浏览器自动算 x-zse-96 签名，比拦截页面请求更可靠。
         """
         import urllib.parse
+
         q = urllib.parse.quote(keyword)
         api_url = (
             f"/api/v4/search_v3"
@@ -261,13 +259,13 @@ class ZhihuAdapter(PlatformAdapter):
     def needs_detail_fetch(self) -> bool:
         return True  # 浏览器内 fetch() 拿全文+评论
 
-    def get_detail(self, raw_item: Any) -> Optional[dict]:
+    def get_detail(self, raw_item: Any) -> dict | None:
         """
         获取知乎回答全文 + 热门评论。
         使用 page.evaluate() 在浏览器内调 API (签名由浏览器自动算)。
         """
         oid = raw_item.get("id", "")
-        obj_type = raw_item.get("type", "search_result")
+        raw_item.get("type", "search_result")
         if not oid:
             return None
 
@@ -280,7 +278,7 @@ class ZhihuAdapter(PlatformAdapter):
             result["content_length"] = len(raw_item["content"])
         else:
             try:
-                answer_url = f"https://www.zhihu.com/question/{raw_item.get('question_id', '')}/answer/{oid}"
+                (f"https://www.zhihu.com/question/{raw_item.get('question_id', '')}/answer/{oid}")
                 api_path = f"/api/v4/answers/{oid}?include=content,excerpt,voteup_count,comment_count,created_time,author"
                 resp = self._page.evaluate(f"""
                     async () => {{
@@ -312,14 +310,16 @@ class ZhihuAdapter(PlatformAdapter):
                 comment_list = resp.get("data", [])
                 for c in (comment_list or [])[:10]:  # 取前10条高赞评论
                     content = c.get("content", "")
-                    content = re.sub(r'<[^>]+>', '', content)  # 去HTML
+                    content = re.sub(r"<[^>]+>", "", content)  # 去HTML
                     author = (c.get("author", {}) or {}).get("name", "")
                     vote = c.get("vote_count", 0)
-                    result["comments"].append({
-                        "author": author,
-                        "content": content[:300],
-                        "vote": vote,
-                    })
+                    result["comments"].append(
+                        {
+                            "author": author,
+                            "content": content[:300],
+                            "vote": vote,
+                        }
+                    )
         except Exception as e:
             logger.debug(f"  Zhihu comments fetch failed for {oid[:8]}: {e}")
 
@@ -329,9 +329,7 @@ class ZhihuAdapter(PlatformAdapter):
     # 归一化
     # ============================================================
 
-    def normalize(
-        self, raw_item: Any, detail: Optional[dict], keyword: str
-    ) -> Optional[dict]:
+    def normalize(self, raw_item: Any, detail: dict | None, keyword: str) -> dict | None:
         """知乎 item → 统一 Schema"""
         oid = raw_item.get("id", "")
         obj_type = raw_item.get("type", "answer")
@@ -362,8 +360,8 @@ class ZhihuAdapter(PlatformAdapter):
         desc = desc[:3000] if desc else ""
 
         # 去除 HTML 标签
-        desc = re.sub(r'<[^>]+>', '', desc)
-        desc = desc.replace('&nbsp;', ' ').replace('&amp;', '&')
+        desc = re.sub(r"<[^>]+>", "", desc)
+        desc = desc.replace("&nbsp;", " ").replace("&amp;", "&")
 
         # 标题
         title = raw_item.get("title", "")
@@ -371,7 +369,11 @@ class ZhihuAdapter(PlatformAdapter):
             title = desc[:60] if desc else ""
 
         # 时间
-        created_ts = detail.get("created_time", raw_item.get("created_time", 0)) if detail else raw_item.get("created_time", 0)
+        created_ts = (
+            detail.get("created_time", raw_item.get("created_time", 0))
+            if detail
+            else raw_item.get("created_time", 0)
+        )
         if created_ts and created_ts > 0:
             try:
                 publish_time = datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S")
@@ -407,7 +409,10 @@ class ZhihuAdapter(PlatformAdapter):
             "publish_time": publish_time,
             "ip_location": "",
             "keyword": keyword,
-            "url": raw_item.get("url", f"https://www.zhihu.com/question/{raw_item.get('question_id','')}/answer/{oid}"),
+            "url": raw_item.get(
+                "url",
+                f"https://www.zhihu.com/question/{raw_item.get('question_id', '')}/answer/{oid}",
+            ),
             "desc_length": len(desc) if desc else 0,
             "image_count": 0,
             "is_video": False,
@@ -433,4 +438,5 @@ class ZhihuAdapter(PlatformAdapter):
     @staticmethod
     def field_mapping() -> dict:
         from .base import FIELD_MAPPING_TABLE
+
         return FIELD_MAPPING_TABLE["zhihu"]

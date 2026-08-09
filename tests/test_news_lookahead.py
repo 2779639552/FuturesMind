@@ -4,6 +4,7 @@ into a historical window.
 Regressions for #992 (flat articles bypassed the date filter), #1007 (global
 news injected future articles), #993 (empty-after-filter returned a blank body).
 """
+
 import time
 from datetime import datetime
 
@@ -33,8 +34,8 @@ def test_window_excludes_future_and_undated_in_backtest():
     inside = datetime(2025, 5, 5)
     future = datetime(2025, 6, 1)
     assert ynews._in_news_window(inside, start, end) is True
-    assert ynews._in_news_window(future, start, end) is False     # look-ahead blocked
-    assert ynews._in_news_window(None, start, end) is False        # undated -> excluded in backtest
+    assert ynews._in_news_window(future, start, end) is False  # look-ahead blocked
+    assert ynews._in_news_window(None, start, end) is False  # undated -> excluded in backtest
 
 
 @pytest.mark.unit
@@ -48,10 +49,18 @@ def test_window_keeps_undated_in_live_window():
 @pytest.mark.unit
 def test_global_news_future_flat_article_excluded(monkeypatch):
     # #1007: a flat, future-dated global article must not appear in a historical run.
-    future_article = {"title": "FUTURE EVENT", "publisher": "P", "link": "l",
-                      "providerPublishTime": _epoch("2025-06-01")}
-    past_article = {"title": "PAST EVENT", "publisher": "P", "link": "l",
-                    "providerPublishTime": _epoch("2025-05-05")}
+    future_article = {
+        "title": "FUTURE EVENT",
+        "publisher": "P",
+        "link": "l",
+        "providerPublishTime": _epoch("2025-06-01"),
+    }
+    past_article = {
+        "title": "PAST EVENT",
+        "publisher": "P",
+        "link": "l",
+        "providerPublishTime": _epoch("2025-05-05"),
+    }
 
     class FakeSearch:
         def __init__(self, *a, **k):
@@ -66,8 +75,12 @@ def test_global_news_future_flat_article_excluded(monkeypatch):
 @pytest.mark.unit
 def test_global_news_empty_after_filter_is_informative(monkeypatch):
     # #993: everything filtered out -> a clear message, not a blank-bodied report.
-    only_future = {"title": "FUTURE", "publisher": "P", "link": "l",
-                   "providerPublishTime": _epoch("2025-06-01")}
+    only_future = {
+        "title": "FUTURE",
+        "publisher": "P",
+        "link": "l",
+        "providerPublishTime": _epoch("2025-06-01"),
+    }
 
     class FakeSearch:
         def __init__(self, *a, **k):

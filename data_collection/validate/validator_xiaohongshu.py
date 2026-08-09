@@ -24,24 +24,22 @@
     python validator_xiaohongshu.py --method spider_xhs   # 使用Spider_XHS（需要先安装）
 """
 
-import json
-import time
-import random
-import logging
 import argparse
-import sys
+import json
+import logging
+import random
 import subprocess
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
+import sys
+import time
 from dataclasses import dataclass, field
-
-import requests
+from pathlib import Path
 
 from config import (
-    SEARCH_KEYWORDS, REQUEST_HEADERS, USER_AGENTS,
-    REQUEST_TIMEOUT, MIN_DELAY, MAX_DELAY,
-    ENDPOINTS, ValidationCriteria, OUTPUT_DIR, LOG_FORMAT, LOG_LEVEL,
+    LOG_FORMAT,
+    LOG_LEVEL,
+    OUTPUT_DIR,
+    SEARCH_KEYWORDS,
+    USER_AGENTS,
 )
 
 logger = logging.getLogger("xhs.validator")
@@ -75,34 +73,35 @@ class XHSValidationResult:
     def to_report(self) -> str:
         status = "✅ 通过" if self.passed else "❌ 未通过"
         lines = [
-            f"\n{'='*60}",
+            f"\n{'=' * 60}",
             f"小红书 (xiaohongshu.com) 验证结果: {status}",
-            f"{'='*60}",
+            f"{'=' * 60}",
             f"  采集方式:     {self.method}",
             f"  可接入性:     {'✅' if self.accessible else '❌'}",
             f"  总结果数:     {self.total_results}",
             f"  相关结果数:   {self.relevant_results}",
-            f"  相关率:       {self.relevance_rate*100:.0f}%",
+            f"  相关率:       {self.relevance_rate * 100:.0f}%",
             f"  平均响应时间: {self.avg_response_time:.2f}s",
         ]
         if self.sample_posts:
-            lines.append(f"\n  样本帖子:")
+            lines.append("\n  样本帖子:")
             for i, post in enumerate(self.sample_posts[:5], 1):
                 title = post.get("title", post.get("text", ""))[:80]
                 lines.append(f"  {i}. @{post.get('user_name', '?')} | {title}")
         if self.errors:
-            lines.append(f"\n  错误:")
+            lines.append("\n  错误:")
             for err in self.errors[:5]:
                 lines.append(f"  - {err}")
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 # ============================================================
 # 方案B: Playwright 浏览器方案
 # ============================================================
 
+
 def validate_playwright(
-    keywords: Optional[list[str]] = None,
+    keywords: list[str] | None = None,
     headless: bool = False,
 ) -> XHSValidationResult:
     """
@@ -122,9 +121,11 @@ def validate_playwright(
         keywords = SEARCH_KEYWORDS[:3]
 
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+        from playwright.sync_api import TimeoutError as PwTimeout, sync_playwright
     except ImportError:
-        result.errors.append("playwright 未安装。请运行: pip install playwright && playwright install chromium")
+        result.errors.append(
+            "playwright 未安装。请运行: pip install playwright && playwright install chromium"
+        )
         print(result.to_report())
         return result
 
@@ -162,7 +163,7 @@ def validate_playwright(
         storage_path = Path(OUTPUT_DIR) / "xhs_storage_state.json"
         if storage_path.exists():
             try:
-                with open(storage_path, "r") as f:
+                with open(storage_path) as f:
                     context.storage_state(loaded=json.load(f))
                 print("✅ 已加载上次登录状态")
             except Exception:
@@ -217,7 +218,9 @@ def validate_playwright(
                     start = time.time()
 
                     # 导航到搜索结果页
-                    search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&type=51"
+                    search_url = (
+                        f"https://www.xiaohongshu.com/search_result?keyword={keyword}&type=51"
+                    )
                     page.goto(search_url, timeout=15000)
 
                     # 等待搜索结果加载
@@ -255,16 +258,19 @@ def validate_playwright(
 
                             # 期货相关性判断
                             from validator_weibo import is_futures_related
+
                             is_related = is_futures_related(title_text)
                             if is_related:
                                 result.relevant_results += 1
 
-                            all_posts.append({
-                                "title": title_text[:200],
-                                "user_name": author_text,
-                                "like_count": like_text,
-                                "is_related": is_related,
-                            })
+                            all_posts.append(
+                                {
+                                    "title": title_text[:200],
+                                    "user_name": author_text,
+                                    "like_count": like_text,
+                                    "is_related": is_related,
+                                }
+                            )
                         except Exception:
                             pass
 
@@ -273,7 +279,7 @@ def validate_playwright(
                     result.accessible = True
 
                 except PwTimeout:
-                    print(f"  ⚠️ 加载超时")
+                    print("  ⚠️ 加载超时")
                     result.errors.append(f"Timeout for keyword '{keyword}'")
                 except Exception as e:
                     print(f"  ❌ 失败: {e}")
@@ -303,8 +309,9 @@ def validate_playwright(
 # 方案A: Spider_XHS 开源项目方案
 # ============================================================
 
+
 def validate_spider_xhs(
-    keywords: Optional[list[str]] = None,
+    keywords: list[str] | None = None,
 ) -> XHSValidationResult:
     """
     使用 Spider_XHS 开源项目进行采集。
@@ -351,7 +358,9 @@ def validate_spider_xhs(
             from spider_xhs import XHSClient  # type: ignore
         except ImportError:
             try:
-                from xhs import Client as XHSClient  # type: ignore
+                from xhs import (
+                    Client as XHSClient,  # type: ignore  # noqa: F401  availability check
+                )
             except ImportError:
                 # 尝试通过命令行调用
                 print("通过命令行调用 Spider_XHS...")
@@ -364,10 +373,15 @@ def validate_spider_xhs(
                     try:
                         proc = subprocess.run(
                             [
-                                sys.executable, "-m", "spider_xhs",
-                                "search", keyword,
-                                "--count", "20",
-                                "--format", "json",
+                                sys.executable,
+                                "-m",
+                                "spider_xhs",
+                                "search",
+                                keyword,
+                                "--count",
+                                "20",
+                                "--format",
+                                "json",
                             ],
                             capture_output=True,
                             text=True,
@@ -384,6 +398,7 @@ def validate_spider_xhs(
                             result.total_results += len(posts)
 
                             from validator_weibo import is_futures_related
+
                             for post in posts:
                                 title = post.get("title", post.get("note_title", ""))
                                 if is_futures_related(title):
@@ -396,11 +411,11 @@ def validate_spider_xhs(
                             result.errors.append(f"Spider_XHS error: {proc.stderr[:200]}")
 
                     except subprocess.TimeoutExpired:
-                        print(f"  ❌ 超时")
+                        print("  ❌ 超时")
                         result.errors.append(f"Timeout for '{keyword}'")
                     except json.JSONDecodeError:
-                        print(f"  ❌ JSON解析失败")
-                        result.errors.append(f"Invalid JSON from Spider_XHS")
+                        print("  ❌ JSON解析失败")
+                        result.errors.append("Invalid JSON from Spider_XHS")
 
                 if response_times:
                     result.avg_response_time = sum(response_times) / len(response_times)
@@ -489,6 +504,7 @@ def print_js_reverse_guide():
 # CLI
 # ============================================================
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="小红书数据采集可行性验证",
@@ -502,16 +518,19 @@ def main():
         """,
     )
     parser.add_argument(
-        "--method", type=str, default="playwright",
+        "--method",
+        type=str,
+        default="playwright",
         choices=["playwright", "spider_xhs", "js_reverse"],
         help="采集方案 (默认: playwright)",
     )
-    parser.add_argument("--keyword", type=str, nargs="+", default=None,
-                        help="测试关键词")
-    parser.add_argument("--headless", action="store_true",
-                        help="Playwright无头模式 (不需要手动扫码时需要已有登录状态)")
-    parser.add_argument("--output", type=str, default=None,
-                        help="JSON输出路径")
+    parser.add_argument("--keyword", type=str, nargs="+", default=None, help="测试关键词")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Playwright无头模式 (不需要手动扫码时需要已有登录状态)",
+    )
+    parser.add_argument("--output", type=str, default=None, help="JSON输出路径")
 
     args = parser.parse_args()
 

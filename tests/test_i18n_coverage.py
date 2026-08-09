@@ -6,6 +6,7 @@ languages. The bug originally happened because several agents silently omitted
 the instruction (fixed in 6b384f7); this test codifies the invariant so a future
 refactor can't quietly drop it again.
 """
+
 from pathlib import Path
 
 import pytest
@@ -36,11 +37,13 @@ REPORT_AGENTS = [
 class TestLanguageInstruction:
     def test_english_adds_no_tokens(self, monkeypatch):
         from tradingagents.dataflows.config import set_config
+
         set_config({"output_language": "English"})
         assert get_language_instruction() == ""
 
     def test_non_english_emits_directive(self):
         from tradingagents.dataflows.config import set_config
+
         set_config({"output_language": "中文"})
         out = get_language_instruction()
         assert "中文" in out

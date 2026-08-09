@@ -25,49 +25,53 @@
     python hybrid_pipeline.py --filter-futures          # 期货相关性过滤
 """
 
-import json
-import time
-import random
-import logging
 import argparse
-import sys
+import json
+import logging
+import random
 import re
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
+import sys
+import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 
-from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout, Page, Route, Request
+from playwright.sync_api import TimeoutError as PwTimeout, sync_playwright
 
 # --- 复用已有的工具函数 ---
 sys.path.insert(0, str(Path(__file__).parent))
 from xhs_scraper import (
-    XHSScraper, XHSNote, ANTI_DETECTION_SCRIPT,
-    decode_objectid_timestamp, parse_like_count,
-    is_futures_related_xhs, filter_futures_notes,
-    STORAGE_STATE_FILE, OUTPUT_DIR,
+    ANTI_DETECTION_SCRIPT,
+    OUTPUT_DIR,
+    STORAGE_STATE_FILE,
+    XHSNote,
+    decode_objectid_timestamp,
+    filter_futures_notes,
+    is_futures_related_xhs,
+    parse_like_count,
 )
 
 logger = logging.getLogger("hybrid.pipeline")
 
 # 小红书 API 端点 (用于拦截)
 XHS_API_PATTERNS = {
-    "note_detail": "**/api/sns/web/v1/feed**",       # 笔记详情
+    "note_detail": "**/api/sns/web/v1/feed**",  # 笔记详情
     "note_comments": "**/api/sns/web/v2/comment/**",  # 评论
-    "search_notes": "**/api/sns/web/v1/search/notes", # 搜索
-    "sub_notes": "**/api/sns/web/v1/note/sub**",      # 子笔记
+    "search_notes": "**/api/sns/web/v1/search/notes",  # 搜索
+    "sub_notes": "**/api/sns/web/v1/note/sub**",  # 子笔记
 }
 
 
 @dataclass
 class DeepNote:
     """深度采集的笔记 (API级别数据)"""
+
     note_id: str = ""
     title: str = ""
-    desc: str = ""               # 正文全文
+    desc: str = ""  # 正文全文
     author_name: str = ""
     author_id: str = ""
-    author_followers: int = 0    # 作者粉丝数
+    author_followers: int = 0  # 作者粉丝数
     like_count: int = 0
     comment_count: int = 0
     collect_count: int = 0
@@ -75,10 +79,10 @@ class DeepNote:
     tags: list = field(default_factory=list)
     topics: list = field(default_factory=list)  # 话题
     images: list = field(default_factory=list)  # 图片URL列表
-    note_type: str = ""          # normal / video
+    note_type: str = ""  # normal / video
     publish_time: str = ""
-    ip_location: str = ""        # IP属地
-    keyword: str = ""            # 搜索关键词
+    ip_location: str = ""  # IP属地
+    keyword: str = ""  # 搜索关键词
     comments: list = field(default_factory=list)  # 评论列表 (前20条)
     raw_api_response: dict = field(default_factory=dict)
 
@@ -138,7 +142,7 @@ class HybridPipeline:
         # 加载已保存的登录态
         if STORAGE_STATE_FILE.exists():
             try:
-                with open(STORAGE_STATE_FILE, "r") as f:
+                with open(STORAGE_STATE_FILE) as f:
                     context_options["storage_state"] = json.load(f)
                 logger.info("Loaded saved login state")
             except Exception:
@@ -155,8 +159,9 @@ class HybridPipeline:
     def _login(self, timeout: int = 180):
         """打开首页并等待登录"""
         logger.info("Opening homepage...")
-        self.page.goto("https://www.xiaohongshu.com/explore", timeout=30000,
-                       wait_until="domcontentloaded")
+        self.page.goto(
+            "https://www.xiaohongshu.com/explore", timeout=30000, wait_until="domcontentloaded"
+        )
         time.sleep(2)
 
         # 检查是否已登录
@@ -217,7 +222,9 @@ class HybridPipeline:
         notes = []
         logger.info(f"Discovering: '{keyword}'")
 
-        search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&type=51&sort=time"
+        search_url = (
+            f"https://www.xiaohongshu.com/search_result?keyword={keyword}&type=51&sort=time"
+        )
         self.page.goto(search_url, timeout=20000, wait_until="domcontentloaded")
         time.sleep(random.uniform(2, 4))
 
@@ -249,7 +256,7 @@ class HybridPipeline:
         logger.info(f"  Discovered {len(notes)} notes for '{keyword}'")
         return notes
 
-    def _parse_search_card(self, elem, keyword: str) -> Optional[XHSNote]:
+    def _parse_search_card(self, elem, keyword: str) -> XHSNote | None:
         """从搜索卡片中提取基础数据"""
         note = XHSNote(keyword=keyword)
 
@@ -258,14 +265,14 @@ class HybridPipeline:
         if not link:
             link = elem
         href = link.get_attribute("href") or ""
-        note_id_match = re.search(r'/(?:explore|discovery/item)/([a-f0-9]{24})', href)
+        note_id_match = re.search(r"/(?:explore|discovery/item)/([a-f0-9]{24})", href)
         if note_id_match:
             note.note_id = note_id_match.group(1)
             note.url = f"https://www.xiaohongshu.com/explore/{note.note_id}"
         else:
             # 尝试 data-id 属性
             data_id = elem.get_attribute("data-id") or ""
-            if re.match(r'^[a-f0-9]{24}$', data_id):
+            if re.match(r"^[a-f0-9]{24}$", data_id):
                 note.note_id = data_id
                 note.url = f"https://www.xiaohongshu.com/explore/{note.note_id}"
             else:
@@ -275,7 +282,7 @@ class HybridPipeline:
         note.publish_time = decode_objectid_timestamp(note.note_id) or ""
 
         # 标题
-        for sel in ['.title', '[class*="title"]', 'span[class*="title"]', 'h3']:
+        for sel in [".title", '[class*="title"]', 'span[class*="title"]', "h3"]:
             el = elem.query_selector(sel)
             if el:
                 note.title = (el.inner_text() or "").strip()
@@ -283,8 +290,13 @@ class HybridPipeline:
                     break
 
         # 作者
-        for sel in ['.author .name', '.name', '[class*="author"] [class*="name"]',
-                     '.nickname', '[class*="nickname"]']:
+        for sel in [
+            ".author .name",
+            ".name",
+            '[class*="author"] [class*="name"]',
+            ".nickname",
+            '[class*="nickname"]',
+        ]:
             el = elem.query_selector(sel)
             if el:
                 note.author_name = (el.inner_text() or "").strip()
@@ -292,13 +304,15 @@ class HybridPipeline:
                     break
 
         # 互动数据
-        count_els = elem.query_selector_all('.count, [class*="count"], [class*="like"] [class*="count"], span[class*="stat"]')
+        count_els = elem.query_selector_all(
+            '.count, [class*="count"], [class*="like"] [class*="count"], span[class*="stat"]'
+        )
         if len(count_els) >= 1:
             note.like_count = (count_els[0].inner_text() or "").strip()
             note.like_count_int = parse_like_count(note.like_count)
 
         # 封面
-        img = elem.query_selector('img')
+        img = elem.query_selector("img")
         if img:
             note.cover_url = img.get_attribute("src") or ""
 
@@ -311,7 +325,7 @@ class HybridPipeline:
         # 如果没有标题，尝试获取全部可见文本
         if not note.title:
             text = (elem.inner_text() or "").strip()
-            lines = [l for l in text.split('\n') if len(l) > 5]
+            lines = [line for line in text.split("\n") if len(line) > 5]
             note.title = lines[0][:100] if lines else ""
 
         return note
@@ -338,43 +352,44 @@ class HybridPipeline:
             url = response.url
             try:
                 # 只拦截API调用
-                if not any(domain in url for domain in
-                           ['edith.xiaohongshu.com', 'www.xiaohongshu.com/api']):
+                if not any(
+                    domain in url for domain in ["edith.xiaohongshu.com", "www.xiaohongshu.com/api"]
+                ):
                     return
 
                 # 匹配笔记详情API
-                if '/api/sns/web/v1/feed' in url or '/api/sns/web/v1/note/' in url:
+                if "/api/sns/web/v1/feed" in url or "/api/sns/web/v1/note/" in url:
                     body = response.json()
-                    self.api_cache['note_detail'] = body
-                    logger.debug(f"Intercepted note detail API")
+                    self.api_cache["note_detail"] = body
+                    logger.debug("Intercepted note detail API")
 
                 # 匹配评论API
-                elif '/api/sns/web/v2/comment' in url:
+                elif "/api/sns/web/v2/comment" in url:
                     body = response.json()
                     cache_key = f"comment_{url}"
                     self.api_cache[cache_key] = body
-                    logger.debug(f"Intercepted comment API")
+                    logger.debug("Intercepted comment API")
 
                 # 匹配搜索API (可以获取更丰富的搜索结果)
-                elif '/api/sns/web/v1/search/notes' in url:
+                elif "/api/sns/web/v1/search/notes" in url:
                     body = response.json()
-                    self.api_cache['search_results'] = body
-                    logger.debug(f"Intercepted search API")
+                    self.api_cache["search_results"] = body
+                    logger.debug("Intercepted search API")
 
             except Exception:
                 pass  # 非JSON响应忽略
 
-        self.page.on('response', on_response)
+        self.page.on("response", on_response)
         self.intercept_enabled = True
         logger.info("API interceptor enabled")
 
-    def deep_extract_one(self, note_id: str) -> Optional[DeepNote]:
+    def deep_extract_one(self, note_id: str) -> DeepNote | None:
         """
         打开笔记详情页，拦截API响应，提取完整数据。
         返回 DeepNote 或 None。
         """
         # 清空之前的缓存
-        self.api_cache.pop('note_detail', None)
+        self.api_cache.pop("note_detail", None)
 
         # 打开详情页
         detail_url = f"https://www.xiaohongshu.com/explore/{note_id}"
@@ -387,18 +402,18 @@ class HybridPipeline:
         # 等待API响应 (笔记详情通过XHR加载)
         wait_start = time.time()
         timeout = 10  # 最多等10秒
-        while 'note_detail' not in self.api_cache:
+        while "note_detail" not in self.api_cache:
             time.sleep(0.5)
             if time.time() - wait_start > timeout:
                 break
 
         # 如果API没被拦截到，尝试从DOM提取 (降级)
-        if 'note_detail' not in self.api_cache:
+        if "note_detail" not in self.api_cache:
             logger.debug(f"API not intercepted for {note_id[:8]}..., trying DOM")
             return self._extract_from_dom_fallback(note_id)
 
         # 从API响应中解析
-        api_data = self.api_cache['note_detail']
+        api_data = self.api_cache["note_detail"]
 
         try:
             deep = self._parse_api_response(api_data, note_id)
@@ -506,7 +521,7 @@ class HybridPipeline:
 
         return deep
 
-    def _extract_from_dom_fallback(self, note_id: str) -> Optional[DeepNote]:
+    def _extract_from_dom_fallback(self, note_id: str) -> DeepNote | None:
         """API拦截失败时的DOM降级方案"""
         deep = DeepNote(note_id=note_id)
         deep.publish_time = decode_objectid_timestamp(note_id) or ""
@@ -515,8 +530,7 @@ class HybridPipeline:
         time.sleep(2)
 
         # 正文
-        for sel in ['#detail-desc', '.note-text', '[class*="noteText"]',
-                     '.desc', '.note-content']:
+        for sel in ["#detail-desc", ".note-text", '[class*="noteText"]', ".desc", ".note-content"]:
             el = self.page.query_selector(sel)
             if el:
                 text = (el.inner_text() or "").strip()
@@ -525,21 +539,21 @@ class HybridPipeline:
                     break
 
         # 互动数据
-        for sel in ['.interact-item', '[class*="interact"] [class*="item"]']:
+        for sel in [".interact-item", '[class*="interact"] [class*="item"]']:
             els = self.page.query_selector_all(sel)
             if len(els) >= 1:
-                deep.like_count = parse_like_count((els[0].inner_text() or ""))
+                deep.like_count = parse_like_count(els[0].inner_text() or "")
             if len(els) >= 2:
-                deep.collect_count = parse_like_count((els[1].inner_text() or ""))
+                deep.collect_count = parse_like_count(els[1].inner_text() or "")
             if len(els) >= 3:
-                deep.comment_count = parse_like_count((els[2].inner_text() or ""))
+                deep.comment_count = parse_like_count(els[2].inner_text() or "")
             break
 
         # 作者
         link = self.page.query_selector('a[href*="/user/profile/"]')
         if link:
             href = link.get_attribute("href") or ""
-            uid = re.search(r'/user/profile/([a-f0-9]{24})', href)
+            uid = re.search(r"/user/profile/([a-f0-9]{24})", href)
             if uid:
                 deep.author_id = uid.group(1)
             author_el = link.query_selector('[class*="name"], [class*="nickname"]')
@@ -563,19 +577,21 @@ class HybridPipeline:
         logger.info(f"Deep extracting {len(ids_to_fetch)} notes...")
 
         for i, nid in enumerate(ids_to_fetch):
-            logger.info(f"  [{i+1}/{len(ids_to_fetch)}] {nid[:8]}...")
+            logger.info(f"  [{i + 1}/{len(ids_to_fetch)}] {nid[:8]}...")
             try:
                 deep = self.deep_extract_one(nid)
                 if deep:
                     results.append(deep)
                     status = "OK" if deep.desc else "no_content"
-                    print(f"  [{i+1}/{len(ids_to_fetch)}] {nid[:8]}... {status} "
-                          f"(desc={len(deep.desc)}c, tags={len(deep.tags)}, likes={deep.like_count})")
+                    print(
+                        f"  [{i + 1}/{len(ids_to_fetch)}] {nid[:8]}... {status} "
+                        f"(desc={len(deep.desc)}c, tags={len(deep.tags)}, likes={deep.like_count})"
+                    )
                 else:
-                    print(f"  [{i+1}/{len(ids_to_fetch)}] {nid[:8]}... FAILED")
+                    print(f"  [{i + 1}/{len(ids_to_fetch)}] {nid[:8]}... FAILED")
             except Exception as e:
                 logger.warning(f"Deep extract failed for {nid[:8]}...: {e}")
-                print(f"  [{i+1}/{len(ids_to_fetch)}] {nid[:8]}... ERROR: {e}")
+                print(f"  [{i + 1}/{len(ids_to_fetch)}] {nid[:8]}... ERROR: {e}")
 
             # 避免触发反爬
             time.sleep(random.uniform(2, 4))
@@ -603,7 +619,7 @@ class HybridPipeline:
         self.start(need_login=need_login)
 
         all_discovered = []  # Phase 1 结果
-        all_deep = []        # Phase 2 结果
+        all_deep = []  # Phase 2 结果
 
         try:
             # Phase 1: 发现
@@ -635,7 +651,7 @@ class HybridPipeline:
 
             # Phase 2: 深挖
             print("\n" + "=" * 60)
-            print(f"PHASE 2: Deep Extraction (API Intercept)")
+            print("PHASE 2: Deep Extraction (API Intercept)")
             print("=" * 60)
 
             note_ids = [n.note_id for n in unique_notes]
@@ -664,7 +680,7 @@ class HybridPipeline:
                     "discovered_count": len(all_discovered),
                     "deep_extracted_count": len(all_deep),
                     "deep_success_rate": len(all_deep) / max(len(note_ids), 1),
-                }
+                },
             }
 
         finally:
@@ -745,7 +761,7 @@ class HybridPipeline:
 def print_summary(results: dict):
     """打印结果摘要"""
     stats = results.get("stats", {})
-    discovered = results.get("discovered", [])
+    results.get("discovered", [])
     deep = results.get("deep_notes", [])
 
     print("\n" + "=" * 60)
@@ -754,15 +770,17 @@ def print_summary(results: dict):
     print(f"  Keywords:      {stats.get('keywords_count', 0)}")
     print(f"  Discovered:    {stats.get('discovered_count', 0)} notes")
     print(f"  Deep extracted:{stats.get('deep_extracted_count', 0)} notes")
-    print(f"  Success rate:  {stats.get('deep_success_rate', 0)*100:.0f}%")
+    print(f"  Success rate:  {stats.get('deep_success_rate', 0) * 100:.0f}%")
 
     if deep:
-        print(f"\n  Top deep notes:")
+        print("\n  Top deep notes:")
         for i, d in enumerate(deep[:5], 1):
-            title = (d.title or d.desc or "")[:80].replace('\n', ' ')
+            title = (d.title or d.desc or "")[:80].replace("\n", " ")
             desc_len = len(d.desc) if d.desc else 0
             print(f"  {i}. @{d.author_name} | {title}")
-            print(f"     L{d.like_count} C{d.comment_count} | {desc_len} chars | {len(d.tags)} tags")
+            print(
+                f"     L{d.like_count} C{d.comment_count} | {desc_len} chars | {len(d.tags)} tags"
+            )
             if d.tags:
                 print(f"     Tags: {', '.join(d.tags[:8])}")
 
@@ -771,19 +789,22 @@ def main():
     parser = argparse.ArgumentParser(
         description="Hybrid Pipeline: Playwright discovery + API intercept deep extraction"
     )
-    parser.add_argument("--keywords", type=str, nargs="+",
-                        default=["螺纹钢期货", "铁矿石期货", "原油期货", "黄金期货"],
-                        help="Search keywords")
-    parser.add_argument("--no-login", action="store_true",
-                        help="Skip login (use saved state)")
-    parser.add_argument("--headless", action="store_true",
-                        help="Headless mode")
-    parser.add_argument("--max-depth", type=int, default=10,
-                        help="Max notes to deep-extract per keyword")
-    parser.add_argument("--filter-futures", action="store_true", default=True,
-                        help="Apply futures relevance filter")
-    parser.add_argument("--no-filter", action="store_true",
-                        help="Disable futures filter")
+    parser.add_argument(
+        "--keywords",
+        type=str,
+        nargs="+",
+        default=["螺纹钢期货", "铁矿石期货", "原油期货", "黄金期货"],
+        help="Search keywords",
+    )
+    parser.add_argument("--no-login", action="store_true", help="Skip login (use saved state)")
+    parser.add_argument("--headless", action="store_true", help="Headless mode")
+    parser.add_argument(
+        "--max-depth", type=int, default=10, help="Max notes to deep-extract per keyword"
+    )
+    parser.add_argument(
+        "--filter-futures", action="store_true", default=True, help="Apply futures relevance filter"
+    )
+    parser.add_argument("--no-filter", action="store_true", help="Disable futures filter")
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--verbose", "-v", action="store_true")
 

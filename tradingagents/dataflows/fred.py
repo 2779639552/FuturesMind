@@ -8,6 +8,7 @@ A free API key (https://fred.stlouisfed.org/docs/api/api_key.html) is read from
 ``FRED_API_KEY``; if it is unset the vendor raises ``FredNotConfiguredError`` so
 the routing layer treats it as "unavailable" rather than a hard crash.
 """
+
 import logging
 import os
 from datetime import datetime, timedelta
@@ -118,9 +119,7 @@ def _resolve_series_id(indicator: str) -> str:
 def _request(path: str, params: dict) -> dict:
     """GET a FRED endpoint, surfacing FRED's JSON error body on a bad request."""
     api_params = {**params, "api_key": get_api_key(), "file_type": "json"}
-    response = requests.get(
-        f"{FRED_API_BASE}/{path}", params=api_params, timeout=REQUEST_TIMEOUT
-    )
+    response = requests.get(f"{FRED_API_BASE}/{path}", params=api_params, timeout=REQUEST_TIMEOUT)
     # FRED returns 400 with a JSON {"error_message": ...} for unknown series IDs
     # or malformed params; turn that into a clear, actionable error.
     if response.status_code == 400:
@@ -189,9 +188,7 @@ def get_macro_data(
 
     # FRED encodes a missing observation as ".".
     points = [
-        (o["date"], o["value"])
-        for o in observations
-        if o.get("value") not in (".", None, "")
+        (o["date"], o["value"]) for o in observations if o.get("value") not in (".", None, "")
     ]
 
     header = (
@@ -229,9 +226,7 @@ def get_macro_data(
         note = f"\n_(showing the most recent {MAX_ROWS} of {len(points)} observations)_\n"
 
     table = (
-        "\n| Date | Value |\n| --- | --- |\n"
-        + "\n".join(f"| {d} | {v} |" for d, v in shown)
-        + "\n"
+        "\n| Date | Value |\n| --- | --- |\n" + "\n".join(f"| {d} | {v} |" for d, v in shown) + "\n"
     )
 
     return header + summary + note + table

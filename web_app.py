@@ -4,50 +4,70 @@ Enhanced v2.5: ProgressTracker (thread-safe), pause/resume/stop,
 PDF+MD export, LLM config panel, real-time token stats, dynamic paths.
 """
 
+import glob
+import io
 import json
 import os
 import re
-import sys
-import io
-import csv
-import math
-import glob
-import time
-import hashlib
 import secrets
+import sys
 import threading
-import tempfile
-from pathlib import Path
+import time
 from datetime import datetime, timedelta
 from functools import wraps
-from queue import Queue
+from pathlib import Path
 
-from flask import Flask, Response, request, jsonify, render_template_string, stream_with_context, send_file, make_response
 from dotenv import load_dotenv
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    make_response,
+    render_template_string,
+    request,
+    send_file,
+    stream_with_context,
+)
 
 load_dotenv()
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.dataflows.config import set_config
-from tradingagents.dataflows.evolution_memory import get_evolution_context
-from tradingagents.dataflows.commodity_futures import get_futures_price, get_variety_info, VARIETY_METADATA
-from tradingagents.dataflows.sentiment_data import get_futures_sentiment
-from tradingagents.llm_clients import create_llm_client
-from langchain_core.messages import HumanMessage
+import contextlib  # noqa: E402
+
+from langchain_core.messages import HumanMessage  # noqa: E402
+
+from commodity_demo import build_commodity_graph  # noqa: E402
 
 # New imports for v2.6
-from database import get_db, AgentSenseDB
-from signal_analyzer import (
-    detect_anomalies, compute_divergence, analyze_lead_lag,
-    analyze_cross_platform, get_top_authors, extract_events,
-    run_simulated_trading, run_trailing_strategy, run_strategy_comparison,
-    run_contrarian_sentiment, run_adaptive_sentiment, run_donchian_strategy, run_momentum_strategy,
+from database import get_db  # noqa: E402
+from path_utils import resolve_think2_dir  # noqa: E402
+from signal_analyzer import (  # noqa: E402
+    analyze_cross_platform,
+    analyze_lead_lag,
+    compare_varieties,
+    compute_divergence,
+    detect_anomalies,
+    extract_events,
+    get_all_variety_scores,
+    get_top_authors,
+    run_adaptive_sentiment,
+    run_contrarian_sentiment,
+    run_donchian_strategy,
     run_momentum_adaptive,
-    compare_varieties, get_all_variety_scores,
+    run_momentum_strategy,
+    run_simulated_trading,
+    run_strategy_comparison,
+    run_trailing_strategy,
 )
-from commodity_demo import build_commodity_graph
+from tradingagents.dataflows.commodity_futures import (  # noqa: E402
+    VARIETY_METADATA,
+    get_futures_price,
+)
+from tradingagents.dataflows.config import set_config  # noqa: E402
+from tradingagents.dataflows.evolution_memory import get_evolution_context  # noqa: E402
+from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
+from tradingagents.llm_clients import create_llm_client  # noqa: E402
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
@@ -60,28 +80,16 @@ set_config(config)
 # (data/external_data) when no user data exists yet — lets a fresh clone browse.
 _USER_SENTIMENT_DIR = Path(os.path.expanduser("~/.tradingagents/external_data"))
 _REPO_SENTIMENT_DIR = Path(__file__).parent / "data" / "external_data"
-SENTIMENT_DIR = _USER_SENTIMENT_DIR if any(_USER_SENTIMENT_DIR.glob("*_sentiment.json")) else _REPO_SENTIMENT_DIR
+SENTIMENT_DIR = (
+    _USER_SENTIMENT_DIR
+    if any(_USER_SENTIMENT_DIR.glob("*_sentiment.json"))
+    else _REPO_SENTIMENT_DIR
+)
 
-# Auto-detect 思路2 project directory (environment variable or common locations).
-# The last candidate is the bundled repo sample (data/think2_validate), used as a
-# fallback so a fresh clone without the local 思路2 project can still render.
-_THINK2_ENV = os.environ.get("THINK2_DIR", "")
-if _THINK2_ENV:
-    THINK2_DIR = Path(_THINK2_ENV)
-else:
-    _candidates = [
-        Path(os.path.expanduser("~/Desktop/思路2/validate")),
-        Path(os.path.expanduser("~/Desktop/silu2/validate")),
-        Path(os.path.expanduser("~/projects/silu2/validate")),
-        Path(__file__).parent / "data" / "think2_validate",  # bundled sample
-    ]
-    THINK2_DIR = None
-    for _c in _candidates:
-        if _c.exists():
-            THINK2_DIR = _c
-            break
-    if THINK2_DIR is None:
-        THINK2_DIR = _candidates[0]  # Default to first candidate (logs warning on startup)
+# Auto-detect 思路2 project directory: $THINK2_DIR override, then common local
+# locations, then the bundled repo sample (data/think2_validate) so a fresh
+# clone without the local 思路2 project can still render.
+THINK2_DIR = resolve_think2_dir()
 
 THINK2_OUTPUT = THINK2_DIR / "output" if THINK2_DIR else None
 THINK2_TRENDS = THINK2_OUTPUT / "trends" if THINK2_OUTPUT else None
@@ -94,11 +102,12 @@ TEMPLATE_PATH = Path(__file__).parent / "web_template.html"
 
 
 def get_page_template():
-    with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
+    with open(TEMPLATE_PATH, encoding="utf-8") as f:
         return f.read()
 
 
 # ── Sector mapping (dynamic from VARIETY_METADATA) ────────────────────────────
+
 
 def _get_sector(code: str) -> str:
     """Get sector name dynamically from VARIETY_METADATA."""
@@ -154,7 +163,13 @@ class ProgressTracker:
 
     def pause(self) -> bool:
         with self._lock:
-            if not self.is_running or self.is_complete or self.error or self.is_paused or self.stop_requested:
+            if (
+                not self.is_running
+                or self.is_complete
+                or self.error
+                or self.is_paused
+                or self.stop_requested
+            ):
                 return False
             self.is_paused = True
             self._pause_event.clear()
@@ -248,8 +263,15 @@ class ProgressTracker:
                 "error": self.error,
                 "current_stage": self.current_stage,
                 "completed_stages": self.completed_stages,
-                "stages": [{"id": s["id"], "name": s["name"], "icon": s["icon"],
-                            "status": self.stage_status(s["id"])} for s in PIPELINE_STAGES],
+                "stages": [
+                    {
+                        "id": s["id"],
+                        "name": s["name"],
+                        "icon": s["icon"],
+                        "status": self.stage_status(s["id"]),
+                    }
+                    for s in PIPELINE_STAGES
+                ],
                 "rating": self.rating,
                 "llm_calls": self.llm_calls,
                 "tool_calls": self.tool_calls,
@@ -268,7 +290,7 @@ CONFIG_PATH = Path(os.path.expanduser("~/.tradingagents/web_config.json"))
 
 def _load_web_config() -> dict:
     if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             return json.load(f)
     return {}
 
@@ -288,10 +310,10 @@ PRICE_CACHE_FILE = Path(__file__).parent / "live_prices_cache.json"
 
 def _start_price_cache_updater():
     """Background thread: refresh price cache every 5 min during trading hours."""
-    import time as _time
-    import threading as _th
     import subprocess as _sp
     import sys as _sys
+    import threading as _th
+    import time as _time
 
     def _refresh():
         while True:
@@ -305,7 +327,8 @@ def _start_price_cache_updater():
 
                 _sp.run(
                     [_sys.executable, str(Path(__file__).parent / "warm_cache.py")],
-                    capture_output=True, timeout=120,
+                    capture_output=True,
+                    timeout=120,
                 )
             except Exception:
                 pass
@@ -322,11 +345,15 @@ _start_price_cache_updater()
 def api_price_live():
     """Get real-time futures prices from disk cache (updated by warm_cache.py)."""
     varieties = request.args.get("varieties", "")
-    vlist = [v.strip() for v in varieties.split(",") if v.strip()] if varieties and varieties.strip() else None
+    vlist = (
+        [v.strip() for v in varieties.split(",") if v.strip()]
+        if varieties and varieties.strip()
+        else None
+    )
     try:
         if not PRICE_CACHE_FILE.exists():
             return jsonify({})
-        with open(str(PRICE_CACHE_FILE), "r", encoding="utf-8") as f:
+        with open(str(PRICE_CACHE_FILE), encoding="utf-8") as f:
             data = json.load(f)
         if vlist:
             data = {k: v for k, v in data.items() if k in vlist}
@@ -342,6 +369,7 @@ def api_price_update():
     varieties = data.get("varieties")
     try:
         from price_fetcher import update_price_files
+
         result = update_price_files(varieties)
         return jsonify({"updated": len(result), "details": result})
     except Exception as e:
@@ -372,20 +400,22 @@ def api_varieties():
         has_sentiment = sent_path.exists()
         if has_sentiment:
             try:
-                with open(sent_path, "r", encoding="utf-8") as f:
+                with open(sent_path, encoding="utf-8") as f:
                     sd = json.load(f)
                 posts = sd["data"]["social_sentiment"]["total_posts_analyzed"]
             except Exception:
                 posts = 0
         else:
             posts = 0
-        result.append({
-            "code": code,
-            "name": meta.get("name", code),
-            "exchange": meta.get("exchange_cn", ""),
-            "sector": _get_sector(code),
-            "sentiment_posts": posts,
-        })
+        result.append(
+            {
+                "code": code,
+                "name": meta.get("name", code),
+                "exchange": meta.get("exchange_cn", ""),
+                "sector": _get_sector(code),
+                "sentiment_posts": posts,
+            }
+        )
     return jsonify(result)
 
 
@@ -395,7 +425,7 @@ def api_sentiment(variety):
     path = SENTIMENT_DIR / f"{variety}_sentiment.json"
     if not path.exists():
         return jsonify({"error": "No sentiment data"}), 404
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
 
     # Compute time range
@@ -425,10 +455,8 @@ def api_sentiment_posts():
     # Calculate cutoff date
     cutoff = None
     if since:
-        try:
+        with contextlib.suppress(ValueError):
             cutoff = datetime.strptime(since, "%Y-%m-%d")
-        except ValueError:
-            pass
     elif days > 0:
         cutoff = datetime.now() - timedelta(days=days)
 
@@ -438,7 +466,7 @@ def api_sentiment_posts():
     all_times = []
     for fpath in jsonl_files:
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 for line in f:
                     if not line.strip():
                         continue
@@ -460,19 +488,21 @@ def api_sentiment_posts():
                                     continue
                             except ValueError:
                                 pass
-                    posts.append({
-                        "platform": d.get("platform", "?"),
-                        "author": (d.get("author_name", "") or "")[:20],
-                        "fans": d.get("author_fans", 0),
-                        "title": (d.get("title", "") or d.get("desc", ""))[:120],
-                        "sentiment": d.get("sentiment", "neutral"),
-                        "score": d.get("sentiment_score", 0),
-                        "varieties": [v["name"] for v in d.get("varieties", [])[:3]],
-                        "likes": d.get("like_count", 0),
-                        "time": t,
-                        "url": d.get("url", ""),
-                        "note_id": d.get("note_id", ""),
-                    })
+                    posts.append(
+                        {
+                            "platform": d.get("platform", "?"),
+                            "author": (d.get("author_name", "") or "")[:20],
+                            "fans": d.get("author_fans", 0),
+                            "title": (d.get("title", "") or d.get("desc", ""))[:120],
+                            "sentiment": d.get("sentiment", "neutral"),
+                            "score": d.get("sentiment_score", 0),
+                            "varieties": [v["name"] for v in d.get("varieties", [])[:3]],
+                            "likes": d.get("like_count", 0),
+                            "time": t,
+                            "url": d.get("url", ""),
+                            "note_id": d.get("note_id", ""),
+                        }
+                    )
         except Exception:
             pass
     posts.sort(key=lambda p: p["time"], reverse=True)
@@ -509,8 +539,12 @@ def api_price(variety):
     # Return with meta
     meta = {}
     if data:
-        meta = {"price_start": data[0]["date"], "price_end": data[-1]["date"], "data_points": len(data)}
-    return jsonify({"_meta": meta, "prices": data[-max(days, 120):]})
+        meta = {
+            "price_start": data[0]["date"],
+            "price_end": data[-1]["date"],
+            "data_points": len(data),
+        }
+    return jsonify({"_meta": meta, "prices": data[-max(days, 120) :]})
 
 
 @app.route("/api/overlay/<variety>")
@@ -538,7 +572,7 @@ def api_overlay(variety):
     sentiment_map = {}
     sent_meta = {}
     if sent_path.exists():
-        with open(sent_path, "r", encoding="utf-8") as f:
+        with open(sent_path, encoding="utf-8") as f:
             sd = json.load(f)
         for d in sd["data"]["daily_series"]:
             sentiment_map[d["date"]] = {
@@ -586,7 +620,7 @@ def api_backtest():
     gw_path = THINK2_TRENDS / "_global_weights.json"
     result = {"platforms": {}, "signal_comparison": {}, "varieties": {}}
     if gw_path.exists():
-        with open(gw_path, "r", encoding="utf-8") as f:
+        with open(gw_path, encoding="utf-8") as f:
             gw = json.load(f)
         result["platforms"] = gw.get("weights", {})
         result["signal_comparison"] = gw.get("signal_comparison", {})
@@ -596,7 +630,7 @@ def api_backtest():
             vname = vf.stem.replace("_weights", "")
             if vname.startswith("_"):
                 continue
-            with open(vf, "r", encoding="utf-8") as f:
+            with open(vf, encoding="utf-8") as f:
                 vd = json.load(f)
             cm = vd.get("combined_metrics", {})
             if cm.get("data_points", 0) > 0:
@@ -619,13 +653,15 @@ def api_history():
             name = f.stem.replace("commodity_", "")
             parts = name.split("_", 1)
             sym = parts[0] if parts else "?"
-            reports.append({
-                "symbol": sym,
-                "filename": f.name,
-                "size": stat.st_size,
-                "time": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
-                "path": str(f),
-            })
+            reports.append(
+                {
+                    "symbol": sym,
+                    "filename": f.name,
+                    "size": stat.st_size,
+                    "time": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    "path": str(f),
+                }
+            )
     return jsonify(reports)
 
 
@@ -649,15 +685,13 @@ def api_compare(variety, date):
     sent_path = SENTIMENT_DIR / f"{variety}_sentiment.json"
     sentiment_series = []
     if sent_path.exists():
-        with open(sent_path, "r", encoding="utf-8") as f:
+        with open(sent_path, encoding="utf-8") as f:
             sd = json.load(f)
         for d in sd["data"]["daily_series"]:
             if d["date"] >= date:
-                sentiment_series.append({
-                    "date": d["date"],
-                    "score": d["avg_score"],
-                    "simple": d.get("simple_avg", 0)
-                })
+                sentiment_series.append(
+                    {"date": d["date"], "score": d["avg_score"], "simple": d.get("simple_avg", 0)}
+                )
 
     if len(prices) >= 2:
         start_close = prices[0]["close"]
@@ -667,15 +701,17 @@ def api_compare(variety, date):
     else:
         pct, actual_dir = 0, "N/A"
 
-    return jsonify({
-        "prices": prices,
-        "sentiment": sentiment_series,
-        "start_close": prices[0]["close"] if prices else 0,
-        "end_close": prices[-1]["close"] if prices else 0,
-        "pct_change": round(pct, 2),
-        "actual_direction": actual_dir,
-        "trading_days": len(prices),
-    })
+    return jsonify(
+        {
+            "prices": prices,
+            "sentiment": sentiment_series,
+            "start_close": prices[0]["close"] if prices else 0,
+            "end_close": prices[-1]["close"] if prices else 0,
+            "pct_change": round(pct, 2),
+            "actual_direction": actual_dir,
+            "trading_days": len(prices),
+        }
+    )
 
 
 @app.route("/api/report/<path:filename>")
@@ -687,32 +723,41 @@ def api_report(filename):
     if not fpath.exists():
         return jsonify({"error": "Not found"}), 404
 
-    with open(fpath, "r", encoding="utf-8") as f:
+    with open(fpath, encoding="utf-8") as f:
         content = f.read()
 
     sections = {}
-    for sec in ["Technical Analysis", "Fundamental Analysis", "Macro/News Analysis",
-                "Sentiment Analysis", "Debate Moderator", "Synthesis", "Scenario"]:
-        m = re.search(rf'## {sec}\n(.*?)(?=\n## |\n---\n|\Z)', content, re.DOTALL)
+    for sec in [
+        "Technical Analysis",
+        "Fundamental Analysis",
+        "Macro/News Analysis",
+        "Sentiment Analysis",
+        "Debate Moderator",
+        "Synthesis",
+        "Scenario",
+    ]:
+        m = re.search(rf"## {sec}\n(.*?)(?=\n## |\n---\n|\Z)", content, re.DOTALL)
         if m:
             sections[sec] = m.group(1).strip()[:5000]
 
     rating_match = re.search(
-        r'RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)', content
+        r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", content
     )
     rating = None
     if rating_match:
         rating = {
             "rating": rating_match.group(1).strip(),
             "confidence": rating_match.group(2).strip(),
-            "score": int(rating_match.group(3))
+            "score": int(rating_match.group(3)),
         }
 
-    return jsonify({"content": content[:50000], "sections": sections, "rating": rating,
-                    "filename": safe_name})
+    return jsonify(
+        {"content": content[:50000], "sections": sections, "rating": rating, "filename": safe_name}
+    )
 
 
 # ── Enhanced SSE analysis endpoint ──────────────────────────────────────────
+
 
 @app.route("/api/run_analysis", methods=["POST"])
 def api_run_analysis():
@@ -725,15 +770,17 @@ def api_run_analysis():
     _tracker = ProgressTracker(symbol=symbol, trade_date=trade_date)
     _tracker.is_running = True
 
-    stages_list = ["technical", "fundamental", "macro", "sentiment",
-                   "bull_opening", "bear_refute", "bull_rebuttal",
-                   "moderator", "synthesis", "scenario"]
     stage_map = {
-        "technical_analyst": "technical", "fundamental_analyst": "fundamental",
-        "macro_analyst": "macro", "sentiment_analyst": "sentiment",
-        "bull_opening": "bull_opening", "bear_refute": "bear_refute",
-        "bull_rebuttal": "bull_rebuttal", "debate_moderator": "moderator",
-        "synthesis": "synthesis", "scenario_analysis": "scenario",
+        "technical_analyst": "technical",
+        "fundamental_analyst": "fundamental",
+        "macro_analyst": "macro",
+        "sentiment_analyst": "sentiment",
+        "bull_opening": "bull_opening",
+        "bear_refute": "bear_refute",
+        "bull_rebuttal": "bull_rebuttal",
+        "debate_moderator": "moderator",
+        "synthesis": "synthesis",
+        "scenario_analysis": "scenario",
     }
     # Store final reports for retrieval
     _tracker._stage_reports = {}
@@ -746,44 +793,74 @@ def api_run_analysis():
             evo_ctx = get_evolution_context(symbol)
             initial_state = {
                 "messages": [HumanMessage(content=f"Analyze {symbol} as of {trade_date}.")],
-                "company_of_interest": symbol, "asset_type": "commodity_futures",
-                "trade_date": trade_date, "past_context": evo_ctx,
-                "technical_report": "", "fundamental_report": "", "macro_report": "",
-                "sentiment_report": "", "discussion_summary": "", "user_feedback_summary": "",
-                "investment_plan": "", "final_trade_decision": "", "scenario_analysis": "",
-                "debate_state": {"bull_history": "", "bear_history": "", "bull_last": "",
-                                 "bear_last": "", "round": 0},
+                "company_of_interest": symbol,
+                "asset_type": "commodity_futures",
+                "trade_date": trade_date,
+                "past_context": evo_ctx,
+                "technical_report": "",
+                "fundamental_report": "",
+                "macro_report": "",
+                "sentiment_report": "",
+                "discussion_summary": "",
+                "user_feedback_summary": "",
+                "investment_plan": "",
+                "final_trade_decision": "",
+                "scenario_analysis": "",
+                "debate_state": {
+                    "bull_history": "",
+                    "bear_history": "",
+                    "bull_last": "",
+                    "bear_last": "",
+                    "round": 0,
+                },
             }
             final_state = {}
-            last_sid_idx = -1
             for chunk in app_graph.stream(initial_state, stream_mode="updates"):
-                if _tracker.stop_requested: break
+                if _tracker.stop_requested:
+                    break
                 _tracker.wait_if_paused()
                 for node_name, node_data in chunk.items():
-                    if not node_data: continue
+                    if not node_data:
+                        continue
                     if isinstance(node_data, dict):
                         final_state.update(node_data)
                     sid = stage_map.get(node_name)
                     if sid and sid not in _tracker.completed_stages:
                         _tracker.mark_stage_done(sid)
                     # Store reports
-                    if node_name in ("technical_analyst","fundamental_analyst","macro_analyst","sentiment_analyst"):
-                        key = node_name.replace("_analyst","") + "_report"
+                    if node_name in (
+                        "technical_analyst",
+                        "fundamental_analyst",
+                        "macro_analyst",
+                        "sentiment_analyst",
+                    ):
+                        key = node_name.replace("_analyst", "") + "_report"
                         _tracker._stage_reports[node_name] = node_data.get(key, "")[:5000]
                     elif node_name == "debate_moderator":
-                        _tracker._stage_reports[node_name] = node_data.get("discussion_summary","")[:5000]
+                        _tracker._stage_reports[node_name] = node_data.get(
+                            "discussion_summary", ""
+                        )[:5000]
                     elif node_name == "synthesis":
-                        syn = node_data.get("investment_plan","")
+                        syn = node_data.get("investment_plan", "")
                         _tracker._stage_reports[node_name] = syn[:5000]
-                        m = re.search(r'RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)', syn)
+                        m = re.search(
+                            r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", syn
+                        )
                         if m:
-                            _tracker._final_rating = {"rating": m.group(1).strip(), "confidence": m.group(2).strip(), "score": int(m.group(3))}
+                            _tracker._final_rating = {
+                                "rating": m.group(1).strip(),
+                                "confidence": m.group(2).strip(),
+                                "score": int(m.group(3)),
+                            }
                     elif node_name == "scenario_analysis":
-                        _tracker._stage_reports[node_name] = node_data.get("scenario_analysis","")[:5000]
-                    elif node_name in ("bull_opening","bear_refute","bull_rebuttal"):
-                        _tracker._stage_reports[node_name] = node_data.get("debate_state",{}).get(
-                            "bull_last" if "bull" in node_name else "bear_last","")[:3000]
-                    _tracker.update_stats(llm=_tracker.llm_calls+1)
+                        _tracker._stage_reports[node_name] = node_data.get("scenario_analysis", "")[
+                            :5000
+                        ]
+                    elif node_name in ("bull_opening", "bear_refute", "bull_rebuttal"):
+                        _tracker._stage_reports[node_name] = node_data.get("debate_state", {}).get(
+                            "bull_last" if "bull" in node_name else "bear_last", ""
+                        )[:3000]
+                    _tracker.update_stats(llm=_tracker.llm_calls + 1)
             _tracker._stage_reports["_final_state"] = final_state
             _tracker.mark_complete(final_state)
 
@@ -794,21 +871,34 @@ def api_run_analysis():
                     agent_dir = _tracker._final_rating.get("rating", "")
                     actual_dir = outcome.get("direction", "")
                     # Map Chinese rating to BULL/BEAR
-                    if "看多" in agent_dir: agent_dir = "BULL"
-                    elif "看空" in agent_dir: agent_dir = "BEAR"
-                    else: agent_dir = "HOLD"
-                    diverged = (agent_dir != actual_dir) and agent_dir != "HOLD" and actual_dir != "HOLD"
+                    if "看多" in agent_dir:
+                        agent_dir = "BULL"
+                    elif "看空" in agent_dir:
+                        agent_dir = "BEAR"
+                    else:
+                        agent_dir = "HOLD"
+                    diverged = (
+                        (agent_dir != actual_dir) and agent_dir != "HOLD" and actual_dir != "HOLD"
+                    )
                     if diverged:
                         # Store divergence for learning
-                        from tradingagents.dataflows.evolution_memory import store_prediction, _load_memory
-                        store_prediction(symbol, trade_date, _tracker._final_rating.get("rating","?"),
-                                        _tracker._final_rating.get("confidence","?"), _tracker._final_rating.get("score",5))
+                        from tradingagents.dataflows.evolution_memory import (
+                            store_prediction,
+                        )
+
+                        store_prediction(
+                            symbol,
+                            trade_date,
+                            _tracker._final_rating.get("rating", "?"),
+                            _tracker._final_rating.get("confidence", "?"),
+                            _tracker._final_rating.get("score", 5),
+                        )
                         # Flag the divergence
                         _tracker._stage_reports["_divergence"] = {
                             "agent_direction": agent_dir,
                             "actual_direction": actual_dir,
                             "actual_pct": outcome.get("pct_change", 0),
-                            "note": f"Agent predicted {agent_dir} but market moved {actual_dir} ({outcome.get('pct_change',0):+.2f}%). This case has been saved for learning."
+                            "note": f"Agent predicted {agent_dir} but market moved {actual_dir} ({outcome.get('pct_change', 0):+.2f}%). This case has been saved for learning.",
                         }
             except Exception:
                 pass  # Non-critical, don't block analysis completion
@@ -822,6 +912,7 @@ def api_run_analysis():
 
 
 # ── Pause / Resume / Stop endpoints ───────────────────────────────────────
+
 
 @app.route("/api/pause", methods=["POST"])
 def api_pause():
@@ -853,7 +944,7 @@ def api_progress():
     global _tracker
     if _tracker:
         d = _tracker.to_dict()
-        d["rating"] = getattr(_tracker, '_final_rating', None)
+        d["rating"] = getattr(_tracker, "_final_rating", None)
         return jsonify(d)
     return jsonify({"is_running": False, "is_complete": False})
 
@@ -874,11 +965,11 @@ def api_feedback():
     # Include current analysis results if available
     current_analysis = ""
     if _tracker and _tracker.is_complete:
-        reports = getattr(_tracker, '_stage_reports', {})
+        reports = getattr(_tracker, "_stage_reports", {})
         syn = reports.get("synthesis", "")
-        rating = getattr(_tracker, '_final_rating', {})
+        rating = getattr(_tracker, "_final_rating", {})
         if syn:
-            current_analysis = f"## Current Analysis Summary\nRATING: {rating.get('rating','?')} | CONFIDENCE: {rating.get('confidence','?')}\n{syn[:1500]}\n\n"
+            current_analysis = f"## Current Analysis Summary\nRATING: {rating.get('rating', '?')} | CONFIDENCE: {rating.get('confidence', '?')}\n{syn[:1500]}\n\n"
     debate_prompt = (
         f"You are an expert commodity futures analyst. A user is debating your analysis of {symbol}.\n\n"
         f"{current_analysis}"
@@ -892,7 +983,12 @@ def api_feedback():
 
     # Add chat history
     if history:
-        history_text = "\n".join([f"{'User' if h['role']=='user' else 'Agent'}: {h['content'][:500]}" for h in history[-6:]])
+        history_text = "\n".join(
+            [
+                f"{'User' if h['role'] == 'user' else 'Agent'}: {h['content'][:500]}"
+                for h in history[-6:]
+            ]
+        )
         debate_prompt += f"\n\nRecent conversation:\n{history_text}"
 
     try:
@@ -902,10 +998,9 @@ def api_feedback():
         )
         llm = client.get_llm()
         result = llm.invoke(debate_prompt)
-        reply = result.content if hasattr(result, 'content') else str(result)
+        reply = result.content if hasattr(result, "content") else str(result)
         return jsonify({"reply": reply[:2000]})
     except Exception as e:
-        import traceback
         return jsonify({"reply": f"Agent unavailable: {str(e)[:200]}"})
 
 
@@ -915,26 +1010,33 @@ def api_analysis_results():
     global _tracker
     if not _tracker or not _tracker.is_complete:
         return jsonify({"ready": False})
-    reports = getattr(_tracker, '_stage_reports', {})
-    rating = getattr(_tracker, '_final_rating', None)
+    reports = getattr(_tracker, "_stage_reports", {})
+    rating = getattr(_tracker, "_final_rating", None)
     # Compute predicted magnitude from SCORE (5=neutral, 0/10=extreme)
     predicted_magnitude = None
     if rating and rating.get("score"):
         predicted_magnitude = round((rating["score"] - 5) * 0.5, 1)
     # Also try to extract from synthesis text
     syn_text = reports.get("synthesis", "")
-    mag_match = re.search(r'(?:预测|目标|预期)(?:涨幅|跌幅|幅度|变化)[：:]\s*([+-]?\d+\.?\d*)\s*%', syn_text)
+    mag_match = re.search(
+        r"(?:预测|目标|预期)(?:涨幅|跌幅|幅度|变化)[：:]\s*([+-]?\d+\.?\d*)\s*%", syn_text
+    )
     if mag_match:
         predicted_magnitude = float(mag_match.group(1))
-    return jsonify({
-        "ready": True,
-        "reports": {k: v for k, v in reports.items() if not k.startswith("_") or k == "_divergence"},
-        "rating": rating,
-        "predicted_magnitude": predicted_magnitude,
-    })
+    return jsonify(
+        {
+            "ready": True,
+            "reports": {
+                k: v for k, v in reports.items() if not k.startswith("_") or k == "_divergence"
+            },
+            "rating": rating,
+            "predicted_magnitude": predicted_magnitude,
+        }
+    )
 
 
 # ── PDF / Markdown Export ──────────────────────────────────────────────────
+
 
 def _generate_pdf(content, filename, rating=None):
     """Generate a PDF from markdown report using fpdf2."""
@@ -985,21 +1087,21 @@ def _generate_pdf(content, filename, rating=None):
     pdf.set_font_size(9)
     lines = content.split("\n")
     for line in lines[:500]:  # Limit to 500 lines
-        line = re.sub(r'[#*_`~>|]', '', line).strip()
+        line = re.sub(r"[#*_`~>|]", "", line).strip()
         if not line:
             pdf.ln(4)
             continue
         if cjk_font:
             pdf.set_font(cjk_font, "", 9)
-        try:
+        with contextlib.suppress(Exception):
             pdf.multi_cell(0, 5, line[:200])
-        except Exception:
-            pass
 
     # Footer
     pdf.ln(8)
     pdf.set_font_size(7)
-    disclaimer = "Disclaimer: This report is AI-generated for research purposes only. Not financial advice."
+    disclaimer = (
+        "Disclaimer: This report is AI-generated for research purposes only. Not financial advice."
+    )
     pdf.cell(0, 5, disclaimer, new_x="LMARGIN", new_y="NEXT", align="C")
 
     return pdf.output()
@@ -1013,18 +1115,20 @@ def api_report_pdf(filename):
     if not fpath.exists():
         return jsonify({"error": "Not found"}), 404
 
-    with open(fpath, "r", encoding="utf-8") as f:
+    with open(fpath, encoding="utf-8") as f:
         content = f.read()
 
     # Extract rating
     rating_match = re.search(
-        r'RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)', content
+        r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", content
     )
     rating = None
     if rating_match:
-        rating = {"rating": rating_match.group(1).strip(),
-                  "confidence": rating_match.group(2).strip(),
-                  "score": int(rating_match.group(3))}
+        rating = {
+            "rating": rating_match.group(1).strip(),
+            "confidence": rating_match.group(2).strip(),
+            "score": int(rating_match.group(3)),
+        }
 
     try:
         pdf_data = _generate_pdf(content, safe_name, rating)
@@ -1032,7 +1136,7 @@ def api_report_pdf(filename):
             io.BytesIO(pdf_data),
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=f"{safe_name.replace('.md', '')}.pdf"
+            download_name=f"{safe_name.replace('.md', '')}.pdf",
         )
     except Exception as e:
         return jsonify({"error": f"PDF generation failed: {e}"}), 500
@@ -1046,15 +1150,11 @@ def api_report_md(filename):
     if not fpath.exists():
         return jsonify({"error": "Not found"}), 404
 
-    return send_file(
-        fpath,
-        mimetype="text/markdown",
-        as_attachment=True,
-        download_name=safe_name
-    )
+    return send_file(fpath, mimetype="text/markdown", as_attachment=True, download_name=safe_name)
 
 
 # ── Config endpoint ───────────────────────────────────────────────────────
+
 
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
@@ -1078,6 +1178,7 @@ def api_config():
 
 # ── Data update pipeline (SSE) ─────────────────────────────────────────────
 
+
 @app.route("/api/update_data", methods=["POST"])
 def api_update_data():
     """One-click pipeline: collect → fix_fans → aggregate → backtest → regenerate."""
@@ -1100,8 +1201,11 @@ def api_update_data():
         total = len(steps)
 
         for i, (key, label) in enumerate(steps):
-            yield f"data: {json.dumps({'type': 'step', 'step': key, 'label': label,
-                                       'progress': f'{i+1}/{total}'}, ensure_ascii=False)}\n\n"
+            payload = json.dumps(
+                {"type": "step", "step": key, "label": label, "progress": f"{i + 1}/{total}"},
+                ensure_ascii=False,
+            )
+            yield f"data: {payload}\n\n"
 
             try:
                 if key == "collect":
@@ -1111,19 +1215,33 @@ def api_update_data():
                         continue
 
                     import subprocess
+
                     venv_py = os.path.join(os.path.dirname(sys.executable), "python")
-                    cmd = [venv_py, "batch_collect.py", "--platform", platforms[0],
-                           "--per-kw", str(per_kw), "--turbo", "--no-detail"]
+                    cmd = [
+                        venv_py,
+                        "batch_collect.py",
+                        "--platform",
+                        platforms[0],
+                        "--per-kw",
+                        str(per_kw),
+                        "--turbo",
+                        "--no-detail",
+                    ]
                     if since_date:
                         cmd.extend(["--since", since_date])
                     result = subprocess.run(
                         cmd,
                         cwd=str(THINK2_DIR),
-                        capture_output=True, text=True, timeout=600,
+                        capture_output=True,
+                        text=True,
+                        timeout=600,
                     )
                     lines = (result.stdout or "").split("\n") + (result.stderr or "").split("\n")
                     for line in lines:
-                        if any(kw in line.lower() for kw in ["complete", "total notes", "done", "error"]):
+                        if any(
+                            kw in line.lower()
+                            for kw in ["complete", "total notes", "done", "error"]
+                        ):
                             yield f"data: {json.dumps({'type': 'log', 'msg': line.strip()[:200]}, ensure_ascii=False)}\n\n"
 
                 elif key == "fix_fans":
@@ -1132,11 +1250,12 @@ def api_update_data():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
                     from platforms.weibo_adapter import _parse_fans_count
+
                     fixed_total = 0
                     for bf in sorted(THINK2_OUTPUT.glob("batch_*.jsonl")):
                         lines_out = []
                         file_fixed = 0
-                        with open(bf, "r", encoding="utf-8") as f:
+                        with open(bf, encoding="utf-8") as f:
                             for line in f:
                                 if not line.strip():
                                     continue
@@ -1158,13 +1277,22 @@ def api_update_data():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
                     from trend_aggregator import aggregate
+
                     paths = sorted(glob.glob(str(THINK2_OUTPUT / "batch_*.jsonl")))
                     result = aggregate(paths)
                     yield f"data: {json.dumps({'type': 'log', 'msg': f'Aggregated {len(result)} varieties'}, ensure_ascii=False)}\n\n"
-                    top = sorted(result.items(), key=lambda x: x[1].get("stats", {}).get("total_notes", 0), reverse=True)[:5]
+                    top = sorted(
+                        result.items(),
+                        key=lambda x: x[1].get("stats", {}).get("total_notes", 0),
+                        reverse=True,
+                    )[:5]
                     for vname, vdata in top:
                         s = vdata.get("stats", {})
-                        yield f"data: {json.dumps({'type': 'log', 'msg': f"  {vname}: {s.get('total_notes', 0)} notes, {s.get('unique_authors', 0)} authors"}, ensure_ascii=False)}\n\n"
+                        notes = s.get("total_notes", 0)
+                        authors = s.get("unique_authors", 0)
+                        msg = f"  {vname}: {notes} notes, {authors} authors"
+                        payload = json.dumps({"type": "log", "msg": msg}, ensure_ascii=False)
+                        yield f"data: {payload}\n\n"
 
                 elif key == "backtest":
                     yield f"data: {json.dumps({'type': 'log', 'msg': 'Running backtest (multi-horizon)...'}, ensure_ascii=False)}\n\n"
@@ -1172,13 +1300,14 @@ def api_update_data():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
                     from backtest_weights import run_all
+
                     result_b = run_all(min_points=10, horizons=[1, 3, 5])
                     gb = result_b.get("global_backtest", {})
                     h1 = gb.get("results_by_horizon", {}).get("h1", {})
                     sc = h1.get("signal_comparison", {})
                     aw = sc.get("author_weighted", {})
-                    acc = aw.get('direction_accuracy', 0)
-                    n = aw.get('data_points', 0)
+                    acc = aw.get("direction_accuracy", 0)
+                    n = aw.get("data_points", 0)
                     yield f"data: {json.dumps({'type': 'log', 'msg': f'Backtest done: author_weighted acc={acc:.1%} (n={n})'}, ensure_ascii=False)}\n\n"
 
                 elif key == "regenerate":
@@ -1186,12 +1315,19 @@ def api_update_data():
                     if not THINK2_DIR or not THINK2_DIR.exists():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
-                    from generate_tradingagents_sentiment import load_trends_data, generate_sentiment_json, OUTPUT_DIR as GEN_OUTPUT
+                    from generate_tradingagents_sentiment import (
+                        OUTPUT_DIR as GEN_OUTPUT,
+                        generate_sentiment_json,
+                        load_trends_data,
+                    )
+
                     varieties, index, global_weights = load_trends_data(THINK2_TRENDS)
                     GEN_OUTPUT.mkdir(parents=True, exist_ok=True)
                     gen_count = 0
                     for vname in sorted(varieties.keys()):
-                        output = generate_sentiment_json(vname, varieties[vname], index, global_weights)
+                        output = generate_sentiment_json(
+                            vname, varieties[vname], index, global_weights
+                        )
                         if output is None:
                             continue
                         if output["data"]["social_sentiment"]["total_posts_analyzed"] < min_notes:
@@ -1206,14 +1342,20 @@ def api_update_data():
                     yield f"data: {json.dumps({'type': 'log', 'msg': 'Fetching latest prices via AKShare...'}, ensure_ascii=False)}\n\n"
                     if THINK2_DIR and THINK2_DIR.exists():
                         import subprocess
+
                         venv_py = os.path.join(os.path.dirname(sys.executable), "python")
                         result = subprocess.run(
                             [venv_py, "price_fetcher.py"],
                             cwd=str(THINK2_DIR),
-                            capture_output=True, text=True, timeout=120,
+                            capture_output=True,
+                            text=True,
+                            timeout=120,
                         )
                         for line in (result.stdout + result.stderr).split("\n"):
-                            if any(kw in line for kw in ["Fetching", "fetched", "Done", "Error", "Updated"]):
+                            if any(
+                                kw in line
+                                for kw in ["Fetching", "fetched", "Done", "Error", "Updated"]
+                            ):
                                 yield f"data: {json.dumps({'type': 'log', 'msg': line.strip()[:200]}, ensure_ascii=False)}\n\n"
                         yield f"data: {json.dumps({'type': 'log', 'msg': 'Price data updated. Latest: 2026-07-21'}, ensure_ascii=False)}\n\n"
                     else:
@@ -1235,7 +1377,7 @@ def api_update_data():
                     jsonl_files = sorted(glob.glob(str(THINK2_OUTPUT / "batch_*.jsonl")))
                     for bf in jsonl_files:
                         try:
-                            with open(bf, "r", encoding="utf-8") as f:
+                            with open(bf, encoding="utf-8") as f:
                                 for line in f:
                                     if not line.strip():
                                         continue
@@ -1279,24 +1421,30 @@ def api_update_data():
 
         yield f"data: {json.dumps({'type': 'complete', 'msg': 'Data update pipeline complete'}, ensure_ascii=False)}\n\n"
 
-    return Response(stream_with_context(generate()), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
 # P0: Database-backed stats & scheduler control
 # ═══════════════════════════════════════════════════════════════════
 
+
 @app.route("/api/db/stats")
 def api_db_stats():
     """Get database stats: posts by platform, total counts."""
     db = get_db()
-    return jsonify({
-        "platforms": db.get_platform_stats(),
-        "total_posts": db.get_total_posts(),
-        "collection_history": db.get_collection_history(10),
-        "unacknowledged_alerts": db.get_unacknowledged_count(),
-    })
+    return jsonify(
+        {
+            "platforms": db.get_platform_stats(),
+            "total_posts": db.get_total_posts(),
+            "collection_history": db.get_collection_history(10),
+            "unacknowledged_alerts": db.get_unacknowledged_count(),
+        }
+    )
 
 
 @app.route("/api/db/alerts")
@@ -1318,9 +1466,16 @@ def api_scheduler_status():
     """Get scheduler status."""
     try:
         from scheduler import _scheduler
+
         if _scheduler and _scheduler.running:
-            jobs = [{"id": j.id, "name": j.name, "next_run": str(j.next_run_time) if j.next_run_time else "?"}
-                    for j in _scheduler.get_jobs()]
+            jobs = [
+                {
+                    "id": j.id,
+                    "name": j.name,
+                    "next_run": str(j.next_run_time) if j.next_run_time else "?",
+                }
+                for j in _scheduler.get_jobs()
+            ]
             return jsonify({"running": True, "jobs": jobs})
         return jsonify({"running": False, "jobs": []})
     except Exception as e:
@@ -1331,6 +1486,7 @@ def api_scheduler_status():
 def api_scheduler_start():
     try:
         from scheduler import start_scheduler
+
         data = request.json or {}
         times = data.get("schedule_times", ["08:00", "18:00"])
         start_scheduler(schedule_times=times)
@@ -1343,6 +1499,7 @@ def api_scheduler_start():
 def api_scheduler_stop():
     try:
         from scheduler import stop_scheduler
+
         stop_scheduler()
         return jsonify({"status": "stopped"})
     except Exception as e:
@@ -1351,6 +1508,7 @@ def api_scheduler_stop():
 
 # ── P0: Auth ──────────────────────────────────────────────────────
 
+
 def _auth_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -1358,6 +1516,7 @@ def _auth_required(f):
         if not token or token not in _auth_tokens:
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
+
     return wrapper
 
 
@@ -1398,6 +1557,7 @@ def api_auth_status():
 # ═══════════════════════════════════════════════════════════════════
 # P1: Analysis endpoints
 # ═══════════════════════════════════════════════════════════════════
+
 
 @app.route("/api/analysis/anomalies/<variety>")
 def api_anomalies(variety):
@@ -1455,7 +1615,10 @@ def api_compare_varieties():
     if varieties_param:
         varieties = [v.strip() for v in varieties_param.split(",")]
     else:
-        varieties = [f.stem.replace("_sentiment", "") for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json"))[:10]]
+        varieties = [
+            f.stem.replace("_sentiment", "")
+            for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json"))[:10]
+        ]
     return jsonify(compare_varieties(varieties))
 
 
@@ -1475,6 +1638,7 @@ def api_crossplatform(variety):
 # ═══════════════════════════════════════════════════════════════════
 # P2: Watchlist
 # ═══════════════════════════════════════════════════════════════════
+
 
 @app.route("/api/watchlist", methods=["GET", "POST", "DELETE"])
 def api_watchlist():
@@ -1499,6 +1663,7 @@ def api_watchlist():
 # P3: Simulated Trading
 # ═══════════════════════════════════════════════════════════════════
 
+
 @app.route("/api/trading/run", methods=["POST"])
 def api_trading_run():
     data = request.json or {}
@@ -1513,10 +1678,7 @@ def api_trading_run():
     # Save trades to DB
     db = get_db()
     for t in result.get("recent_trades", []):
-        db.save_trade_signal(
-            t["variety"], t["entry"], 0,
-            t["dir"], 0, horizon
-        )
+        db.save_trade_signal(t["variety"], t["entry"], 0, t["dir"], 0, horizon)
     return jsonify(result)
 
 
@@ -1555,6 +1717,7 @@ def api_apply_risk():
         return jsonify({"trades": trades_raw})
 
     from signal_analyzer import _load_price as _lpr, apply_risk_management as _arm
+
     px_data = _lpr(variety)
     prices = px_data.get("prices", []) if px_data else []
     result = _arm(trades_raw, prices, stop_loss, trail_stop)
@@ -1570,8 +1733,8 @@ def api_trading_multi():
     horizon = data.get("horizon", 3)
     start_date = data.get("start_date", "2025-01-01")
     end_date = data.get("end_date", "2026-07-21")
-    stop_loss = data.get("stop_loss", 0)
-    trail_stop = data.get("trail_stop", 0)
+    data.get("stop_loss", 0)
+    data.get("trail_stop", 0)
 
     result = {"curves": {}, "stats": {}, "dates": [], "price_curve": []}
     # Per-strategy PnL deltas: {strategy: {entry_date: pnl}}
@@ -1580,28 +1743,40 @@ def api_trading_multi():
     for s in strategies:
         try:
             if s == "fixed":
-                r = run_simulated_trading(variety=variety, horizon=horizon, signal_threshold=0.2, start_date=start_date)
+                r = run_simulated_trading(
+                    variety=variety, horizon=horizon, signal_threshold=0.2, start_date=start_date
+                )
                 trades = r.get("recent_trades", [])
                 pnl_map = {}
                 for t in trades:
-                    d = str(t.get("entry", "")); p = float(t.get("pnl", 0))
+                    d = str(t.get("entry", ""))
+                    p = float(t.get("pnl", 0))
                     pnl_map[d] = pnl_map.get(d, 0) + p
                 strategy_pnls[s] = pnl_map
-                result["stats"]["fixed"] = {"trades": r.get("total_trades", 0), "win_rate": r.get("win_rate", 0),
-                                              "total_pnl": round(sum(pnl_map.values()), 2), "label": "情绪固定",
-                                              "advanced_metrics": r.get("advanced_metrics", {})}
+                result["stats"]["fixed"] = {
+                    "trades": r.get("total_trades", 0),
+                    "win_rate": r.get("win_rate", 0),
+                    "total_pnl": round(sum(pnl_map.values()), 2),
+                    "label": "情绪固定",
+                    "advanced_metrics": r.get("advanced_metrics", {}),
+                }
 
             elif s == "trailing":
                 r = run_trailing_strategy(variety=variety, signal_threshold=0.2, max_holding=10)
                 trades = r.get("recent_trades", [])
                 pnl_map = {}
                 for t in trades:
-                    d = str(t.get("entry", "")); p = float(t.get("pnl", 0))
+                    d = str(t.get("entry", ""))
+                    p = float(t.get("pnl", 0))
                     pnl_map[d] = pnl_map.get(d, 0) + p
                 strategy_pnls[s] = pnl_map
-                result["stats"]["trailing"] = {"trades": r.get("total_trades", 0), "win_rate": r.get("win_rate", 0),
-                                                "total_pnl": round(sum(pnl_map.values()), 2), "label": "情绪反转",
-                                                "advanced_metrics": r.get("advanced_metrics", {})}
+                result["stats"]["trailing"] = {
+                    "trades": r.get("total_trades", 0),
+                    "win_rate": r.get("win_rate", 0),
+                    "total_pnl": round(sum(pnl_map.values()), 2),
+                    "label": "情绪反转",
+                    "advanced_metrics": r.get("advanced_metrics", {}),
+                }
 
             elif s == "adaptive_sent":
                 r = run_adaptive_sentiment(variety=variety)
@@ -1611,13 +1786,18 @@ def api_trading_multi():
                 if len(dates) == len(c):
                     prev = 0
                     for i, d in enumerate(dates):
-                        delta = c[i] - prev; prev = c[i]
-                        if delta != 0: pnl_map[d] = round(delta, 2)
+                        delta = c[i] - prev
+                        prev = c[i]
+                        if delta != 0:
+                            pnl_map[d] = round(delta, 2)
                 strategy_pnls[s] = pnl_map
-                result["stats"]["adaptive_sent"] = {"trades": r.get("adaptive", {}).get("trades", 0),
-                                                     "win_rate": r.get("adaptive", {}).get("win_rate", 0),
-                                                     "total_pnl": round(c[-1], 2) if c else 0, "label": "自适应",
-                                                     "advanced_metrics": r.get("adaptive", {}).get("advanced_metrics", {})}
+                result["stats"]["adaptive_sent"] = {
+                    "trades": r.get("adaptive", {}).get("trades", 0),
+                    "win_rate": r.get("adaptive", {}).get("win_rate", 0),
+                    "total_pnl": round(c[-1], 2) if c else 0,
+                    "label": "自适应",
+                    "advanced_metrics": r.get("adaptive", {}).get("advanced_metrics", {}),
+                }
 
             elif s == "contrarian":
                 r = run_contrarian_sentiment(variety=variety)
@@ -1627,13 +1807,18 @@ def api_trading_multi():
                 if len(dates) == len(c):
                     prev = 0
                     for i, d in enumerate(dates):
-                        delta = c[i] - prev; prev = c[i]
-                        if delta != 0: pnl_map[d] = round(delta, 2)
+                        delta = c[i] - prev
+                        prev = c[i]
+                        if delta != 0:
+                            pnl_map[d] = round(delta, 2)
                 strategy_pnls[s] = pnl_map
-                result["stats"]["contrarian"] = {"trades": r.get("contrarian", {}).get("trades", 0),
-                                                  "win_rate": r.get("contrarian", {}).get("win_rate", 0),
-                                                  "total_pnl": round(c[-1], 2) if c else 0, "label": "逆情绪",
-                                                  "advanced_metrics": r.get("contrarian", {}).get("advanced_metrics", {})}
+                result["stats"]["contrarian"] = {
+                    "trades": r.get("contrarian", {}).get("trades", 0),
+                    "win_rate": r.get("contrarian", {}).get("win_rate", 0),
+                    "total_pnl": round(c[-1], 2) if c else 0,
+                    "label": "逆情绪",
+                    "advanced_metrics": r.get("contrarian", {}).get("advanced_metrics", {}),
+                }
             elif s == "momentum_ad":
                 r = run_momentum_adaptive(variety=variety)
                 c = r.get("curves", {}).get("adaptive", [])
@@ -1642,13 +1827,18 @@ def api_trading_multi():
                 if len(dates) == len(c):
                     prev = 0
                     for i, d in enumerate(dates):
-                        delta = c[i] - prev; prev = c[i]
-                        if delta != 0: pnl_map[d] = round(delta, 2)
+                        delta = c[i] - prev
+                        prev = c[i]
+                        if delta != 0:
+                            pnl_map[d] = round(delta, 2)
                 strategy_pnls[s] = pnl_map
-                result["stats"]["momentum_ad"] = {"trades": r.get("adaptive", {}).get("trades", 0),
-                                                   "win_rate": r.get("adaptive", {}).get("win_rate", 0),
-                                                   "total_pnl": round(c[-1], 2) if c else 0, "label": "动量+自适应",
-                                                   "advanced_metrics": r.get("adaptive", {}).get("advanced_metrics", {})}
+                result["stats"]["momentum_ad"] = {
+                    "trades": r.get("adaptive", {}).get("trades", 0),
+                    "win_rate": r.get("adaptive", {}).get("win_rate", 0),
+                    "total_pnl": round(c[-1], 2) if c else 0,
+                    "label": "动量+自适应",
+                    "advanced_metrics": r.get("adaptive", {}).get("advanced_metrics", {}),
+                }
         except Exception as e:
             result["stats"][s] = {"error": str(e)[:100]}
 
@@ -1656,6 +1846,7 @@ def api_trading_multi():
     common_dates = []
     if variety:
         from signal_analyzer import _load_price as _lp2
+
         pdata = _lp2(variety)
         if pdata:
             prices = pdata.get("prices", [])
@@ -1674,9 +1865,11 @@ def api_trading_multi():
         result["dates"] = common_dates
         for s in strategy_pnls:
             pnl_map = strategy_pnls[s]
-            cum = 0; aligned = []
+            cum = 0
+            aligned = []
             for d in common_dates:
-                if d in pnl_map: cum += pnl_map[d]
+                if d in pnl_map:
+                    cum += pnl_map[d]
                 aligned.append(round(cum, 2))
             result["curves"][s] = aligned
             # Update total_pnl
@@ -1769,7 +1962,8 @@ _batch_state = {"running": False, "results": [], "total": 0, "done": 0}
 
 def _predict_sentiment_only(variety: str, trade_date: str) -> dict:
     """Get instant sentiment-based direction prediction."""
-    from signal_analyzer import _load_sentiment, _load_price
+    from signal_analyzer import _load_sentiment
+
     sent = _load_sentiment(variety)
     if not sent:
         return None
@@ -1788,6 +1982,7 @@ def _predict_sentiment_only(variety: str, trade_date: str) -> dict:
 def _get_actual_outcome(variety: str, trade_date: str, horizon_days: int = 5) -> dict:
     """Get actual price movement after trade_date. Auto-adjusts if date is beyond data range."""
     from signal_analyzer import _load_price as _lp
+
     price_data = _lp(variety)
     if not price_data:
         return None
@@ -1797,10 +1992,7 @@ def _get_actual_outcome(variety: str, trade_date: str, horizon_days: int = 5) ->
     # Get all dates
     all_dates = [str(p["date"])[:10] for p in prices]
     # If trade_date is beyond data range, auto-shift to last available
-    if trade_date > all_dates[-1]:
-        effective_date = all_dates[-1]
-    else:
-        effective_date = trade_date
+    effective_date = all_dates[-1] if trade_date > all_dates[-1] else trade_date
     # Find entry price
     entry_px = None
     for p in prices:
@@ -1810,7 +2002,9 @@ def _get_actual_outcome(variety: str, trade_date: str, horizon_days: int = 5) ->
     if not entry_px:
         return None
     # Find exit price
-    target = (datetime.strptime(effective_date, "%Y-%m-%d") + timedelta(days=horizon_days)).strftime("%Y-%m-%d")
+    target = (
+        datetime.strptime(effective_date, "%Y-%m-%d") + timedelta(days=horizon_days)
+    ).strftime("%Y-%m-%d")
     exit_px = None
     for p in prices:
         d = str(p["date"])[:10]
@@ -1826,7 +2020,13 @@ def _get_actual_outcome(variety: str, trade_date: str, horizon_days: int = 5) ->
         return None
     pct = (exit_px - entry_px) / entry_px * 100
     actual_dir = "BULL" if pct > 0.15 else ("BEAR" if pct < -0.15 else "HOLD")
-    return {"direction": actual_dir, "pct_change": round(pct, 2), "entry": round(entry_px,2), "exit": round(exit_px,2), "effective_date": effective_date}
+    return {
+        "direction": actual_dir,
+        "pct_change": round(pct, 2),
+        "entry": round(entry_px, 2),
+        "exit": round(exit_px, 2),
+        "effective_date": effective_date,
+    }
 
 
 def _run_agent_for_variety(symbol: str, trade_date: str, config: dict) -> dict:
@@ -1836,13 +2036,26 @@ def _run_agent_for_variety(symbol: str, trade_date: str, config: dict) -> dict:
         evo_ctx = get_evolution_context(symbol)
         state = {
             "messages": [HumanMessage(content=f"Analyze {symbol} as of {trade_date}.")],
-            "company_of_interest": symbol, "asset_type": "commodity_futures",
-            "trade_date": trade_date, "past_context": evo_ctx,
-            "technical_report": "", "fundamental_report": "", "macro_report": "",
-            "sentiment_report": "", "discussion_summary": "", "user_feedback_summary": "",
-            "investment_plan": "", "final_trade_decision": "", "scenario_analysis": "",
-            "debate_state": {"bull_history": "", "bear_history": "", "bull_last": "",
-                             "bear_last": "", "round": 0},
+            "company_of_interest": symbol,
+            "asset_type": "commodity_futures",
+            "trade_date": trade_date,
+            "past_context": evo_ctx,
+            "technical_report": "",
+            "fundamental_report": "",
+            "macro_report": "",
+            "sentiment_report": "",
+            "discussion_summary": "",
+            "user_feedback_summary": "",
+            "investment_plan": "",
+            "final_trade_decision": "",
+            "scenario_analysis": "",
+            "debate_state": {
+                "bull_history": "",
+                "bear_history": "",
+                "bull_last": "",
+                "bear_last": "",
+                "round": 0,
+            },
         }
         final = {}
         for chunk in app_graph.stream(state, stream_mode="updates"):
@@ -1850,9 +2063,13 @@ def _run_agent_for_variety(symbol: str, trade_date: str, config: dict) -> dict:
                 if isinstance(nd, dict):
                     final.update(nd)
         syn = final.get("investment_plan", "")
-        m = re.search(r'RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)', syn)
+        m = re.search(r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", syn)
         if m:
-            return {"direction": m.group(1).strip().upper(), "confidence": m.group(2).strip(), "score": int(m.group(3))}
+            return {
+                "direction": m.group(1).strip().upper(),
+                "confidence": m.group(2).strip(),
+                "score": int(m.group(3)),
+            }
         return {"direction": "UNKNOWN", "confidence": "?", "score": 0}
     except Exception as e:
         return {"direction": "ERROR", "error": str(e)[:100]}
@@ -1872,6 +2089,7 @@ def api_batch_start():
     if not varieties:
         # Default: varieties with BOTH sentiment and price data
         from signal_analyzer import _load_price as _lp
+
         vars_with_data = []
         for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
             v = f.stem.replace("_sentiment", "")
@@ -1881,8 +2099,14 @@ def api_batch_start():
                 vars_with_data.append(v)
         varieties = vars_with_data[:20]
 
-    _batch_state = {"running": True, "results": [], "total": len(varieties), "done": 0,
-                    "date": trade_date, "varieties": varieties}
+    _batch_state = {
+        "running": True,
+        "results": [],
+        "total": len(varieties),
+        "done": 0,
+        "date": trade_date,
+        "varieties": varieties,
+    }
 
     def run_batch():
         global _batch_state
@@ -1901,7 +2125,7 @@ def api_batch_start():
 
             # Compare sentiment vs actual
             if sent and outcome:
-                result["sentiment_correct"] = (sent["direction"] == outcome["direction"])
+                result["sentiment_correct"] = sent["direction"] == outcome["direction"]
 
             # Full agent prediction (slow, optional)
             if run_agent:
@@ -1916,7 +2140,7 @@ def api_batch_start():
                 else:
                     agent_dir = "HOLD"
                 if outcome:
-                    result["agent_correct"] = (agent_dir == outcome["direction"])
+                    result["agent_correct"] = agent_dir == outcome["direction"]
 
             _batch_state["results"].append(result)
             _batch_state["done"] += 1
@@ -1962,30 +2186,52 @@ def _validate_one_variety(variety: str, trade_date: str, config: dict) -> dict:
         evo_ctx = get_evolution_context(variety)
         state = {
             "messages": [HumanMessage(content=f"Analyze {variety} as of {trade_date}.")],
-            "company_of_interest": variety, "asset_type": "commodity_futures",
-            "trade_date": trade_date, "past_context": evo_ctx,
-            "technical_report": "", "fundamental_report": "", "macro_report": "",
-            "sentiment_report": "", "discussion_summary": "", "user_feedback_summary": "",
-            "investment_plan": "", "final_trade_decision": "", "scenario_analysis": "",
-            "debate_state": {"bull_history": "", "bear_history": "", "bull_last": "",
-                             "bear_last": "", "round": 0},
+            "company_of_interest": variety,
+            "asset_type": "commodity_futures",
+            "trade_date": trade_date,
+            "past_context": evo_ctx,
+            "technical_report": "",
+            "fundamental_report": "",
+            "macro_report": "",
+            "sentiment_report": "",
+            "discussion_summary": "",
+            "user_feedback_summary": "",
+            "investment_plan": "",
+            "final_trade_decision": "",
+            "scenario_analysis": "",
+            "debate_state": {
+                "bull_history": "",
+                "bear_history": "",
+                "bull_last": "",
+                "bear_last": "",
+                "round": 0,
+            },
         }
         final = {}
         t0 = time.time()
-        stage_names = {"technical_analyst":"技术","fundamental_analyst":"基本面","macro_analyst":"宏观",
-                       "sentiment_analyst":"情绪","bull_opening":"多方","bear_refute":"空方",
-                       "bull_rebuttal":"反驳","debate_moderator":"裁决","synthesis":"研判","scenario_analysis":"情景"}
+        stage_names = {
+            "technical_analyst": "技术",
+            "fundamental_analyst": "基本面",
+            "macro_analyst": "宏观",
+            "sentiment_analyst": "情绪",
+            "bull_opening": "多方",
+            "bear_refute": "空方",
+            "bull_rebuttal": "反驳",
+            "debate_moderator": "裁决",
+            "synthesis": "研判",
+            "scenario_analysis": "情景",
+        }
         for chunk in app_graph.stream(state, stream_mode="updates"):
             for node_name, nd in chunk.items():
                 if isinstance(nd, dict):
                     final.update(nd)
                 # Update per-variety stage progress
                 stage = stage_names.get(node_name, node_name[:4])
-                _val_state["current_stage"] = f"{variety}: {stage} ({time.time()-t0:.0f}s)"
+                _val_state["current_stage"] = f"{variety}: {stage} ({time.time() - t0:.0f}s)"
         elapsed = time.time() - t0
 
         syn = final.get("investment_plan", "")
-        m = re.search(r'RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)', syn)
+        m = re.search(r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", syn)
         if not m:
             return {"variety": variety, "error": "No RATING found", "elapsed": f"{elapsed:.0f}s"}
 
@@ -2007,15 +2253,27 @@ def _validate_one_variety(variety: str, trade_date: str, config: dict) -> dict:
         # Actual outcome
         outcome = _get_actual_outcome(variety, trade_date, horizon_days=5)
         if not outcome:
-            return {"variety": variety, "rating": rating, "confidence": confidence, "score": score,
-                    "agent_dir": agent_dir, "error": "No price data", "elapsed": f"{elapsed:.0f}s"}
+            return {
+                "variety": variety,
+                "rating": rating,
+                "confidence": confidence,
+                "score": score,
+                "agent_dir": agent_dir,
+                "error": "No price data",
+                "elapsed": f"{elapsed:.0f}s",
+            }
 
         correct = agent_dir == outcome["direction"] if agent_dir != "HOLD" else None
 
         return {
-            "variety": variety, "rating": rating, "confidence": confidence, "score": score,
-            "agent_dir": agent_dir, "actual_dir": outcome["direction"],
-            "actual_pct": outcome["pct_change"], "correct": correct,
+            "variety": variety,
+            "rating": rating,
+            "confidence": confidence,
+            "score": score,
+            "agent_dir": agent_dir,
+            "actual_dir": outcome["direction"],
+            "actual_pct": outcome["pct_change"],
+            "correct": correct,
             "dir_strength": dir_strength,
             "elapsed": f"{elapsed:.0f}s",
         }
@@ -2027,7 +2285,9 @@ def _validate_one_variety(variety: str, trade_date: str, config: dict) -> dict:
 def api_validation_start():
     global _val_state
     if _val_state["running"]:
-        return jsonify({"error": "Already running", "progress": f"{_val_state['done']}/{_val_state['total']}"})
+        return jsonify(
+            {"error": "Already running", "progress": f"{_val_state['done']}/{_val_state['total']}"}
+        )
 
     data = request.json or {}
     trade_date = data.get("date", "2026-07-10")
@@ -2035,6 +2295,7 @@ def api_validation_start():
 
     if not varieties_raw:
         from signal_analyzer import _load_price as _lpv
+
         vars_with_data = []
         for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
             v = f.stem.replace("_sentiment", "")
@@ -2045,8 +2306,14 @@ def api_validation_start():
     else:
         varieties = varieties_raw
 
-    _val_state = {"running": True, "results": [], "total": len(varieties), "done": 0,
-                  "date": trade_date, "varieties": varieties}
+    _val_state = {
+        "running": True,
+        "results": [],
+        "total": len(varieties),
+        "done": 0,
+        "date": trade_date,
+        "varieties": varieties,
+    }
 
     def run_validation():
         global _val_state
@@ -2073,11 +2340,21 @@ def api_validation_start():
         _val_state["summary"] = {
             "direction_accuracy": round(correct / total_v, 3) if total_v else 0,
             "total_valid": total_v,
-            "high_conf_acc": round(sum(1 for r in high_conf if r["correct"]) / len(high_conf), 3) if high_conf else 0,
-            "mid_conf_acc": round(sum(1 for r in mid_conf if r["correct"]) / len(mid_conf), 3) if mid_conf else 0,
-            "low_conf_acc": round(sum(1 for r in low_conf if r["correct"]) / len(low_conf), 3) if low_conf else 0,
+            "high_conf_acc": round(sum(1 for r in high_conf if r["correct"]) / len(high_conf), 3)
+            if high_conf
+            else 0,
+            "mid_conf_acc": round(sum(1 for r in mid_conf if r["correct"]) / len(mid_conf), 3)
+            if mid_conf
+            else 0,
+            "low_conf_acc": round(sum(1 for r in low_conf if r["correct"]) / len(low_conf), 3)
+            if low_conf
+            else 0,
             "avg_score": round(sum(scores) / len(scores), 1) if scores else 0,
-            "score_pct_corr": round(sum((s - 5) * p for s, p in zip(scores, pcts)) / len(scores), 2) if scores else 0,
+            "score_pct_corr": round(
+                sum((s - 5) * p for s, p in zip(scores, pcts, strict=True)) / len(scores), 2
+            )
+            if scores
+            else 0,
         }
         _val_state["running"] = False
 
@@ -2095,11 +2372,13 @@ def api_validation_status():
 if __name__ == "__main__":
     try:
         from scheduler import start_scheduler
+
         start_scheduler(schedule_times=["08:00", "18:00"])
         print("Scheduler started: daily at 08:00, 18:00")
     except Exception as e:
         print(f"Scheduler not started: {e}")
 
     from waitress import serve
+
     print("FuturesMind Dashboard: http://localhost:5000")
     serve(app, host="0.0.0.0", port=5000, threads=8, channel_timeout=600)

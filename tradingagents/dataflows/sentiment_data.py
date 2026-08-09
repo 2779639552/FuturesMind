@@ -15,9 +15,8 @@ JSON schema matches the output of generate_tradingagents_sentiment.py.
 
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +24,7 @@ EXTERNAL_DATA_DIR = Path.home() / ".tradingagents" / "external_data"
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 
-def load_sentiment_data(variety: str) -> Optional[dict]:
+def load_sentiment_data(variety: str) -> dict | None:
     """Load sentiment JSON for a variety. Returns None if not found or stale.
 
     Staleness threshold: data older than 48 hours triggers a warning but is still returned.
@@ -37,7 +36,7 @@ def load_sentiment_data(variety: str) -> Optional[dict]:
         return None
 
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to read sentiment data for %s: %s", variety, e)
@@ -55,7 +54,9 @@ def load_sentiment_data(variety: str) -> Optional[dict]:
                 logger.warning(
                     "Sentiment data for %s is %.0f hours old (stale threshold: %dh). "
                     "Data will still be used but LLM will be warned about staleness.",
-                    variety, age_hours, stale_hours,
+                    variety,
+                    age_hours,
+                    stale_hours,
                 )
                 data["_stale"] = True
                 data["_age_hours"] = round(age_hours, 1)
@@ -95,7 +96,7 @@ def get_futures_sentiment(symbol: str) -> str:
     ds = d.get("daily_series", [])
     pw = d.get("platform_weights", {})
     spc = d.get("sentiment_price_correlation", {})
-    idx = d.get("index_summary", {})
+    d.get("index_summary", {})
     meth = d.get("methodology", {})
 
     # --- Build the prompt ---
@@ -109,19 +110,25 @@ def get_futures_sentiment(symbol: str) -> str:
 
     # Staleness warning
     if data.get("_stale"):
-        lines.append(f"⚠️ 数据已过期（{data.get('_age_hours', '?')}小时前），以下信息可能不再反映当前市场情绪。")
+        lines.append(
+            f"⚠️ 数据已过期（{data.get('_age_hours', '?')}小时前），以下信息可能不再反映当前市场情绪。"
+        )
 
     lines.append("=" * 60)
     lines.append("")
 
     # --- Section 1: Overall Sentiment ---
     lines.append("## 1. 整体情绪概览")
-    lines.append(f"  综合情绪: {ss.get('overall_sentiment_label', 'N/A')} "
-                 f"(avg_score={ss.get('avg_score', 'N/A')}, "
-                 f"level={ss.get('overall_sentiment', 'N/A')})")
-    lines.append(f"  多空比: 看多 {ss.get('bullish_ratio', 0):.1%} | "
-                 f"看空 {ss.get('bearish_ratio', 0):.1%} | "
-                 f"中性 {ss.get('neutral_ratio', 0):.1%}")
+    lines.append(
+        f"  综合情绪: {ss.get('overall_sentiment_label', 'N/A')} "
+        f"(avg_score={ss.get('avg_score', 'N/A')}, "
+        f"level={ss.get('overall_sentiment', 'N/A')})"
+    )
+    lines.append(
+        f"  多空比: 看多 {ss.get('bullish_ratio', 0):.1%} | "
+        f"看空 {ss.get('bearish_ratio', 0):.1%} | "
+        f"中性 {ss.get('neutral_ratio', 0):.1%}"
+    )
     lines.append(f"  分析帖子总数: {ss.get('total_posts_analyzed', 0)}")
     lines.append(f"  时间范围: {ss.get('date_range', 'N/A')}")
     lines.append(f"  情绪趋势: {ss.get('trend_label', 'N/A')}")
@@ -140,8 +147,9 @@ def get_futures_sentiment(symbol: str) -> str:
     # --- Section 2: Sentiment-Price Correlation ---
     lines.append("## 2. 情绪-价格相关性（回测）")
     if spc.get("direction_accuracy") is not None:
-        lines.append(f"  方向准确率: {spc['direction_accuracy']:.1%} "
-                     f"(N={spc.get('data_points', 0)} days)")
+        lines.append(
+            f"  方向准确率: {spc['direction_accuracy']:.1%} (N={spc.get('data_points', 0)} days)"
+        )
         lines.append(f"  Pearson r: {spc.get('pearson_r', 'N/A')}")
         lines.append(f"  解读: {spc.get('note', '')}")
     else:
@@ -151,8 +159,10 @@ def get_futures_sentiment(symbol: str) -> str:
     # --- Section 3: Daily Time Series ---
     lines.append("## 3. 每日情绪时序（最近30天）")
     if ds:
-        lines.append(f"  {'Date':<12} {'Score':>7} {'Notes':>5} {'Bull':>4} {'Bear':>4} {'Platforms'}")
-        lines.append(f"  {'-'*12} {'-'*7} {'-'*5} {'-'*4} {'-'*4} {'-'*20}")
+        lines.append(
+            f"  {'Date':<12} {'Score':>7} {'Notes':>5} {'Bull':>4} {'Bear':>4} {'Platforms'}"
+        )
+        lines.append(f"  {'-' * 12} {'-' * 7} {'-' * 5} {'-' * 4} {'-' * 4} {'-' * 20}")
         for d in ds[-14:]:  # Show last 14 days to keep prompt manageable
             score = d.get("avg_score", 0)
             # Visual indicator
@@ -198,15 +208,23 @@ def get_futures_sentiment(symbol: str) -> str:
     # --- Section 6: Guidance for the Sentiment Analyst ---
     lines.append("## 6. 分析指引")
     lines.append("  作为情绪分析师，你应当：")
-    lines.append("  1. **解读多空比**: 当前多空比相对于极端值（>70%看多或>70%看空）的位置，判断是否接近反转阈值。")
+    lines.append(
+        "  1. **解读多空比**: 当前多空比相对于极端值（>70%看多或>70%看空）的位置，判断是否接近反转阈值。"
+    )
     lines.append("  2. **识别情绪趋势**: 情绪是在改善还是恶化？情绪拐点往往领先价格拐点1-3天。")
     lines.append("  3. **检测情绪-价格背离** (最重要的信号):")
     lines.append("     - 价格上涨 + 情绪转弱 → 上涨动力衰竭，可能见顶")
     lines.append("     - 价格下跌 + 情绪转暖 → 底部信号，关注反弹")
     lines.append("     - 价格震荡 + 情绪极端 → 即将突破")
-    lines.append("  4. **平台一致性检查**: 多平台情绪一致 → 信号可信度高；平台分化 → 市场分歧大，谨慎。")
-    lines.append("  5. **散户反向指标**: 散户一致性看多往往为顶部信号，散户恐慌看空往往为底部信号。")
-    lines.append("  6. **数据量评估**: 样本量 < 10 条时，降低情绪分析的权重；样本量 < 3 条时，标注'无可靠情绪数据'。")
+    lines.append(
+        "  4. **平台一致性检查**: 多平台情绪一致 → 信号可信度高；平台分化 → 市场分歧大，谨慎。"
+    )
+    lines.append(
+        "  5. **散户反向指标**: 散户一致性看多往往为顶部信号，散户恐慌看空往往为底部信号。"
+    )
+    lines.append(
+        "  6. **数据量评估**: 样本量 < 10 条时，降低情绪分析的权重；样本量 < 3 条时，标注'无可靠情绪数据'。"
+    )
     lines.append('  7. **时效性**: 如果数据标注为"已过期"，在分析中明确说明并降低权重。')
 
     return "\n".join(lines)
@@ -217,6 +235,7 @@ def get_futures_sentiment(symbol: str) -> str:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
+
     logging.basicConfig(level=logging.INFO)
 
     test_variety = sys.argv[1] if len(sys.argv) > 1 else "RB"

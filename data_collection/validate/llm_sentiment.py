@@ -16,9 +16,6 @@ LLM情感引擎 — 使用大语言模型做期货文本情感分析
 
 import json
 import os
-from dataclasses import dataclass, field, asdict
-from typing import Optional
-
 
 # ============================================================
 # Prompt 设计 — 注入期货领域知识
@@ -73,11 +70,13 @@ USER_PROMPT_TEMPLATE = """分析以下期货相关文本的情感:
 # 引擎实现
 # ============================================================
 
+
 class LLMSentimentEngine:
     """LLM情感分析引擎"""
 
-    def __init__(self, provider: str = "claude", model: str = None,
-                 api_key: str = None, base_url: str = None):
+    def __init__(
+        self, provider: str = "claude", model: str = None, api_key: str = None, base_url: str = None
+    ):
         """
         provider: "claude" | "openai" | "local"
         model: 模型名 (claude默认 claude-sonnet-5, openai默认 gpt-4o)
@@ -98,9 +97,12 @@ class LLMSentimentEngine:
         """分析单条文本，返回完整结果dict"""
         if not text or not text.strip():
             return {
-                "sentiment": "neutral", "score": 0.0,
-                "confidence": 0.1, "reasoning": "empty text",
-                "key_phrases": [], "engine": "llm",
+                "sentiment": "neutral",
+                "score": 0.0,
+                "confidence": 0.1,
+                "reasoning": "empty text",
+                "key_phrases": [],
+                "engine": "llm",
             }
 
         if self.provider == "claude":
@@ -197,6 +199,7 @@ class LLMSentimentEngine:
     def _call_local(self, text: str) -> dict:
         """调用本地模型 (Ollama兼容)"""
         import requests
+
         try:
             resp = requests.post(
                 f"{self.base_url or 'http://localhost:11434'}/api/generate",
@@ -224,9 +227,12 @@ class LLMSentimentEngine:
 
     def _fallback_error(self, msg: str) -> dict:
         return {
-            "sentiment": "neutral", "score": 0.0,
-            "confidence": 0.0, "reasoning": f"LLM error: {msg}",
-            "key_phrases": [], "engine": "llm_fallback",
+            "sentiment": "neutral",
+            "score": 0.0,
+            "confidence": 0.0,
+            "reasoning": f"LLM error: {msg}",
+            "key_phrases": [],
+            "engine": "llm_fallback",
         }
 
     def analyze_batch(self, texts: list[str]) -> list[dict]:
@@ -238,6 +244,7 @@ class LLMSentimentEngine:
 # 混合分析器 — 规则引擎 + LLM
 # ============================================================
 
+
 class HybridSentimentAnalyzer:
     """
     混合情感分析器:
@@ -246,9 +253,9 @@ class HybridSentimentAnalyzer:
     - 或全部使用LLM (需API key)
     """
 
-    def __init__(self, llm_engine: LLMSentimentEngine = None,
-                 fallback_threshold: float = 0.4):
+    def __init__(self, llm_engine: LLMSentimentEngine = None, fallback_threshold: float = 0.4):
         from sentiment import SentimentAnalyzer
+
         self.rule = SentimentAnalyzer()
         self.llm = llm_engine
         self.threshold = fallback_threshold
@@ -288,6 +295,7 @@ if __name__ == "__main__":
 
     # 测试规则引擎
     from sentiment import SentimentAnalyzer
+
     sa = SentimentAnalyzer()
     print("=" * 60)
     print("  规则引擎 (当前)")

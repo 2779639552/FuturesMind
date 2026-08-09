@@ -14,28 +14,34 @@
     python validator_xueqiu.py
 """
 
-import json
-import time
-import random
-import logging
 import argparse
+import json
+import logging
+import random
 import sys
-import re
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import requests
+from config import (
+    BACKOFF_FACTOR,
+    ENDPOINTS,
+    FUTURES_KEYWORDS,
+    LOG_FORMAT,
+    LOG_LEVEL,
+    MAX_DELAY,
+    MAX_RETRIES,
+    MIN_DELAY,
+    OUTPUT_DIR,
+    REQUEST_TIMEOUT,
+    SEARCH_KEYWORDS,
+    USER_AGENTS,
+    ValidationCriteria,
+)
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-from config import (
-    SEARCH_KEYWORDS, REQUEST_HEADERS, USER_AGENTS,
-    REQUEST_TIMEOUT, MIN_DELAY, MAX_DELAY, MAX_RETRIES, BACKOFF_FACTOR,
-    ENDPOINTS, ValidationCriteria, OUTPUT_DIR, LOG_FORMAT, LOG_LEVEL,
-    FUTURES_KEYWORDS,
-)
 
 logger = logging.getLogger("xueqiu.validator")
 
@@ -44,15 +50,17 @@ logger = logging.getLogger("xueqiu.validator")
 # 数据结构
 # ============================================================
 
+
 @dataclass
 class XueqiuPost:
     """雪球帖子"""
+
     post_id: str
     title: str
     text: str
-    created_at: Optional[str] = None
-    user_name: Optional[str] = None
-    user_id: Optional[str] = None
+    created_at: str | None = None
+    user_name: str | None = None
+    user_id: str | None = None
     reply_count: int = 0
     retweet_count: int = 0
     like_count: int = 0
@@ -71,7 +79,7 @@ class XueqiuValidationResult:
     total_results: int
     relevant_results: int
     avg_response_time: float
-    max_freshness_minutes: Optional[float]
+    max_freshness_minutes: float | None
     sustained_success_rate: float
     # 雪球特有指标
     avg_like_count: float = 0.0
@@ -99,33 +107,35 @@ class XueqiuValidationResult:
     def to_report(self) -> str:
         status = "✅ 通过" if self.passed else "❌ 未通过"
         lines = [
-            f"\n{'='*60}",
+            f"\n{'=' * 60}",
             f"雪球 (xueqiu.com) 验证结果: {status}",
-            f"{'='*60}",
+            f"{'=' * 60}",
             f"  可接入性:     {'✅' if self.accessible else '❌'}",
             f"  请求成功率:   {self.successful_requests}/{self.total_requests}",
             f"  总结果数:     {self.total_results}",
             f"  相关结果数:   {self.relevant_results}",
-            f"  相关率:       {self.relevance_rate*100:.0f}%",
+            f"  相关率:       {self.relevance_rate * 100:.0f}%",
             f"  平均响应时间: {self.avg_response_time:.2f}s",
             f"  平均点赞数:   {self.avg_like_count:.0f}",
             f"  平均评论数:   {self.avg_reply_count:.0f}",
             f"  关联标的数:   {len(self.unique_stocks)}",
-            f"  持续请求成功率: {self.sustained_success_rate*100:.0f}%",
+            f"  持续请求成功率: {self.sustained_success_rate * 100:.0f}%",
         ]
         if self.sample_posts:
-            lines.append(f"\n  样本帖子 (前5条):")
+            lines.append("\n  样本帖子 (前5条):")
             for i, post in enumerate(self.sample_posts[:5], 1):
                 title_preview = post["title"][:80]
                 lines.append(f"  {i}. @{post['user_name']} | {title_preview}")
-                lines.append(f"     💬{post['reply_count']} 🔄{post['retweet_count']} ❤️{post['like_count']} | {post['created_at']}")
+                lines.append(
+                    f"     💬{post['reply_count']} 🔄{post['retweet_count']} ❤️{post['like_count']} | {post['created_at']}"
+                )
                 if post.get("stocks"):
                     lines.append(f"     🏷️ 关联: {', '.join(post['stocks'][:5])}")
         if self.errors:
-            lines.append(f"\n  错误:")
+            lines.append("\n  错误:")
             for err in self.errors[:5]:
                 lines.append(f"  - {err}")
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 # ============================================================
@@ -134,13 +144,59 @@ class XueqiuValidationResult:
 
 # 期货品种在雪球上的代码前缀
 XUEQIU_FUTURES_PREFIXES = {
-    "RB", "I", "HC", "J", "JM", "SF", "SM", "WR",     # 黑色系
-    "CU", "AL", "ZN", "PB", "NI", "SN", "AU", "AG",   # 有色
-    "SC", "TA", "MA", "V", "PP", "L", "RU", "BU",     # 能化
-    "UR", "SA", "FG", "EG", "EB", "PF", "PG",
-    "M", "Y", "P", "RM", "OI", "SR", "CF", "C", "CS", # 农产品
-    "JD", "LH", "AP", "CJ", "PK",
-    "IF", "IC", "IH", "IM", "T", "TF", "TS", "TL",    # 金融
+    "RB",
+    "I",
+    "HC",
+    "J",
+    "JM",
+    "SF",
+    "SM",
+    "WR",  # 黑色系
+    "CU",
+    "AL",
+    "ZN",
+    "PB",
+    "NI",
+    "SN",
+    "AU",
+    "AG",  # 有色
+    "SC",
+    "TA",
+    "MA",
+    "V",
+    "PP",
+    "L",
+    "RU",
+    "BU",  # 能化
+    "UR",
+    "SA",
+    "FG",
+    "EG",
+    "EB",
+    "PF",
+    "PG",
+    "M",
+    "Y",
+    "P",
+    "RM",
+    "OI",
+    "SR",
+    "CF",
+    "C",
+    "CS",  # 农产品
+    "JD",
+    "LH",
+    "AP",
+    "CJ",
+    "PK",
+    "IF",
+    "IC",
+    "IH",
+    "IM",
+    "T",
+    "TF",
+    "TS",
+    "TL",  # 金融
 }
 
 
@@ -154,7 +210,7 @@ def is_xueqiu_futures_related(post: XueqiuPost) -> bool:
             if any(code.startswith(p) for p in XUEQIU_FUTURES_PREFIXES):
                 return True
             # 检查是否在品种知识库中
-            for variety, aliases in FUTURES_KEYWORDS.items():
+            for _variety, aliases in FUTURES_KEYWORDS.items():
                 for alias in aliases:
                     if alias.upper() in code:
                         return True
@@ -167,12 +223,14 @@ def is_xueqiu_futures_related(post: XueqiuPost) -> bool:
     # 文本检查
     text = post.title + " " + post.text
     from validator_weibo import is_futures_related
+
     return is_futures_related(text)
 
 
 # ============================================================
 # 雪球Session初始化（关键：需要先获取Cookie）
 # ============================================================
+
 
 def init_xueqiu_session() -> requests.Session:
     """
@@ -191,12 +249,14 @@ def init_xueqiu_session() -> requests.Session:
     session.mount("https://", adapter)
     session.mount("http://", adapter)
 
-    session.headers.update({
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Referer": "https://xueqiu.com/",
-    })
+    session.headers.update(
+        {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": "https://xueqiu.com/",
+        }
+    )
 
     # 第一步：访问首页获取Cookie
     logger.info("初始化雪球Session: 访问首页获取Cookie...")
@@ -214,6 +274,7 @@ def init_xueqiu_session() -> requests.Session:
 # 核心搜索逻辑
 # ============================================================
 
+
 def search_xueqiu(
     session: requests.Session,
     keyword: str,
@@ -226,7 +287,7 @@ def search_xueqiu(
         "count": count,
         "page": page,
         "type": "status",  # 帖子类型
-        "sort": "time",    # 按时间排序
+        "sort": "time",  # 按时间排序
     }
 
     response = session.get(
@@ -247,9 +308,11 @@ def search_xueqiu(
             post_id=str(item.get("id", "")),
             title=item.get("title", ""),
             text=item.get("text", item.get("description", "")),
-            created_at=datetime.fromtimestamp(
-                item.get("created_at", 0) / 1000
-            ).strftime("%Y-%m-%d %H:%M:%S") if item.get("created_at") else None,
+            created_at=datetime.fromtimestamp(item.get("created_at", 0) / 1000).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            if item.get("created_at")
+            else None,
             user_name=item.get("user", {}).get("screen_name", "unknown"),
             user_id=str(item.get("user", {}).get("id", "")),
             reply_count=item.get("reply_count", 0),
@@ -268,7 +331,7 @@ def search_xueqiu(
 def search_xueqiu_with_stock_filter(
     session: requests.Session,
     keyword: str,
-    stock_codes: Optional[list[str]] = None,
+    stock_codes: list[str] | None = None,
     page: int = 1,
 ) -> list[XueqiuPost]:
     """
@@ -297,8 +360,9 @@ def search_xueqiu_with_stock_filter(
 # 验证主流程
 # ============================================================
 
+
 def validate(
-    keywords: Optional[list[str]] = None,
+    keywords: list[str] | None = None,
     verbose: bool = False,
 ) -> XueqiuValidationResult:
     """运行雪球数据采集可行性验证"""
@@ -326,9 +390,9 @@ def validate(
     # ========================================
     # Phase 1: 可接入性 + 内容覆盖
     # ========================================
-    print(f"\n{'─'*50}")
+    print(f"\n{'─' * 50}")
     print("Phase 1: 可接入性与内容覆盖验证")
-    print(f"{'─'*50}")
+    print(f"{'─' * 50}")
 
     response_times = []
     all_posts = []
@@ -369,13 +433,15 @@ def validate(
                         pass
 
             result.total_results += len(posts)
-            related_in_batch = sum(1 for _, r in all_posts[-len(posts):] if r)
-            print(f"  ✅ '{keyword}': {len(posts)}条, {related_in_batch}条期货相关 ({elapsed:.2f}s)")
+            related_in_batch = sum(1 for _, r in all_posts[-len(posts) :] if r)
+            print(
+                f"  ✅ '{keyword}': {len(posts)}条, {related_in_batch}条期货相关 ({elapsed:.2f}s)"
+            )
 
             result.accessible = True
 
         except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if hasattr(e, 'response') else '?'
+            status = e.response.status_code if hasattr(e, "response") else "?"
             logger.error(f"  搜索 '{keyword}' 失败: HTTP {status}")
             result.errors.append(f"Keyword '{keyword}': HTTP {status}")
         except Exception as e:
@@ -415,7 +481,7 @@ def validate(
     # ========================================
     # Phase 2: 频率限制验证
     # ========================================
-    print(f"\n{'─'*50}")
+    print(f"\n{'─' * 50}")
     print("Phase 2: 频率限制验证")
 
     sustained = 0
@@ -430,27 +496,29 @@ def validate(
                 sustained += 1
             sustained_total += 1
             if verbose or i % 5 == 0:
-                print(f"  请求 #{i+1}: ✅ ({len(posts)}条)")
+                print(f"  请求 #{i + 1}: ✅ ({len(posts)}条)")
         except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if hasattr(e, 'response') else '?'
-            print(f"  请求 #{i+1}: ❌ HTTP {status}")
-            result.errors.append(f"Sustained #{i+1}: HTTP {status}")
+            status = e.response.status_code if hasattr(e, "response") else "?"
+            print(f"  请求 #{i + 1}: ❌ HTTP {status}")
+            result.errors.append(f"Sustained #{i + 1}: HTTP {status}")
             if status in (403, 429):
-                logger.warning(f"触发频率限制，停止测试 (请求#{i+1})")
+                logger.warning(f"触发频率限制，停止测试 (请求#{i + 1})")
                 break
         except Exception as e:
-            print(f"  请求 #{i+1}: ❌ {str(e)[:50]}")
+            print(f"  请求 #{i + 1}: ❌ {str(e)[:50]}")
 
     if sustained_total > 0:
         result.sustained_success_rate = sustained / sustained_total
-    print(f"  结果: {sustained}/{sustained_total} 成功 ({result.sustained_success_rate*100:.0f}%)")
+    print(
+        f"  结果: {sustained}/{sustained_total} 成功 ({result.sustained_success_rate * 100:.0f}%)"
+    )
 
     # ========================================
     # Phase 3: 样本展示
     # ========================================
-    print(f"\n{'─'*50}")
+    print(f"\n{'─' * 50}")
     print("Phase 3: 样本数据展示")
-    print(f"{'─'*50}")
+    print(f"{'─' * 50}")
 
     if result.sample_posts:
         print(f"\n期货相关的雪球帖子 ({len(result.sample_posts)}条):")
@@ -474,14 +542,12 @@ def validate(
 # CLI
 # ============================================================
 
+
 def main():
     parser = argparse.ArgumentParser(description="雪球数据采集可行性验证")
-    parser.add_argument("--keyword", type=str, nargs="+", default=None,
-                        help="测试关键词")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="详细输出")
-    parser.add_argument("--output", type=str, default=None,
-                        help="JSON输出路径")
+    parser.add_argument("--keyword", type=str, nargs="+", default=None, help="测试关键词")
+    parser.add_argument("--verbose", "-v", action="store_true", help="详细输出")
+    parser.add_argument("--output", type=str, default=None, help="JSON输出路径")
 
     args = parser.parse_args()
 

@@ -202,8 +202,7 @@ class TestTraderAgent:
 
     def test_falls_back_to_freetext_when_structured_unavailable(self):
         plain_response = (
-            "**Action**: Sell\n\nGuidance cut hits margins.\n\n"
-            "FINAL TRANSACTION PROPOSAL: **SELL**"
+            "**Action**: Sell\n\nGuidance cut hits margins.\n\nFINAL TRANSACTION PROPOSAL: **SELL**"
         )
         llm = MagicMock()
         llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
@@ -240,9 +239,7 @@ def _structured_rm_llm(captured: dict, plan: ResearchPlan | None = None):
             strategic_actions="Hold current position; reassess after earnings.",
         )
     structured = MagicMock()
-    structured.invoke.side_effect = lambda prompt: (
-        captured.__setitem__("prompt", prompt) or plan
-    )
+    structured.invoke.side_effect = lambda prompt: captured.__setitem__("prompt", prompt) or plan
     llm = MagicMock()
     llm.with_structured_output.return_value = structured
     return llm
@@ -276,7 +273,9 @@ class TestResearchManagerAgent:
             assert f"**{tier}**" in prompt, f"missing {tier} in prompt"
 
     def test_falls_back_to_freetext_when_structured_unavailable(self):
-        plain_response = "**Recommendation**: Sell\n\n**Rationale**: ...\n\n**Strategic Actions**: ..."
+        plain_response = (
+            "**Recommendation**: Sell\n\n**Rationale**: ...\n\n**Strategic Actions**: ..."
+        )
         llm = MagicMock()
         llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
         llm.invoke.return_value = MagicMock(content=plain_response)
@@ -325,16 +324,20 @@ class TestRenderSentimentReport:
     def test_all_six_bands_render(self):
         for band in SentimentBand:
             report = SentimentReport(
-                overall_band=band, overall_score=5.0,
-                confidence="medium", narrative="n",
+                overall_band=band,
+                overall_score=5.0,
+                confidence="medium",
+                narrative="n",
             )
             assert band.value in render_sentiment_report(report)
 
     def test_score_out_of_range_rejected(self):
         with pytest.raises(ValidationError):
             SentimentReport(
-                overall_band=SentimentBand.BULLISH, overall_score=11.0,
-                confidence="high", narrative="n",
+                overall_band=SentimentBand.BULLISH,
+                overall_score=11.0,
+                confidence="high",
+                narrative="n",
             )
 
 
@@ -356,12 +359,15 @@ class TestCommoditySentimentAnalyst:
     tests stay deterministic and never touch AKShare / the network."""
 
     def test_success_passes_report_through(self):
-        report = ("BIAS: 看多 | CONFIDENCE: 中\n\n"
-                  "**情绪概况**: 螺纹钢 social sentiment mildly bullish.\n"
-                  "**数据质量**: 145 posts, fresh.")
+        report = (
+            "BIAS: 看多 | CONFIDENCE: 中\n\n"
+            "**情绪概况**: 螺纹钢 social sentiment mildly bullish.\n"
+            "**数据质量**: 145 posts, fresh."
+        )
         llm = MagicMock()
-        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
-                   return_value=report) as mock_loop:
+        with patch(
+            "tradingagents.agents.analysts.sentiment_analyst._run_tool_loop", return_value=report
+        ) as mock_loop:
             result = create_commodity_sentiment_analyst(llm)(_make_commodity_state())
         mock_loop.assert_called_once()
         assert result["sentiment_report"] == report
@@ -375,8 +381,9 @@ class TestCommoditySentimentAnalyst:
             return "BIAS: 看空 | CONFIDENCE: 低"
 
         llm = MagicMock()
-        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
-                   side_effect=fake_loop):
+        with patch(
+            "tradingagents.agents.analysts.sentiment_analyst._run_tool_loop", side_effect=fake_loop
+        ):
             create_commodity_sentiment_analyst(llm)(_make_commodity_state())
         assert "RB" in captured["prompt"]
         assert "2026-08-02" in captured["prompt"]
@@ -389,8 +396,9 @@ class TestCommoditySentimentAnalyst:
             return "BIAS: 中性 | CONFIDENCE: 低"
 
         llm = MagicMock()
-        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
-                   side_effect=fake_loop):
+        with patch(
+            "tradingagents.agents.analysts.sentiment_analyst._run_tool_loop", side_effect=fake_loop
+        ):
             create_commodity_sentiment_analyst(llm)(_make_commodity_state())
         assert seen["tool_names"] == [
             "get_futures_price",
@@ -401,8 +409,10 @@ class TestCommoditySentimentAnalyst:
 
     def test_sentiment_report_also_in_messages(self):
         llm = MagicMock()
-        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
-                   return_value="BIAS: 看多 | CONFIDENCE: 中"):
+        with patch(
+            "tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
+            return_value="BIAS: 看多 | CONFIDENCE: 中",
+        ):
             result = create_commodity_sentiment_analyst(llm)(_make_commodity_state())
         assert len(result["messages"]) == 1
         assert result["sentiment_report"] in result["messages"][0].content
@@ -410,8 +420,10 @@ class TestCommoditySentimentAnalyst:
 
     def test_analysis_error_when_tool_loop_raises(self):
         llm = MagicMock()
-        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
-                   side_effect=ValueError("provider timeout")):
+        with patch(
+            "tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
+            side_effect=ValueError("provider timeout"),
+        ):
             result = create_commodity_sentiment_analyst(llm)(_make_commodity_state())
         assert result["sentiment_report"].startswith("ANALYSIS_ERROR:")
         assert "provider timeout" in result["sentiment_report"]

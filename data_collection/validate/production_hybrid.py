@@ -22,39 +22,57 @@ Layer 2 (API Deep Extract - Spider_XHS路径):
   python production_hybrid.py --no-login --deep browser_api       # Phase 1 + browser API
 """
 
-import json, time, random, logging, argparse, sys, re, subprocess
-from pathlib import Path
+import argparse
+import json
+import logging
+import random
+import re
+import sys
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
-from dataclasses import dataclass, field, asdict
+from pathlib import Path
 
-from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+from playwright.sync_api import TimeoutError as PwTimeout, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).parent))
+import contextlib
+
 from xhs_scraper import (
-    ANTI_DETECTION_SCRIPT, decode_objectid_timestamp, parse_like_count,
-    is_futures_related_xhs, filter_futures_notes,
-    STORAGE_STATE_FILE, OUTPUT_DIR, XHSNote,
+    ANTI_DETECTION_SCRIPT,
+    OUTPUT_DIR,
+    STORAGE_STATE_FILE,
+    decode_objectid_timestamp,
+    is_futures_related_xhs,
+    parse_like_count,
 )
 
 logger = logging.getLogger("prod.hybrid")
 
 FUTURES_KEYWORDS = [
-    "螺纹钢期货", "铁矿石期货", "原油期货分析", "黄金期货走势",
-    "PTA期货", "豆粕期货", "股指期货策略", "期货日内交易",
-    "焦炭期货", "棕榈油期货",
+    "螺纹钢期货",
+    "铁矿石期货",
+    "原油期货分析",
+    "黄金期货走势",
+    "PTA期货",
+    "豆粕期货",
+    "股指期货策略",
+    "期货日内交易",
+    "焦炭期货",
+    "棕榈油期货",
 ]
 
 
 @dataclass
 class DiscoveredNote:
     """发现层数据（搜索页可获取）"""
+
     note_id: str
     title: str
     author_name: str
     like_count: int
-    note_type: str          # normal / video
-    publish_time: str        # from note_id decoding
+    note_type: str  # normal / video
+    publish_time: str  # from note_id decoding
     url: str
     keyword: str
     cover_url: str = ""
@@ -67,9 +85,10 @@ class DiscoveredNote:
 @dataclass
 class DeepNote:
     """深挖层数据（API获取）"""
+
     note_id: str
     title: str = ""
-    desc: str = ""               # 正文全文
+    desc: str = ""  # 正文全文
     author_name: str = ""
     author_id: str = ""
     author_fans: int = 0
@@ -79,12 +98,14 @@ class DeepNote:
     share_count: int = 0
     tags: list = field(default_factory=list)
     topics: list = field(default_factory=list)
-    images: list = field(default_factory=list)          # [{"url":..., "scene":..., "width":..., "height":...}]
-    video_urls: list = field(default_factory=list)       # [{"codec":..., "resolution":..., "url":...}]
-    video_duration: int = 0                               # milliseconds
+    images: list = field(
+        default_factory=list
+    )  # [{"url":..., "scene":..., "width":..., "height":...}]
+    video_urls: list = field(default_factory=list)  # [{"codec":..., "resolution":..., "url":...}]
+    video_duration: int = 0  # milliseconds
     note_type: str = ""
-    publish_time: str = ""                                # from note_id decoding
-    publish_time_api: str = ""                            # from API timestamp field
+    publish_time: str = ""  # from note_id decoding
+    publish_time_api: str = ""  # from API timestamp field
     ip_location: str = ""
     keyword: str = ""
     url: str = ""
@@ -113,7 +134,8 @@ class ProductionHybrid:
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
-            ] + (["--window-size=1280,900"] if not self.headless else []),
+            ]
+            + (["--window-size=1280,900"] if not self.headless else []),
             slow_mo=30,
         )
         ctx_opts = {
@@ -138,7 +160,9 @@ class ProductionHybrid:
             self._ensure_login()
 
     def _ensure_login(self, timeout=180):
-        self.page.goto("https://www.xiaohongshu.com/explore", timeout=30000, wait_until="domcontentloaded")
+        self.page.goto(
+            "https://www.xiaohongshu.com/explore", timeout=30000, wait_until="domcontentloaded"
+        )
         time.sleep(2)
         has_login = self.page.query_selector(
             'input[placeholder*="search"], input[placeholder*="Search"], #search-input, .avatar'
@@ -153,8 +177,10 @@ class ProductionHybrid:
         start = time.time()
         while time.time() - start < timeout:
             time.sleep(2)
-            if self.page.query_selector('input[placeholder*="search"], input[placeholder*="Search"], #search-input, .avatar'):
-                logger.info(f"Login OK ({time.time()-start:.0f}s)")
+            if self.page.query_selector(
+                'input[placeholder*="search"], input[placeholder*="Search"], #search-input, .avatar'
+            ):
+                logger.info(f"Login OK ({time.time() - start:.0f}s)")
                 self._save_state()
                 return
         logger.warning("Login timeout")
@@ -170,8 +196,10 @@ class ProductionHybrid:
 
     def stop(self):
         try:
-            if self.browser: self.browser.close()
-            if self.pw: self.pw.stop()
+            if self.browser:
+                self.browser.close()
+            if self.pw:
+                self.pw.stop()
         except Exception:
             pass
 
@@ -182,7 +210,9 @@ class ProductionHybrid:
     def discover(self, keyword: str, max_scroll: int = 4) -> list[DiscoveredNote]:
         """搜索并发现笔记"""
         logger.info(f"Discover: '{keyword}'")
-        search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&type=51&sort=time"
+        search_url = (
+            f"https://www.xiaohongshu.com/search_result?keyword={keyword}&type=51&sort=time"
+        )
         try:
             self.page.goto(search_url, timeout=15000, wait_until="domcontentloaded")
         except PwTimeout:
@@ -240,7 +270,7 @@ class ProductionHybrid:
             seen_ids = set()
             for item in js_data:
                 href = item.get("href", "")
-                nid_match = re.search(r'([a-f0-9]{24})', href)
+                nid_match = re.search(r"([a-f0-9]{24})", href)
                 if not nid_match:
                     continue
                 nid = nid_match.group(1)
@@ -267,10 +297,10 @@ class ProductionHybrid:
                 # Try to find link inside section
                 link = elem.query_selector('a[href*="/explore/"]')
                 href = link.get_attribute("href") if link else elem.get_attribute("href") or ""
-                nid_match = re.search(r'([a-f0-9]{24})', href)
+                nid_match = re.search(r"([a-f0-9]{24})", href)
                 if not nid_match:
                     data_id = elem.get_attribute("data-id") or ""
-                    if re.match(r'^[a-f0-9]{24}$', data_id):
+                    if re.match(r"^[a-f0-9]{24}$", data_id):
                         nid = data_id
                     else:
                         continue
@@ -283,8 +313,14 @@ class ProductionHybrid:
 
                 # Title: search within the section container
                 title = ""
-                for s in ['.title', 'span[class*="title"]', 'h3', '[class*="title"]',
-                           'a[class*="title"]', '.note-title']:
+                for s in [
+                    ".title",
+                    'span[class*="title"]',
+                    "h3",
+                    '[class*="title"]',
+                    'a[class*="title"]',
+                    ".note-title",
+                ]:
                     el = elem.query_selector(s)
                     if el:
                         title = (el.inner_text() or "").strip()
@@ -292,24 +328,33 @@ class ProductionHybrid:
                             break
                 if not title:
                     text = (elem.inner_text() or "").strip()
-                    lines = [l for l in text.split('\n') if len(l.strip()) > 5]
+                    lines = [line for line in text.split("\n") if len(line.strip()) > 5]
                     title = lines[0][:100] if lines else ""
-
 
                 # Author
                 author = ""
-                for s in ['.author .name', '.name', '[class*="name"]', '.nickname',
-                           '.author span', '[class*="author"] span']:
+                for s in [
+                    ".author .name",
+                    ".name",
+                    '[class*="name"]',
+                    ".nickname",
+                    ".author span",
+                    '[class*="author"] span',
+                ]:
                     el = elem.query_selector(s)
                     if el:
                         author = (el.inner_text() or "").strip()
-                        if author and len(author) < 50 and not author.startswith(('202', '20')):
+                        if author and len(author) < 50 and not author.startswith(("202", "20")):
                             break
 
                 # Like count
                 likes = 0
-                for s in ['.count', '[class*="count"]', 'span[class*="stat"]',
-                           '[class*="like-wrapper"] span']:
+                for s in [
+                    ".count",
+                    '[class*="count"]',
+                    'span[class*="stat"]',
+                    '[class*="like-wrapper"] span',
+                ]:
                     el = elem.query_selector(s)
                     if el:
                         likes = parse_like_count(el.inner_text() or "")
@@ -317,22 +362,30 @@ class ProductionHybrid:
                             break
 
                 # Note type
-                note_type = "video" if elem.query_selector('[class*="video"], [class*="play"], .duration') else "normal"
+                note_type = (
+                    "video"
+                    if elem.query_selector('[class*="video"], [class*="play"], .duration')
+                    else "normal"
+                )
 
                 # Cover
                 cover = ""
-                img = elem.query_selector('img')
+                img = elem.query_selector("img")
                 if img:
                     cover = img.get_attribute("src") or ""
 
                 pub_time = decode_objectid_timestamp(nid) or ""
 
                 note = DiscoveredNote(
-                    note_id=nid, title=title, author_name=author,
-                    like_count=likes, note_type=note_type,
+                    note_id=nid,
+                    title=title,
+                    author_name=author,
+                    like_count=likes,
+                    note_type=note_type,
                     publish_time=pub_time,
                     url=f"https://www.xiaohongshu.com/explore/{nid}",
-                    keyword=keyword, cover_url=cover,
+                    keyword=keyword,
+                    cover_url=cover,
                 )
                 notes.append(note)
 
@@ -345,8 +398,9 @@ class ProductionHybrid:
     # Phase 2a: Spider_XHS API pipeline (search + detail)
     # ============================================
 
-    def spider_xhs_search(self, keyword: str, count: int = 20,
-                          spider_xhs_path: str = None) -> list[dict]:
+    def spider_xhs_search(
+        self, keyword: str, count: int = 20, spider_xhs_path: str = None
+    ) -> list[dict]:
         """
         Use Spider_XHS's own search API. Returns items with:
           id (note_id), xsec_token, note_card{display_title, user, interact_info}
@@ -357,6 +411,7 @@ class ProductionHybrid:
         # Spider_XHS JS files use relative paths (./static/...).
         # Must run from Spider_XHS directory.
         import os as _os
+
         _prev_cwd = _os.getcwd()
         _os.chdir(spider_xhs_path)
 
@@ -364,9 +419,10 @@ class ProductionHybrid:
             sys.path.insert(0, spider_xhs_path)
 
             # Lazy init Spider_XHS
-            if not hasattr(self, '_xhs_api'):
+            if not hasattr(self, "_xhs_api"):
                 from apis.xhs_pc_apis import XHS_Apis
                 from xhs_utils.common_util import init
+
                 cookies_str, _ = init()
                 if not cookies_str:
                     logger.error("Spider_XHS .env has no COOKIES")
@@ -382,8 +438,9 @@ class ProductionHybrid:
         finally:
             _os.chdir(_prev_cwd)
 
-    def spider_xhs_get_detail(self, note_id: str, xsec_token: str,
-                              spider_xhs_path: str = None) -> Optional[dict]:
+    def spider_xhs_get_detail(
+        self, note_id: str, xsec_token: str, spider_xhs_path: str = None
+    ) -> dict | None:
         """
         Get full note detail + comments via Spider_XHS API.
         Returns dict with keys: note_card, comments
@@ -392,6 +449,7 @@ class ProductionHybrid:
             spider_xhs_path = str(Path(__file__).parent.parent / "Spider_XHS")
 
         import os as _os
+
         _prev_cwd = _os.getcwd()
         _os.chdir(spider_xhs_path)
 
@@ -433,13 +491,19 @@ class ProductionHybrid:
                         # Get sub-comments for each top comment
                         sc_list = c.get("sub_comments", []) or []
                         for sc in sc_list:
-                            comment["sub_comments"].append({
-                                "id": sc.get("id", ""),
-                                "content": sc.get("content", ""),
-                                "user_name": (sc.get("user_info", {}) or {}).get("nickname", ""),
-                                "like_count": sc.get("like_count", 0),
-                                "target_user": (sc.get("target_comment", {}) or {}).get("user_info", {}).get("nickname", ""),
-                            })
+                            comment["sub_comments"].append(
+                                {
+                                    "id": sc.get("id", ""),
+                                    "content": sc.get("content", ""),
+                                    "user_name": (sc.get("user_info", {}) or {}).get(
+                                        "nickname", ""
+                                    ),
+                                    "like_count": sc.get("like_count", 0),
+                                    "target_user": (sc.get("target_comment", {}) or {})
+                                    .get("user_info", {})
+                                    .get("nickname", ""),
+                                }
+                            )
                         comments.append(comment)
             except Exception as e:
                 logger.debug(f"Comment fetch failed for {note_id[:8]}...: {e}")
@@ -448,8 +512,9 @@ class ProductionHybrid:
         finally:
             _os.chdir(_prev_cwd)
 
-    def _parse_spider_xhs_note_card(self, nc: dict, note_id: str, keyword: str,
-                                     comments: list = None) -> DeepNote:
+    def _parse_spider_xhs_note_card(
+        self, nc: dict, note_id: str, keyword: str, comments: list = None
+    ) -> DeepNote:
         """Parse note_card from Spider_XHS API into DeepNote with full dimensions"""
         user = nc.get("user", {}) or {}
         interact = nc.get("interact_info", {}) or {}
@@ -459,14 +524,14 @@ class ProductionHybrid:
 
         # --- Topics ---
         topics = []
-        for t in (nc.get("topic_list", []) or []):
+        for t in nc.get("topic_list", []) or []:
             name = t.get("name", "") or t.get("topic_name", "")
             if name:
                 topics.append(name)
 
         # --- Images (ALL formats: original, thumbnail, webp) ---
         images = []
-        for img in (nc.get("image_list", []) or []):
+        for img in nc.get("image_list", []) or []:
             if not isinstance(img, dict):
                 continue
             # info_list contains multiple resolutions
@@ -476,18 +541,28 @@ class ProductionHybrid:
                     url = entry.get("url", "") if isinstance(entry, dict) else ""
                     if url and url.startswith("http"):
                         scene = entry.get("image_scene", "")
-                        images.append({"url": url, "scene": scene,
-                                       "width": img.get("width", 0),
-                                       "height": img.get("height", 0)})
+                        images.append(
+                            {
+                                "url": url,
+                                "scene": scene,
+                                "width": img.get("width", 0),
+                                "height": img.get("height", 0),
+                            }
+                        )
             # Also check direct URL fields
             for key in ["url_default", "url", "original"]:
                 val = img.get(key, {})
                 if isinstance(val, dict):
                     url = val.get("url", "")
                     if url and url.startswith("http"):
-                        images.append({"url": url, "scene": key,
-                                       "width": img.get("width", 0),
-                                       "height": img.get("height", 0)})
+                        images.append(
+                            {
+                                "url": url,
+                                "scene": key,
+                                "width": img.get("width", 0),
+                                "height": img.get("height", 0),
+                            }
+                        )
 
         # --- Video URL ---
         video_urls = []
@@ -501,10 +576,13 @@ class ProductionHybrid:
                     res_stream = codec_stream.get(res, {})
                     master_url = res_stream.get("master_url", "")
                     if master_url:
-                        video_urls.append({
-                            "codec": codec, "resolution": res,
-                            "url": master_url,
-                        })
+                        video_urls.append(
+                            {
+                                "codec": codec,
+                                "resolution": res,
+                                "url": master_url,
+                            }
+                        )
             # Also check video duration
             video_duration = video.get("duration", 0)  # in milliseconds
         else:
@@ -517,10 +595,8 @@ class ProductionHybrid:
         api_time = nc.get("time", 0) or nc.get("create_time", 0)
         api_time_str = ""
         if api_time and api_time > 0:
-            try:
+            with contextlib.suppress(Exception):
                 api_time_str = datetime.fromtimestamp(api_time / 1000).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                pass
 
         return DeepNote(
             note_id=note_id,
@@ -548,8 +624,7 @@ class ProductionHybrid:
         )
 
     def deep_extract_spider_xhs(
-        self, keywords: list[str], max_depth: int = 20,
-        spider_xhs_path: str = None
+        self, keywords: list[str], max_depth: int = 20, spider_xhs_path: str = None
     ) -> list[DeepNote]:
         """
         Full Spider_XHS pipeline: search + detail extraction.
@@ -617,10 +692,12 @@ class ProductionHybrid:
 
                 has_full = "FULL" if full_nc else "basic"
                 desc_len = len(deep.desc) if deep.desc else 0
-                print(f"    [{fetched}] {nid[:8]}... {has_full} | "
-                      f"L{deep.like_count} C{deep.comment_count} | "
-                      f"desc={desc_len}c tags={len(deep.tags)} | "
-                      f"{deep.title[:50]}")
+                print(
+                    f"    [{fetched}] {nid[:8]}... {has_full} | "
+                    f"L{deep.like_count} C{deep.comment_count} | "
+                    f"desc={desc_len}c tags={len(deep.tags)} | "
+                    f"{deep.title[:50]}"
+                )
 
             print(f"    -> {fetched} notes extracted")
 
@@ -649,7 +726,9 @@ class ProductionHybrid:
     # Full Pipeline
     # ============================================
 
-    def run_discovery_only(self, keywords: list[str], filter_futures: bool = True) -> list[DiscoveredNote]:
+    def run_discovery_only(
+        self, keywords: list[str], filter_futures: bool = True
+    ) -> list[DiscoveredNote]:
         """只运行发现层"""
         self.start(need_login=not STORAGE_STATE_FILE.exists())
 
@@ -739,10 +818,14 @@ class ProductionHybrid:
             },
             "discovered": [
                 {
-                    "note_id": n.note_id, "title": n.title,
-                    "author_name": n.author_name, "like_count": n.like_count,
-                    "note_type": n.note_type, "publish_time": n.publish_time,
-                    "url": n.url, "keyword": n.keyword,
+                    "note_id": n.note_id,
+                    "title": n.title,
+                    "author_name": n.author_name,
+                    "like_count": n.like_count,
+                    "note_type": n.note_type,
+                    "publish_time": n.publish_time,
+                    "url": n.url,
+                    "keyword": n.keyword,
                     "futures_confidence": round(n.futures_confidence, 3),
                     "quality_score": round(n.quality_score, 3),
                     "cover_url": n.cover_url,
@@ -763,8 +846,8 @@ class ProductionHybrid:
                     "share_count": n.share_count,
                     "tags": n.tags,
                     "topics": n.topics,
-                    "images": n.images,              # ALL image URLs with metadata
-                    "video_urls": n.video_urls,      # video stream URLs
+                    "images": n.images,  # ALL image URLs with metadata
+                    "video_urls": n.video_urls,  # video stream URLs
                     "video_duration_ms": n.video_duration,
                     "note_type": n.note_type,
                     "publish_time": n.publish_time,
@@ -772,7 +855,7 @@ class ProductionHybrid:
                     "ip_location": n.ip_location,
                     "keyword": n.keyword,
                     "url": n.url,
-                    "comments": n.comments[:50],     # top-level + sub_comments
+                    "comments": n.comments[:50],  # top-level + sub_comments
                     "comments_count_actual": len(n.comments),
                 }
                 for n in deep
@@ -799,16 +882,17 @@ def print_summary(results: dict):
     if discovered:
         # Top notes
         sorted_notes = sorted(discovered, key=lambda n: n.quality_score, reverse=True)
-        print(f"\n  Top discovered notes:")
+        print("\n  Top discovered notes:")
         for i, n in enumerate(sorted_notes[:5], 1):
-            title = (n.title or "")[:70].replace('\n', ' ')
+            title = (n.title or "")[:70].replace("\n", " ")
             print(f"  {i}. [{n.note_type[0].upper()}] @{n.author_name} | {title}")
             print(f"     L{n.like_count} | {n.publish_time} | score={n.quality_score:.2f}")
 
         # Keyword distribution
         from collections import Counter
+
         kw_dist = Counter(n.keyword for n in discovered)
-        print(f"\n  Keyword distribution:")
+        print("\n  Keyword distribution:")
         for kw, count in kw_dist.most_common():
             print(f"    {kw}: {count}")
 
@@ -818,19 +902,25 @@ def main():
     parser.add_argument("--keywords", nargs="+", default=FUTURES_KEYWORDS[:4])
     parser.add_argument("--no-login", action="store_true")
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--deep", choices=["none", "spider_xhs", "browser_api"],
-                        default="none", help="Deep extract method")
+    parser.add_argument(
+        "--deep",
+        choices=["none", "spider_xhs", "browser_api"],
+        default="none",
+        help="Deep extract method",
+    )
     parser.add_argument("--max-depth", type=int, default=10)
     parser.add_argument("--no-filter", action="store_true")
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("--discovery-only", action="store_true",
-                        help="Phase 1 only, skip deep extraction")
+    parser.add_argument(
+        "--discovery-only", action="store_true", help="Phase 1 only, skip deep extraction"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S",
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
     )
 
     pipeline = ProductionHybrid(headless=args.headless)

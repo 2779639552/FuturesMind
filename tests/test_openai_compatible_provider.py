@@ -39,7 +39,11 @@ def test_keyless_local_uses_placeholder_and_chat_completions(monkeypatch):
     assert type(llm).__name__ == "LocalCompatibleChatOpenAI"
     assert str(llm.openai_api_base) == "http://localhost:8000/v1"
     # keyless local servers: a placeholder key is sent
-    key = llm.openai_api_key.get_secret_value() if hasattr(llm.openai_api_key, "get_secret_value") else llm.openai_api_key
+    key = (
+        llm.openai_api_key.get_secret_value()
+        if hasattr(llm.openai_api_key, "get_secret_value")
+        else llm.openai_api_key
+    )
     assert key == "EMPTY"
     # must use Chat Completions, not OpenAI's Responses API
     assert getattr(llm, "use_responses_api", False) in (False, None)
@@ -51,7 +55,11 @@ def test_optional_key_from_env(monkeypatch):
     llm = create_llm_client(
         provider="openai_compatible", model="m", base_url="https://relay.example/v1"
     ).get_llm()
-    key = llm.openai_api_key.get_secret_value() if hasattr(llm.openai_api_key, "get_secret_value") else llm.openai_api_key
+    key = (
+        llm.openai_api_key.get_secret_value()
+        if hasattr(llm.openai_api_key, "get_secret_value")
+        else llm.openai_api_key
+    )
     assert key == "sk-relay-123"
 
 
@@ -62,6 +70,7 @@ def test_any_model_accepted_no_forced_key():
     # key-optional, so the CLI never forces a prompt and keyless servers work.
     assert get_api_key_env("openai_compatible") == "OPENAI_COMPATIBLE_API_KEY"
     from tradingagents.llm_clients.openai_client import OPENAI_COMPATIBLE_PROVIDERS
+
     assert OPENAI_COMPATIBLE_PROVIDERS["openai_compatible"].key_optional is True
 
 
@@ -69,8 +78,15 @@ def test_any_model_accepted_no_forced_key():
 def test_env_backend_url_precedence():
     # #978: explicit env URL wins over the menu/default regardless of provider source.
     from cli.utils import resolve_backend_url
-    assert resolve_backend_url("openai", "https://api.openai.com/v1", env_url="http://proxy/v1") == "http://proxy/v1"
-    assert resolve_backend_url("openai", "https://api.openai.com/v1", env_url=None) == "https://api.openai.com/v1"
+
+    assert (
+        resolve_backend_url("openai", "https://api.openai.com/v1", env_url="http://proxy/v1")
+        == "http://proxy/v1"
+    )
+    assert (
+        resolve_backend_url("openai", "https://api.openai.com/v1", env_url=None)
+        == "https://api.openai.com/v1"
+    )
     assert resolve_backend_url("deepseek", None, None) == "https://api.deepseek.com"
 
 
@@ -89,7 +105,9 @@ def test_structured_output_suppresses_object_tool_choice(monkeypatch):
     monkeypatch.setattr(
         ChatOpenAI,
         "with_structured_output",
-        lambda self, schema, method=None, **kw: captured.update({"method": method, **kw}) or "BOUND",
+        lambda self, schema, method=None, **kw: (
+            captured.update({"method": method, **kw}) or "BOUND"
+        ),
     )
     llm = create_llm_client(
         provider="openai_compatible", model="local-llm-30b", base_url="http://localhost:1234/v1"

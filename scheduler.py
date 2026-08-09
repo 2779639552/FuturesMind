@@ -5,17 +5,14 @@ import subprocess
 import sys
 from contextlib import suppress
 from datetime import datetime
-from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from database import get_db
+from path_utils import resolve_think2_dir
 
-THINK2_DIR = Path(os.environ.get(
-    "THINK2_DIR",
-    os.path.expanduser("~/Desktop/思路2/validate")
-))
+THINK2_DIR = resolve_think2_dir()
 
 # ── Global scheduler ──────────────────────────────────────────────
 
@@ -28,22 +25,30 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
     log_id = db.start_collection(platform, keywords_count=30)
 
     try:
-        since_date = (datetime.now().replace(hour=0, minute=0, second=0) -
-                       __import__('datetime').timedelta(days=since_days)).strftime("%Y-%m-%d")
+        since_date = (
+            datetime.now().replace(hour=0, minute=0, second=0)
+            - __import__("datetime").timedelta(days=since_days)
+        ).strftime("%Y-%m-%d")
 
         venv_py = os.path.join(os.path.dirname(sys.executable), "python")
         cmd = [
-            venv_py, "batch_collect.py",
-            "--platform", platform,
-            "--per-kw", str(per_kw),
-            "--turbo", "--no-detail",
-            "--since", since_date,
+            venv_py,
+            "batch_collect.py",
+            "--platform",
+            platform,
+            "--per-kw",
+            str(per_kw),
+            "--turbo",
+            "--no-detail",
+            "--since",
+            since_date,
         ]
 
         result = subprocess.run(
             cmd,
             cwd=str(THINK2_DIR) if THINK2_DIR.exists() else ".",
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             timeout=900,  # 15 min timeout
         )
 
@@ -57,31 +62,46 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
 
         if result.returncode != 0 and "Interrupted" not in output:
             db.finish_collection(log_id, posts_count, error=output[-500:])
-            db.create_alert("collection_failed", f"{platform} collection failed",
-                            output[-300:] or "Unknown error", severity="error")
+            db.create_alert(
+                "collection_failed",
+                f"{platform} collection failed",
+                output[-300:] or "Unknown error",
+                severity="error",
+            )
         else:
             db.finish_collection(log_id, posts_count)
 
             # Check if posts count is too low
             if posts_count < 10:
-                db.create_alert("low_data", f"{platform} low posts",
-                                f"Only {posts_count} posts collected", severity="warning")
+                db.create_alert(
+                    "low_data",
+                    f"{platform} low posts",
+                    f"Only {posts_count} posts collected",
+                    severity="warning",
+                )
 
     except subprocess.TimeoutExpired:
         db.finish_collection(log_id, 0, error="Timeout (15 min)")
-        db.create_alert("collection_timeout", f"{platform} timeout",
-                        "Collection exceeded 15 minutes", severity="error")
+        db.create_alert(
+            "collection_timeout",
+            f"{platform} timeout",
+            "Collection exceeded 15 minutes",
+            severity="error",
+        )
     except Exception as e:
         db.finish_collection(log_id, 0, error=str(e)[:500])
-        db.create_alert("collection_error", f"{platform} error",
-                        str(e)[:300], severity="error")
+        db.create_alert("collection_error", f"{platform} error", str(e)[:300], severity="error")
 
 
 def _run_daily_pipeline():
     """Full daily pipeline: weibo + zhihu → aggregate → backtest → regenerate."""
     db = get_db()
-    db.create_alert("pipeline_started", "Daily pipeline started",
-                    f"Automated pipeline at {datetime.now():%H:%M}", severity="info")
+    db.create_alert(
+        "pipeline_started",
+        "Daily pipeline started",
+        f"Automated pipeline at {datetime.now():%H:%M}",
+        severity="info",
+    )
 
     # Collect from weibo (fast, stable)
     _run_platform_collection("weibo", per_kw=15, since_days=7)
@@ -115,13 +135,18 @@ print(f'Pipeline OK: {gen_count} JSONs')
         subprocess.run(
             [venv_py, "-c", script],
             cwd=str(THINK2_DIR) if THINK2_DIR.exists() else ".",
-            capture_output=True, text=True, timeout=300,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
-        db.create_alert("pipeline_complete", "Daily pipeline complete",
-                        f"Generated results at {datetime.now():%H:%M}", severity="info")
+        db.create_alert(
+            "pipeline_complete",
+            "Daily pipeline complete",
+            f"Generated results at {datetime.now():%H:%M}",
+            severity="info",
+        )
     except Exception as e:
-        db.create_alert("pipeline_error", "Pipeline failed",
-                        str(e)[:300], severity="error")
+        db.create_alert("pipeline_error", "Pipeline failed", str(e)[:300], severity="error")
 
 
 def start_scheduler(schedule_times: list[str] = None):
@@ -171,8 +196,12 @@ def _health_check():
     recent = db.get_collection_history(limit=5)
     failures = [r for r in recent if r.get("status") == "error"]
     if failures:
-        db.create_alert("health_warning", "Recent collection failures detected",
-                        f"{len(failures)} failures in last 5 runs", severity="warning")
+        db.create_alert(
+            "health_warning",
+            "Recent collection failures detected",
+            f"{len(failures)} failures in last 5 runs",
+            severity="warning",
+        )
 
 
 def stop_scheduler():

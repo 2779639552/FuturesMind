@@ -219,8 +219,9 @@ def get_realtime_price(
         JSON with keys: price, change_pct, volume, name, timestamp
     """
     import json
+
     try:
-        from price_fetcher import get_cached_prices, NAME_TO_CODE
+        from price_fetcher import NAME_TO_CODE, get_cached_prices
     except ImportError:
         return "ERROR: price_fetcher module not available (web_app context only)"
 
@@ -234,11 +235,15 @@ def get_realtime_price(
         return f"NO_DATA: No live price available for {upper}. Market may be closed."
 
     data = prices[upper]
-    return json.dumps({
-        "code": upper,
-        "name": data.get("name", upper),
-        "price": data.get("price", 0),
-        "change_pct": data.get("change_pct", 0),
-        "volume": data.get("volume", 0),
-        "timestamp": data.get("timestamp", ""),
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "code": upper,
+            "name": data.get("name", upper),
+            "price": data.get("price", 0),
+            "change_pct": data.get("change_pct", 0),
+            "volume": data.get("volume", 0),
+            "timestamp": data.get("timestamp", ""),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )

@@ -4,6 +4,7 @@ requested end_date (and the current day) is actually included.
 Regressions for #986 (current-day OHLCV excluded) and #987 (requested end_date
 row omitted).
 """
+
 import pandas as pd
 import pytest
 
@@ -25,8 +26,13 @@ def test_get_yfin_requests_inclusive_end(monkeypatch):
             captured["end"] = end
             idx = pd.to_datetime(["2025-05-08", "2025-05-09"])
             return pd.DataFrame(
-                {"Open": [1.0, 2.0], "High": [1.0, 2.0], "Low": [1.0, 2.0],
-                 "Close": [1.0, 2.0], "Volume": [1, 2]},
+                {
+                    "Open": [1.0, 2.0],
+                    "High": [1.0, 2.0],
+                    "Low": [1.0, 2.0],
+                    "Close": [1.0, 2.0],
+                    "Volume": [1, 2],
+                },
                 index=idx,
             )
 
@@ -48,8 +54,7 @@ def test_load_ohlcv_requests_inclusive_end(monkeypatch, tmp_path):
         captured["end"] = end
         idx = pd.to_datetime([pd.Timestamp.today().normalize()])
         return pd.DataFrame(
-            {"Open": [100.0], "High": [100.0], "Low": [100.0],
-             "Close": [100.0], "Volume": [1]},
+            {"Open": [100.0], "High": [100.0], "Low": [100.0], "Close": [100.0], "Volume": [1]},
             index=idx,
         )
 

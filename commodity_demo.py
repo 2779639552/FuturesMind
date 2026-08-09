@@ -25,37 +25,46 @@ Examples:
     venv/Scripts/python commodity_demo.py RB --no-feedback      # Skip feedback
 """
 
+import logging
 import os
 import sys
-import logging
 from datetime import datetime
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Add the project root to sys.path for imports
+# Add the project root to sys.path for imports (before the project imports below)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from langgraph.graph import StateGraph, END, START
-from langchain_core.messages import HumanMessage
+import contextlib  # noqa: E402
 
-from tradingagents.agents.utils.agent_states import AgentState
-from tradingagents.agents.analysts.commodity_analysts import (
-    create_commodity_technical_analyst,
+from langchain_core.messages import HumanMessage  # noqa: E402
+from langgraph.graph import END, START, StateGraph  # noqa: E402
+
+from commodity_debate import (  # noqa: E402
+    create_bear_debater,
+    create_bull_debater,
+    create_debate_moderator,
+)
+from tradingagents.agents.analysts.commodity_analysts import (  # noqa: E402
     create_commodity_fundamental_analyst,
     create_commodity_macro_analyst,
+    create_commodity_technical_analyst,
 )
-from tradingagents.agents.analysts.sentiment_analyst import (
+from tradingagents.agents.analysts.sentiment_analyst import (  # noqa: E402
     create_commodity_sentiment_analyst,
 )
-from tradingagents.dataflows.commodity_futures import get_variety_info
-from tradingagents.dataflows.config import set_config
-from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.llm_clients import create_llm_client
-from tradingagents.dataflows.evolution_memory import get_evolution_context, store_prediction
-from tradingagents.agents.utils.user_feedback_agent import create_user_feedback_node
-from commodity_debate import create_bull_debater, create_bear_debater, create_debate_moderator
+from tradingagents.agents.utils.agent_states import AgentState  # noqa: E402
+from tradingagents.agents.utils.user_feedback_agent import create_user_feedback_node  # noqa: E402
+from tradingagents.dataflows.commodity_futures import get_variety_info  # noqa: E402
+from tradingagents.dataflows.config import set_config  # noqa: E402
+from tradingagents.dataflows.evolution_memory import (  # noqa: E402
+    get_evolution_context,
+    store_prediction,
+)
+from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
+from tradingagents.llm_clients import create_llm_client  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING)  # Keep logger quiet; use progress_callback for output
 logger = logging.getLogger(__name__)
@@ -63,6 +72,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Console progress callback — makes tool calls visible in real-time
 # ---------------------------------------------------------------------------
+
 
 def console_progress_callback(event_type, data):
     """Print tool-calling progress via the logger (CLI-compatible).
@@ -74,13 +84,18 @@ def console_progress_callback(event_type, data):
     label = data.get("label", "?")
 
     if event_type == "tool_call":
-        logger.info("[%s] R%s: %s(%s)", label,
-                     data.get('iteration', '?'), data['tool_name'],
-                     data.get('args_brief', ''))
+        logger.info(
+            "[%s] R%s: %s(%s)",
+            label,
+            data.get("iteration", "?"),
+            data["tool_name"],
+            data.get("args_brief", ""),
+        )
 
     elif event_type == "tool_result":
-        logger.info("[%s] <- %s chars from %s", label,
-                     data.get('result_length', 0), data['tool_name'])
+        logger.info(
+            "[%s] <- %s chars from %s", label, data.get("result_length", 0), data["tool_name"]
+        )
 
     elif event_type == "report_start":
         logger.info("[%s] Writing report...", label)
@@ -138,9 +153,9 @@ def print_report_summary(report_text, max_chars=500):
 def safe_print(text, max_chars=2000):
     """Print text safely, handling Windows GBK encoding issues.
 
-    On Windows terminals with GBK code pages, characters like emoji and
-   某些特殊Unicode字符  will raise UnicodeEncodeError. This function
-    falls back to ASCII with replace-on-error for such cases.
+     On Windows terminals with GBK code pages, characters like emoji and
+    某些特殊Unicode字符  will raise UnicodeEncodeError. This function
+     falls back to ASCII with replace-on-error for such cases.
     """
     if not text:
         return
@@ -148,7 +163,7 @@ def safe_print(text, max_chars=2000):
     try:
         logger.info(content)
     except (UnicodeEncodeError, UnicodeDecodeError):
-        safe = content.encode('ascii', errors='replace').decode('ascii')
+        safe = content.encode("ascii", errors="replace").decode("ascii")
         logger.info(safe)
     if len(text) > max_chars:
         logger.info("... (truncated, %d chars total)", len(text))
@@ -158,6 +173,7 @@ def safe_print(text, max_chars=2000):
 # Multi-round Adversarial Debate (v2.4 — replaces single-round Discussion)
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+
 
 def create_discussion_node(llm):
     """Roundtable discussion — chief strategist reviews all four reports.
@@ -264,6 +280,7 @@ Remember: You are moderating a DISCUSSION, not making the final call. Be fair to
 # ---------------------------------------------------------------------------
 # Synthesis node: final recommendation with weighted perspectives
 # ---------------------------------------------------------------------------
+
 
 def create_synthesis_node(llm):
     """Synthesize four analyst reports + discussion summary into final recommendation."""
@@ -417,6 +434,7 @@ Remember: This is for research/educational purposes only. Do NOT provide specifi
 # Scenario Analysis node: bull/base/bear 3-scenario projection
 # ---------------------------------------------------------------------------
 
+
 def create_scenario_node(llm):
     """Post-Synthesis scenario analysis — 3-scenario projection with probabilities.
 
@@ -429,8 +447,8 @@ def create_scenario_node(llm):
         synthesis = state.get("investment_plan", "")
         technical = state.get("technical_report", "")
         fundamental = state.get("fundamental_report", "")
-        macro = state.get("macro_report", "")
-        sentiment = state.get("sentiment_report", "")
+        state.get("macro_report", "")
+        state.get("sentiment_report", "")
         symbol = state["company_of_interest"]
 
         prompt_text = f"""You are a scenario analyst. The synthesis strategist has produced a base-case recommendation for `{symbol}`. Your job is to stress-test it with three explicit scenarios.
@@ -507,6 +525,7 @@ Assign probability weights to each scenario (they MUST sum to 100%).
 # Build the commodity analysis graph
 # ---------------------------------------------------------------------------
 
+
 def build_commodity_graph(config: dict, enable_feedback: bool = True, max_feedback_rounds: int = 5):
     """Build a LangGraph for commodity futures analysis.
 
@@ -545,16 +564,18 @@ def build_commodity_graph(config: dict, enable_feedback: bool = True, max_feedba
     )
 
     # Multi-round debate (quick_llm) — Bull opening + Bull rebuttal (fair last-word)
-    bull_opening_node = create_bull_debater(quick_llm)   # R1: opening statement
-    bear_node = create_bear_debater(quick_llm)            # R1: refutation
-    bull_rebuttal_node = create_bull_debater(quick_llm)   # R2: rebuttal (LAST WORD)
-    moderator_node = create_debate_moderator(quick_llm)   # Judge
+    bull_opening_node = create_bull_debater(quick_llm)  # R1: opening statement
+    bear_node = create_bear_debater(quick_llm)  # R1: refutation
+    bull_rebuttal_node = create_bull_debater(quick_llm)  # R2: rebuttal (LAST WORD)
+    moderator_node = create_debate_moderator(quick_llm)  # Judge
 
     # Key decision nodes (deep_llm — higher quality for critical decisions)
     synthesis_node = create_synthesis_node(deep_llm)
     scenario_node = create_scenario_node(deep_llm)
     feedback_node = create_user_feedback_node(
-        deep_llm, max_rounds=max_feedback_rounds, enabled=enable_feedback,
+        deep_llm,
+        max_rounds=max_feedback_rounds,
+        enabled=enable_feedback,
     )
 
     # Build graph
@@ -602,6 +623,7 @@ def build_commodity_graph(config: dict, enable_feedback: bool = True, max_feedba
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     # Parse arguments
     # Support: commodity_demo.py [symbol] [date] [--no-feedback] [--feedback-rounds N]
@@ -618,10 +640,8 @@ def main():
             enable_feedback = False
         elif a == "--feedback-rounds" and i + 1 < len(args):
             i += 1
-            try:
+            with contextlib.suppress(ValueError):
                 max_feedback_rounds = int(args[i])
-            except ValueError:
-                pass
         elif not a.startswith("--"):
             if symbol == "RB" and not a.startswith("202"):
                 symbol = a
@@ -634,7 +654,7 @@ def main():
     print_banner(symbol, trade_date)
 
     # Show variety info
-    print(f"[*] 品种信息:")
+    print("[*] 品种信息:")
     info = get_variety_info(symbol)
     safe_print(info[:500])
     print()
@@ -659,7 +679,8 @@ def main():
 
     # Build graph (returns compiled app + standalone feedback node)
     app, feedback_node = build_commodity_graph(
-        config, enable_feedback=enable_feedback,
+        config,
+        enable_feedback=enable_feedback,
         max_feedback_rounds=max_feedback_rounds,
     )
 
@@ -689,7 +710,13 @@ def main():
         "investment_plan": "",
         "final_trade_decision": "",
         "scenario_analysis": "",
-        "debate_state": {"bull_history": "", "bear_history": "", "bull_last": "", "bear_last": "", "round": 0},
+        "debate_state": {
+            "bull_history": "",
+            "bear_history": "",
+            "bull_last": "",
+            "bear_last": "",
+            "round": 0,
+        },
     }
 
     # -------------------------------------------------------------------
@@ -751,12 +778,16 @@ def main():
 
                 elif node_name == "synthesis":
                     synthesis = node_data.get("investment_plan", "")
-                    print_stage_header(f"[Synthesis] Final recommendation ({len(synthesis):,} chars)")
+                    print_stage_header(
+                        f"[Synthesis] Final recommendation ({len(synthesis):,} chars)"
+                    )
                     safe_print(synthesis)
 
                 elif node_name == "scenario_analysis":
                     scenario = node_data.get("scenario_analysis", "")
-                    print_stage_header(f"[Scenario] Three-scenario projection ({len(scenario):,} chars)")
+                    print_stage_header(
+                        f"[Scenario] Three-scenario projection ({len(scenario):,} chars)"
+                    )
                     safe_print(scenario)
 
             # Accumulate state from each chunk
@@ -766,6 +797,7 @@ def main():
     except Exception as e:
         logger.error("Analysis failed: %s", e)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -799,7 +831,7 @@ def main():
         f.write(f"**Date**: {trade_date}\n")
         f.write(f"**Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"**Elapsed**: {elapsed:.0f}s\n\n")
-        f.write(f"---\n\n")
+        f.write("---\n\n")
         for title, content in reports:
             if content:
                 f.write(f"## {title}\n\n{content}\n\n---\n\n")
@@ -810,8 +842,11 @@ def main():
     # Deferred outcome: store structured prediction for next-run backtest
     # -------------------------------------------------------------------
     import re as _re
+
     syn_text = final_state.get("investment_plan", "")
-    rating_match = _re.search(r'RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)', syn_text)
+    rating_match = _re.search(
+        r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", syn_text
+    )
     if rating_match:
         try:
             store_prediction(
@@ -822,7 +857,7 @@ def main():
                 score=int(rating_match.group(3)),
                 key_levels=final_state.get("investment_plan", "")[:500],
             )
-            print(f"\n[*] Prediction stored for deferred backtesting")
+            print("\n[*] Prediction stored for deferred backtesting")
         except Exception:
             pass
     # -------------------------------------------------------------------
@@ -838,13 +873,13 @@ def main():
     # Analysis is done but we stay in interactive mode so the user can
     # discuss results, start a debate, or explicitly exit.
     # -------------------------------------------------------------------
-    _run_interactive_demo(final_state, symbol, output_file,
-                          feedback_node, enable_feedback)
+    _run_interactive_demo(final_state, symbol, output_file, feedback_node, enable_feedback)
 
 
 # ---------------------------------------------------------------------------
 # Interactive post-analysis loop for demo
 # ---------------------------------------------------------------------------
+
 
 def _run_interactive_demo(
     final_state: dict,
@@ -906,6 +941,7 @@ def _run_interactive_demo(
 # Market Comparison Report Generator
 # ---------------------------------------------------------------------------
 
+
 def print_comparison_report(final_state: dict, symbol: str, trade_date: str, report_path: str):
     """Generate a multi-dimensional comparison between Agent analysis and market research.
 
@@ -921,48 +957,73 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     synthesis = final_state.get("investment_plan", "")
 
     # Extract structured RATING (v2.3.2 format)
-    rating_match = __import__('re').search(r'RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)', synthesis)
+    rating_match = __import__("re").search(
+        r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", synthesis
+    )
     if rating_match:
         agent_direction = f"{rating_match.group(1).strip()} (信心={rating_match.group(2).strip()}, 分数={rating_match.group(3).strip()}/10)"
     else:
         # Fallback to old format
-        direction_match = __import__('re').search(r'方向判断[：:]\s*(.+?)(?:\n|$)', synthesis)
+        direction_match = __import__("re").search(r"方向判断[：:]\s*(.+?)(?:\n|$)", synthesis)
         agent_direction = direction_match.group(1).strip() if direction_match else "N/A"
 
     # Extract weights (v2.3.2: 4 dimensions)
     weights = {}
-    for dim, label in [("技术面", "tech"), ("基本面", "fund"), ("宏观面", "macro"), ("情绪面", "sent")]:
-        m = __import__('re').search(rf'{dim}权重[：:]\s*(\d+)/10', synthesis)
+    for dim, label in [
+        ("技术面", "tech"),
+        ("基本面", "fund"),
+        ("宏观面", "macro"),
+        ("情绪面", "sent"),
+    ]:
+        m = __import__("re").search(rf"{dim}权重[：:]\s*(\d+)/10", synthesis)
         if m:
             weights[label] = int(m.group(1))
 
     # Extract key factors from fundamental report
     key_bullish = []
     key_bearish = []
-    for line in fundamental.split('\n'):
+    for line in fundamental.split("\n"):
         line = line.strip()
-        if '看多' in line or '利多' in line or '支撑' in line or 'strong' in line.lower():
-            if len(line) > 10 and len(key_bullish) < 5:
-                key_bullish.append(line[:120])
-        if '看空' in line or '利空' in line or '压力' in line or '疲弱' in line or '累库' in line:
-            if len(line) > 10 and len(key_bearish) < 5:
-                key_bearish.append(line[:120])
+        if (
+            len(line) > 10
+            and len(key_bullish) < 5
+            and ("看多" in line or "利多" in line or "支撑" in line or "strong" in line.lower())
+        ):
+            key_bullish.append(line[:120])
+        if (
+            len(line) > 10
+            and len(key_bearish) < 5
+            and (
+                "看空" in line
+                or "利空" in line
+                or "压力" in line
+                or "疲弱" in line
+                or "累库" in line
+            )
+        ):
+            key_bearish.append(line[:120])
 
     # Extract price range
-    price_match = __import__('re').search(r'关键价位.*?\n(.*?)(?:\n\n|$)', synthesis, __import__('re').DOTALL)
+    price_match = __import__("re").search(
+        r"关键价位.*?\n(.*?)(?:\n\n|$)", synthesis, __import__("re").DOTALL
+    )
     price_range = price_match.group(1).strip()[:500] if price_match else "N/A"
 
     # Extract BIAS from each analyst (v2.3.2: structured header)
     biases = {}
-    for label, report in [("Technical", technical), ("Fundamental", fundamental),
-                           ("Macro", macro), ("Sentiment", sentiment)]:
+    for label, report in [
+        ("Technical", technical),
+        ("Fundamental", fundamental),
+        ("Macro", macro),
+        ("Sentiment", sentiment),
+    ]:
         # Try new structured format first
-        m = __import__('re').search(r'BIAS:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)(?:\n|$)', report)
+        m = __import__("re").search(r"BIAS:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)(?:\n|$)", report)
         if m:
             biases[label] = f"{m.group(1).strip()} (信心={m.group(2).strip()})"
         else:
             # Fallback to old format
-            m2 = __import__('re').search(r'Bias[：:]*\s*(.+?)(?:\n|$)', report)
+            m2 = __import__("re").search(r"Bias[：:]*\s*(.+?)(?:\n|$)", report)
             if m2:
                 biases[label] = m2.group(1).strip()
 
@@ -971,14 +1032,14 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     sep2 = "-" * 80
 
     print(f"\n\n{sep}")
-    print(f"  MARKET COMPARISON REPORT")
+    print("  MARKET COMPARISON REPORT")
     print(f"  {symbol} | {trade_date} | Generated by TradingAgents AI")
     print(f"{sep}")
 
     # === Section 1: Direction Comparison ===
-    print(f"\n{'='*80}")
-    print(f"  一、方向判断对比")
-    print(f"{'='*80}")
+    print(f"\n{'=' * 80}")
+    print("  一、方向判断对比")
+    print(f"{'=' * 80}")
     print(f"  {'维度':<20} {'Agent 判断':<30} {'市场研报':<30}")
     print(f"  {sep2}")
     print(f"  {'最终方向':<20} {agent_direction:<30} {'[搜索最新研报填入]':<30}")
@@ -988,42 +1049,44 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     print(f"  {'情绪面Bias':<20} {biases.get('Sentiment', 'N/A'):<30} {'':<30}")
 
     # === Section 2: Weighting ===
-    print(f"\n{'='*80}")
-    print(f"  二、权重分配对比")
-    print(f"{'='*80}")
-    print(f"  Agent 四维权重分配：")
-    print(f"    技术面: {weights.get('tech', '?')}/10 | 基本面: {weights.get('fund', '?')}/10 | 宏观面: {weights.get('macro', '?')}/10 | 情绪面: {weights.get('sent', '?')}/10")
-    print(f"  市场研报权重倾向：[通常基本面/供需 > 宏观/政策 > 技术/资金]")
+    print(f"\n{'=' * 80}")
+    print("  二、权重分配对比")
+    print(f"{'=' * 80}")
+    print("  Agent 四维权重分配：")
+    print(
+        f"    技术面: {weights.get('tech', '?')}/10 | 基本面: {weights.get('fund', '?')}/10 | 宏观面: {weights.get('macro', '?')}/10 | 情绪面: {weights.get('sent', '?')}/10"
+    )
+    print("  市场研报权重倾向：[通常基本面/供需 > 宏观/政策 > 技术/资金]")
 
     # === Section 3: Key Factors ===
-    print(f"\n{'='*80}")
-    print(f"  三、核心多空因素")
-    print(f"{'='*80}")
+    print(f"\n{'=' * 80}")
+    print("  三、核心多空因素")
+    print(f"{'=' * 80}")
     print(f"  {'因素':<15} {'Agent':<40} {'市场研报':<25}")
     print(f"  {sep2}")
     if key_bullish:
         print(f"  {'【利多因素】':<15}")
         for i, f in enumerate(key_bullish[:3]):
-            print(f"  {str(i+1):<15} {f:<40} {'':<25}")
+            print(f"  {str(i + 1):<15} {f:<40} {'':<25}")
     if key_bearish:
         print(f"  {'【利空因素】':<15}")
         for i, f in enumerate(key_bearish[:3]):
-            print(f"  {str(i+1):<15} {f:<40} {'':<25}")
+            print(f"  {str(i + 1):<15} {f:<40} {'':<25}")
 
     # === Section 4: Price Range ===
-    print(f"\n{'='*80}")
-    print(f"  四、关键价位")
-    print(f"{'='*80}")
-    print(f"  Agent 价位分析：")
-    for line in price_range.split('\n')[:8]:
+    print(f"\n{'=' * 80}")
+    print("  四、关键价位")
+    print(f"{'=' * 80}")
+    print("  Agent 价位分析：")
+    for line in price_range.split("\n")[:8]:
         if line.strip():
             print(f"    {line.strip()[:100]}")
-    print(f"  市场研报价位：[搜索各机构研报填入]")
+    print("  市场研报价位：[搜索各机构研报填入]")
 
     # === Section 5: Methodology Comparison ===
-    print(f"\n{'='*80}")
-    print(f"  五、方法论对比")
-    print(f"{'='*80}")
+    print(f"\n{'=' * 80}")
+    print("  五、方法论对比")
+    print(f"{'=' * 80}")
     print(f"  {'维度':<20} {'Agent':<30} {'市场研报':<30}")
     print(f"  {sep2}")
     methods = [
@@ -1040,20 +1103,20 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
         print(f"  {dim:<20} {agent_val:<30} {mkt_val:<30}")
 
     # === Section 6: Coverage ===
-    print(f"\n{'='*80}")
-    print(f"  六、数据覆盖度")
-    print(f"{'='*80}")
+    print(f"\n{'=' * 80}")
+    print("  六、数据覆盖度")
+    print(f"{'=' * 80}")
     # Detect what data was available
     has_external = len(fundamental) > 3000  # rough heuristic
     coverage = "85% (含外源JSON)" if has_external else "45-60% (仅免费API)"
     print(f"  Agent 数据覆盖度: {coverage}")
-    print(f"  市场研报覆盖率: 100% (含Mysteel/专有数据库)")
-    print(f"  缺失数据类型: 表观消费量、矿山/钢厂周度开工率、蒙煤通关量等Mysteel级专有数据")
+    print("  市场研报覆盖率: 100% (含Mysteel/专有数据库)")
+    print("  缺失数据类型: 表观消费量、矿山/钢厂周度开工率、蒙煤通关量等Mysteel级专有数据")
 
     # === Section 7: Overall Score ===
-    print(f"\n{'='*80}")
-    print(f"  七、综合评分")
-    print(f"{'='*80}")
+    print(f"\n{'=' * 80}")
+    print("  七、综合评分")
+    print(f"{'=' * 80}")
     print(f"  {'维度':<20} {'Agent得分':<15} {'说明':<45}")
     print(f"  {sep2}")
     scores = [
@@ -1069,26 +1132,26 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
         print(f"  {dim:<20} {score:<15} {note:<45}")
 
     # === Section 8: Key Gaps to Fill ===
-    print(f"\n{'='*80}")
-    print(f"  八、需补充的市场研报信息")
-    print(f"{'='*80}")
-    print(f"  请搜索以下机构最新研报填入对比：")
-    print(f"    东吴期货、正信期货、国信期货、光大期货、南华期货、中信建投期货")
+    print(f"\n{'=' * 80}")
+    print("  八、需补充的市场研报信息")
+    print(f"{'=' * 80}")
+    print("  请搜索以下机构最新研报填入对比：")
+    print("    东吴期货、正信期货、国信期货、光大期货、南华期货、中信建投期货")
     print(f"  搜索关键词: {symbol} 期货 2026年7月 研报 走势分析")
-    print(f"  重点对比维度：")
-    print(f"    1. 方向判断 → 匹配/偏离？")
-    print(f"    2. 关键价位 → Agent vs 机构目标价？")
-    print(f"    3. 核心逻辑 → 双方是否使用相同的数据源？")
-    print(f"    4. 风险提示 → Agent是否遗漏了机构关注的风险？")
+    print("  重点对比维度：")
+    print("    1. 方向判断 → 匹配/偏离？")
+    print("    2. 关键价位 → Agent vs 机构目标价？")
+    print("    3. 核心逻辑 → 双方是否使用相同的数据源？")
+    print("    4. 风险提示 → Agent是否遗漏了机构关注的风险？")
 
     print(f"\n{sep}")
-    print(f"  对比报告已附在分析报告末尾")
+    print("  对比报告已附在分析报告末尾")
     print(f"{sep}")
 
     # --- Save comparison to file ---
-    comparison_path = report_path.replace('.md', '_comparison.md')
+    comparison_path = report_path.replace(".md", "_comparison.md")
     try:
-        with open(comparison_path, 'w', encoding='utf-8') as f:
+        with open(comparison_path, "w", encoding="utf-8") as f:
             f.write(f"# Market Comparison: {symbol}\n\n")
             f.write(f"**Date**: {trade_date}\n\n")
             f.write(f"## Direction\n- Agent: {agent_direction}\n- Market: [TBD]\n\n")
@@ -1097,7 +1160,7 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
             f.write(f"- Macro: {weights.get('macro', '?')}/10\n")
             f.write(f"- Sentiment: {weights.get('sent', '?')}/10\n\n")
             f.write(f"## Key Price Levels\n{price_range}\n\n")
-            f.write(f"## Methodology Comparison\n")
+            f.write("## Methodology Comparison\n")
             for dim, agent_val, mkt_val in methods:
                 f.write(f"- {dim}: Agent={agent_val} | Market={mkt_val}\n")
         print(f"\n[*] 对比框架已保存至: {comparison_path}")

@@ -11,19 +11,19 @@
 依赖: requests (纯 HTTP, 无浏览器)
 """
 
-import re
 import logging
-import time
 import random
-from pathlib import Path
+import re
+import time
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .base import PlatformAdapter, CredentialError
+from .base import CredentialError, PlatformAdapter
 
 logger = logging.getLogger("platforms.weibo")
 
@@ -65,6 +65,7 @@ def _parse_fans_count(raw) -> int:
     except (ValueError, TypeError):
         return 0
 
+
 # 微博 API 端点 (与 config.py ENDPOINTS["weibo"] 一致)
 WEIBO_SEARCH_URL = "https://m.weibo.cn/api/container/getIndex"
 WEIBO_DETAIL_URL = "https://m.weibo.cn/statuses/extend"
@@ -83,7 +84,7 @@ REQUEST_HEADERS = {
 }
 
 
-def _parse_created_at(created_at: str) -> Optional[str]:
+def _parse_created_at(created_at: str) -> str | None:
     """
     解析微博时间格式 → "YYYY-MM-DD HH:MM:SS"。
     支持: 相对时间 (几分钟前/小时前/昨天) + 绝对时间 (Tue Jul 15 ...) + ISO。
@@ -137,10 +138,10 @@ def _parse_created_at(created_at: str) -> Optional[str]:
 
 def _clean_html(text: str) -> str:
     """去除 HTML 标签 + 常见转义"""
-    text = re.sub(r'<[^>]+>', '', text)
-    text = text.replace('&nbsp;', ' ').replace('&amp;', '&')
-    text = text.replace('&lt;', '<').replace('&gt;', '>')
-    text = text.replace('&quot;', '"')
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+    text = text.replace("&lt;", "<").replace("&gt;", ">")
+    text = text.replace("&quot;", '"')
     return text.strip()
 
 
@@ -152,7 +153,7 @@ class WeiboAdapter(PlatformAdapter):
     id_prefix = "wb:"
 
     def __init__(self):
-        self._session: Optional[requests.Session] = None
+        self._session: requests.Session | None = None
         self._cookie: str = ""
 
     # ============================================================
@@ -248,8 +249,7 @@ class WeiboAdapter(PlatformAdapter):
 
             if data.get("ok") != 1:
                 logger.warning(
-                    f"Weibo search '{keyword}' page={page} ok!=1: "
-                    f"{str(data.get('msg', ''))[:80]}"
+                    f"Weibo search '{keyword}' page={page} ok!=1: {str(data.get('msg', ''))[:80]}"
                 )
                 break
 
@@ -317,7 +317,7 @@ class WeiboAdapter(PlatformAdapter):
     def needs_detail_fetch(self) -> bool:
         return False  # 微博搜索直接返回全文+互动数据
 
-    def get_detail(self, raw_item: Any) -> Optional[dict]:
+    def get_detail(self, raw_item: Any) -> dict | None:
         """
         获取微博长文详情 (isLongText=True 时调用)。
         m.weibo.cn/statuses/extend?id={mid}
@@ -346,9 +346,7 @@ class WeiboAdapter(PlatformAdapter):
     # 归一化
     # ============================================================
 
-    def normalize(
-        self, raw_item: Any, detail: Optional[dict], keyword: str
-    ) -> Optional[dict]:
+    def normalize(self, raw_item: Any, detail: dict | None, keyword: str) -> dict | None:
         """微博 mblog → 统一 Schema dict"""
         mid = raw_item.get("mid", "")
         if not mid:
@@ -369,7 +367,9 @@ class WeiboAdapter(PlatformAdapter):
         user = raw_item.get("user", {}) or {}
         author_name = user.get("screen_name", "unknown")
         author_id = str(user.get("id", ""))
-        author_fans = _parse_fans_count(user.get("followers_count", 0))  # 粉丝数(解析"15.8万"→158000)
+        author_fans = _parse_fans_count(
+            user.get("followers_count", 0)
+        )  # 粉丝数(解析"15.8万"→158000)
 
         # IP 属地: 去掉"发布于"前缀
         ip_location = (raw_item.get("region_name", "") or "").replace("发布于 ", "").strip()
@@ -419,4 +419,5 @@ class WeiboAdapter(PlatformAdapter):
     @staticmethod
     def field_mapping() -> dict:
         from .base import FIELD_MAPPING_TABLE
+
         return FIELD_MAPPING_TABLE["weibo"]

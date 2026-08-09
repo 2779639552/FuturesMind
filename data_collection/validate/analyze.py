@@ -10,16 +10,16 @@
 """
 
 import argparse
-import sys
 import os
+import sys
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 # Add self to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from report_utils import load_data, generate_html_report, REPORT_DIR
+from report_utils import REPORT_DIR, generate_html_report, load_data
 
 
 def main():
@@ -42,8 +42,14 @@ def main():
     )
     parser.add_argument("input", help="JSONL数据文件路径")
     parser.add_argument("--no-html", action="store_true", help="仅输出终端文本, 不生成HTML报告")
-    parser.add_argument("-m", "--modules", type=int, nargs="+", default=[1, 2, 3, 4, 5],
-                        help="运行的分析模块编号 (默认全部: 1 2 3 4 5)")
+    parser.add_argument(
+        "-m",
+        "--modules",
+        type=int,
+        nargs="+",
+        default=[1, 2, 3, 4, 5],
+        help="运行的分析模块编号 (默认全部: 1 2 3 4 5)",
+    )
 
     args = parser.parse_args()
 
@@ -52,9 +58,9 @@ def main():
         print(f"错误: 文件不存在: {args.input}")
         sys.exit(1)
 
-    print(f"\n{'='*70}")
-    print(f"  期货社交媒体数据分析")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print("  期货社交媒体数据分析")
+    print(f"{'=' * 70}")
     print(f"  数据文件: {args.input}")
     print(f"  分析模块: {args.modules}")
     print(f"  输出模式: {'终端' if args.no_html else '终端 + HTML报告'}")
@@ -68,7 +74,6 @@ def main():
     print(f"  加载耗时: {time.time() - t0:.1f}s")
 
     # Module registry
-    modules = {}
     module_names = {
         1: ("品种热度与情绪仪表盘", "variety_dashboard"),
         2: ("情感深度分析", "sentiment_deep"),
@@ -108,19 +113,19 @@ def main():
 
             # Collect HTML
             if not args.no_html and result.get("html"):
-                html_sections.append({
-                    "title": f"模块{mod_id}: {mod_label}",
-                    "content": result["html"]
-                })
+                html_sections.append(
+                    {"title": f"模块{mod_id}: {mod_label}", "content": result["html"]}
+                )
 
         except Exception as e:
             print(f"  错误: {e}")
             import traceback
+
             traceback.print_exc()
 
     # Generate HTML report
     if not args.no_html and html_sections:
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print("  生成HTML报告...")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = str(REPORT_DIR / f"analysis_report_{ts}.html")
@@ -129,9 +134,9 @@ def main():
 
     # Final summary
     total_time = time.time() - t0
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  分析完成 | 总耗时: {total_time:.1f}s | 笔记: {len(df)}条")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
 
 if __name__ == "__main__":

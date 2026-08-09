@@ -16,14 +16,10 @@
   - 任一模型不可用时自动降级到单模型
 """
 
-import re
 import json
-import time
 import logging
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
-from collections import Counter
+from pathlib import Path
 
 logger = logging.getLogger("multimodal")
 
@@ -33,47 +29,72 @@ logger = logging.getLogger("multimodal")
 
 EMOJI_SENTIMENT = {
     # 强烈看多 🚀📈💰🔥💎
-    "🚀": ("strong_bullish", 0.8), "📈": ("bullish", 0.6),
-    "💰": ("bullish", 0.5), "🔥": ("bullish", 0.6),
-    "💎": ("strong_bullish", 0.7), "💎🙌": ("strong_bullish", 0.9),
-    "🤑": ("bullish", 0.5), "💪": ("bullish", 0.4),
-    "✨": ("slightly_bullish", 0.2), "🎉": ("bullish", 0.5),
-    "🟢": ("bullish", 0.4), "✅": ("slightly_bullish", 0.2),
-    "⬆️": ("bullish", 0.5), "↗️": ("slightly_bullish", 0.3),
-
+    "🚀": ("strong_bullish", 0.8),
+    "📈": ("bullish", 0.6),
+    "💰": ("bullish", 0.5),
+    "🔥": ("bullish", 0.6),
+    "💎": ("strong_bullish", 0.7),
+    "💎🙌": ("strong_bullish", 0.9),
+    "🤑": ("bullish", 0.5),
+    "💪": ("bullish", 0.4),
+    "✨": ("slightly_bullish", 0.2),
+    "🎉": ("bullish", 0.5),
+    "🟢": ("bullish", 0.4),
+    "✅": ("slightly_bullish", 0.2),
+    "⬆️": ("bullish", 0.5),
+    "↗️": ("slightly_bullish", 0.3),
     # 强烈看空 📉🔴💀😭
-    "📉": ("bearish", -0.6), "🔴": ("bearish", -0.5),
-    "💀": ("strong_bearish", -0.8), "😭": ("bearish", -0.5),
-    "😱": ("bearish", -0.4), "🤮": ("strong_bearish", -0.6),
-    "💔": ("bearish", -0.5), "📛": ("bearish", -0.4),
-    "⚠️": ("slightly_bearish", -0.2), "😰": ("slightly_bearish", -0.3),
-    "🔻": ("bearish", -0.5), "⬇️": ("bearish", -0.5),
-    "↘️": ("slightly_bearish", -0.3), "😤": ("bearish", -0.3),
-
+    "📉": ("bearish", -0.6),
+    "🔴": ("bearish", -0.5),
+    "💀": ("strong_bearish", -0.8),
+    "😭": ("bearish", -0.5),
+    "😱": ("bearish", -0.4),
+    "🤮": ("strong_bearish", -0.6),
+    "💔": ("bearish", -0.5),
+    "📛": ("bearish", -0.4),
+    "⚠️": ("slightly_bearish", -0.2),
+    "😰": ("slightly_bearish", -0.3),
+    "🔻": ("bearish", -0.5),
+    "⬇️": ("bearish", -0.5),
+    "↘️": ("slightly_bearish", -0.3),
+    "😤": ("bearish", -0.3),
     # 中性/观望 🤔👀
-    "🤔": ("neutral", 0.0), "👀": ("neutral", 0.0),
-    "🤷": ("neutral", 0.0), "😐": ("neutral", 0.0),
+    "🤔": ("neutral", 0.0),
+    "👀": ("neutral", 0.0),
+    "🤷": ("neutral", 0.0),
+    "😐": ("neutral", 0.0),
 }
 
 # Emoji文本描述映射
 EMOJI_TEXT_MAP = {
-    "🚀": "火箭/暴涨", "📈": "上涨趋势", "📉": "下跌趋势",
-    "💰": "赚钱", "💎": "钻石手/坚定持有", "💀": "爆仓/死了",
-    "😭": "痛哭/亏损", "🔥": "火/热门", "🟢": "绿色/上涨",
-    "🔴": "红色/下跌", "🤔": "思考/观望", "👀": "关注/观察",
+    "🚀": "火箭/暴涨",
+    "📈": "上涨趋势",
+    "📉": "下跌趋势",
+    "💰": "赚钱",
+    "💎": "钻石手/坚定持有",
+    "💀": "爆仓/死了",
+    "😭": "痛哭/亏损",
+    "🔥": "火/热门",
+    "🟢": "绿色/上涨",
+    "🔴": "红色/下跌",
+    "🤔": "思考/观望",
+    "👀": "关注/观察",
 }
 
 
 @dataclass
 class ImageAnalysis:
     """单张图片分析结果"""
+
     image_url: str = ""
-    image_type: str = "unknown"      # kline_chart | pnl_screenshot | meme_sticker | text_screenshot | general
-    ocr_text: str = ""               # OCR提取的文字
+    image_type: str = (
+        "unknown"  # kline_chart | pnl_screenshot | meme_sticker | text_screenshot | general
+    )
+    ocr_text: str = ""  # OCR提取的文字
     visual_sentiment: str = "neutral"
     visual_score: float = 0.0
     visual_confidence: float = 0.0
-    visual_summary: str = ""         # 图片内容简述
+    visual_summary: str = ""  # 图片内容简述
     qwen_result: dict = field(default_factory=dict)
     dots_result: dict = field(default_factory=dict)
 
@@ -81,15 +102,53 @@ class ImageAnalysis:
 class ImageTypeClassifier:
     """图片类型分类器 — 基于规则+关键特征快速判定"""
 
-    CHART_KEYWORDS = ["K线", "蜡烛图", "走势图", "分时图", "日线", "周线",
-                      "均线", "MACD", "KDJ", "RSI", "布林带", "成交量",
-                      "涨跌幅", "开盘", "收盘", "最高", "最低"]
+    CHART_KEYWORDS = [
+        "K线",
+        "蜡烛图",
+        "走势图",
+        "分时图",
+        "日线",
+        "周线",
+        "均线",
+        "MACD",
+        "KDJ",
+        "RSI",
+        "布林带",
+        "成交量",
+        "涨跌幅",
+        "开盘",
+        "收盘",
+        "最高",
+        "最低",
+    ]
 
-    PNL_KEYWORDS = ["盈亏", "持仓", "当日盈亏", "浮动盈亏", "平仓",
-                    "手续费", "保证金", "可用资金", "权益", "逐笔"]
+    PNL_KEYWORDS = [
+        "盈亏",
+        "持仓",
+        "当日盈亏",
+        "浮动盈亏",
+        "平仓",
+        "手续费",
+        "保证金",
+        "可用资金",
+        "权益",
+        "逐笔",
+    ]
 
-    MEME_KEYWORDS = ["表情包", "笑哭", "哈哈哈", "卧槽", "心态", "韭菜",
-                     "割肉", "抄底", "踏空", "满仓", "爆仓", "梭哈"]
+    MEME_KEYWORDS = [
+        "表情包",
+        "笑哭",
+        "哈哈哈",
+        "卧槽",
+        "心态",
+        "韭菜",
+        "割肉",
+        "抄底",
+        "踏空",
+        "满仓",
+        "爆仓",
+        "梭哈",
+    ]
 
     @classmethod
     def classify(cls, ocr_text: str = "", visual_summary: str = "") -> str:
@@ -135,6 +194,7 @@ class ImageAnalyzer:
         """初始化Qwen3-VL 2B Ollama"""
         try:
             import requests
+
             resp = requests.get("http://localhost:11434/api/tags", timeout=5)
             models = [m["name"] for m in resp.json().get("models", [])]
             # 查找qwen3-vl模型
@@ -152,6 +212,7 @@ class ImageAnalyzer:
         """初始化dots.vlm1 — 尝试多个可用端点"""
         try:
             from gradio_client import Client
+
             # 尝试多个可能的space路径
             for space in [
                 "rednote-hilab/dots-vlm1-demo",
@@ -168,13 +229,16 @@ class ImageAnalyzer:
             # HuggingFace space 不可用时的降级: 尝试 Inference API
             # 需要 HF_TOKEN 环境变量
             import os
+
             if os.environ.get("HF_TOKEN"):
                 logger.info("dots.vlm1: using HF Inference API (requires HF_TOKEN)")
                 self.dots_use_inference_api = True
                 self.dots_available = True
             else:
-                logger.warning("dots.vlm1: HF Space unavailable (401). "
-                             "Set HF_TOKEN for Inference API, or use Qwen-only mode.")
+                logger.warning(
+                    "dots.vlm1: HF Space unavailable (401). "
+                    "Set HF_TOKEN for Inference API, or use Qwen-only mode."
+                )
         except ImportError:
             logger.warning("gradio_client not installed. pip install gradio_client")
         except Exception as e:
@@ -215,9 +279,7 @@ class ImageAnalyzer:
         result.visual_summary = "\n".join(summary_parts)
 
         # 图片类型判定
-        result.image_type = self.classifier.classify(
-            result.ocr_text, result.visual_summary
-        )
+        result.image_type = self.classifier.classify(result.ocr_text, result.visual_summary)
 
         # 加权投票
         weights = self._get_weights(result.image_type)
@@ -252,8 +314,9 @@ class ImageAnalyzer:
     def _call_qwen(self, image_path: str, context: str = "") -> dict:
         """调用本地Qwen3-VL (Ollama, GPU加速)"""
         try:
-            import requests
             import base64
+
+            import requests
 
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode()
@@ -293,18 +356,26 @@ class ImageAnalyzer:
             return {"sentiment_score": 0, "confidence": 0, "summary": f"error: {e}"}
 
     def _score_to_sentiment(self, score: float) -> str:
-        if score >= 0.6: return "strong_bullish"
-        elif score >= 0.3: return "bullish"
-        elif score >= 0.1: return "slightly_bullish"
-        elif score > -0.1: return "neutral"
-        elif score > -0.3: return "slightly_bearish"
-        elif score > -0.6: return "bearish"
-        else: return "strong_bearish"
+        if score >= 0.6:
+            return "strong_bullish"
+        elif score >= 0.3:
+            return "bullish"
+        elif score >= 0.1:
+            return "slightly_bullish"
+        elif score > -0.1:
+            return "neutral"
+        elif score > -0.3:
+            return "slightly_bearish"
+        elif score > -0.6:
+            return "bearish"
+        else:
+            return "strong_bearish"
 
 
 # ============================================================
 # Emoji 分析器
 # ============================================================
+
 
 class EmojiAnalyzer:
     """Emoji情感分析"""
@@ -318,13 +389,15 @@ class EmojiAnalyzer:
         for emoji, (sentiment, score) in EMOJI_SENTIMENT.items():
             count = text.count(emoji)
             if count > 0:
-                emojis_found.append({
-                    "emoji": emoji,
-                    "text": EMOJI_TEXT_MAP.get(emoji, ""),
-                    "count": count,
-                    "sentiment": sentiment,
-                    "score": score,
-                })
+                emojis_found.append(
+                    {
+                        "emoji": emoji,
+                        "text": EMOJI_TEXT_MAP.get(emoji, ""),
+                        "count": count,
+                        "sentiment": sentiment,
+                        "score": score,
+                    }
+                )
                 total_score += score * count
                 total_conf += 0.6 * count  # emoji置信度默认0.6
 
@@ -347,6 +420,7 @@ class EmojiAnalyzer:
 # 三通道融合引擎
 # ============================================================
 
+
 class MultimodalSentimentEngine:
     """
     三通道情感融合:
@@ -362,9 +436,9 @@ class MultimodalSentimentEngine:
 
         # 通道权重 (可调)
         self.channel_weights = {
-            "text": 0.45,     # 文字权重
-            "image": 0.40,    # 图片权重
-            "emoji": 0.15,    # Emoji权重
+            "text": 0.45,  # 文字权重
+            "image": 0.40,  # 图片权重
+            "emoji": 0.15,  # Emoji权重
         }
 
     def analyze(self, text: str = "", image_paths: list[str] = None) -> dict:
@@ -396,12 +470,15 @@ class MultimodalSentimentEngine:
                 ),
                 "score": round(sum(image_scores) / len(image_scores), 3),
                 "confidence": round(sum(image_confs) / len(image_confs), 3),
-                "details": [{
-                    "image_type": r.image_type,
-                    "score": r.visual_score,
-                    "ocr_text": r.ocr_text[:200],
-                    "summary": r.visual_summary[:200],
-                } for r in image_results],
+                "details": [
+                    {
+                        "image_type": r.image_type,
+                        "score": r.visual_score,
+                        "ocr_text": r.ocr_text[:200],
+                        "summary": r.visual_summary[:200],
+                    }
+                    for r in image_results
+                ],
             }
         else:
             channels["image"] = {"sentiment": "neutral", "score": 0, "confidence": 0, "details": []}
@@ -412,16 +489,15 @@ class MultimodalSentimentEngine:
         # === 融合 ===
         w = self.channel_weights
         final_score = (
-            w["text"] * channels["text"].get("score", 0) +
-            w["image"] * channels["image"].get("score", 0) +
-            w["emoji"] * channels["emoji"].get("emoji_score", 0)
+            w["text"] * channels["text"].get("score", 0)
+            + w["image"] * channels["image"].get("score", 0)
+            + w["emoji"] * channels["emoji"].get("emoji_score", 0)
         )
 
         # 如果无图片，重新分配权重
         if not image_paths:
-            final_score = (
-                0.75 * channels["text"].get("score", 0) +
-                0.25 * channels["emoji"].get("emoji_score", 0)
+            final_score = 0.75 * channels["text"].get("score", 0) + 0.25 * channels["emoji"].get(
+                "emoji_score", 0
             )
 
         final_confidence = max(
@@ -444,6 +520,7 @@ class MultimodalSentimentEngine:
 # ============================================================
 # Prompt模板
 # ============================================================
+
 
 def _build_qwen_prompt(context: str = "") -> str:
     return f"""分析这张期货/股票相关的图片。请严格按以下JSON格式返回:
@@ -532,12 +609,13 @@ if __name__ == "__main__":
     print("\n[Qwen3-VL 本地]")
     try:
         import requests
+
         resp = requests.get("http://localhost:11434/api/tags", timeout=5)
         models = [m["name"] for m in resp.json().get("models", [])]
         vl = [m for m in models if "qwen" in m.lower() or "vl" in m.lower()]
         if vl:
             print(f"  OK: {vl}")
-            print(f"  安装命令: ollama pull qwen3-vl:2b")
+            print("  安装命令: ollama pull qwen3-vl:2b")
         else:
             print("  Ollama可用，但未安装Qwen-VL模型")
             print("  安装: ollama pull qwen3-vl:2b")
@@ -549,6 +627,7 @@ if __name__ == "__main__":
     print("\n[dots.vlm1 HF API]")
     try:
         from gradio_client import Client
+
         c = Client("rednote-hilab/dots-vlm1-demo")
         print("  OK: HuggingFace Space可用")
         print("  URL: https://huggingface.co/spaces/rednote-hilab/dots-vlm1-demo")
@@ -573,10 +652,14 @@ if __name__ == "__main__":
     # 权重示例
     print("\n[加权策略示例]")
     for img_type in ["kline_chart", "pnl_screenshot", "meme_sticker", "text_screenshot", "general"]:
-        w = ImageTypeClassifier.classify.__func__.__self__ if hasattr(ImageTypeClassifier, '__func__') else None
+        w = (
+            ImageTypeClassifier.classify.__func__.__self__
+            if hasattr(ImageTypeClassifier, "__func__")
+            else None
+        )
         weights = ImageAnalyzer()._get_weights(img_type)
         print(f"  {img_type}: Qwen={weights['qwen']:.0%}, dots={weights['dots']:.0%}")
 
     print("\n[三通道融合示例]")
-    print(f"  text + image + emoji → 加权融合 (45%/40%/15%)")
-    print(f"  无图片: text + emoji → 加权融合 (75%/25%)")
+    print("  text + image + emoji → 加权融合 (45%/40%/15%)")
+    print("  无图片: text + emoji → 加权融合 (75%/25%)")

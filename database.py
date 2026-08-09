@@ -7,14 +7,14 @@ Usage:
     stats = db.get_collection_stats()
 """
 
-import sqlite3
+import hashlib
 import json
 import os
-import hashlib
+import sqlite3
 import threading
-from pathlib import Path
-from datetime import datetime, timedelta
 from contextlib import contextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
 
 DB_DIR = Path(os.path.expanduser("~/.tradingagents"))
 DB_PATH = DB_DIR / "agentsense.db"
@@ -161,34 +161,39 @@ class AgentSenseDB:
         with self._conn() as c:
             for p in posts:
                 try:
-                    c.execute("""
+                    c.execute(
+                        """
                         INSERT OR IGNORE INTO posts (note_id, platform, author_name, author_fans,
                             title, content, sentiment, sentiment_score, publish_time, url,
                             likes, comments, shares, varieties)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        p.get("note_id", ""),
-                        p.get("platform", "?"),
-                        (p.get("author_name", "") or "")[:50],
-                        p.get("author_fans", 0) or 0,
-                        (p.get("title", "") or "")[:200],
-                        p.get("content", "") or "",
-                        p.get("sentiment", "neutral"),
-                        p.get("sentiment_score", 0) or 0,
-                        (p.get("publish_time", "") or "")[:19],
-                        p.get("url", "") or "",
-                        p.get("like_count", 0) or 0,
-                        p.get("comment_count", 0) or 0,
-                        p.get("share_count", 0) or 0,
-                        json.dumps(p.get("varieties", []), ensure_ascii=False),
-                    ))
+                    """,
+                        (
+                            p.get("note_id", ""),
+                            p.get("platform", "?"),
+                            (p.get("author_name", "") or "")[:50],
+                            p.get("author_fans", 0) or 0,
+                            (p.get("title", "") or "")[:200],
+                            p.get("content", "") or "",
+                            p.get("sentiment", "neutral"),
+                            p.get("sentiment_score", 0) or 0,
+                            (p.get("publish_time", "") or "")[:19],
+                            p.get("url", "") or "",
+                            p.get("like_count", 0) or 0,
+                            p.get("comment_count", 0) or 0,
+                            p.get("share_count", 0) or 0,
+                            json.dumps(p.get("varieties", []), ensure_ascii=False),
+                        ),
+                    )
                     if c.rowcount > 0:
                         count += 1
                 except Exception:
                     pass
         return count
 
-    def get_posts(self, platform=None, variety=None, sentiment=None, since=None, limit=200) -> list[dict]:
+    def get_posts(
+        self, platform=None, variety=None, sentiment=None, since=None, limit=200
+    ) -> list[dict]:
         conditions = []
         params = []
         if platform:
@@ -207,8 +212,7 @@ class AgentSenseDB:
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         with self._conn() as c:
             rows = c.execute(
-                f"SELECT * FROM posts {where} ORDER BY publish_time DESC LIMIT ?",
-                params + [limit]
+                f"SELECT * FROM posts {where} ORDER BY publish_time DESC LIMIT ?", params + [limit]
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -235,7 +239,8 @@ class AgentSenseDB:
 
     def upsert_sentiment_daily(self, variety: str, date: str, data: dict):
         with self._conn() as c:
-            c.execute("""
+            c.execute(
+                """
                 INSERT INTO sentiment_daily (variety, date, simple_avg, avg_score,
                     bullish_ratio, bearish_ratio, neutral_ratio, total_notes, author_count, platform_breakdown)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -245,32 +250,52 @@ class AgentSenseDB:
                     neutral_ratio=excluded.neutral_ratio, total_notes=excluded.total_notes,
                     author_count=excluded.author_count, platform_breakdown=excluded.platform_breakdown,
                     updated_at=datetime('now')
-            """, (
-                variety, date,
-                data.get("simple_avg", 0), data.get("avg_score", 0),
-                data.get("bullish_ratio", 0), data.get("bearish_ratio", 0),
-                data.get("neutral_ratio", 0), data.get("total_notes", 0),
-                data.get("author_count", 0),
-                json.dumps(data.get("platform_breakdown", {}), ensure_ascii=False),
-            ))
+            """,
+                (
+                    variety,
+                    date,
+                    data.get("simple_avg", 0),
+                    data.get("avg_score", 0),
+                    data.get("bullish_ratio", 0),
+                    data.get("bearish_ratio", 0),
+                    data.get("neutral_ratio", 0),
+                    data.get("total_notes", 0),
+                    data.get("author_count", 0),
+                    json.dumps(data.get("platform_breakdown", {}), ensure_ascii=False),
+                ),
+            )
 
     def get_sentiment_series(self, variety: str, days: int = 180) -> list[dict]:
         since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         with self._conn() as c:
             rows = c.execute(
                 "SELECT * FROM sentiment_daily WHERE variety=? AND date>=? ORDER BY date",
-                (variety, since)
+                (variety, since),
             ).fetchall()
         return [dict(r) for r in rows]
 
     # ── Alerts ─────────────────────────────────────────────────────────
 
-    def create_alert(self, alert_type: str, title: str, message: str = "",
-                     variety: str = "", severity: str = "info", data: dict = None) -> int:
+    def create_alert(
+        self,
+        alert_type: str,
+        title: str,
+        message: str = "",
+        variety: str = "",
+        severity: str = "info",
+        data: dict = None,
+    ) -> int:
         with self._conn() as c:
             c.execute(
                 "INSERT INTO alerts (alert_type, variety, title, message, severity, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (alert_type, variety, title, message, severity, json.dumps(data or {}, ensure_ascii=False))
+                (
+                    alert_type,
+                    variety,
+                    title,
+                    message,
+                    severity,
+                    json.dumps(data or {}, ensure_ascii=False),
+                ),
             )
             return c.lastrowid
 
@@ -278,8 +303,7 @@ class AgentSenseDB:
         where = "WHERE acknowledged=0" if unacknowledged_only else ""
         with self._conn() as c:
             rows = c.execute(
-                f"SELECT * FROM alerts {where} ORDER BY created_at DESC LIMIT ?",
-                (limit,)
+                f"SELECT * FROM alerts {where} ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -297,16 +321,18 @@ class AgentSenseDB:
         with self._conn() as c:
             c.execute(
                 "INSERT INTO collection_log (platform, keywords_count, status) VALUES (?, ?, 'running')",
-                (platform, keywords_count)
+                (platform, keywords_count),
             )
             return c.lastrowid
 
-    def finish_collection(self, log_id: int, posts_collected: int, posts_after_filter: int = 0, error: str = ""):
+    def finish_collection(
+        self, log_id: int, posts_collected: int, posts_after_filter: int = 0, error: str = ""
+    ):
         status = "error" if error else "success"
         with self._conn() as c:
             c.execute(
                 "UPDATE collection_log SET status=?, posts_collected=?, posts_after_filter=?, error_msg=?, finished_at=datetime('now') WHERE id=?",
-                (status, posts_collected, posts_after_filter or posts_collected, error, log_id)
+                (status, posts_collected, posts_after_filter or posts_collected, error, log_id),
             )
 
     def get_collection_history(self, limit=20) -> list[dict]:
@@ -324,7 +350,7 @@ class AgentSenseDB:
             with self._conn() as c:
                 c.execute(
                     "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-                    (username, pwd_hash, 1 if is_admin else 0)
+                    (username, pwd_hash, 1 if is_admin else 0),
                 )
             return True
         except sqlite3.IntegrityError:
@@ -334,8 +360,7 @@ class AgentSenseDB:
         pwd_hash = hashlib.sha256(password.encode()).hexdigest()
         with self._conn() as c:
             row = c.execute(
-                "SELECT id FROM users WHERE username=? AND password_hash=?",
-                (username, pwd_hash)
+                "SELECT id FROM users WHERE username=? AND password_hash=?", (username, pwd_hash)
             ).fetchone()
         return row is not None
 
@@ -355,7 +380,10 @@ class AgentSenseDB:
 
     def add_to_watchlist(self, variety: str, user_id=1):
         with self._conn() as c:
-            c.execute("INSERT OR IGNORE INTO watchlist (user_id, variety) VALUES (?, ?)", (user_id, variety))
+            c.execute(
+                "INSERT OR IGNORE INTO watchlist (user_id, variety) VALUES (?, ?)",
+                (user_id, variety),
+            )
 
     def remove_from_watchlist(self, variety: str, user_id=1):
         with self._conn() as c:
@@ -363,19 +391,29 @@ class AgentSenseDB:
 
     # ── Trade Signals ──────────────────────────────────────────────────
 
-    def save_trade_signal(self, variety: str, date: str, signal_value: float,
-                          direction: str, entry_price: float, horizon_days: int = 3):
+    def save_trade_signal(
+        self,
+        variety: str,
+        date: str,
+        signal_value: float,
+        direction: str,
+        entry_price: float,
+        horizon_days: int = 3,
+    ):
         with self._conn() as c:
-            c.execute("""
+            c.execute(
+                """
                 INSERT INTO trade_signals (variety, signal_date, signal_value, direction, entry_price, horizon_days)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, (variety, date, signal_value, direction, entry_price, horizon_days))
+            """,
+                (variety, date, signal_value, direction, entry_price, horizon_days),
+            )
 
     def resolve_trade_signal(self, signal_id: int, exit_price: float, pnl_pct: float, outcome: str):
         with self._conn() as c:
             c.execute(
                 "UPDATE trade_signals SET exit_price=?, pnl_pct=?, outcome=? WHERE id=?",
-                (exit_price, pnl_pct, outcome, signal_id)
+                (exit_price, pnl_pct, outcome, signal_id),
             )
 
     def get_trade_signals(self, variety=None, outcome=None, limit=100) -> list[dict]:
@@ -391,15 +429,19 @@ class AgentSenseDB:
         with self._conn() as c:
             rows = c.execute(
                 f"SELECT * FROM trade_signals {where} ORDER BY created_at DESC LIMIT ?",
-                params + [limit]
+                params + [limit],
             ).fetchall()
         return [dict(r) for r in rows]
 
     def get_trade_stats(self) -> dict:
         with self._conn() as c:
-            total = c.execute("SELECT COUNT(*) FROM trade_signals WHERE outcome != 'pending'").fetchone()[0]
+            total = c.execute(
+                "SELECT COUNT(*) FROM trade_signals WHERE outcome != 'pending'"
+            ).fetchone()[0]
             wins = c.execute("SELECT COUNT(*) FROM trade_signals WHERE outcome='win'").fetchone()[0]
-            avg_pnl = c.execute("SELECT AVG(pnl_pct) FROM trade_signals WHERE outcome != 'pending'").fetchone()[0]
+            avg_pnl = c.execute(
+                "SELECT AVG(pnl_pct) FROM trade_signals WHERE outcome != 'pending'"
+            ).fetchone()[0]
         return {
             "total_trades": total,
             "wins": wins,

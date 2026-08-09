@@ -33,8 +33,10 @@ class TestLoadOhlcvNoPoison(unittest.TestCase):
 
     def test_empty_download_raises_and_does_not_cache(self):
         empty = pd.DataFrame()
-        with mock.patch.object(stockstats_utils.yf, "download", return_value=empty), \
-                self.assertRaises(NoMarketDataError):
+        with (
+            mock.patch.object(stockstats_utils.yf, "download", return_value=empty),
+            self.assertRaises(NoMarketDataError),
+        ):
             stockstats_utils.load_ohlcv("FAKE", "2026-01-01")
         # Nothing should have been written to the cache.
         self.assertEqual(os.listdir(self._tmp), [])
@@ -53,9 +55,7 @@ class TestRouteToVendorSentinel(unittest.TestCase):
             raise NoMarketDataError(symbol, "GC=F", "no rows")
 
         patched = {"yfinance": raises_no_data, "alpha_vantage": raises_no_data}
-        with mock.patch.dict(
-            interface.VENDOR_METHODS, {"get_stock_data": patched}, clear=False
-        ):
+        with mock.patch.dict(interface.VENDOR_METHODS, {"get_stock_data": patched}, clear=False):
             result = interface.route_to_vendor(
                 "get_stock_data", "XAUUSD+", "2026-01-01", "2026-01-10"
             )
@@ -75,12 +75,8 @@ class TestRouteToVendorSentinel(unittest.TestCase):
             raise ValueError("ALPHA_VANTAGE_API_KEY environment variable is not set.")
 
         patched = {"yfinance": raises_no_data, "alpha_vantage": raises_unavailable}
-        with mock.patch.dict(
-            interface.VENDOR_METHODS, {"get_stock_data": patched}, clear=False
-        ):
-            result = interface.route_to_vendor(
-                "get_stock_data", "FAKE", "2026-01-01", "2026-01-10"
-            )
+        with mock.patch.dict(interface.VENDOR_METHODS, {"get_stock_data": patched}, clear=False):
+            result = interface.route_to_vendor("get_stock_data", "FAKE", "2026-01-01", "2026-01-10")
         self.assertIn("NO_DATA_AVAILABLE", result)
 
 

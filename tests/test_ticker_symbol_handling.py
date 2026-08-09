@@ -22,6 +22,7 @@ class TickerSymbolHandlingTests(unittest.TestCase):
         # descriptive one in cli/utils. Keep a single canonical definition.
         import cli.main
         import cli.utils
+
         self.assertIs(cli.main.get_ticker, cli.utils.get_ticker)
 
 

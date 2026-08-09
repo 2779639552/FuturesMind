@@ -10,12 +10,13 @@ Researcher/Research Manager pattern.
 """
 
 import logging
+
 from langchain_core.messages import HumanMessage
 
 from tradingagents.agents.analysts.commodity_analysts import _run_tool_loop
 from tradingagents.agents.utils.commodity_futures_tools import (
-    get_futures_price,
     get_futures_indicators,
+    get_futures_price,
     get_futures_sentiment,
     get_realtime_price,
     get_variety_info,
@@ -29,12 +30,12 @@ DEBATE_MAX_ITERATIONS = 3
 
 # Tools available to debaters (fact-checking + live data)
 DEBATE_TOOLS = [
-    get_realtime_price,       # Live market price
-    get_verified_quote,       # Precise historical snapshot
-    get_futures_price,        # Recent price history
-    get_futures_indicators,   # Technical levels (support/resistance)
-    get_futures_sentiment,    # Social sentiment check
-    get_variety_info,         # Variety metadata
+    get_realtime_price,  # Live market price
+    get_verified_quote,  # Precise historical snapshot
+    get_futures_price,  # Recent price history
+    get_futures_indicators,  # Technical levels (support/resistance)
+    get_futures_sentiment,  # Social sentiment check
+    get_variety_info,  # Variety metadata
 ]
 
 # Moderator tools: narrower set, focused on fact-checking
@@ -43,6 +44,7 @@ MODERATOR_TOOLS = [
     get_verified_quote,
     get_futures_price,
 ]
+
 
 # Helper — stage header (shared with commodity_demo.py)
 # When a progress_callback is provided, output is routed there;
@@ -60,7 +62,9 @@ def _debate_progress_callback(event_type, data):
     if event_type == "tool_call":
         logger.debug("[%s] %s(%s)", label, data["tool_name"], data.get("args_brief", ""))
     elif event_type == "tool_result":
-        logger.debug("[%s] <- %s chars from %s", label, data.get("result_length", 0), data["tool_name"])
+        logger.debug(
+            "[%s] <- %s chars from %s", label, data.get("result_length", 0), data["tool_name"]
+        )
 
 
 def create_bull_debater(llm, label="Bull"):
@@ -110,10 +114,10 @@ def create_bull_debater(llm, label="Bull"):
 
 **Analyst Reports (for context)**:
 ---
-Technical: {technical[:1200] if technical else 'N/A'}
-Fundamental: {fundamental[:1200] if fundamental else 'N/A'}
-Macro/News: {macro[:800] if macro else 'N/A'}
-Sentiment: {sentiment[:600] if sentiment else 'N/A'}
+Technical: {technical[:1200] if technical else "N/A"}
+Fundamental: {fundamental[:1200] if fundamental else "N/A"}
+Macro/News: {macro[:800] if macro else "N/A"}
+Sentiment: {sentiment[:600] if sentiment else "N/A"}
 ---
 
 {opponent_context}
@@ -128,7 +132,9 @@ Sentiment: {sentiment[:600] if sentiment else 'N/A'}
         # Run tool-calling loop
         try:
             result = _run_tool_loop(
-                llm, DEBATE_TOOLS, [initial_msg],
+                llm,
+                DEBATE_TOOLS,
+                [initial_msg],
                 max_iterations=DEBATE_MAX_ITERATIONS,
                 progress_callback=_debate_progress_callback,
                 label=f"Bull-R{round_num}",
@@ -136,13 +142,17 @@ Sentiment: {sentiment[:600] if sentiment else 'N/A'}
         except Exception as e:
             logger.error("Bull debater failed: %s", e)
             # Fallback to simple invoke
-            fallback = llm.invoke(f"用中文为 {symbol} 商品期货构建最强看涨论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}")
-            result = fallback.content if hasattr(fallback, 'content') else str(fallback)
+            fallback = llm.invoke(
+                f"用中文为 {symbol} 商品期货构建最强看涨论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}"
+            )
+            result = fallback.content if hasattr(fallback, "content") else str(fallback)
 
         if not result:
             logger.warning("Bull returned empty — retrying with simpler prompt")
-            fallback = llm.invoke(f"用中文为 {symbol} 商品期货构建最强看涨论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}")
-            result = fallback.content if hasattr(fallback, 'content') else str(fallback)
+            fallback = llm.invoke(
+                f"用中文为 {symbol} 商品期货构建最强看涨论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}"
+            )
+            result = fallback.content if hasattr(fallback, "content") else str(fallback)
 
         new_debate_state = {
             "bull_history": debate_state.get("bull_history", "") + "\n" + result,
@@ -207,10 +217,10 @@ def create_bear_debater(llm, label="Bear"):
 
 **Analyst Reports (for context)**:
 ---
-Technical: {technical[:1200] if technical else 'N/A'}
-Fundamental: {fundamental[:1200] if fundamental else 'N/A'}
-Macro/News: {macro[:800] if macro else 'N/A'}
-Sentiment: {sentiment[:600] if sentiment else 'N/A'}
+Technical: {technical[:1200] if technical else "N/A"}
+Fundamental: {fundamental[:1200] if fundamental else "N/A"}
+Macro/News: {macro[:800] if macro else "N/A"}
+Sentiment: {sentiment[:600] if sentiment else "N/A"}
 ---
 
 {opponent_context}
@@ -225,20 +235,26 @@ Sentiment: {sentiment[:600] if sentiment else 'N/A'}
         # Run tool-calling loop
         try:
             result = _run_tool_loop(
-                llm, DEBATE_TOOLS, [initial_msg],
+                llm,
+                DEBATE_TOOLS,
+                [initial_msg],
                 max_iterations=DEBATE_MAX_ITERATIONS,
                 progress_callback=_debate_progress_callback,
                 label=f"Bear-R{round_num}",
             )
         except Exception as e:
             logger.error("Bear debater failed: %s", e)
-            fallback = llm.invoke(f"用中文为 {symbol} 商品期货构建最强看跌论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}")
-            result = fallback.content if hasattr(fallback, 'content') else str(fallback)
+            fallback = llm.invoke(
+                f"用中文为 {symbol} 商品期货构建最强看跌论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}"
+            )
+            result = fallback.content if hasattr(fallback, "content") else str(fallback)
 
         if not result:
             logger.warning("Bear returned empty — retrying with simpler prompt")
-            fallback = llm.invoke(f"用中文为 {symbol} 商品期货构建最强看跌论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}")
-            result = fallback.content if hasattr(fallback, 'content') else str(fallback)
+            fallback = llm.invoke(
+                f"用中文为 {symbol} 商品期货构建最强看跌论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}"
+            )
+            result = fallback.content if hasattr(fallback, "content") else str(fallback)
 
         new_debate_state = {
             "bull_history": debate_state.get("bull_history", ""),
@@ -289,15 +305,15 @@ A bull vs bear debate just finished. Your job: summarize, fact-check, and judge.
 **Debate Transcript**:
 
 BULL ARGUMENTS:
-{bull_history[:2000] if bull_history else 'None.'}
+{bull_history[:2000] if bull_history else "None."}
 
 BEAR ARGUMENTS:
-{bear_history[:2000] if bear_history else 'None.'}
+{bear_history[:2000] if bear_history else "None."}
 
 **Analyst Reports (for context)**:
-Technical: {technical[:500] if technical else 'N/A'}
-Fundamental: {fundamental[:500] if fundamental else 'N/A'}
-Macro: {macro[:400] if macro else 'N/A'}
+Technical: {technical[:500] if technical else "N/A"}
+Fundamental: {fundamental[:500] if fundamental else "N/A"}
+Macro: {macro[:400] if macro else "N/A"}
 
 **Tasks**:
 1. FACT-CHECK: Use tools to verify 1-2 key factual claims from the debate (price levels, direction claims)
@@ -328,20 +344,26 @@ Macro: {macro[:400] if macro else 'N/A'}
         # Run tool-calling loop for fact-checking
         try:
             result = _run_tool_loop(
-                llm, MODERATOR_TOOLS, [initial_msg],
+                llm,
+                MODERATOR_TOOLS,
+                [initial_msg],
                 max_iterations=DEBATE_MAX_ITERATIONS,
                 progress_callback=_debate_progress_callback,
                 label="Moderator",
             )
         except Exception as e:
             logger.error("Moderator failed: %s", e)
-            fallback = llm.invoke(f"Summarize the bull vs bear debate for {symbol}. Bull: {bull_history[:1000]} Bear: {bear_history[:1000]}")
-            result = fallback.content if hasattr(fallback, 'content') else str(fallback)
+            fallback = llm.invoke(
+                f"Summarize the bull vs bear debate for {symbol}. Bull: {bull_history[:1000]} Bear: {bear_history[:1000]}"
+            )
+            result = fallback.content if hasattr(fallback, "content") else str(fallback)
 
         if not result:
             logger.warning("Moderator returned empty — retrying")
-            fallback = llm.invoke(f"Summarize the bull vs bear debate for {symbol}. Bull: {bull_history[:1000]} Bear: {bear_history[:1000]}")
-            result = fallback.content if hasattr(fallback, 'content') else str(fallback)
+            fallback = llm.invoke(
+                f"Summarize the bull vs bear debate for {symbol}. Bull: {bull_history[:1000]} Bear: {bear_history[:1000]}"
+            )
+            result = fallback.content if hasattr(fallback, "content") else str(fallback)
 
         logger.info("Moderator done.")
 

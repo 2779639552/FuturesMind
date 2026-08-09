@@ -55,9 +55,7 @@ class BedrockClient(BaseLLMClient):
         chat_cls = _bedrock_class()
 
         region = (
-            os.environ.get("AWS_REGION")
-            or os.environ.get("AWS_DEFAULT_REGION")
-            or _DEFAULT_REGION
+            os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or _DEFAULT_REGION
         )
         llm_kwargs = {"model": self.model, "region_name": region}
         # A Bedrock API key authenticates without AWS access keys. Passing it as

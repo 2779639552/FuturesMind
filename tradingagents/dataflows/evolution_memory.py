@@ -16,13 +16,14 @@ Follows the same pattern as ``external_data.py``: JSON files under
 ``~/.tradingagents/`` with staleness-agnostic reads (debates never expire).
 """
 
+import contextlib
 import json
 import logging
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATA_DIR = os.path.join(
-    os.path.expanduser("~"), ".tradingagents", "evolution_memory"
-)
+DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".tradingagents", "evolution_memory")
 
 MAX_DEBATES_PER_VARIETY = 50
 MAX_CRITICISMS_IN_PROFILE = 10
@@ -79,7 +78,9 @@ def load_debates(variety: str) -> list[dict[str, Any]]:
     if declared and declared != variety.upper():
         logger.warning(
             "Evolution memory file %s declares variety=%s, expected %s.",
-            filepath, declared, variety,
+            filepath,
+            declared,
+            variety,
         )
         return []
 
@@ -221,7 +222,7 @@ def get_evolution_context(variety: str) -> str:
             for lesson in d.get("lessons_learned", []):
                 lessons_set.add(lesson)
         if lessons_set:
-            parts.append("### {variety} 品种历史经验".format(variety=variety))
+            parts.append(f"### {variety} 品种历史经验")
             for lesson in sorted(lessons_set):
                 parts.append(f"- {lesson}")
             parts.append("")
@@ -231,9 +232,7 @@ def get_evolution_context(variety: str) -> str:
     if factors:
         sorted_factors = sorted(factors.items(), key=lambda x: x[1], reverse=True)
         parts.append("### 用户关注因子权重")
-        parts.append(
-            " > ".join(f"{k}({v})" for k, v in sorted_factors[:6])
-        )
+        parts.append(" > ".join(f"{k}({v})" for k, v in sorted_factors[:6]))
         parts.append("")
 
     # --- Direction calibration ---
@@ -354,16 +353,15 @@ def update_profile_from_debate(
         prev_note = cal.get("adjustment_note", "")
         if "下调乐观程度" not in prev_note:
             cal["adjustment_note"] = prev_note + (
-                "用户历史上比agent更偏保守/看空且被辩论验证为正确，"
-                "综合判断时应考虑下调乐观程度。" if not prev_note else ""
+                "用户历史上比agent更偏保守/看空且被辩论验证为正确，综合判断时应考虑下调乐观程度。"
+                if not prev_note
+                else ""
             )
     elif not user_persuaded and is_user_more_bearish:
         # User was bearish but agent maintained position — record the disagreement
         # but don't assume agent is biased
         cal = profile.setdefault("direction_calibration", {})
-        cal["user_agent_disagreement_count"] = (
-            cal.get("user_agent_disagreement_count", 0) + 1
-        )
+        cal["user_agent_disagreement_count"] = cal.get("user_agent_disagreement_count", 0) + 1
         # Only flag bias if user has been RIGHT multiple times (not just disagreed)
         if cal.get("user_agent_disagreement_count", 0) >= 3:
             cal["bullish_bias_detected"] = True
@@ -441,9 +439,23 @@ def build_debate_record(
         agreement = "partial"
 
     # Split multi-line text into lists
-    agreed_pts = [p.strip() for p in user_factors_text.split("\n") if "认同" in p or "准确" in p] if user_factors_text else []
-    disagreed_pts = [p.strip() for p in user_factors_text.split("\n") if "低估" in p or "高估" in p or "不足" in p] if user_factors_text else []
-    missing_factors = [m.strip() for m in user_missing_text.split("\n") if m.strip()] if user_missing_text else []
+    agreed_pts = (
+        [p.strip() for p in user_factors_text.split("\n") if "认同" in p or "准确" in p]
+        if user_factors_text
+        else []
+    )
+    disagreed_pts = (
+        [
+            p.strip()
+            for p in user_factors_text.split("\n")
+            if "低估" in p or "高估" in p or "不足" in p
+        ]
+        if user_factors_text
+        else []
+    )
+    missing_factors = (
+        [m.strip() for m in user_missing_text.split("\n") if m.strip()] if user_missing_text else []
+    )
 
     return {
         "id": str(uuid.uuid4())[:8],
@@ -486,7 +498,11 @@ if __name__ == "__main__":
     record = build_debate_record(
         variety=test_variety,
         trade_date="2026-07-17",
-        agent_conclusion={"direction": "震荡偏多", "weights": {"tech": 2, "fund": 4, "macro": 4}, "summary": "测试结论"},
+        agent_conclusion={
+            "direction": "震荡偏多",
+            "weights": {"tech": 2, "fund": 4, "macro": 4},
+            "summary": "测试结论",
+        },
         user_direction="偏保守",
         user_factors_text="库存分析准确\n低估了出口数据影响",
         user_missing_text="出口退税政策变化",
@@ -520,12 +536,13 @@ if __name__ == "__main__":
 
     # 6. Cleanup test data
     import sys
+
     if "--keep" not in sys.argv:
         test_file = _ensure_dir() / f"{test_variety}.json"
         test_file.unlink(missing_ok=True)
         prof_file = _ensure_dir() / "user_profile.json"
         prof_file.unlink(missing_ok=True)
-        print(f"\n6. Cleaned up test files (use --keep to preserve)")
+        print("\n6. Cleaned up test files (use --keep to preserve)")
 
     print("\n=== All tests passed ===")
 
@@ -573,21 +590,25 @@ def store_prediction(
                 predictions = []
 
         # Add new prediction
-        predictions.append({
-            "trade_date": trade_date,
-            "rating": rating,
-            "confidence": confidence,
-            "score": score,
-            "key_levels": key_levels,
-            "stored_at": datetime.now(timezone.utc).isoformat(),
-            "resolved": False,
-        })
+        predictions.append(
+            {
+                "trade_date": trade_date,
+                "rating": rating,
+                "confidence": confidence,
+                "score": score,
+                "key_levels": key_levels,
+                "stored_at": datetime.now(timezone.utc).isoformat(),
+                "resolved": False,
+            }
+        )
 
         # Keep last 20 predictions
         predictions = predictions[-20:]
 
         filepath.write_text(json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info("Stored prediction for %s on %s: %s (score=%d)", variety, trade_date, rating, score)
+        logger.info(
+            "Stored prediction for %s on %s: %s (score=%d)", variety, trade_date, rating, score
+        )
 
     except Exception as e:
         logger.warning("Failed to store prediction for %s: %s", variety, e)
@@ -636,11 +657,10 @@ def resolve_past_predictions(variety: str, symbol: str) -> str:
         # Fetch price data from trade_date to now
         try:
             from datetime import datetime as dt, timedelta
+
             target_dt = dt.strptime(trade_date, "%Y-%m-%d")
             end_dt = target_dt + timedelta(days=14)  # Look ahead 2 weeks
-            price_result = get_futures_price(
-                symbol, trade_date, end_dt.strftime("%Y-%m-%d")
-            )
+            price_result = get_futures_price(symbol, trade_date, end_dt.strftime("%Y-%m-%d"))
         except Exception:
             continue
 
@@ -662,7 +682,7 @@ def resolve_past_predictions(variety: str, symbol: str) -> str:
 
         entry_close = closes[0][1]
         # Find the furthest available close within 10 trading days
-        last_close = closes[min(len(closes)-1, 10)][1]
+        last_close = closes[min(len(closes) - 1, 10)][1]
         pct_change = (last_close - entry_close) / entry_close * 100
 
         # Determine if prediction was correct
@@ -671,9 +691,7 @@ def resolve_past_predictions(variety: str, symbol: str) -> str:
         price_up = pct_change > 0.2
         price_down = pct_change < -0.2
 
-        if is_bullish and price_up:
-            outcome = "CORRECT"
-        elif is_bearish and price_down:
+        if is_bullish and price_up or is_bearish and price_down:
             outcome = "CORRECT"
         elif abs(pct_change) <= 0.2:
             outcome = "FLAT (方向不明)"
@@ -698,12 +716,8 @@ def resolve_past_predictions(variety: str, symbol: str) -> str:
         unresolved[i]["resolved_at"] = datetime.now(timezone.utc).isoformat()
 
     # Write back
-    try:
-        filepath.write_text(
-            json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        filepath.write_text(json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if not reflections:
         return ""
@@ -715,7 +729,9 @@ def resolve_past_predictions(variety: str, symbol: str) -> str:
     ]
     parts.extend(reflections)
     parts.append("")
-    parts.append("**请反思**: 上次预测中准确和错误的部分分别是什么原因？当前分析是否需要调整判断框架？")
+    parts.append(
+        "**请反思**: 上次预测中准确和错误的部分分别是什么原因？当前分析是否需要调整判断框架？"
+    )
     parts.append("")
 
     return "\n".join(parts)

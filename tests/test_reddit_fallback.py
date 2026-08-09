@@ -29,6 +29,7 @@ _SAMPLE_ATOM = """<?xml version="1.0" encoding="UTF-8"?>
 
 def _resp(read_fn):
     """A minimal context-manager response whose read() runs ``read_fn``."""
+
     class _Resp:
         def __enter__(self_inner):
             return self_inner
@@ -38,6 +39,7 @@ def _resp(read_fn):
 
         def read(self_inner):
             return read_fn()
+
     return _Resp()
 
 
@@ -48,6 +50,7 @@ def _atom_resp():
 def _raise(exc):
     def _r():
         raise exc
+
     return _resp(_r)
 
 
@@ -65,7 +68,7 @@ class TestIsoToTimestamp:
 @pytest.mark.unit
 class TestStripHtml:
     def test_extracts_between_sc_markers_and_unescapes(self):
-        raw = "<!-- SC_OFF --><div class=\"md\"><p>Great <b>quarter</b> &amp; more</p></div><!-- SC_ON -->"
+        raw = '<!-- SC_OFF --><div class="md"><p>Great <b>quarter</b> &amp; more</p></div><!-- SC_ON -->'
         assert reddit._strip_html(raw) == "Great quarter & more"
 
     def test_empty(self):
@@ -96,11 +99,22 @@ class TestFetchSubredditIsRssFirst:
     the WAF-blocked JSON endpoint, which only burned rate-limit budget."""
 
     def test_delegates_to_rss_without_touching_json(self):
-        sentinel = [{"title": "x", "source": "rss", "score": None,
-                     "num_comments": None, "created_utc": None, "selftext": ""}]
-        with patch.object(reddit, "_fetch_subreddit_rss", return_value=sentinel) as rss, \
-             patch.object(reddit, "urlopen",
-                          side_effect=AssertionError("JSON endpoint must not be called")):
+        sentinel = [
+            {
+                "title": "x",
+                "source": "rss",
+                "score": None,
+                "num_comments": None,
+                "created_utc": None,
+                "selftext": "",
+            }
+        ]
+        with (
+            patch.object(reddit, "_fetch_subreddit_rss", return_value=sentinel) as rss,
+            patch.object(
+                reddit, "urlopen", side_effect=AssertionError("JSON endpoint must not be called")
+            ),
+        ):
             out = reddit._fetch_subreddit("NVDA", "stocks", 5, 5.0)
         rss.assert_called_once()
         assert out is sentinel
@@ -112,10 +126,20 @@ class TestJsonPathFallsBackToRss:
 
     def test_403_triggers_rss(self):
         err = HTTPError("url", 403, "Blocked", {}, None)
-        rss_posts = [{"title": "x", "source": "rss", "score": None,
-                      "num_comments": None, "created_utc": None, "selftext": ""}]
-        with patch.object(reddit, "urlopen", side_effect=err), \
-             patch.object(reddit, "_fetch_subreddit_rss", return_value=rss_posts) as rss:
+        rss_posts = [
+            {
+                "title": "x",
+                "source": "rss",
+                "score": None,
+                "num_comments": None,
+                "created_utc": None,
+                "selftext": "",
+            }
+        ]
+        with (
+            patch.object(reddit, "urlopen", side_effect=err),
+            patch.object(reddit, "_fetch_subreddit_rss", return_value=rss_posts) as rss,
+        ):
             out = reddit._fetch_subreddit_json("NVDA", "stocks", 5, 5.0)
         rss.assert_called_once()
         assert out and out[0]["source"] == "rss"
@@ -125,25 +149,31 @@ class TestJsonPathFallsBackToRss:
 class TestRss429Backoff:
     def test_429_then_success_retries_once(self):
         err = HTTPError("url", 429, "Too Many Requests", {}, None)
-        with patch.object(reddit, "urlopen", side_effect=[err, _atom_resp()]) as op, \
-             patch.object(reddit.time, "sleep") as slept:
+        with (
+            patch.object(reddit, "urlopen", side_effect=[err, _atom_resp()]) as op,
+            patch.object(reddit.time, "sleep") as slept,
+        ):
             posts = reddit._fetch_subreddit_rss("NVDA", "stocks", 5, 5.0)
-        assert op.call_count == 2          # original + exactly one retry
-        slept.assert_called_once()         # backed off before retrying
+        assert op.call_count == 2  # original + exactly one retry
+        slept.assert_called_once()  # backed off before retrying
         assert len(posts) == 2
 
     def test_429_twice_gives_up_after_one_retry(self):
         err = HTTPError("url", 429, "Too Many Requests", {}, None)
-        with patch.object(reddit, "urlopen", side_effect=[err, err]) as op, \
-             patch.object(reddit.time, "sleep"):
+        with (
+            patch.object(reddit, "urlopen", side_effect=[err, err]) as op,
+            patch.object(reddit.time, "sleep"),
+        ):
             posts = reddit._fetch_subreddit_rss("NVDA", "stocks", 5, 5.0)
-        assert op.call_count == 2          # one retry, then gives up cleanly
+        assert op.call_count == 2  # one retry, then gives up cleanly
         assert posts == []
 
     def test_retry_after_header_is_honoured(self):
         err = HTTPError("url", 429, "Too Many Requests", {"Retry-After": "12"}, None)
-        with patch.object(reddit, "urlopen", side_effect=[err, _atom_resp()]), \
-             patch.object(reddit.time, "sleep") as slept:
+        with (
+            patch.object(reddit, "urlopen", side_effect=[err, _atom_resp()]),
+            patch.object(reddit.time, "sleep") as slept,
+        ):
             reddit._fetch_subreddit_rss("NVDA", "stocks", 5, 5.0)
         slept.assert_called_once_with(12.0)
 
@@ -158,8 +188,10 @@ class TestChunkedTransferErrorsHandled:
             assert reddit._fetch_subreddit_rss("NVDA", "stocks", 5, 5.0) == []
 
     def test_json_incomplete_read_falls_back_to_rss(self):
-        with patch.object(reddit, "urlopen", return_value=_raise(http.client.IncompleteRead(b""))), \
-             patch.object(reddit, "_fetch_subreddit_rss", return_value=[]) as rss:
+        with (
+            patch.object(reddit, "urlopen", return_value=_raise(http.client.IncompleteRead(b""))),
+            patch.object(reddit, "_fetch_subreddit_rss", return_value=[]) as rss,
+        ):
             reddit._fetch_subreddit_json("NVDA", "stocks", 5, 5.0)
         rss.assert_called_once()
 
@@ -167,11 +199,16 @@ class TestChunkedTransferErrorsHandled:
 @pytest.mark.unit
 class TestFormatterHandlesRssPosts:
     def test_rss_posts_omit_fake_counts_and_note_source(self):
-        rss_posts = [{
-            "title": "NVDA pops", "score": None, "num_comments": None,
-            "created_utc": reddit._iso_to_timestamp("2026-05-20T14:30:00Z"),
-            "selftext": "great quarter", "source": "rss",
-        }]
+        rss_posts = [
+            {
+                "title": "NVDA pops",
+                "score": None,
+                "num_comments": None,
+                "created_utc": reddit._iso_to_timestamp("2026-05-20T14:30:00Z"),
+                "selftext": "great quarter",
+                "source": "rss",
+            }
+        ]
         with patch.object(reddit, "_fetch_subreddit", return_value=rss_posts):
             out = reddit.fetch_reddit_posts("NVDA", subreddits=("stocks",), inter_request_delay=0)
         assert "via RSS feed" in out
@@ -180,11 +217,15 @@ class TestFormatterHandlesRssPosts:
         assert "great quarter" in out
 
     def test_json_posts_still_show_counts(self):
-        json_posts = [{
-            "title": "NVDA pops", "score": 1234, "num_comments": 56,
-            "created_utc": reddit._iso_to_timestamp("2026-05-20T14:30:00Z"),
-            "selftext": "",
-        }]
+        json_posts = [
+            {
+                "title": "NVDA pops",
+                "score": 1234,
+                "num_comments": 56,
+                "created_utc": reddit._iso_to_timestamp("2026-05-20T14:30:00Z"),
+                "selftext": "",
+            }
+        ]
         with patch.object(reddit, "_fetch_subreddit", return_value=json_posts):
             out = reddit.fetch_reddit_posts("NVDA", subreddits=("stocks",), inter_request_delay=0)
         assert "1234↑" in out

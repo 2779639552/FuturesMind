@@ -5,6 +5,7 @@ The guard raises NoMarketDataError with a stale-specific detail, so the router's
 existing try-next-vendor + single-sentinel handling applies and the sentinel
 surfaces the reason.
 """
+
 import copy
 import unittest
 from unittest import mock
@@ -50,9 +51,7 @@ class StaleGuardUnitTests(unittest.TestCase):
 
     def test_empty_frame_is_left_to_caller(self):
         # Empty is a no-data condition handled elsewhere, not a staleness one.
-        _assert_ohlcv_not_stale(
-            pd.DataFrame(columns=["Date", "Close"]), "2026-06-11", "X"
-        )
+        _assert_ohlcv_not_stale(pd.DataFrame(columns=["Date", "Close"]), "2026-06-11", "X")
 
     def test_long_holiday_gap_within_threshold_is_accepted(self):
         _assert_ohlcv_not_stale(_frame("2026-06-02"), "2026-06-11", "X")  # 9 days
@@ -63,8 +62,11 @@ class StaleGuardPropagationTests(unittest.TestCase):
     def test_get_yfin_data_online_raises_on_stale_frame(self):
         stale = pd.DataFrame(
             {
-                "Open": [280.0], "High": [286.0], "Low": [278.0],
-                "Close": [284.45], "Volume": [1_000_000],
+                "Open": [280.0],
+                "High": [286.0],
+                "Low": [278.0],
+                "Close": [284.45],
+                "Volume": [1_000_000],
             },
             index=pd.DatetimeIndex([pd.Timestamp("2025-06-11")], name="Date"),
         )
@@ -76,8 +78,10 @@ class StaleGuardPropagationTests(unittest.TestCase):
             def history(self, start, end):
                 return stale
 
-        with mock.patch.object(y_finance.yf, "Ticker", DummyTicker), \
-                self.assertRaises(NoMarketDataError):
+        with (
+            mock.patch.object(y_finance.yf, "Ticker", DummyTicker),
+            self.assertRaises(NoMarketDataError),
+        ):
             y_finance.get_YFin_data_online("CB", "2026-06-01", "2026-06-11")
 
 
@@ -102,9 +106,7 @@ class StaleGuardRoutingTests(unittest.TestCase):
             {"get_stock_data": {"yfinance": _stale}},
             clear=False,
         ):
-            out = interface.route_to_vendor(
-                "get_stock_data", "CB", "2026-06-01", "2026-06-11"
-            )
+            out = interface.route_to_vendor("get_stock_data", "CB", "2026-06-01", "2026-06-11")
         self.assertIn("NO_DATA_AVAILABLE", out)
         self.assertIn("stale", out)  # the typed detail is surfaced to the agent
 

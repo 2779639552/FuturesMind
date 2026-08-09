@@ -12,10 +12,14 @@
   python image_pipeline.py data.jsonl --max-images 50 --no-download
 """
 
-import json, os, time, hashlib, argparse, sys
-from pathlib import Path
+import argparse
+import hashlib
+import json
+import os
+import sys
+import time
 from datetime import datetime
-from typing import Optional
+from pathlib import Path
 
 import requests
 from PIL import Image
@@ -34,8 +38,10 @@ QWEN_MODEL = "granite3.2-vision:2b"  # Fast non-thinking VL model (8.5s vs 56s f
 # 图片下载
 # ============================================================
 
-def download_image(url: str, note_id: str, img_idx: int,
-                   cookies: dict = None, timeout: int = 30) -> Optional[str]:
+
+def download_image(
+    url: str, note_id: str, img_idx: int, cookies: dict = None, timeout: int = 30
+) -> str | None:
     """下载单张图片，返回本地路径。失败返回None。"""
     # 用URL hash做缓存key
     url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
@@ -54,7 +60,7 @@ def download_image(url: str, note_id: str, img_idx: int,
         if resp.status_code == 200 and len(resp.content) > 1000:
             cache_path.write_bytes(resp.content)
             return str(cache_path)
-    except Exception as e:
+    except Exception:
         pass
     return None
 
@@ -102,6 +108,7 @@ def analyze_image(image_path: str, timeout: int = 180) -> dict:
 
         # 转为PNG bytes
         import io
+
         png_buf = io.BytesIO()
         img.convert("RGB").save(png_buf, format="PNG")
         png_bytes = png_buf.getvalue()
@@ -116,7 +123,7 @@ def analyze_image(image_path: str, timeout: int = 180) -> dict:
                 "stream": False,
                 "options": {
                     "temperature": 0.1,
-                    "num_predict": 800,   # Granite non-thinking: 500-800 tokens enough for JSON
+                    "num_predict": 800,  # Granite non-thinking: 500-800 tokens enough for JSON
                 },
             },
             timeout=timeout,
@@ -170,6 +177,7 @@ def analyze_image(image_path: str, timeout: int = 180) -> dict:
 # 合并分析结果到note
 # ============================================================
 
+
 def merge_image_analysis(note: dict, image_results: list[dict]) -> dict:
     """将图片分析结果合并到note"""
     scores = []
@@ -199,7 +207,9 @@ def merge_image_analysis(note: dict, image_results: list[dict]) -> dict:
         "image_types": types,
         "image_sentiment_scores": scores,
         "image_avg_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
-        "image_avg_confidence": round(sum(confidences) / len(confidences), 3) if confidences else 0.0,
+        "image_avg_confidence": round(sum(confidences) / len(confidences), 3)
+        if confidences
+        else 0.0,
         "image_descriptions": descriptions,
         "image_key_infos": key_infos,
         "results": image_results,
@@ -248,13 +258,15 @@ def merge_image_analysis(note: dict, image_results: list[dict]) -> dict:
 # 主流程
 # ============================================================
 
-def run_pipeline(jsonl_path: str, max_images: int = None,
-                 no_download: bool = False, start_from: int = 0):
+
+def run_pipeline(
+    jsonl_path: str, max_images: int = None, no_download: bool = False, start_from: int = 0
+):
     """主流程: 下载图片 → Qwen3-VL分析 → 合并结果"""
 
     # 读JSONL
     notes = []
-    with open(jsonl_path, "r", encoding="utf-8") as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -264,9 +276,9 @@ def run_pipeline(jsonl_path: str, max_images: int = None,
         notes = notes[start_from:]
         print(f"从第{start_from}条开始, 剩余{len(notes)}条")
 
-    print(f"{'='*60}")
-    print(f"  图片下载 + Qwen3-VL 多模态分析")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
+    print("  图片下载 + Qwen3-VL 多模态分析")
+    print(f"{'=' * 60}")
     print(f"  输入: {jsonl_path}")
     print(f"  笔记数: {len(notes)}")
     print(f"  最大图片数: {max_images or '无限制'}")
@@ -299,8 +311,9 @@ def run_pipeline(jsonl_path: str, max_images: int = None,
                 f_out.write(json.dumps(note, ensure_ascii=False) + "\n")
                 continue
 
-            print(f"\n[{note_idx+1}/{len(notes)}] Note {note_id[:12]}... "
-                  f"({len(image_urls)} images)")
+            print(
+                f"\n[{note_idx + 1}/{len(notes)}] Note {note_id[:12]}... ({len(image_urls)} images)"
+            )
 
             # Step 1: Download
             local_paths = []
@@ -313,7 +326,7 @@ def run_pipeline(jsonl_path: str, max_images: int = None,
                         local_paths.append(local)
                         total_downloaded += 1
                     else:
-                        print(f"  Image {i+1}: download FAILED")
+                        print(f"  Image {i + 1}: download FAILED")
 
                 print(f"  Downloaded: {len(local_paths)}/{len(image_urls)}")
             else:
@@ -346,11 +359,13 @@ def run_pipeline(jsonl_path: str, max_images: int = None,
                     elif result.get("parse_error"):
                         print(f"PARSE_ERR ({elapsed:.1f}s)")
                     else:
-                        print(f"{result.get('image_type', '?')} "
-                              f"| {result.get('sentiment', '?')} "
-                              f"| score={result.get('sentiment_score', 0)} "
-                              f"| conf={result.get('confidence', 0):.2f} "
-                              f"({elapsed:.1f}s)")
+                        print(
+                            f"{result.get('image_type', '?')} "
+                            f"| {result.get('sentiment', '?')} "
+                            f"| score={result.get('sentiment_score', 0)} "
+                            f"| conf={result.get('confidence', 0):.2f} "
+                            f"({elapsed:.1f}s)"
+                        )
 
                     image_results.append(result)
                     time.sleep(0.5)  # 小间隔防止过热
@@ -366,20 +381,19 @@ def run_pipeline(jsonl_path: str, max_images: int = None,
                 avg_time = elapsed / total_analyzed
                 remaining = (max_images or 999) - total_images
                 eta = max(0, remaining * avg_time)
-                print(f"  Progress: {total_analyzed} imgs analyzed, "
-                      f"ETA: {eta/60:.0f}min")
+                print(f"  Progress: {total_analyzed} imgs analyzed, ETA: {eta / 60:.0f}min")
 
     # Summary
     elapsed = time.time() - start_time
-    print(f"\n{'='*60}")
-    print(f"  Pipeline Complete")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("  Pipeline Complete")
+    print(f"{'=' * 60}")
     print(f"  Images downloaded: {total_downloaded}")
     print(f"  Images analyzed: {total_analyzed}")
-    print(f"  Time: {elapsed/60:.1f} min")
-    print(f"  Speed: {total_analyzed/elapsed*60:.0f} images/min")
+    print(f"  Time: {elapsed / 60:.1f} min")
+    print(f"  Speed: {total_analyzed / elapsed * 60:.0f} images/min")
     print(f"  Output: {out_path}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     return str(out_path)
 
@@ -387,12 +401,9 @@ def run_pipeline(jsonl_path: str, max_images: int = None,
 def main():
     parser = argparse.ArgumentParser(description="图片下载 + Qwen3-VL多模态分析")
     parser.add_argument("input", help="JSONL数据文件 (含image_urls字段)")
-    parser.add_argument("--max-images", type=int, default=None,
-                        help="最多分析图片数 (默认全部)")
-    parser.add_argument("--no-download", action="store_true",
-                        help="跳过下载 (使用缓存)")
-    parser.add_argument("--start-from", type=int, default=0,
-                        help="从第N条笔记开始")
+    parser.add_argument("--max-images", type=int, default=None, help="最多分析图片数 (默认全部)")
+    parser.add_argument("--no-download", action="store_true", help="跳过下载 (使用缓存)")
+    parser.add_argument("--start-from", type=int, default=0, help="从第N条笔记开始")
     args = parser.parse_args()
 
     run_pipeline(

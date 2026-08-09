@@ -8,10 +8,16 @@ Usage:
   python image_pipeline_v2.py data.jsonl --max-images 50
 """
 
-import json, os, time, hashlib, io, base64, argparse, sys, re
-from pathlib import Path
+import argparse
+import base64
+import hashlib
+import io
+import json
+import sys
+import time
 from datetime import datetime
-from typing import Optional
+from pathlib import Path
+
 import requests
 from PIL import Image
 
@@ -24,7 +30,9 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 FAST_MODEL = "granite3.2-vision:2b"
 DEEP_MODEL = "qwen2.5vl:3b"
 
-CLASSIFY_PROMPT = "What type of image is this? Answer with ONE WORD: chart, screenshot, meme, or text."
+CLASSIFY_PROMPT = (
+    "What type of image is this? Answer with ONE WORD: chart, screenshot, meme, or text."
+)
 OCR_PROMPT = "Extract all visible text from this image. Output only the text, nothing else."
 DEEP_PROMPT = 'Analyze this futures image. JSON: {"sentiment":"bullish/bearish/neutral","sentiment_score":-1to1,"description":"brief"}. Only JSON.'
 
@@ -33,14 +41,17 @@ DEEP_PROMPT = 'Analyze this futures image. JSON: {"sentiment":"bullish/bearish/n
 # Image download & preparation
 # ============================================================
 
-def download_image(url: str, note_id: str, img_idx: int, timeout: int = 30) -> Optional[str]:
+
+def download_image(url: str, note_id: str, img_idx: int, timeout: int = 30) -> str | None:
     url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
     cache_path = IMAGE_CACHE_DIR / f"{note_id}_{img_idx}_{url_hash}.jpg"
     if cache_path.exists():
         return str(cache_path)
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                    "Referer": "https://www.xiaohongshu.com/"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "https://www.xiaohongshu.com/",
+        }
         resp = requests.get(url, headers=headers, timeout=timeout)
         if resp.status_code == 200 and len(resp.content) > 1000:
             cache_path.write_bytes(resp.content)
@@ -68,17 +79,25 @@ def prepare_image(image_path: str, max_size: int = 640):
 # Ollama helpers
 # ============================================================
 
-def call_ollama(model: str, prompt: str, image_b64: str,
-                num_predict: int = 300, timeout: int = 120) -> dict:
-    resp = requests.post(OLLAMA_URL, json={
-        "model": model, "prompt": prompt,
-        "images": [image_b64], "stream": False,
-        "options": {"temperature": 0.1, "num_predict": num_predict}
-    }, timeout=timeout)
+
+def call_ollama(
+    model: str, prompt: str, image_b64: str, num_predict: int = 300, timeout: int = 120
+) -> dict:
+    resp = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": model,
+            "prompt": prompt,
+            "images": [image_b64],
+            "stream": False,
+            "options": {"temperature": 0.1, "num_predict": num_predict},
+        },
+        timeout=timeout,
+    )
     return resp.json()
 
 
-def parse_json_response(response_text: str) -> Optional[dict]:
+def parse_json_response(response_text: str) -> dict | None:
     if not response_text:
         return None
     cleaned = response_text.strip()
@@ -100,6 +119,7 @@ def parse_json_response(response_text: str) -> Optional[dict]:
 # ============================================================
 # Stage 1: classify + OCR (Granite, merged call)
 # ============================================================
+
 
 def stage1_classify_and_ocr(image_path: str) -> dict:
     img_b64, w, h, fmt = prepare_image(image_path, max_size=640)
@@ -135,11 +155,17 @@ def stage1_classify_and_ocr(image_path: str) -> dict:
 # Stage 2: deep visual analysis (qwen2.5vl:3b, 480px)
 # ============================================================
 
+
 def stage2_deep_analysis(image_path: str) -> dict:
     img_b64, w, h, fmt = prepare_image(image_path, max_size=480)
     if img_b64 is None:
-        return {"sentiment": "neutral", "sentiment_score": 0.0, "confidence": 0.0,
-                "description": "image too small", "analyzed": False}
+        return {
+            "sentiment": "neutral",
+            "sentiment_score": 0.0,
+            "confidence": 0.0,
+            "description": "image too small",
+            "analyzed": False,
+        }
 
     t0 = time.time()
     data = call_ollama(DEEP_MODEL, DEEP_PROMPT, img_b64, num_predict=500, timeout=120)
@@ -150,8 +176,12 @@ def stage2_deep_analysis(image_path: str) -> dict:
         result["analyzed"] = True
         result["model"] = DEEP_MODEL
     else:
-        result = {"sentiment": "neutral", "sentiment_score": 0.0,
-                  "confidence": 0.1, "description": "parse_failed"}
+        result = {
+            "sentiment": "neutral",
+            "sentiment_score": 0.0,
+            "confidence": 0.1,
+            "description": "parse_failed",
+        }
     result["image_size"] = f"{w}x{h}"
     result["analyzed_at"] = datetime.now().isoformat()
     result["deep_time"] = round(elapsed, 1)
@@ -162,15 +192,22 @@ def stage2_deep_analysis(image_path: str) -> dict:
 # Text sentiment (reuse existing engine)
 # ============================================================
 
+
 def text_sentiment_analysis(ocr_text: str, note_desc: str = "") -> dict:
     try:
         from sentiment import SentimentAnalyzer
+
         sa = SentimentAnalyzer()
         combined = f"{note_desc} {ocr_text}".strip()
         if combined:
             r = sa.analyze(combined)
-            return {"sentiment": r["sentiment"], "sentiment_score": r["score"],
-                    "confidence": r["confidence"], "analyzed": True, "model": "text_engine"}
+            return {
+                "sentiment": r["sentiment"],
+                "sentiment_score": r["score"],
+                "confidence": r["confidence"],
+                "analyzed": True,
+                "model": "text_engine",
+            }
     except ImportError:
         pass
     return {"sentiment": "neutral", "sentiment_score": 0.0, "confidence": 0.0}
@@ -179,6 +216,7 @@ def text_sentiment_analysis(ocr_text: str, note_desc: str = "") -> dict:
 # ============================================================
 # FAST mode: rule-based, zero API calls
 # ============================================================
+
 
 def fast_analyze_image(image_path: str, note_desc: str = "") -> dict:
     try:
@@ -212,6 +250,7 @@ def fast_analyze_image(image_path: str, note_desc: str = "") -> dict:
         # text sentiment
         try:
             from sentiment import SentimentAnalyzer
+
             sa = SentimentAnalyzer()
             text_r = sa.analyze(note_desc) if note_desc else {"sentiment": "neutral", "score": 0}
         except ImportError:
@@ -219,28 +258,45 @@ def fast_analyze_image(image_path: str, note_desc: str = "") -> dict:
 
         # fusion: text 70% + color 30%
         final_score = round(text_r["score"] * 0.7 + color_score * 0.3, 2)
-        if final_score > 0.3: final_sent = "bullish"
-        elif final_score > 0.1: final_sent = "slightly_bullish"
-        elif final_score < -0.3: final_sent = "bearish"
-        elif final_score < -0.1: final_sent = "slightly_bearish"
-        else: final_sent = "neutral"
+        if final_score > 0.3:
+            final_sent = "bullish"
+        elif final_score > 0.1:
+            final_sent = "slightly_bullish"
+        elif final_score < -0.3:
+            final_sent = "bearish"
+        elif final_score < -0.1:
+            final_sent = "slightly_bearish"
+        else:
+            final_sent = "neutral"
 
         return {
-            "image_type": image_type, "sentiment": final_sent,
-            "sentiment_score": final_score, "confidence": 0.3,
+            "image_type": image_type,
+            "sentiment": final_sent,
+            "sentiment_score": final_score,
+            "confidence": 0.3,
             "description": f"{image_type} | {w}x{h} | aspect={aspect:.1f}",
-            "route": "fast", "model": "heuristics", "analyzed": True,
-            "color_sentiment": color_sentiment, "color_score": color_score,
-            "text_sentiment": text_r["sentiment"], "text_score": text_r["score"],
+            "route": "fast",
+            "model": "heuristics",
+            "analyzed": True,
+            "color_sentiment": color_sentiment,
+            "color_score": color_score,
+            "text_sentiment": text_r["sentiment"],
+            "text_score": text_r["score"],
         }
     except Exception as e:
-        return {"sentiment": "neutral", "sentiment_score": 0, "confidence": 0,
-                "description": f"error: {e}", "route": "fast"}
+        return {
+            "sentiment": "neutral",
+            "sentiment_score": 0,
+            "confidence": 0,
+            "description": f"error: {e}",
+            "route": "fast",
+        }
 
 
 # ============================================================
 # Merge results
 # ============================================================
+
 
 def merge_results(note: dict, image_results: list) -> dict:
     scores = [r.get("sentiment_score", 0) for r in image_results if r.get("analyzed")]
@@ -260,10 +316,12 @@ def merge_results(note: dict, image_results: list) -> dict:
 # Main pipeline
 # ============================================================
 
-def run_pipeline_v2(jsonl_path: str, max_images: int = None,
-                    start_from: int = 0, mode: str = "deep"):
+
+def run_pipeline_v2(
+    jsonl_path: str, max_images: int = None, start_from: int = 0, mode: str = "deep"
+):
     notes = []
-    with open(jsonl_path, "r", encoding="utf-8") as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 notes.append(json.loads(line))
@@ -273,19 +331,25 @@ def run_pipeline_v2(jsonl_path: str, max_images: int = None,
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = Path(jsonl_path).parent / f"multimodal_v2_{ts}.jsonl"
 
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Image Analysis Pipeline ({mode.upper()} mode)")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     if mode == "fast":
-        print(f"  Method: rule-based (geometry + color + text)")
+        print("  Method: rule-based (geometry + color + text)")
     else:
         print(f"  Stage1: {FAST_MODEL} (classify+OCR)")
         print(f"  Stage2: {DEEP_MODEL} (visual sentiment)")
     print(f"  Notes: {len(notes)}, Max images: {max_images or 'all'}")
     print()
 
-    stats = {"stage1": 0, "stage2": 0, "text_route": 0,
-             "deep_route": 0, "downloaded": 0, "total": 0}
+    stats = {
+        "stage1": 0,
+        "stage2": 0,
+        "text_route": 0,
+        "deep_route": 0,
+        "downloaded": 0,
+        "total": 0,
+    }
     start_time = time.time()
 
     with open(out_path, "w", encoding="utf-8") as f_out:
@@ -303,7 +367,7 @@ def run_pipeline_v2(jsonl_path: str, max_images: int = None,
                 f_out.write(json.dumps(note, ensure_ascii=False) + "\n")
                 continue
 
-            print(f"\n[{note_idx+1}/{len(notes)}] {note_id[:12]}... ({len(image_urls)} imgs)")
+            print(f"\n[{note_idx + 1}/{len(notes)}] {note_id[:12]}... ({len(image_urls)} imgs)")
 
             image_results = []
             for i, url in enumerate(image_urls[:5]):
@@ -321,13 +385,15 @@ def run_pipeline_v2(jsonl_path: str, max_images: int = None,
                     t0 = time.time()
                     result = fast_analyze_image(local_path, note_desc)
                     t = time.time() - t0
-                    print(f"  Img{i+1}: {result['image_type']} {t:.1f}s | "
-                          f"{result['sentiment']} {result['sentiment_score']:+.1f} (conf={result['confidence']:.1f})")
+                    print(
+                        f"  Img{i + 1}: {result['image_type']} {t:.1f}s | "
+                        f"{result['sentiment']} {result['sentiment_score']:+.1f} (conf={result['confidence']:.1f})"
+                    )
                     image_results.append(result)
                     continue
 
                 # === DEEP mode ===
-                print(f"  Img{i+1}: S1...", end=" ", flush=True)
+                print(f"  Img{i + 1}: S1...", end=" ", flush=True)
                 t0 = time.time()
                 s1 = stage1_classify_and_ocr(local_path)
                 s1_time = time.time() - t0
@@ -370,15 +436,17 @@ def run_pipeline_v2(jsonl_path: str, max_images: int = None,
             if stats["total"] > 0:
                 avg = elapsed / stats["total"]
                 remaining = (max_images or 999) - stats["total"]
-                print(f"  [{stats['text_route']} text | {stats['deep_route']} deep] "
-                      f"ETA: {max(0, remaining * avg / 60):.0f}min")
+                print(
+                    f"  [{stats['text_route']} text | {stats['deep_route']} deep] "
+                    f"ETA: {max(0, remaining * avg / 60):.0f}min"
+                )
 
     elapsed = time.time() - start_time
-    print(f"\n{'='*60}")
-    print(f"  Complete: {stats['total']} imgs in {elapsed/60:.0f}min")
+    print(f"\n{'=' * 60}")
+    print(f"  Complete: {stats['total']} imgs in {elapsed / 60:.0f}min")
     print(f"  Text: {stats['text_route']}, Deep: {stats['deep_route']}")
     print(f"  Output: {out_path}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 def main():

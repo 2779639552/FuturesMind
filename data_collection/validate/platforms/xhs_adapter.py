@@ -9,13 +9,13 @@
 依赖: Spider_XHS/ 目录下的签名引擎 (Node.js + JS 核心文件)
 """
 
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from .base import PlatformAdapter, CredentialError
+from .base import CredentialError, PlatformAdapter
 
 logger = logging.getLogger("platforms.xhs")
 
@@ -26,7 +26,7 @@ SPIDER_XHS_PATH = str(Path(__file__).parent.parent.parent / "Spider_XHS")
 def _extract_image_urls(image_list: list) -> list[str]:
     """从 image_list 提取最佳质量 URL。取 info_list 最后一项 (通常最高清)。"""
     urls = []
-    for img in (image_list or []):
+    for img in image_list or []:
         info_list = img.get("info_list", [])
         if info_list:
             urls.append(info_list[-1].get("url", ""))
@@ -43,7 +43,7 @@ class XHSAdapter(PlatformAdapter):
     id_prefix = ""  # 保持裸 ObjectId，向后兼容旧批次数据
 
     def __init__(self):
-        self._api: Any = None               # XHS_Apis 实例
+        self._api: Any = None  # XHS_Apis 实例
         self._cookies_str: str = ""
         self._original_cwd: str = ""
 
@@ -63,15 +63,12 @@ class XHSAdapter(PlatformAdapter):
             sys.path.insert(0, SPIDER_XHS_PATH)
 
         try:
-            from xhs_utils.common_util import init as xhs_init
             from apis.xhs_pc_apis import XHS_Apis
+            from xhs_utils.common_util import init as xhs_init
 
             cookies_str, _ = xhs_init()
             if not cookies_str:
-                raise CredentialError(
-                    "Spider_XHS .env has no COOKIES.\n"
-                    "Run: python xhs_scraper.py"
-                )
+                raise CredentialError("Spider_XHS .env has no COOKIES.\nRun: python xhs_scraper.py")
 
             self._api = XHS_Apis()
             self._cookies_str = cookies_str
@@ -81,8 +78,7 @@ class XHSAdapter(PlatformAdapter):
             raise
         except Exception as e:
             raise CredentialError(
-                f"Failed to init Spider_XHS: {e}\n"
-                "Ensure Spider_XHS/.env has valid COOKIES."
+                f"Failed to init Spider_XHS: {e}\nEnsure Spider_XHS/.env has valid COOKIES."
             ) from e
 
     def close(self) -> None:
@@ -102,9 +98,7 @@ class XHSAdapter(PlatformAdapter):
         小红书关键词搜索。
         返回: Spider_XHS items 列表（含 note_card 基础信息）。
         """
-        success, msg, items = self._api.search_some_note(
-            keyword, count + 5, self._cookies_str
-        )
+        success, msg, items = self._api.search_some_note(keyword, count + 5, self._cookies_str)
 
         if not success or not isinstance(items, list):
             logger.warning(f"XHS search '{keyword}' returned no results: {msg}")
@@ -121,7 +115,7 @@ class XHSAdapter(PlatformAdapter):
     def needs_detail_fetch(self) -> bool:
         return True  # 小红书搜索仅返回摘要，需逐条深挖
 
-    def get_detail(self, raw_item: Any) -> Optional[dict]:
+    def get_detail(self, raw_item: Any) -> dict | None:
         """
         获取小红书笔记详情。
         raw_item: search() 返回的 item（需含 id + xsec_token）。
@@ -149,8 +143,7 @@ class XHSAdapter(PlatformAdapter):
                 logger.debug(f"  Note {nid[:8]}... not accessible (300031)")
             else:
                 logger.debug(
-                    f"  Note {nid[:8]}... code={code} "
-                    f"msg={detail_raw.get('msg', '')[:50]}"
+                    f"  Note {nid[:8]}... code={code} msg={detail_raw.get('msg', '')[:50]}"
                 )
             return None
 
@@ -165,9 +158,7 @@ class XHSAdapter(PlatformAdapter):
     # 归一化
     # ============================================================
 
-    def normalize(
-        self, raw_item: Any, detail: Optional[dict], keyword: str
-    ) -> Optional[dict]:
+    def normalize(self, raw_item: Any, detail: dict | None, keyword: str) -> dict | None:
         """
         小红书 item → 统一 Schema dict。
         detail 为 get_detail() 返回的完整 note_card（优先使用），
@@ -184,11 +175,7 @@ class XHSAdapter(PlatformAdapter):
         user = nc.get("user", {}) or {}
         author_fans = user.get("follower_count", user.get("fans", 0)) or 0
         interact = nc.get("interact_info", {}) or {}
-        tags = [
-            t.get("name", "")
-            for t in (nc.get("tag_list", []) or [])
-            if t.get("name")
-        ]
+        tags = [t.get("name", "") for t in (nc.get("tag_list", []) or []) if t.get("name")]
 
         title = nc.get("title", "") or nc.get("display_title", "")
         desc = nc.get("desc", "")
@@ -196,6 +183,7 @@ class XHSAdapter(PlatformAdapter):
         # 时间: ObjectId → datetime string
         try:
             from production_hybrid import decode_objectid_timestamp
+
             publish_time = decode_objectid_timestamp(nid) or ""
         except ImportError:
             publish_time = ""
@@ -245,4 +233,5 @@ class XHSAdapter(PlatformAdapter):
     @staticmethod
     def field_mapping() -> dict:
         from .base import FIELD_MAPPING_TABLE
+
         return FIELD_MAPPING_TABLE["xhs"]

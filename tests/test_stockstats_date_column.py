@@ -15,14 +15,16 @@ from tradingagents.dataflows import stockstats_utils as su
 def _ohlcv(date_col: str) -> pd.DataFrame:
     """OHLCV frame whose date column is named `date_col`."""
     dates = pd.bdate_range("2026-04-01", periods=10)
-    return pd.DataFrame({
-        date_col: dates,
-        "Open": [100.0 + i for i in range(10)],
-        "High": [101.0 + i for i in range(10)],
-        "Low": [99.0 + i for i in range(10)],
-        "Close": [100.5 + i for i in range(10)],
-        "Volume": [1_000_000 + i for i in range(10)],
-    })
+    return pd.DataFrame(
+        {
+            date_col: dates,
+            "Open": [100.0 + i for i in range(10)],
+            "High": [101.0 + i for i in range(10)],
+            "Low": [99.0 + i for i in range(10)],
+            "Close": [100.5 + i for i in range(10)],
+            "Volume": [1_000_000 + i for i in range(10)],
+        }
+    )
 
 
 @pytest.mark.unit
@@ -63,6 +65,7 @@ class TestCleanDataframeAcrossVersions:
         """stockstats must compute indicators on a frame whose date column
         arrived as `index`, instead of erroring per indicator."""
         from stockstats import wrap
+
         cleaned = su._clean_dataframe(_ohlcv("index"))
         df = wrap(cleaned)
         df["close_5_sma"]  # triggers calculation

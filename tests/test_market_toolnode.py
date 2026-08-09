@@ -5,6 +5,7 @@ call fails and the model reports the tool "unavailable" and skips verification.
 Regression guard for that wiring gap (snapshot bound to the LLM but missing from
 the market ToolNode).
 """
+
 import pytest
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph

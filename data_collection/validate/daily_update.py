@@ -6,7 +6,10 @@ Usage: python daily_update.py
        python daily_update.py --per-kw 20 --max-detail 5
 """
 
-import subprocess, sys, os, argparse
+import argparse
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 # 默认每日更新配置
@@ -17,7 +20,7 @@ DEFAULT_MAX_DETAIL = 5
 
 def run_step(name: str, cmd: list[str], blocking: bool = False):
     """运行一个步骤，返回是否成功"""
-    print(f"\n{'='*50}\n  {name}\n  {' '.join(cmd)}\n{'='*50}")
+    print(f"\n{'=' * 50}\n  {name}\n  {' '.join(cmd)}\n{'=' * 50}")
     result = subprocess.run(cmd, capture_output=False)
     if result.returncode != 0:
         print(f"  ⚠️  FAILED: {name}")
@@ -30,12 +33,16 @@ def run_step(name: str, cmd: list[str], blocking: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="每日一键更新: 多平台采集 → 聚合 → 看板")
-    parser.add_argument("--platforms", nargs="+", default=DEFAULT_PLATFORMS,
-                        help="目标平台 (默认 xhs, 可多选: xhs weibo zhihu)")
-    parser.add_argument("--per-kw", type=int, default=DEFAULT_PER_KW,
-                        help="每关键词搜索条数")
-    parser.add_argument("--max-detail", type=int, default=DEFAULT_MAX_DETAIL,
-                        help="每关键词深挖条数")
+    parser.add_argument(
+        "--platforms",
+        nargs="+",
+        default=DEFAULT_PLATFORMS,
+        help="目标平台 (默认 xhs, 可多选: xhs weibo zhihu)",
+    )
+    parser.add_argument("--per-kw", type=int, default=DEFAULT_PER_KW, help="每关键词搜索条数")
+    parser.add_argument(
+        "--max-detail", type=int, default=DEFAULT_MAX_DETAIL, help="每关键词深挖条数"
+    )
     args = parser.parse_args()
 
     os.chdir(Path(__file__).parent)
@@ -45,10 +52,14 @@ if __name__ == "__main__":
         run_step(
             f"Collect from {platform}",
             [
-                "python", "batch_collect.py",
-                "--platform", platform,
-                "--per-kw", str(args.per_kw),
-                "--max-detail", str(args.max_detail),
+                "python",
+                "batch_collect.py",
+                "--platform",
+                platform,
+                "--per-kw",
+                str(args.per_kw),
+                "--max-detail",
+                str(args.max_detail),
             ],
             blocking=False,
         )
@@ -62,7 +73,7 @@ if __name__ == "__main__":
     # Step 4: 生成看板
     run_step("Build dashboard", ["python", "dashboard.py"], blocking=False)
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print("  每日更新完成!")
-    print(f"  看板: output/trends/dashboard.html")
-    print(f"{'='*50}")
+    print("  看板: output/trends/dashboard.html")
+    print(f"{'=' * 50}")

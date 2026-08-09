@@ -10,13 +10,13 @@
   - normalize: 统一 Schema
 """
 
-import re
 import json
 import logging
+import re
 import time
-from pathlib import Path
 from datetime import datetime
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
 
 from .base import PlatformAdapter
 
@@ -52,7 +52,9 @@ class XueqiuAdapter(PlatformAdapter):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            raise Exception("Playwright not installed. Run: pip install playwright && playwright install chromium")
+            raise Exception(
+                "Playwright not installed. Run: pip install playwright && playwright install chromium"
+            ) from None
 
         self._user_cookies = self._load_cookies()
 
@@ -87,10 +89,12 @@ class XueqiuAdapter(PlatformAdapter):
 
         # 设置登录 Cookie
         if self._user_cookies:
-            self._context.add_cookies([
-                {"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"}
-                for k, v in self._user_cookies.items()
-            ])
+            self._context.add_cookies(
+                [
+                    {"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"}
+                    for k, v in self._user_cookies.items()
+                ]
+            )
             logger.info(f"Set {len(self._user_cookies)} login cookies")
 
         # 访问行情页建立完整会话
@@ -104,9 +108,12 @@ class XueqiuAdapter(PlatformAdapter):
 
     def close(self) -> None:
         try:
-            if self._context: self._context.close()
-            if self._browser: self._browser.close()
-            if self._playwright: self._playwright.stop()
+            if self._context:
+                self._context.close()
+            if self._browser:
+                self._browser.close()
+            if self._playwright:
+                self._playwright.stop()
         except Exception:
             pass
 
@@ -125,7 +132,8 @@ class XueqiuAdapter(PlatformAdapter):
             try:
                 data = json.loads(raw)
                 cookies = {k: str(v) for k, v in data.items()}
-                if cookies: return cookies
+                if cookies:
+                    return cookies
             except json.JSONDecodeError:
                 pass
         for part in raw.split(";"):
@@ -143,12 +151,13 @@ class XueqiuAdapter(PlatformAdapter):
     def needs_detail_fetch(self) -> bool:
         return False
 
-    def get_detail(self, raw_item: Any) -> Optional[dict]:
+    def get_detail(self, raw_item: Any) -> dict | None:
         return None
 
     def search(self, keyword: str, count: int) -> list[Any]:
         """在浏览器内用 fetch() 调搜索 API（绕过 WAF）"""
         import urllib.parse
+
         all_items = []
         page = 1
 
@@ -181,7 +190,11 @@ class XueqiuAdapter(PlatformAdapter):
                 sid = str(item.get("id", ""))
                 if not sid:
                     continue
-                if item.get("retweeted_status") and not item.get("title") and not item.get("description"):
+                if (
+                    item.get("retweeted_status")
+                    and not item.get("title")
+                    and not item.get("description")
+                ):
                     continue
                 all_items.append(item)
 
@@ -194,7 +207,7 @@ class XueqiuAdapter(PlatformAdapter):
     # 归一化
     # ═══════════════════════════════════════════════════════════
 
-    def normalize(self, raw_item: Any, detail: Optional[dict], keyword: str) -> Optional[dict]:
+    def normalize(self, raw_item: Any, detail: dict | None, keyword: str) -> dict | None:
         if not isinstance(raw_item, dict):
             return None
 
@@ -217,8 +230,20 @@ class XueqiuAdapter(PlatformAdapter):
         # 清理 HTML 标签
         title = re.sub(r"<[^>]+>", "", title)
         desc = re.sub(r"<[^>]+>", "", desc)
-        title = title.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").strip()
-        desc = desc.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").strip()
+        title = (
+            title.replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .strip()
+        )
+        desc = (
+            desc.replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .strip()
+        )
         full_text = (title + " " + desc).strip()
         if not full_text:
             return None
@@ -231,17 +256,25 @@ class XueqiuAdapter(PlatformAdapter):
         if created_at > 10_000_000_000:
             created_at = created_at / 1000
         try:
-            publish_time = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S") if created_at > 0 else ""
+            publish_time = (
+                datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+                if created_at > 0
+                else ""
+            )
         except Exception:
             publish_time = ""
 
         tags = []
-        for t in (content_item.get("topics", content_item.get("tags", [])) or []):
-            if isinstance(t, dict): tags.append(t.get("name", ""))
-            elif isinstance(t, str): tags.append(t)
+        for t in content_item.get("topics", content_item.get("tags", [])) or []:
+            if isinstance(t, dict):
+                tags.append(t.get("name", ""))
+            elif isinstance(t, str):
+                tags.append(t)
 
         pics = content_item.get("pics", content_item.get("images", [])) or []
-        image_urls = [p.get("url", p.get("src", "")) for p in pics if isinstance(p, dict) and p.get("url")]
+        image_urls = [
+            p.get("url", p.get("src", "")) for p in pics if isinstance(p, dict) and p.get("url")
+        ]
 
         url = content_item.get("target", "") or f"https://xueqiu.com/{sid}"
 
@@ -271,10 +304,12 @@ class XueqiuAdapter(PlatformAdapter):
 
     def classify_error(self, exc: Exception) -> str:
         msg = str(exc).lower()
-        if "timeout" in msg: return "rate_limit"
+        if "timeout" in msg:
+            return "rate_limit"
         return "other"
 
     @staticmethod
     def field_mapping() -> dict:
         from .base import FIELD_MAPPING_TABLE
+
         return FIELD_MAPPING_TABLE.get("xueqiu", {})

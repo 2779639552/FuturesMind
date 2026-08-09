@@ -24,8 +24,8 @@ from tradingagents.agents.utils.agent_utils import get_language_instruction
 from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_price,
     get_futures_sentiment,
-    get_verified_quote,
     get_variety_info,
+    get_verified_quote,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,8 +33,14 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ITERATIONS = 4  # Sentiment analyst needs fewer iterations (no heavy data retrieval)
 
 
-def _run_tool_loop(llm, tools, initial_messages, max_iterations=MAX_TOOL_ITERATIONS,
-                   progress_callback=None, label="Sentiment"):
+def _run_tool_loop(
+    llm,
+    tools,
+    initial_messages,
+    max_iterations=MAX_TOOL_ITERATIONS,
+    progress_callback=None,
+    label="Sentiment",
+):
     """Execute a tool-calling loop — mirrors commodity_analysts._run_tool_loop.
 
     Copied here to keep the analyst module self-contained and avoid
@@ -53,7 +59,9 @@ def _run_tool_loop(llm, tools, initial_messages, max_iterations=MAX_TOOL_ITERATI
         messages.append(response)
 
         if progress_callback and response.content:
-            content_preview = response.content[:500] if len(response.content) > 500 else response.content
+            content_preview = (
+                response.content[:500] if len(response.content) > 500 else response.content
+            )
             progress_callback("llm_thinking", {"content": content_preview, "iteration": iteration})
 
         if not response.tool_calls:
@@ -73,13 +81,16 @@ def _run_tool_loop(llm, tools, initial_messages, max_iterations=MAX_TOOL_ITERATI
                 args_brief = args_brief[:97] + "..."
 
             if progress_callback:
-                progress_callback("tool_call", {
-                    "tool_name": tool_name,
-                    "args": tool_args,
-                    "args_brief": args_brief,
-                    "iteration": iteration,
-                    "label": label,
-                })
+                progress_callback(
+                    "tool_call",
+                    {
+                        "tool_name": tool_name,
+                        "args": tool_args,
+                        "args_brief": args_brief,
+                        "iteration": iteration,
+                        "label": label,
+                    },
+                )
 
             if tool_name in tool_map:
                 try:
@@ -93,22 +104,28 @@ def _run_tool_loop(llm, tools, initial_messages, max_iterations=MAX_TOOL_ITERATI
 
             if progress_callback:
                 result_str = str(result)
-                progress_callback("tool_result", {
-                    "tool_name": tool_name,
-                    "result_length": len(result_str),
-                    "preview": result_str[:300] if len(result_str) > 300 else result_str,
-                    "label": label,
-                })
+                progress_callback(
+                    "tool_result",
+                    {
+                        "tool_name": tool_name,
+                        "result_length": len(result_str),
+                        "preview": result_str[:300] if len(result_str) > 300 else result_str,
+                        "label": label,
+                    },
+                )
 
             messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
 
-    logger.warning("Sentiment tool loop hit max iterations (%d). Returning last response.", max_iterations)
-    return response.content if hasattr(response, 'content') else str(response)
+    logger.warning(
+        "Sentiment tool loop hit max iterations (%d). Returning last response.", max_iterations
+    )
+    return response.content if hasattr(response, "content") else str(response)
 
 
 # ---------------------------------------------------------------------------
 # Commodity Sentiment Analyst Node
 # ---------------------------------------------------------------------------
+
 
 def create_commodity_sentiment_analyst(llm, label="Sentiment", progress_callback=None):
     """Create the 4th parallel analyst: Market Sentiment / Social Psychology.
@@ -138,8 +155,7 @@ def create_commodity_sentiment_analyst(llm, label="Sentiment", progress_callback
             get_verified_quote,
         ]
 
-        system_message = (
-            """You are a commodity futures market sentiment analyst specializing in Chinese futures markets.
+        system_message = """You are a commodity futures market sentiment analyst specializing in Chinese futures markets.
 
 **Your Role**: Analyze social media sentiment (market psychology) for the given commodity futures contract. You fill a gap the other analysts miss: what are market participants *feeling* and *saying* — not just what prices and fundamentals show.
 
@@ -213,9 +229,7 @@ End with:
 |---------|------|----------|--------|---------|
 | (至少填写5行) | 利多/利空 | 具体数值 | 高/中/低 | 数据源 |
 
-"""
-            + get_language_instruction()
-        )
+""" + get_language_instruction()
 
         # --- Self-Evolution Injection ---
         evolution_ctx = state.get("past_context", "")
@@ -223,14 +237,18 @@ End with:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system",
-             "You are a helpful AI assistant collaborating with other analysts."
-             " Use the provided tools to gather data, then write your full analysis report."
-             " You have access to: {tool_names}."
-             " Today is {current_date}. Analyze commodity futures variety: {symbol}.\n{system_message}"),
-            MessagesPlaceholder(variable_name="messages"),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a helpful AI assistant collaborating with other analysts."
+                    " Use the provided tools to gather data, then write your full analysis report."
+                    " You have access to: {tool_names}."
+                    " Today is {current_date}. Analyze commodity futures variety: {symbol}.\n{system_message}",
+                ),
+                MessagesPlaceholder(variable_name="messages"),
+            ]
+        )
 
         prompt = prompt.partial(system_message=system_message)
         prompt = prompt.partial(tool_names=", ".join(t.name for t in tools))
@@ -240,8 +258,9 @@ End with:
         initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]
 
         try:
-            report = _run_tool_loop(llm, tools, initial_messages,
-                                    progress_callback=progress_callback, label=label)
+            report = _run_tool_loop(
+                llm, tools, initial_messages, progress_callback=progress_callback, label=label
+            )
         except Exception as e:
             logger.error("Sentiment analyst failed: %s", e)
             report = f"ANALYSIS_ERROR: Sentiment analysis failed: {e}"
@@ -265,6 +284,7 @@ End with:
 # implementation in the social_media_analyst module if needed, or provide
 # a no-op placeholder until the stock path is refactored.
 
+
 def create_sentiment_analyst(llm):
     """Stock-path sentiment analyst — placeholder shim.
 
@@ -276,6 +296,7 @@ def create_sentiment_analyst(llm):
     implementation from git history.
     """
     import warnings
+
     warnings.warn(
         "create_sentiment_analyst: stock-path sentiment analyst is a shim. "
         "Use create_commodity_sentiment_analyst for commodity futures analysis.",
@@ -286,6 +307,7 @@ def create_sentiment_analyst(llm):
     # Simple pass-through: returns a node that reports unavailability
     def sentiment_analyst_node(state):
         from langchain_core.messages import AIMessage
+
         ticker = state.get("company_of_interest", "unknown")
         msg = (
             f"[Sentiment Analyst] Social sentiment data not available for {ticker}. "
@@ -296,6 +318,7 @@ def create_sentiment_analyst(llm):
             "messages": [AIMessage(content=msg)],
             "sentiment_report": msg,
         }
+
     return sentiment_analyst_node
 
 
@@ -306,6 +329,7 @@ def create_social_media_analyst(llm):
     continues to work.
     """
     import warnings
+
     warnings.warn(
         "create_social_media_analyst is deprecated. Use create_sentiment_analyst instead.",
         DeprecationWarning,

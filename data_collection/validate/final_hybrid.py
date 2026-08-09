@@ -15,19 +15,26 @@
 使用:
   python final_hybrid.py --no-login --keywords "铁矿石" "螺纹钢" --max-depth 5
 """
-import json, time, random, logging, argparse, sys, re
-from pathlib import Path
-from datetime import datetime
-from typing import Optional
-from dataclasses import dataclass, field
 
-from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+import argparse
+import json
+import logging
+import random
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).parent))
 from xhs_scraper import (
-    ANTI_DETECTION_SCRIPT, decode_objectid_timestamp, parse_like_count,
-    is_futures_related_xhs, filter_futures_notes,
-    STORAGE_STATE_FILE, OUTPUT_DIR, XHSNote,
+    ANTI_DETECTION_SCRIPT,
+    OUTPUT_DIR,
+    STORAGE_STATE_FILE,
+    decode_objectid_timestamp,
+    is_futures_related_xhs,
 )
 
 logger = logging.getLogger("final.hybrid")
@@ -38,6 +45,7 @@ FUTURES_KEYWORDS = ["螺纹钢期货", "铁矿石期货", "原油期货", "黄�
 @dataclass
 class RichNote:
     """从API获取的完整笔记数据"""
+
     note_id: str
     title: str
     desc: str
@@ -92,9 +100,13 @@ class FinalHybrid:
 
     def _ensure_login(self, timeout=180):
         """确保已登录"""
-        self.page.goto("https://www.xiaohongshu.com/explore", timeout=30000, wait_until="domcontentloaded")
+        self.page.goto(
+            "https://www.xiaohongshu.com/explore", timeout=30000, wait_until="domcontentloaded"
+        )
         time.sleep(2)
-        search = self.page.query_selector('input[placeholder*="search"], input[placeholder*="Search"], #search-input')
+        search = self.page.query_selector(
+            'input[placeholder*="search"], input[placeholder*="Search"], #search-input'
+        )
         if search:
             logger.info("Already logged in")
             self._save_state()
@@ -106,9 +118,11 @@ class FinalHybrid:
         start = time.time()
         while time.time() - start < timeout:
             time.sleep(2)
-            search = self.page.query_selector('input[placeholder*="search"], input[placeholder*="Search"], #search-input, .avatar')
+            search = self.page.query_selector(
+                'input[placeholder*="search"], input[placeholder*="Search"], #search-input, .avatar'
+            )
             if search:
-                logger.info(f"Login OK ({time.time()-start:.0f}s)")
+                logger.info(f"Login OK ({time.time() - start:.0f}s)")
                 self._save_state()
                 return
         logger.warning("Login timeout")
@@ -129,12 +143,13 @@ class FinalHybrid:
         logger.info(f"Discover: '{keyword}'")
         self.page.goto(
             f"https://www.xiaohongshu.com/search_result?keyword={keyword}&type=51&sort=time",
-            timeout=15000, wait_until="domcontentloaded"
+            timeout=15000,
+            wait_until="domcontentloaded",
         )
         time.sleep(2)
 
         for _ in range(max_scroll):
-            self.page.evaluate(f"window.scrollBy(0, {random.randint(400,800)})")
+            self.page.evaluate(f"window.scrollBy(0, {random.randint(400, 800)})")
             time.sleep(random.uniform(1, 2))
 
         # 从DOM提取note_id — 这是最可靠的方式
@@ -156,7 +171,7 @@ class FinalHybrid:
 
     # ============= Layer 2: API Deep Extract =============
 
-    def deep_extract_one(self, note_id: str) -> Optional[dict]:
+    def deep_extract_one(self, note_id: str) -> dict | None:
         """
         在浏览器内用 fetch() 直接调用小红书API。
         浏览器自动处理X-s签名和Cookie，无需逆向。
@@ -196,8 +211,9 @@ class FinalHybrid:
                 if i == 0:
                     # 第一个需要在一个搜索页面上
                     self.page.goto(
-                        f"https://www.xiaohongshu.com/search_result?keyword=futures&type=51",
-                        timeout=10000, wait_until="domcontentloaded"
+                        "https://www.xiaohongshu.com/search_result?keyword=futures&type=51",
+                        timeout=10000,
+                        wait_until="domcontentloaded",
                     )
                     time.sleep(1)
 
@@ -206,15 +222,17 @@ class FinalHybrid:
                 if raw and raw.get("success"):
                     rich = self._parse_note_api(raw["data"], nid, meta.get("keyword", ""))
                     results.append(rich)
-                    print(f"  [{i+1}/{len(ids_to_fetch)}] {nid[:8]}... OK "
-                          f"| {rich.title[:50] if rich.title else '(no title)'} "
-                          f"| L{rich.like_count} C{rich.comment_count}")
+                    print(
+                        f"  [{i + 1}/{len(ids_to_fetch)}] {nid[:8]}... OK "
+                        f"| {rich.title[:50] if rich.title else '(no title)'} "
+                        f"| L{rich.like_count} C{rich.comment_count}"
+                    )
                 else:
                     err = raw.get("error", "no_data") if raw else "null_response"
-                    print(f"  [{i+1}/{len(ids_to_fetch)}] {nid[:8]}... FAIL ({err})")
+                    print(f"  [{i + 1}/{len(ids_to_fetch)}] {nid[:8]}... FAIL ({err})")
 
             except Exception as e:
-                print(f"  [{i+1}/{len(ids_to_fetch)}] {nid[:8]}... ERROR: {str(e)[:60]}")
+                print(f"  [{i + 1}/{len(ids_to_fetch)}] {nid[:8]}... ERROR: {str(e)[:60]}")
 
         logger.info(f"Deep extraction: {len(results)}/{len(ids_to_fetch)} success")
         return results
@@ -223,24 +241,46 @@ class FinalHybrid:
         """解析API响应"""
         items = data.get("data", {}).get("items", [])
         if not items:
-            return RichNote(note_id=note_id, title="", desc="", author_name="",
-                           author_id="", author_fans=0, like_count=0, comment_count=0,
-                           collect_count=0, share_count=0, tags=[], topics=[],
-                           images=[], note_type="", publish_time="", ip_location="",
-                           keyword=keyword, url=f"https://www.xiaohongshu.com/explore/{note_id}")
+            return RichNote(
+                note_id=note_id,
+                title="",
+                desc="",
+                author_name="",
+                author_id="",
+                author_fans=0,
+                like_count=0,
+                comment_count=0,
+                collect_count=0,
+                share_count=0,
+                tags=[],
+                topics=[],
+                images=[],
+                note_type="",
+                publish_time="",
+                ip_location="",
+                keyword=keyword,
+                url=f"https://www.xiaohongshu.com/explore/{note_id}",
+            )
 
         nc = items[0].get("note_card", {})
         user = nc.get("user", {})
         interact = nc.get("interact_info", {})
 
         tags = [t.get("name", "") for t in (nc.get("tag_list", []) or [])]
-        topics = [t.get("name", "") or t.get("topic_name", "") for t in (nc.get("topic_list", []) or nc.get("topics", []) or [])]
+        topics = [
+            t.get("name", "") or t.get("topic_name", "")
+            for t in (nc.get("topic_list", []) or nc.get("topics", []) or [])
+        ]
 
         images = []
-        for img in (nc.get("image_list", []) or []):
+        for img in nc.get("image_list", []) or []:
             for key in ["url_default", "url", "original"]:
                 info = img.get(key, img if isinstance(img, str) else {})
-                url = info.get("url", "") if isinstance(info, dict) else (info if isinstance(info, str) and info.startswith("http") else "")
+                url = (
+                    info.get("url", "")
+                    if isinstance(info, dict)
+                    else (info if isinstance(info, str) and info.startswith("http") else "")
+                )
                 if url:
                     images.append(url)
                     break
@@ -308,9 +348,12 @@ class FinalHybrid:
 
     def stop(self):
         try:
-            if self.browser: self.browser.close()
-            if self.pw: self.pw.stop()
-        except: pass
+            if self.browser:
+                self.browser.close()
+            if self.pw:
+                self.pw.stop()
+        except Exception:
+            pass
 
     def save(self, results, filename=None):
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -318,20 +361,34 @@ class FinalHybrid:
             filename = f"final_hybrid_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
         output = {
-            "metadata": {"timestamp": datetime.now().isoformat(), "method": "hybrid_in_browser_api"},
+            "metadata": {
+                "timestamp": datetime.now().isoformat(),
+                "method": "hybrid_in_browser_api",
+            },
             "discovered_count": results["discovered_count"],
             "deep_notes": [
                 {
-                    "note_id": n.note_id, "title": n.title, "desc": n.desc[:1500] if n.desc else "",
-                    "author_name": n.author_name, "author_id": n.author_id, "author_fans": n.author_fans,
-                    "like_count": n.like_count, "comment_count": n.comment_count,
-                    "collect_count": n.collect_count, "share_count": n.share_count,
-                    "tags": n.tags, "topics": n.topics, "images": n.images[:5],
-                    "note_type": n.note_type, "publish_time": n.publish_time,
-                    "ip_location": n.ip_location, "keyword": n.keyword, "url": n.url,
+                    "note_id": n.note_id,
+                    "title": n.title,
+                    "desc": n.desc[:1500] if n.desc else "",
+                    "author_name": n.author_name,
+                    "author_id": n.author_id,
+                    "author_fans": n.author_fans,
+                    "like_count": n.like_count,
+                    "comment_count": n.comment_count,
+                    "collect_count": n.collect_count,
+                    "share_count": n.share_count,
+                    "tags": n.tags,
+                    "topics": n.topics,
+                    "images": n.images[:5],
+                    "note_type": n.note_type,
+                    "publish_time": n.publish_time,
+                    "ip_location": n.ip_location,
+                    "keyword": n.keyword,
+                    "url": n.url,
                 }
                 for n in results["deep_notes"]
-            ]
+            ],
         }
         path = OUTPUT_DIR / filename
         with open(path, "w", encoding="utf-8") as f:
@@ -349,24 +406,31 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     pipeline = FinalHybrid()
     try:
         results = pipeline.run(
-            keywords=args.keywords, max_depth=args.max_depth,
-            filter_futures=not args.no_filter, need_login=not args.no_login,
+            keywords=args.keywords,
+            max_depth=args.max_depth,
+            filter_futures=not args.no_filter,
+            need_login=not args.no_login,
         )
 
         deep = results["deep_notes"]
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"RESULTS: {len(deep)} deep notes")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         for i, n in enumerate(deep[:5], 1):
-            title = (n.title or n.desc or "")[:80].replace('\n', ' ')
+            title = (n.title or n.desc or "")[:80].replace("\n", " ")
             print(f"  {i}. [{n.note_type[0].upper()}] @{n.author_name} | {title}")
-            print(f"     L{n.like_count} C{n.comment_count} S{n.share_count} | {len(n.desc)} chars | {len(n.tags)} tags | fans={n.author_fans}")
+            print(
+                f"     L{n.like_count} C{n.comment_count} S{n.share_count} | {len(n.desc)} chars | {len(n.tags)} tags | fans={n.author_fans}"
+            )
 
         path = pipeline.save(results, args.output)
         print(f"\nSaved: {path}")

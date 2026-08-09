@@ -18,18 +18,23 @@
   python batch_collect.py --no-detail                          # 不深挖(微博推荐,速度快)
 """
 
-import json, time, random, logging, argparse, sys, os
+import argparse
+import contextlib
+import json
+import logging
+import random
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
-from dataclasses import dataclass, field, asdict
-
-# 平台适配器
-from platforms import get_adapter, list_platforms
-from platforms.base import PlatformAdapter, CredentialError
 
 # NER + 情感 (纯文本, 平台无关)
 from ner import FuturesNER
+
+# 平台适配器
+from platforms import get_adapter, list_platforms
+from platforms.base import CredentialError, PlatformAdapter
 from sentiment import SentimentAnalyzer
 
 logger = logging.getLogger("batch.collect")
@@ -39,15 +44,15 @@ logger = logging.getLogger("batch.collect")
 # ============================================================
 
 # 采集控制
-DEFAULT_PER_KW = 30          # 每关键词采集条数
-MIN_DELAY_MS = 300           # 最小请求间隔(ms) — 实测API耗时~750ms, 300ms间隔安全
-MAX_DELAY_MS = 1000          # 最大请求间隔(ms)
-SAFE_MODE_MULTIPLIER = 2.5   # 安全模式延时倍率 (300*2.5=750ms 起步)
-TURBO_MIN_DELAY_MS = 120     # 极速模式最小间隔
-TURBO_MAX_DELAY_MS = 500     # 极速模式最大间隔
-RATE_LIMIT_COOLDOWN = 30     # 触发限流后冷却秒数
-BATCH_COOLDOWN = 1           # 每批关键词间休息秒数
-MAX_DETAIL_PER_KW = 10       # 每关键词最多深挖条数
+DEFAULT_PER_KW = 30  # 每关键词采集条数
+MIN_DELAY_MS = 300  # 最小请求间隔(ms) — 实测API耗时~750ms, 300ms间隔安全
+MAX_DELAY_MS = 1000  # 最大请求间隔(ms)
+SAFE_MODE_MULTIPLIER = 2.5  # 安全模式延时倍率 (300*2.5=750ms 起步)
+TURBO_MIN_DELAY_MS = 120  # 极速模式最小间隔
+TURBO_MAX_DELAY_MS = 500  # 极速模式最大间隔
+RATE_LIMIT_COOLDOWN = 30  # 触发限流后冷却秒数
+BATCH_COOLDOWN = 1  # 每批关键词间休息秒数
+MAX_DETAIL_PER_KW = 10  # 每关键词最多深挖条数
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -55,50 +60,145 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # 平台默认关键词 (xhs 保留旧列表, 微博/知乎待 config.py 扩展)
 DEFAULT_KEYWORDS_XHS = [
     # 黑色系
-    "螺纹钢期货", "铁矿石期货", "焦炭期货", "焦煤期货",
-    "热卷期货", "硅铁期货", "锰硅期货",
+    "螺纹钢期货",
+    "铁矿石期货",
+    "焦炭期货",
+    "焦煤期货",
+    "热卷期货",
+    "硅铁期货",
+    "锰硅期货",
     # 有色金属
-    "沪铜期货", "沪铝期货", "沪锌期货", "沪镍期货",
-    "黄金期货分析", "白银期货分析", "碳酸锂期货", "工业硅期货",
+    "沪铜期货",
+    "沪铝期货",
+    "沪锌期货",
+    "沪镍期货",
+    "黄金期货分析",
+    "白银期货分析",
+    "碳酸锂期货",
+    "工业硅期货",
     # 能源化工
-    "原油期货分析", "PTA期货", "甲醇期货", "纯碱期货",
-    "PVC期货", "玻璃期货", "尿素期货", "橡胶期货", "沥青期货",
+    "原油期货分析",
+    "PTA期货",
+    "甲醇期货",
+    "纯碱期货",
+    "PVC期货",
+    "玻璃期货",
+    "尿素期货",
+    "橡胶期货",
+    "沥青期货",
     # 农产品
-    "豆粕期货", "豆油期货", "棕榈油期货", "菜粕期货",
-    "白糖期货", "棉花期货", "玉米期货", "生猪期货",
-    "鸡蛋期货", "苹果期货", "红枣期货", "花生期货",
+    "豆粕期货",
+    "豆油期货",
+    "棕榈油期货",
+    "菜粕期货",
+    "白糖期货",
+    "棉花期货",
+    "玉米期货",
+    "生猪期货",
+    "鸡蛋期货",
+    "苹果期货",
+    "红枣期货",
+    "花生期货",
     # 金融
-    "股指期货策略", "国债期货",
+    "股指期货策略",
+    "国债期货",
     # 通用
-    "期货实盘", "期货技术分析", "期货基本面",
-    "期货日内交易", "期货波段策略",
+    "期货实盘",
+    "期货技术分析",
+    "期货基本面",
+    "期货日内交易",
+    "期货波段策略",
 ]
 
 DEFAULT_KEYWORDS_WEIBO = [
-    "螺纹钢", "铁矿石", "焦炭", "焦煤", "热卷",
-    "沪铜", "沪铝", "沪锌", "沪镍", "黄金", "白银",
-    "原油", "PTA", "甲醇", "纯碱", "PVC", "玻璃", "尿素", "橡胶",
-    "豆粕", "豆油", "棕榈油", "菜粕", "白糖", "棉花", "玉米", "生猪",
-    "股指期货", "国债期货",
-    "期货实盘", "期货技术分析", "期货基本面",
+    "螺纹钢",
+    "铁矿石",
+    "焦炭",
+    "焦煤",
+    "热卷",
+    "沪铜",
+    "沪铝",
+    "沪锌",
+    "沪镍",
+    "黄金",
+    "白银",
+    "原油",
+    "PTA",
+    "甲醇",
+    "纯碱",
+    "PVC",
+    "玻璃",
+    "尿素",
+    "橡胶",
+    "豆粕",
+    "豆油",
+    "棕榈油",
+    "菜粕",
+    "白糖",
+    "棉花",
+    "玉米",
+    "生猪",
+    "股指期货",
+    "国债期货",
+    "期货实盘",
+    "期货技术分析",
+    "期货基本面",
 ]
 
 DEFAULT_KEYWORDS_ZHIHU = [
-    "期货", "商品期货", "金融期货",
-    "螺纹钢", "铁矿石", "焦炭", "焦煤",
-    "沪铜", "黄金", "白银", "原油",
-    "豆粕", "棕榈油", "白糖",
-    "股指期货", "国债期货",
-    "期货交易策略", "期货技术分析",
+    "期货",
+    "商品期货",
+    "金融期货",
+    "螺纹钢",
+    "铁矿石",
+    "焦炭",
+    "焦煤",
+    "沪铜",
+    "黄金",
+    "白银",
+    "原油",
+    "豆粕",
+    "棕榈油",
+    "白糖",
+    "股指期货",
+    "国债期货",
+    "期货交易策略",
+    "期货技术分析",
 ]
 
 DEFAULT_KEYWORDS_XUEQIU = [
-    "螺纹钢", "铁矿石", "焦炭", "焦煤", "热卷",
-    "沪铜", "沪铝", "沪锌", "沪镍", "黄金", "白银",
-    "原油", "PTA", "甲醇", "纯碱", "PVC", "玻璃", "尿素", "橡胶",
-    "豆粕", "豆油", "棕榈油", "菜粕", "白糖", "棉花", "玉米", "生猪",
-    "股指期货", "国债期货",
-    "期货实盘", "期货技术分析", "期货基本面",
+    "螺纹钢",
+    "铁矿石",
+    "焦炭",
+    "焦煤",
+    "热卷",
+    "沪铜",
+    "沪铝",
+    "沪锌",
+    "沪镍",
+    "黄金",
+    "白银",
+    "原油",
+    "PTA",
+    "甲醇",
+    "纯碱",
+    "PVC",
+    "玻璃",
+    "尿素",
+    "橡胶",
+    "豆粕",
+    "豆油",
+    "棕榈油",
+    "菜粕",
+    "白糖",
+    "棉花",
+    "玉米",
+    "生猪",
+    "股指期货",
+    "国债期货",
+    "期货实盘",
+    "期货技术分析",
+    "期货基本面",
 ]
 
 DEFAULT_KEYWORDS = {
@@ -113,9 +213,11 @@ DEFAULT_KEYWORDS = {
 # 数据结构
 # ============================================================
 
+
 @dataclass
 class CollectStats:
     """采集统计"""
+
     started: str = ""
     keywords_total: int = 0
     keywords_done: int = 0
@@ -170,7 +272,7 @@ class RateLimiter:
             logger.warning(f"Rate limit detected! Delay increased to {self.current_delay:.1f}s")
             time.sleep(RATE_LIMIT_COOLDOWN)
         else:
-            backoff = min(2.0 ** self.consecutive_failures, 5.0)
+            backoff = min(2.0**self.consecutive_failures, 5.0)
             self.current_delay = min(self.max_delay, self.current_delay * backoff)
 
     def cooldown(self, seconds: float = 10):
@@ -194,7 +296,7 @@ class MultiPlatformCollector:
         self.ner = FuturesNER()
         self.sentiment = SentimentAnalyzer()
         self.stats = CollectStats(started=datetime.now().isoformat())
-        self.output_file: Optional[Path] = None
+        self.output_file: Path | None = None
         self.seen_ids: set = set()  # (platform, note_id) 跨关键词去重
 
     def init_api(self):
@@ -202,17 +304,15 @@ class MultiPlatformCollector:
         try:
             self.adapter.init()
         except CredentialError as e:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"  ⚠️  {self.adapter.display_name} 登录凭证缺失或已过期！")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             print(f"\n  {e}\n")
             sys.exit(1)
 
         logger.info(f"{self.adapter.display_name} adapter initialized.")
 
-    def collect_one_keyword(
-        self, keyword: str, count: int, max_detail: int
-    ) -> list[dict]:
+    def collect_one_keyword(self, keyword: str, count: int, max_detail: int) -> list[dict]:
         """
         采集一个关键词 (平台无关)。
         流程: search → [get_detail for each] → normalize → filter seen
@@ -243,7 +343,7 @@ class MultiPlatformCollector:
         detail_count = 0
         detail_limit = max_detail if self.adapter.needs_detail_fetch else len(items)
 
-        for item_idx, item in enumerate(items):
+        for _item_idx, item in enumerate(items):
             if detail_count >= detail_limit:
                 break
 
@@ -305,16 +405,22 @@ class MultiPlatformCollector:
 
             # 日志
             desc_len = len(note_dict.get("desc", "") or "")
-            title_preview = (note_dict.get("title") or note_dict.get("desc") or "")[:40].replace('\n', ' ')
+            title_preview = (note_dict.get("title") or note_dict.get("desc") or "")[:40].replace(
+                "\n", " "
+            )
             try:
-                print(f"  [{detail_count}/{detail_limit}] {str(note_id)[:12]}... "
-                      f"L{note_dict.get('like_count',0)} C{note_dict.get('comment_count',0)} "
-                      f"| {desc_len}c | {title_preview}")
+                print(
+                    f"  [{detail_count}/{detail_limit}] {str(note_id)[:12]}... "
+                    f"L{note_dict.get('like_count', 0)} C{note_dict.get('comment_count', 0)} "
+                    f"| {desc_len}c | {title_preview}"
+                )
             except UnicodeEncodeError:
-                safe_title = title_preview.encode('ascii', errors='replace').decode('ascii')
-                print(f"  [{detail_count}/{detail_limit}] {str(note_id)[:12]}... "
-                      f"L{note_dict.get('like_count',0)} C{note_dict.get('comment_count',0)} "
-                      f"| {desc_len}c | {safe_title}")
+                safe_title = title_preview.encode("ascii", errors="replace").decode("ascii")
+                print(
+                    f"  [{detail_count}/{detail_limit}] {str(note_id)[:12]}... "
+                    f"L{note_dict.get('like_count', 0)} C{note_dict.get('comment_count', 0)} "
+                    f"| {desc_len}c | {safe_title}"
+                )
 
         self.stats.searched_total += len(items)
         return notes
@@ -353,8 +459,12 @@ class MultiPlatformCollector:
         return notes
 
     def run(
-        self, keywords: list[str], per_kw: int = 30, max_detail: int = 10,
-        no_enrich: bool = False, since: str | None = None,
+        self,
+        keywords: list[str],
+        per_kw: int = 30,
+        max_detail: int = 10,
+        no_enrich: bool = False,
+        since: str | None = None,
     ) -> list[dict]:
         """主采集循环 (平台无关)。
 
@@ -380,20 +490,22 @@ class MultiPlatformCollector:
 
         total_notes = 0
         detail_text = "no detail" if not self.adapter.needs_detail_fetch else f"detail {max_detail}"
-        mode_str = "TURBO" if self.limiter.turbo_mode else "SAFE" if self.limiter.safe_mode else "FAST"
+        mode_str = (
+            "TURBO" if self.limiter.turbo_mode else "SAFE" if self.limiter.safe_mode else "FAST"
+        )
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"BATCH COLLECTION — {self.adapter.display_name}")
         print(f"  Keywords: {len(keywords)}")
         print(f"  Per keyword: search {per_kw}, {detail_text}")
         print(f"  Mode: {mode_str}")
         print(f"  Output: {self.output_file}")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
         start_time = time.time()
 
         for kw_idx, kw in enumerate(keywords):
-            print(f"\n--- [{kw_idx+1}/{len(keywords)}] '{kw}' ---")
+            print(f"\n--- [{kw_idx + 1}/{len(keywords)}] '{kw}' ---")
 
             try:
                 notes = self.collect_one_keyword(kw, count=per_kw, max_detail=max_detail)
@@ -424,7 +536,9 @@ class MultiPlatformCollector:
                     else:
                         filtered.append(note)  # Keep if no publish_time
                 if skipped:
-                    print(f"  [filter] Kept {len(filtered)}/{len(notes)} notes (skipped {skipped} before {since})")
+                    print(
+                        f"  [filter] Kept {len(filtered)}/{len(notes)} notes (skipped {skipped} before {since})"
+                    )
                 notes = filtered
 
             # 增量写盘: 每个关键词完成后追加 (中断不丢数据)
@@ -439,31 +553,31 @@ class MultiPlatformCollector:
             elapsed = time.time() - start_time
             avg_time_per_kw = elapsed / (kw_idx + 1) if kw_idx > 0 else 0
             eta = avg_time_per_kw * (len(keywords) - kw_idx - 1)
-            print(f"\n  '{kw}' done: {len(notes)} notes enriched. "
-                  f"Total: {total_notes}. ETA: {eta/60:.0f}min")
+            print(
+                f"\n  '{kw}' done: {len(notes)} notes enriched. "
+                f"Total: {total_notes}. ETA: {eta / 60:.0f}min"
+            )
 
             # 批次间冷却 (无结果的 kw 跳过, 省时间)
             if kw_idx < len(keywords) - 1 and notes:
                 self.limiter.cooldown(BATCH_COOLDOWN + random.uniform(0, 1))
 
         # 关闭平台资源
-        try:
+        with contextlib.suppress(Exception):
             self.adapter.close()
-        except Exception:
-            pass
 
         # 汇总
         elapsed = time.time() - start_time
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"BATCH COLLECTION COMPLETE — {self.adapter.display_name}")
-        print(f"  Time: {elapsed/60:.0f}min")
+        print(f"  Time: {elapsed / 60:.0f}min")
         print(f"  Keywords: {len(keywords)} done")
         print(f"  Total notes: {total_notes} (unique: {len(self.seen_ids)})")
         print(f"  Detail success: {self.stats.detail_fetched}")
         print(f"  Detail failed: {self.stats.detail_failed}")
         print(f"  Rate limits hit: {self.stats.rate_limits_hit}")
         print(f"  Output: {self.output_file}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         return []
 
@@ -471,6 +585,7 @@ class MultiPlatformCollector:
 # ============================================================
 # CLI
 # ============================================================
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -487,27 +602,28 @@ def main():
   python batch_collect.py --turbo                                 # 极速模式
         """,
     )
-    parser.add_argument("--platform", type=str, default="xhs",
-                        choices=list_platforms(),
-                        help="目标平台 (默认 xhs)")
-    parser.add_argument("--keywords", nargs="+", default=None,
-                        help="采集关键词 (默认使用预设列表)")
-    parser.add_argument("--per-kw", type=int, default=30,
-                        help="每关键词搜索条数 (默认30)")
-    parser.add_argument("--max-detail", type=int, default=10,
-                        help="每关键词深挖条数 (默认10, 微博自动忽略)")
-    parser.add_argument("--safe-mode", action="store_true",
-                        help="安全模式: 更长的请求间隔 (750ms起步)")
-    parser.add_argument("--turbo", action="store_true",
-                        help="极速模式: 最小延时(120ms), Cookie新鲜时使用")
-    parser.add_argument("--no-detail", action="store_true",
-                        help="不获取详情 (速度快, 但可能无正文)")
-    parser.add_argument("--no-enrich", action="store_true",
-                        help="跳过NER+情感分析")
-    parser.add_argument("--since", type=str, default=None,
-                        help="只保留此日期之后的帖子 (YYYY-MM-DD)")
-    parser.add_argument("--output", type=str, default=None,
-                        help="输出文件名 (默认自动生成)")
+    parser.add_argument(
+        "--platform", type=str, default="xhs", choices=list_platforms(), help="目标平台 (默认 xhs)"
+    )
+    parser.add_argument("--keywords", nargs="+", default=None, help="采集关键词 (默认使用预设列表)")
+    parser.add_argument("--per-kw", type=int, default=30, help="每关键词搜索条数 (默认30)")
+    parser.add_argument(
+        "--max-detail", type=int, default=10, help="每关键词深挖条数 (默认10, 微博自动忽略)"
+    )
+    parser.add_argument(
+        "--safe-mode", action="store_true", help="安全模式: 更长的请求间隔 (750ms起步)"
+    )
+    parser.add_argument(
+        "--turbo", action="store_true", help="极速模式: 最小延时(120ms), Cookie新鲜时使用"
+    )
+    parser.add_argument(
+        "--no-detail", action="store_true", help="不获取详情 (速度快, 但可能无正文)"
+    )
+    parser.add_argument("--no-enrich", action="store_true", help="跳过NER+情感分析")
+    parser.add_argument(
+        "--since", type=str, default=None, help="只保留此日期之后的帖子 (YYYY-MM-DD)"
+    )
+    parser.add_argument("--output", type=str, default=None, help="输出文件名 (默认自动生成)")
     parser.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -518,13 +634,16 @@ def main():
     )
 
     # 关键词
-    keywords = args.keywords if args.keywords else DEFAULT_KEYWORDS.get(
-        args.platform, DEFAULT_KEYWORDS_XHS
+    keywords = (
+        args.keywords
+        if args.keywords
+        else DEFAULT_KEYWORDS.get(args.platform, DEFAULT_KEYWORDS_XHS)
     )
     max_detail = 0 if args.no_detail else args.max_detail
     platform_name = args.platform
 
     from platforms import ADAPTER_DISPLAY_NAMES
+
     display = ADAPTER_DISPLAY_NAMES.get(platform_name, platform_name)
 
     mode_str = "TURBO" if args.turbo else "SAFE" if args.safe_mode else "FAST"
@@ -537,7 +656,9 @@ def main():
     print(f"  Mode:        {mode_str}")
     print(f"  NER+Sentiment: {'OFF' if args.no_enrich else 'ON'}")
     if not args.no_detail:
-        deep_fetch = max_detail if getattr(get_adapter(platform_name), 'needs_detail_fetch', True) else 0
+        deep_fetch = (
+            max_detail if getattr(get_adapter(platform_name), "needs_detail_fetch", True) else 0
+        )
         est_calls = len(keywords) * deep_fetch if deep_fetch else len(keywords)
         print(f"  Est. detail API calls: ~{est_calls}")
     print()

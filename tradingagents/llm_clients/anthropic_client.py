@@ -7,8 +7,15 @@ from .base_client import BaseLLMClient, normalize_content
 from .validators import validate_model
 
 _PASSTHROUGH_KWARGS = (
-    "timeout", "max_retries", "api_key", "max_tokens", "temperature",
-    "callbacks", "http_client", "http_async_client", "effort",
+    "timeout",
+    "max_retries",
+    "api_key",
+    "max_tokens",
+    "temperature",
+    "callbacks",
+    "http_client",
+    "http_async_client",
+    "effort",
 )
 
 # Anthropic's extended-thinking ``effort`` parameter is accepted by Opus 4.5+,
@@ -18,7 +25,7 @@ _PASSTHROUGH_KWARGS = (
 # ``fable-5``); the per-family minimum below is forward-compatible.
 _EFFORT_EXACT = {
     "claude-mythos-preview",  # non-standard preview name; effort-capable
-    "claude-mythos-5",        # Fable 5 twin (Project Glasswing); effort-capable
+    "claude-mythos-5",  # Fable 5 twin (Project Glasswing); effort-capable
 }
 _EFFORT_MODEL = re.compile(r"^claude-(opus|sonnet|fable)-(\d+)(?:-(\d+))?$")
 _EFFORT_MIN_VERSION = {"opus": (4, 5), "sonnet": (4, 6), "fable": (5, 0)}

@@ -20,8 +20,8 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_news,
     get_futures_price,
     get_futures_supply_demand,
-    get_verified_quote,
     get_variety_info,
+    get_verified_quote,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,8 +29,14 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ITERATIONS = 6  # safety limit
 
 
-def _run_tool_loop(llm, tools, initial_messages, max_iterations=MAX_TOOL_ITERATIONS,
-                   progress_callback=None, label="Analyst"):
+def _run_tool_loop(
+    llm,
+    tools,
+    initial_messages,
+    max_iterations=MAX_TOOL_ITERATIONS,
+    progress_callback=None,
+    label="Analyst",
+):
     """Execute a tool-calling loop: LLM decides, we execute tools, LLM processes results.
 
     Args:
@@ -61,7 +67,9 @@ def _run_tool_loop(llm, tools, initial_messages, max_iterations=MAX_TOOL_ITERATI
 
         # Emit LLM reasoning text between tool calls (if any)
         if progress_callback and response.content:
-            content_preview = response.content[:500] if len(response.content) > 500 else response.content
+            content_preview = (
+                response.content[:500] if len(response.content) > 500 else response.content
+            )
             progress_callback("llm_thinking", {"content": content_preview, "iteration": iteration})
 
         if not response.tool_calls:
@@ -84,13 +92,16 @@ def _run_tool_loop(llm, tools, initial_messages, max_iterations=MAX_TOOL_ITERATI
                 args_brief = args_brief[:97] + "..."
 
             if progress_callback:
-                progress_callback("tool_call", {
-                    "tool_name": tool_name,
-                    "args": tool_args,
-                    "args_brief": args_brief,
-                    "iteration": iteration,
-                    "label": label,
-                })
+                progress_callback(
+                    "tool_call",
+                    {
+                        "tool_name": tool_name,
+                        "args": tool_args,
+                        "args_brief": args_brief,
+                        "iteration": iteration,
+                        "label": label,
+                    },
+                )
 
             if tool_name in tool_map:
                 try:
@@ -105,23 +116,27 @@ def _run_tool_loop(llm, tools, initial_messages, max_iterations=MAX_TOOL_ITERATI
 
             if progress_callback:
                 result_str = str(result)
-                progress_callback("tool_result", {
-                    "tool_name": tool_name,
-                    "result_length": len(result_str),
-                    "preview": result_str[:300] if len(result_str) > 300 else result_str,
-                    "label": label,
-                })
+                progress_callback(
+                    "tool_result",
+                    {
+                        "tool_name": tool_name,
+                        "result_length": len(result_str),
+                        "preview": result_str[:300] if len(result_str) > 300 else result_str,
+                        "label": label,
+                    },
+                )
 
             messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
 
     # Hit max iterations
     logger.warning("Tool loop hit max iterations (%d). Returning last response.", max_iterations)
-    return response.content if hasattr(response, 'content') else str(response)
+    return response.content if hasattr(response, "content") else str(response)
 
 
 # ---------------------------------------------------------------------------
 # Technical Analyst
 # ---------------------------------------------------------------------------
+
 
 def create_commodity_technical_analyst(llm, label="Technical", progress_callback=None):
     """Technical analyst for commodity futures: price action, indicators, volume/OI."""
@@ -137,8 +152,7 @@ def create_commodity_technical_analyst(llm, label="Technical", progress_callback
             get_verified_quote,
         ]
 
-        system_message = (
-            """You are a commodity futures technical analyst specializing in Chinese futures markets.
+        system_message = """You are a commodity futures technical analyst specializing in Chinese futures markets.
 
 **Your Role**: Analyze price trends, technical indicators, and market microstructure for the given commodity futures contract.
 
@@ -186,9 +200,7 @@ End your report with:
 |---------|------|----------|--------|---------|
 | (至少填写5行关键发现) | 利多/利空 | 具体数值 | 高/中/低 | 工具名 |
 
-"""
-            + get_language_instruction()
-        )
+""" + get_language_instruction()
 
         # --- Self-Evolution Injection ---
         # Prepend evolution memory context so the analyst sees user preferences
@@ -198,14 +210,18 @@ End your report with:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system",
-             "You are a helpful AI assistant collaborating with other analysts."
-             " Use the provided tools to gather data, then write your full analysis report."
-             " You have access to: {tool_names}."
-             " Today is {current_date}. Analyze commodity futures variety: {symbol}.\n{system_message}"),
-            MessagesPlaceholder(variable_name="messages"),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a helpful AI assistant collaborating with other analysts."
+                    " Use the provided tools to gather data, then write your full analysis report."
+                    " You have access to: {tool_names}."
+                    " Today is {current_date}. Analyze commodity futures variety: {symbol}.\n{system_message}",
+                ),
+                MessagesPlaceholder(variable_name="messages"),
+            ]
+        )
 
         prompt = prompt.partial(system_message=system_message)
         prompt = prompt.partial(tool_names=", ".join(t.name for t in tools))
@@ -217,8 +233,9 @@ End your report with:
 
         # Run tool-calling loop
         try:
-            report = _run_tool_loop(llm, tools, initial_messages,
-                                    progress_callback=progress_callback, label=label)
+            report = _run_tool_loop(
+                llm, tools, initial_messages, progress_callback=progress_callback, label=label
+            )
         except Exception as e:
             logger.error("Technical analyst failed: %s", e)
             report = f"ANALYSIS_ERROR: Technical analysis failed: {e}"
@@ -234,6 +251,7 @@ End your report with:
 # ---------------------------------------------------------------------------
 # Fundamental Analyst (Supply/Demand/Basis/Inventory)
 # ---------------------------------------------------------------------------
+
 
 def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_callback=None):
     """Fundamental analyst for commodity futures: supply/demand, inventory, basis, industrial chain."""
@@ -251,8 +269,7 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
             get_verified_quote,
         ]
 
-        system_message = (
-            """You are a commodity futures fundamental analyst specializing in Chinese futures markets.
+        system_message = """You are a commodity futures fundamental analyst specializing in Chinese futures markets.
 
 **Your Role**: Analyze supply-demand dynamics, inventory cycles, basis structure, and industrial chain relationships.
 
@@ -337,9 +354,7 @@ End with:
 |---------|------|----------|--------|---------|
 | (至少填写5行) | 利多/利空 | 具体数值 | 高/中/低 | 工具名 |
 
-"""
-            + get_language_instruction()
-        )
+""" + get_language_instruction()
 
         # --- Self-Evolution Injection ---
         evolution_ctx = state.get("past_context", "")
@@ -347,14 +362,18 @@ End with:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system",
-             "You are a helpful AI assistant collaborating with other analysts."
-             " Use the provided tools to gather data, then write your full analysis report."
-             " You have access to: {tool_names}."
-             " Today is {current_date}. Analyze commodity futures variety: {symbol}.\n{system_message}"),
-            MessagesPlaceholder(variable_name="messages"),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a helpful AI assistant collaborating with other analysts."
+                    " Use the provided tools to gather data, then write your full analysis report."
+                    " You have access to: {tool_names}."
+                    " Today is {current_date}. Analyze commodity futures variety: {symbol}.\n{system_message}",
+                ),
+                MessagesPlaceholder(variable_name="messages"),
+            ]
+        )
 
         prompt = prompt.partial(system_message=system_message)
         prompt = prompt.partial(tool_names=", ".join(t.name for t in tools))
@@ -364,8 +383,9 @@ End with:
         initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]
 
         try:
-            report = _run_tool_loop(llm, tools, initial_messages,
-                                    progress_callback=progress_callback, label=label)
+            report = _run_tool_loop(
+                llm, tools, initial_messages, progress_callback=progress_callback, label=label
+            )
         except Exception as e:
             logger.error("Fundamental analyst failed: %s", e)
             report = f"ANALYSIS_ERROR: Fundamental analysis failed: {e}"
@@ -382,6 +402,7 @@ End with:
 # Macro & News Analyst
 # ---------------------------------------------------------------------------
 
+
 def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=None):
     """Macro & news analyst for commodity futures: policy, macro cycles, geopolitical events."""
 
@@ -397,8 +418,7 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
             get_verified_quote,
         ]
 
-        system_message = (
-            """You are a commodity futures macro & policy analyst specializing in Chinese markets.
+        system_message = """You are a commodity futures macro & policy analyst specializing in Chinese markets.
 
 **Your Role**: Analyze macroeconomic conditions, government policies, and geopolitical events that drive commodity prices.
 
@@ -460,9 +480,7 @@ End with:
 |---------|------|----------|--------|---------|
 | (至少填写5行) | 利多/利空 | 具体数值 | 高/中/低 | 工具名 |
 
-"""
-            + get_language_instruction()
-        )
+""" + get_language_instruction()
 
         # --- Self-Evolution Injection ---
         evolution_ctx = state.get("past_context", "")
@@ -470,14 +488,18 @@ End with:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system",
-             "You are a helpful AI assistant collaborating with other analysts."
-             " Use the provided tools to gather data, then write your full analysis report."
-             " You have access to: {tool_names}."
-             " Today is {current_date}. Analyze commodity futures variety: {symbol}.\n{system_message}"),
-            MessagesPlaceholder(variable_name="messages"),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a helpful AI assistant collaborating with other analysts."
+                    " Use the provided tools to gather data, then write your full analysis report."
+                    " You have access to: {tool_names}."
+                    " Today is {current_date}. Analyze commodity futures variety: {symbol}.\n{system_message}",
+                ),
+                MessagesPlaceholder(variable_name="messages"),
+            ]
+        )
 
         prompt = prompt.partial(system_message=system_message)
         prompt = prompt.partial(tool_names=", ".join(t.name for t in tools))
@@ -487,8 +509,9 @@ End with:
         initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]
 
         try:
-            report = _run_tool_loop(llm, tools, initial_messages,
-                                    progress_callback=progress_callback, label=label)
+            report = _run_tool_loop(
+                llm, tools, initial_messages, progress_callback=progress_callback, label=label
+            )
         except Exception as e:
             logger.error("Macro analyst failed: %s", e)
             report = f"ANALYSIS_ERROR: Macro analysis failed: {e}"
