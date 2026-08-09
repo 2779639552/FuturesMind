@@ -7,12 +7,12 @@ behavior we added for the Trader, Research Manager, and Sentiment Analyst
 so they share the same deterministic output shape.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
-from tradingagents.agents.analysts.sentiment_analyst import create_sentiment_analyst
+from tradingagents.agents.analysts.sentiment_analyst import create_commodity_sentiment_analyst
 from tradingagents.agents.managers.research_manager import create_research_manager
 from tradingagents.agents.schemas import (
     PortfolioDecision,
@@ -338,71 +338,81 @@ class TestRenderSentimentReport:
             )
 
 
-def _make_sentiment_state():
+def _make_commodity_state():
     return {
-        "company_of_interest": "NVDA",
-        "trade_date": "2026-01-15",
-        "asset_type": "stock",
+        "company_of_interest": "RB",
+        "trade_date": "2026-08-02",
+        "asset_type": "commodity_futures",
         "messages": [],
     }
 
 
-def _structured_sentiment_llm(captured: dict, report: SentimentReport | None = None):
-    """MagicMock LLM whose structured binding captures the prompt and returns
-    a real SentimentReport so render_sentiment_report works."""
-    if report is None:
-        report = SentimentReport(
-            overall_band=SentimentBand.BULLISH, overall_score=7.5,
-            confidence="high",
-            narrative="StockTwits 75% bullish. News constructive. Reddit upbeat.",
-        )
-    structured = MagicMock()
-    structured.invoke.side_effect = lambda prompt: (
-        captured.__setitem__("prompt", prompt) or report
-    )
-    llm = MagicMock()
-    llm.with_structured_output.return_value = structured
-    return llm
-
-
 @pytest.mark.unit
-class TestSentimentAnalystAgent:
-    def test_structured_path_produces_rendered_markdown(self):
+class TestCommoditySentimentAnalyst:
+    """The stock-path `create_sentiment_analyst` is a deprecation shim; the
+    supported path is `create_commodity_sentiment_analyst`, which drives a
+    tool-calling loop (`_run_tool_loop`) over the 4 commodity tools and returns
+    `{messages: [HumanMessage], sentiment_report}`. Patch the loop itself so the
+    tests stay deterministic and never touch AKShare / the network."""
+
+    def test_success_passes_report_through(self):
+        report = ("BIAS: 看多 | CONFIDENCE: 中\n\n"
+                  "**情绪概况**: 螺纹钢 social sentiment mildly bullish.\n"
+                  "**数据质量**: 145 posts, fresh.")
+        llm = MagicMock()
+        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
+                   return_value=report) as mock_loop:
+            result = create_commodity_sentiment_analyst(llm)(_make_commodity_state())
+        mock_loop.assert_called_once()
+        assert result["sentiment_report"] == report
+        assert result["messages"][0].content == f"[Sentiment Analyst Report]\n{report}"
+
+    def test_symbol_and_date_reach_tool_loop_prompt(self):
         captured = {}
-        report = SentimentReport(
-            overall_band=SentimentBand.MILDLY_BEARISH, overall_score=4.0,
-            confidence="medium", narrative="Mixed signals across sources.",
-        )
-        analyst = create_sentiment_analyst(_structured_sentiment_llm(captured, report))
-        sr = analyst(_make_sentiment_state())["sentiment_report"]
-        assert "**Overall Sentiment:** **Mildly Bearish**" in sr
-        assert "(Score: 4.0/10)" in sr
-        assert "Mixed signals across sources." in sr
+
+        def fake_loop(_llm, _tools, initial_messages, **kwargs):
+            captured["prompt"] = initial_messages[0].content
+            return "BIAS: 看空 | CONFIDENCE: 低"
+
+        llm = MagicMock()
+        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
+                   side_effect=fake_loop):
+            create_commodity_sentiment_analyst(llm)(_make_commodity_state())
+        assert "RB" in captured["prompt"]
+        assert "2026-08-02" in captured["prompt"]
+
+    def test_tool_loop_receives_commodity_tool_quad(self):
+        seen = {}
+
+        def fake_loop(_llm, tools, _initial_messages, **kwargs):
+            seen["tool_names"] = sorted(t.name for t in tools)
+            return "BIAS: 中性 | CONFIDENCE: 低"
+
+        llm = MagicMock()
+        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
+                   side_effect=fake_loop):
+            create_commodity_sentiment_analyst(llm)(_make_commodity_state())
+        assert seen["tool_names"] == [
+            "get_futures_price",
+            "get_futures_sentiment",
+            "get_variety_info",
+            "get_verified_quote",
+        ]
 
     def test_sentiment_report_also_in_messages(self):
-        captured = {}
-        analyst = create_sentiment_analyst(_structured_sentiment_llm(captured))
-        result = analyst(_make_sentiment_state())
+        llm = MagicMock()
+        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
+                   return_value="BIAS: 看多 | CONFIDENCE: 中"):
+            result = create_commodity_sentiment_analyst(llm)(_make_commodity_state())
         assert len(result["messages"]) == 1
-        assert result["sentiment_report"] == result["messages"][0].content
+        assert result["sentiment_report"] in result["messages"][0].content
+        assert result["messages"][0].content.startswith("[Sentiment Analyst Report]")
 
-    def test_prompt_contains_ticker(self):
-        captured = {}
-        create_sentiment_analyst(_structured_sentiment_llm(captured))(_make_sentiment_state())
-        assert any("NVDA" in str(m) for m in captured["prompt"])
-
-    def test_falls_back_to_freetext_when_structured_unavailable(self):
-        plain = "**Overall Sentiment:** **Bearish** (Score: 3.0/10)\n**Confidence:** Low\n\nLimited data."
+    def test_analysis_error_when_tool_loop_raises(self):
         llm = MagicMock()
-        llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
-        llm.invoke.return_value = MagicMock(content=plain)
-        assert create_sentiment_analyst(llm)(_make_sentiment_state())["sentiment_report"] == plain
-
-    def test_falls_back_to_freetext_when_structured_call_fails(self):
-        plain = "Fallback free-text sentiment."
-        structured = MagicMock()
-        structured.invoke.side_effect = ValueError("bad JSON from model")
-        llm = MagicMock()
-        llm.with_structured_output.return_value = structured
-        llm.invoke.return_value = MagicMock(content=plain)
-        assert create_sentiment_analyst(llm)(_make_sentiment_state())["sentiment_report"] == plain
+        with patch("tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
+                   side_effect=ValueError("provider timeout")):
+            result = create_commodity_sentiment_analyst(llm)(_make_commodity_state())
+        assert result["sentiment_report"].startswith("ANALYSIS_ERROR:")
+        assert "provider timeout" in result["sentiment_report"]
+        assert "ANALYSIS_ERROR" in result["messages"][0].content

@@ -1,10 +1,12 @@
 """FuturesMind Scheduler — Automated collection with APScheduler."""
 
+import os
 import subprocess
 import sys
-import os
-from pathlib import Path
+from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -50,10 +52,8 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
         posts_count = 0
         for line in output.split("\n"):
             if "Total notes:" in line:
-                try:
+                with suppress(Exception):
                     posts_count = int(line.split("Total notes:")[1].strip().split()[0])
-                except Exception:
-                    pass
 
         if result.returncode != 0 and "Interrupted" not in output:
             db.finish_collection(log_id, posts_count, error=output[-500:])
@@ -112,7 +112,7 @@ for vname in sorted(varieties.keys()):
     gen_count += 1
 print(f'Pipeline OK: {gen_count} JSONs')
         """
-        result = subprocess.run(
+        subprocess.run(
             [venv_py, "-c", script],
             cwd=str(THINK2_DIR) if THINK2_DIR.exists() else ".",
             capture_output=True, text=True, timeout=300,

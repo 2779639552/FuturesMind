@@ -34,6 +34,7 @@ dependencies = [
     "flask>=3.0",
     "waitress>=3.0",
     "akshare>=1.18",
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]

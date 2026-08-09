@@ -1,9 +1,9 @@
 """Real-time & historical futures price fetcher via AKShare."""
 import json
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
 
 logger = logging.getLogger("price_fetcher")
 
@@ -38,7 +38,7 @@ DEFAULT_LIVE_VARIETIES = [
 ]
 
 
-def fetch_realtime_prices(varieties: Optional[list[str]] = None) -> dict:
+def fetch_realtime_prices(varieties: list[str] | None = None) -> dict:
     """Fetch real-time futures prices from AKShare.
 
     Args:
@@ -91,7 +91,7 @@ def fetch_realtime_prices(varieties: Optional[list[str]] = None) -> dict:
     return result
 
 
-def update_price_files(varieties: Optional[list[str]] = None) -> dict:
+def update_price_files(varieties: list[str] | None = None) -> dict:
     """Fetch latest daily data and update price JSON files.
 
     Adds new days to existing price files. Does NOT overwrite existing data.
@@ -114,14 +114,14 @@ def update_price_files(varieties: Optional[list[str]] = None) -> dict:
 
 def _update_single_price(code: str, name: str) -> dict:
     """Update price JSON for a single variety using AKShare daily data."""
+
     import akshare as ak
-    from datetime import date
 
     # Load existing data
     price_path = PRICE_DIR / f"{name}_price.json"
     existing = {}
     if price_path.exists():
-        with open(price_path, "r", encoding="utf-8") as f:
+        with open(price_path, encoding="utf-8") as f:
             existing = json.load(f)
 
     existing_prices = existing.get("prices", [])
@@ -178,7 +178,7 @@ _last_fetch: float = 0
 CACHE_TTL = 60  # seconds
 
 
-def get_cached_prices(varieties: Optional[list[str]] = None) -> dict:
+def get_cached_prices(varieties: list[str] | None = None) -> dict:
     """Get live prices. Sync fetch on first call (~15s), instant thereafter (60s cache)."""
     import time
     global _last_fetch
