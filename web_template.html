@@ -613,6 +613,14 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
           <label>日期</label>
           <input type="date" id="date" value="2026-07-14">
         </div>
+        <div style="flex:1;min-width:150px">
+          <label>情绪分析师</label>
+          <select id="include-sentiment">
+            <option value="auto" selected>自动(无数据时跳过)</option>
+            <option value="include">始终包含</option>
+            <option value="exclude">始终排除(仅3分析师)</option>
+          </select>
+        </div>
         <button class="btn btn-primary" id="btn-run" onclick="App.runAnalysis()">▶ 开始分析</button>
         <button class="btn btn-outline btn-sm" id="btn-pause" onclick="App.pauseAnalysis()" style="display:none" title="暂停">⏸</button>
         <button class="btn btn-outline btn-sm" id="btn-resume" onclick="App.resumeAnalysis()" style="display:none" title="恢复">▶</button>
@@ -1281,15 +1289,21 @@ const App = {
     document.getElementById('comparison-charts').style.display = 'none';
     document.getElementById('stat-status').textContent = 'Starting...';
 
-    const stages = [
+    const allStages = [
       {id:'technical',name:'Tech',icon:'📊'},{id:'fundamental',name:'Fund',icon:'📋'},
       {id:'macro',name:'Macro',icon:'🌍'},{id:'sentiment',name:'Sent',icon:'💬'},
       {id:'bull_opening',name:'Bull',icon:'🐂'},{id:'bear_refute',name:'Bear',icon:'🐻'},
       {id:'bull_rebuttal',name:'Rebuttal',icon:'🔄'},{id:'moderator',name:'Judge',icon:'⚖️'},
       {id:'synthesis',name:'Synth',icon:'🎯'},{id:'scenario',name:'Scenario',icon:'📈'}
     ];
+    const incChoice = (document.getElementById('include-sentiment')?.value || 'auto');
+    let stages = incChoice === 'exclude'
+      ? allStages.filter(s => s.id !== 'sentiment')
+      : allStages;
+    const analystN = stages.filter(s =>
+      ['technical','fundamental','macro','sentiment'].includes(s.id)).length;
     pipeline.innerHTML = stages.map((s,i) =>
-      `<span class="pipeline-stage ${i<4?'active':'pending'}" id="stage-${s.id}"><span class="dot"></span>${s.icon} ${s.name}</span>`
+      `<span class="pipeline-stage ${i<analystN?'active':'pending'}" id="stage-${s.id}"><span class="dot"></span>${s.icon} ${s.name}</span>`
     ).join('');
 
     const sym = document.getElementById('sym').value;
@@ -1303,10 +1317,19 @@ const App = {
     log.innerHTML += '<span class="node">Starting analysis...</span>\n';
     const r1 = await fetch('/api/run_analysis', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({symbol:sym, date})
+      body:JSON.stringify({symbol:sym, date, include_sentiment: incChoice})
     });
     const d1 = await r1.json();
     log.innerHTML += `<span class="node">Analysis started (${d1.status})</span>\n`;
+    // Backend's authoritative stage list (auto mode may have dropped sentiment)
+    if (d1.stages && d1.stages.length) {
+      const ids = new Set(d1.stages);
+      stages = allStages.filter(s => ids.has(s.id));
+      pipeline.innerHTML = stages.map((s,i) =>
+        `<span class="pipeline-stage pending" id="stage-${s.id}"><span class="dot"></span>${s.icon} ${s.name}</span>`
+      ).join('');
+      log.innerHTML += `<span class="node">Sentiment 分析师: ${d1.include_sentiment ? '包含' : '跳过'}</span>\n`;
+    }
 
     // Step 2: Poll for progress
     const poll = setInterval(async () => {
@@ -1320,7 +1343,7 @@ const App = {
             if (el) el.className = 'pipeline-stage '+s.status;
           });
           document.getElementById('progress-status').textContent =
-            `${d.completed_stages?.length||0}/10 stages`;
+            `${d.completed_stages?.length||0}/${d.stages?.length||stages.length} stages`;
           document.getElementById('stat-llm').textContent = d.llm_calls || '-';
         }
 

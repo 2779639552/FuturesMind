@@ -66,6 +66,7 @@ from tradingagents.dataflows.commodity_futures import (  # noqa: E402
 )
 from tradingagents.dataflows.config import set_config  # noqa: E402
 from tradingagents.dataflows.evolution_memory import get_evolution_context  # noqa: E402
+from tradingagents.dataflows.sentiment_data import load_sentiment_data  # noqa: E402
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
 from tradingagents.llm_clients import create_llm_client  # noqa: E402
 
@@ -134,9 +135,10 @@ PIPELINE_STAGES = [
 class ProgressTracker:
     """Thread-safe mutable state container for analysis progress."""
 
-    def __init__(self, symbol="", trade_date=""):
+    def __init__(self, symbol="", trade_date="", stages=None):
         self.symbol = symbol
         self.trade_date = trade_date
+        self.stages = stages if stages is not None else PIPELINE_STAGES
         self.start_time = time.time()
 
         self.is_running = False
@@ -270,7 +272,7 @@ class ProgressTracker:
                         "icon": s["icon"],
                         "status": self.stage_status(s["id"]),
                     }
-                    for s in PIPELINE_STAGES
+                    for s in self.stages
                 ],
                 "rating": self.rating,
                 "llm_calls": self.llm_calls,
@@ -767,7 +769,24 @@ def api_run_analysis():
     symbol = data.get("symbol", "RB").upper()
     trade_date = data.get("date", "2026-07-14")
 
-    _tracker = ProgressTracker(symbol=symbol, trade_date=trade_date)
+    # Resolve whether the Sentiment analyst runs this time. "auto" degrades
+    # to the 3-analyst flow (Technical/Fundamental/Macro) when no sentiment
+    # data is actually available for this variety (incl. repo-sample fallback).
+    inc_choice = str(data.get("include_sentiment", "auto")).strip().lower()
+    if inc_choice == "include":
+        include_sentiment = True
+    elif inc_choice == "exclude":
+        include_sentiment = False
+    else:  # "auto" (default)
+        include_sentiment = load_sentiment_data(symbol) is not None
+
+    stages = (
+        PIPELINE_STAGES
+        if include_sentiment
+        else [s for s in PIPELINE_STAGES if s["id"] != "sentiment"]
+    )
+
+    _tracker = ProgressTracker(symbol=symbol, trade_date=trade_date, stages=stages)
     _tracker.is_running = True
 
     stage_map = {
@@ -789,7 +808,9 @@ def api_run_analysis():
     def run_analysis():
         global _tracker
         try:
-            app_graph, _ = build_commodity_graph(config, enable_feedback=False)
+            app_graph, _ = build_commodity_graph(
+                config, enable_feedback=False, include_sentiment=include_sentiment
+            )
             evo_ctx = get_evolution_context(symbol)
             initial_state = {
                 "messages": [HumanMessage(content=f"Analyze {symbol} as of {trade_date}.")],
@@ -908,7 +929,13 @@ def api_run_analysis():
     t = threading.Thread(target=run_analysis, daemon=True)
     t.start()
 
-    return jsonify({"status": "started"})
+    return jsonify(
+        {
+            "status": "started",
+            "include_sentiment": include_sentiment,
+            "stages": [s["id"] for s in stages],
+        }
+    )
 
 
 # ── Pause / Resume / Stop endpoints ───────────────────────────────────────
@@ -2032,7 +2059,10 @@ def _get_actual_outcome(variety: str, trade_date: str, horizon_days: int = 5) ->
 def _run_agent_for_variety(symbol: str, trade_date: str, config: dict) -> dict:
     """Run full agent pipeline for one variety and extract RATING."""
     try:
-        app_graph, _ = build_commodity_graph(config, enable_feedback=False)
+        include_sentiment = load_sentiment_data(symbol) is not None
+        app_graph, _ = build_commodity_graph(
+            config, enable_feedback=False, include_sentiment=include_sentiment
+        )
         evo_ctx = get_evolution_context(symbol)
         state = {
             "messages": [HumanMessage(content=f"Analyze {symbol} as of {trade_date}.")],
@@ -2182,7 +2212,10 @@ def _validate_one_variety(variety: str, trade_date: str, config: dict) -> dict:
     """Run full Agent pipeline with per-stage progress tracking."""
     global _val_state
     try:
-        app_graph, _ = build_commodity_graph(config, enable_feedback=False)
+        include_sentiment = load_sentiment_data(variety) is not None
+        app_graph, _ = build_commodity_graph(
+            config, enable_feedback=False, include_sentiment=include_sentiment
+        )
         evo_ctx = get_evolution_context(variety)
         state = {
             "messages": [HumanMessage(content=f"Analyze {variety} as of {trade_date}.")],

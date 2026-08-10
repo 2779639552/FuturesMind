@@ -526,7 +526,12 @@ Assign probability weights to each scenario (they MUST sum to 100%).
 # ---------------------------------------------------------------------------
 
 
-def build_commodity_graph(config: dict, enable_feedback: bool = True, max_feedback_rounds: int = 5):
+def build_commodity_graph(
+    config: dict,
+    enable_feedback: bool = True,
+    max_feedback_rounds: int = 5,
+    include_sentiment: bool = True,
+):
     """Build a LangGraph for commodity futures analysis.
 
     Graph structure:
@@ -559,9 +564,10 @@ def build_commodity_graph(config: dict, enable_feedback: bool = True, max_feedba
     macro_node = create_commodity_macro_analyst(
         quick_llm, label="Macro/News", progress_callback=console_progress_callback
     )
-    sentiment_node = create_commodity_sentiment_analyst(
-        quick_llm, label="Sentiment", progress_callback=console_progress_callback
-    )
+    if include_sentiment:
+        sentiment_node = create_commodity_sentiment_analyst(
+            quick_llm, label="Sentiment", progress_callback=console_progress_callback
+        )
 
     # Multi-round debate (quick_llm) — Bull opening + Bull rebuttal (fair last-word)
     bull_opening_node = create_bull_debater(quick_llm)  # R1: opening statement
@@ -585,7 +591,8 @@ def build_commodity_graph(config: dict, enable_feedback: bool = True, max_feedba
     graph.add_node("technical_analyst", tech_node)
     graph.add_node("fundamental_analyst", fund_node)
     graph.add_node("macro_analyst", macro_node)
-    graph.add_node("sentiment_analyst", sentiment_node)
+    if include_sentiment:
+        graph.add_node("sentiment_analyst", sentiment_node)
     graph.add_node("bull_opening", bull_opening_node)
     graph.add_node("bear_refute", bear_node)
     graph.add_node("bull_rebuttal", bull_rebuttal_node)
@@ -593,17 +600,19 @@ def build_commodity_graph(config: dict, enable_feedback: bool = True, max_feedba
     graph.add_node("synthesis", synthesis_node)
     graph.add_node("scenario_analysis", scenario_node)
 
-    # Fan-out: START → all four analysts in parallel
+    # Fan-out: START → analysts in parallel (sentiment optional)
     graph.add_edge(START, "technical_analyst")
     graph.add_edge(START, "fundamental_analyst")
     graph.add_edge(START, "macro_analyst")
-    graph.add_edge(START, "sentiment_analyst")
+    if include_sentiment:
+        graph.add_edge(START, "sentiment_analyst")
 
     # Fan-in → Bull Opening (R1)
     graph.add_edge("technical_analyst", "bull_opening")
     graph.add_edge("fundamental_analyst", "bull_opening")
     graph.add_edge("macro_analyst", "bull_opening")
-    graph.add_edge("sentiment_analyst", "bull_opening")
+    if include_sentiment:
+        graph.add_edge("sentiment_analyst", "bull_opening")
 
     # Debate: Bull(R1) → Bear(R1) → Bull(R2 rebuttal) → Moderator
     # Both sides get equal turns; Bull gets LAST WORD (fair rebuttal right)
