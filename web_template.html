@@ -1050,6 +1050,22 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
           <option value="contrarian">逆情绪(背离)🔄</option>
           <option value="momentum_ad">动量+自适应🔄</option>
           <option value="compare">基本面vs情绪对比</option>
+          <optgroup label="技术策略·纯价格">
+            <option value="ma_cross">双均线交叉</option>
+            <option value="macd">MACD</option>
+            <option value="rsi">RSI 均值回归</option>
+            <option value="bollinger">布林带突破</option>
+            <option value="turtle">海龟交易法</option>
+            <option value="atr">ATR 通道突破</option>
+          </optgroup>
+          <optgroup label="技术策略·情绪确认">
+            <option value="ma_cross_sent">双均线交叉+情绪</option>
+            <option value="macd_sent">MACD+情绪</option>
+            <option value="rsi_sent">RSI+情绪</option>
+            <option value="bollinger_sent">布林带+情绪</option>
+            <option value="turtle_sent">海龟+情绪</option>
+            <option value="atr_sent">ATR+情绪</option>
+          </optgroup>
         </select></div>
         <div id="param-horizon"><label>持仓天数</label><input type="number" id="trade-horizon" value="3" min="1" max="20" style="width:70px"></div>
         <div id="param-maxhold" style="display:none"><label>最大持仓天数</label><input type="number" id="trade-maxhold" value="10" min="3" max="30" style="width:70px"></div>
@@ -1075,13 +1091,57 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
         <button class="btn btn-primary" onclick="App.runTradingBacktest()">运行回测</button>
         <button class="btn btn-outline btn-sm" onclick="App.runMultiCompare()" style="margin-left:4px">多策略对比</button>
       </div>
-      <div style="margin-top:6px;font-size:0.75rem;color:var(--text-muted)">
-        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="fixed" checked> 情绪固定</label>
-        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="trailing"> 情绪反转</label>
-        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="adaptive_sent" checked> 自适应</label>
-        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="contrarian"> 逆情绪</label>
-        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="momentum_ad"> 动量+自适应</label>
-        <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="momentum"> 动量(纯价格)</label>
+      <div style="margin-top:6px;font-size:0.75rem;color:var(--text-muted);position:relative">
+        <button type="button" class="btn btn-outline btn-sm" id="multi-strat-toggle" onclick="App.toggleMultiPanel()" style="display:inline-flex;align-items:center;gap:6px">
+          <span>🗂 多策略选择</span>
+          <span id="multi-strat-count" style="background:var(--brand);color:#fff;border-radius:10px;padding:0 7px;font-weight:700"></span>
+          <span style="opacity:.7">▾</span>
+        </button>
+        <div id="multi-strat-panel" style="display:none;position:absolute;top:100%;left:0;margin-top:6px;z-index:50;background:var(--bg-input,#1b1e26);border:1px solid rgba(127,127,127,.3);border-radius:10px;padding:12px 14px;min-width:360px;max-width:560px;box-shadow:0 10px 30px rgba(0,0,0,.35)">
+          <div style="font-weight:700;margin-bottom:10px;color:var(--text-secondary)">选择要对比的策略(每类可全选)</div>
+          <div class="multi-group">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600"><input type="checkbox" class="multi-group-all" data-group="sentiment" onchange="App.toggleGroupAll(this)"> 情绪策略</label>
+              <span style="color:var(--text-muted);font-size:.68rem">固定持仓 / 反转 / 自适应 / 逆情绪 / 动量+自适应</span>
+            </div>
+            <div class="multi-group-cbs" data-group="sentiment">
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="fixed" checked> 情绪固定</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="trailing"> 情绪反转</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="adaptive_sent" checked> 自适应</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="contrarian"> 逆情绪</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="momentum_ad"> 动量+自适应</label>
+            </div>
+          </div>
+          <div class="multi-group" style="margin-top:10px;border-top:1px solid rgba(127,127,127,.2);padding-top:10px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600"><input type="checkbox" class="multi-group-all" data-group="tech" onchange="App.toggleGroupAll(this)"> 技术策略·纯价格</label>
+              <span style="color:var(--text-muted);font-size:.68rem">动量 / 双均线 / MACD / RSI / 布林带 / 海龟 / ATR</span>
+            </div>
+            <div class="multi-group-cbs" data-group="tech">
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="momentum"> 动量</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="ma_cross"> 双均线</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="macd"> MACD</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="rsi"> RSI</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="bollinger"> 布林带</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="turtle"> 海龟</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="atr"> ATR</label>
+            </div>
+          </div>
+          <div class="multi-group" style="margin-top:10px;border-top:1px solid rgba(127,127,127,.2);padding-top:10px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600"><input type="checkbox" class="multi-group-all" data-group="tech_sent" onchange="App.toggleGroupAll(this)"> 技术策略·情绪确认</label>
+              <span style="color:var(--text-muted);font-size:.68rem">每个指标的情绪自适应版</span>
+            </div>
+            <div class="multi-group-cbs" data-group="tech_sent">
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="ma_cross_sent"> 双均线+情绪</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="macd_sent"> MACD+情绪</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="rsi_sent"> RSI+情绪</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="bollinger_sent"> 布林带+情绪</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="turtle_sent"> 海龟+情绪</label>
+              <label style="display:inline;cursor:pointer;margin-right:8px"><input type="checkbox" class="multi-cb" value="atr_sent"> ATR+情绪</label>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="card"><h3>回测结果概览</h3><div id="trading-summary"><span style="color:var(--text-muted)">点击运行回测</span></div></div>
@@ -1142,6 +1202,7 @@ const App = {
     this._loadTheme();
     await this._loadVarieties();
     this.updatePlatformHint();
+    this.updateMultiCount();
     // Handle window resize for charts
     window.addEventListener('resize', () => this._resizeAllCharts());
     // Keyboard nav: Ctrl+1-8 to switch tabs
@@ -2242,6 +2303,16 @@ const App = {
   initTradingTab() {
     this._populateVarietySelects(['trade-variety']);
     this.fetchLivePrices();
+    this.updateMultiCount();
+    // 点面板外部关闭多策略下拉
+    document.addEventListener('click', (e) => {
+      const panel = document.getElementById('multi-strat-panel');
+      const toggle = document.getElementById('multi-strat-toggle');
+      if (panel && panel.style.display === 'block' &&
+          !panel.contains(e.target) && !(toggle && toggle.contains(e.target))) {
+        panel.style.display = 'none';
+      }
+    });
   },
 
   async fetchLivePrices() {
@@ -2285,21 +2356,84 @@ const App = {
     }
   },
 
-  
+  // 多策略选择下拉面板:展开/收起 + 组内全选
+  toggleMultiPanel() {
+    const panel = document.getElementById('multi-strat-panel');
+    if (!panel) return;
+    const show = panel.style.display === 'none' || panel.style.display === '';
+    panel.style.display = show ? 'block' : 'none';
+    this.updateMultiCount();
+  },
+
+  toggleGroupAll(el) {
+    const group = el.dataset.group;
+    document.querySelectorAll('.multi-group-cbs[data-group="'+group+'"] .multi-cb')
+      .forEach(cb => cb.checked = el.checked);
+    this.updateMultiCount();
+  },
+
+  updateMultiCount() {
+    const el = document.getElementById('multi-strat-count');
+    if (!el) return;
+    const n = document.querySelectorAll('.multi-cb:checked').length;
+    el.textContent = n;
+    el.style.background = n ? 'var(--brand)' : 'var(--text-muted)';
+  },
+
+  // 归一化强度条:strength_pct ∈ [0,1],跨策略可比(情绪/基本面分按 [-1,1],收益率/突破按 5% 封顶)
+  fmtStrengthPct(ts) {
+    if (!ts || ts.strength_pct == null) return "";
+    const pct = Math.round((ts.strength_pct || 0) * 100);
+    const c = ts.action === 'buy' ? 'var(--green)' : ts.action === 'sell' ? 'var(--red)' : 'var(--text-muted)';
+    return "<span style='display:inline-flex;align-items:center;gap:4px;vertical-align:middle'>" +
+      "<span style='width:36px;height:6px;border-radius:3px;background:rgba(127,127,127,.25);overflow:hidden;display:inline-block;vertical-align:middle'>" +
+      "<span style='display:block;height:100%;width:" + pct + "%;background:" + c + ";border-radius:3px'></span></span>" +
+      "<b style='color:" + c + ";font-size:0.72rem'>" + pct + "%</b></span>";
+  },
+
   async runTradingBacktest() {
     const v = document.getElementById('trade-variety').value;
     const strat = document.getElementById('trade-strategy').value;
+    const startDate = document.getElementById('trade-start').value;
+    const endDate = document.getElementById('trade-end').value;
     const out = document.getElementById('trading-summary');
     const stats = document.getElementById('trading-stats');
     const detail = document.getElementById('trading-detail');
+    const D = {start_date: startDate || "2025-01-01", end_date: endDate || ""};
+    // 交易成本/风控开关(与多策略对比共用口径;此前单卡未应用 → 两视图不一致)
+    const riskOn = document.getElementById('risk-enabled').checked;
+    const stopLoss = riskOn ? parseFloat(document.getElementById('risk-stop').value) || 0 : 0;
+    const trailStop = riskOn ? parseFloat(document.getElementById('risk-trail').value) || 0 : 0;
+    const costOn = document.getElementById('cost-enabled').checked;
+    const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;
+    const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;
+    const cpt = costOn ? (commRate * 2) + (slipTick * 0.02) : 0;
+    // 与多策略对比 prefer 口径一致:曲线形状策略展示与自身同名的子策略
+    // (adaptive_sent→adaptive, contrarian→contrarian, momentum_ad→adaptive),
+    // 避免按固定顺序取到 consensus 顶替同名子策略。
+    const prefer = strat === 'adaptive_sent' ? 'adaptive' :
+                   strat === 'contrarian' ? 'contrarian' :
+                   strat === 'momentum_ad' ? 'adaptive' : null;
 
     const eps = {
-      fixed:         ['/api/trading/run',                  {variety:v, horizon:3, threshold:0.2}],
-      trailing:      ['/api/trading/trailing',             {variety:v, threshold:0.2, max_holding:10}],
-      contrarian:    ['/api/trading/contrarian',           {variety:v||"", horizon:3, trend_window:5}],
-      adaptive_sent: ['/api/trading/adaptive_sentiment',   {variety:v||"", horizon:3, trend_window:5}],
-      momentum_ad:   ['/api/trading/momentum_adaptive',    {variety:v||""}],
-      compare:       ['/api/trading/compare',              {variety:v||"RB", horizon:5, fund_threshold:0.3, sent_threshold:0.2}],
+      fixed:         ['/api/trading/run',                  Object.assign({variety:v, horizon:3, threshold:0.2}, D)],
+      trailing:      ['/api/trading/trailing',             Object.assign({variety:v, threshold:0.2, max_holding:10}, D)],
+      contrarian:    ['/api/trading/contrarian',           Object.assign({variety:v||"", horizon:3, trend_window:5}, D)],
+      adaptive_sent: ['/api/trading/adaptive_sentiment',   Object.assign({variety:v||"", horizon:3, trend_window:5}, D)],
+      momentum_ad:   ['/api/trading/momentum_adaptive',    Object.assign({variety:v||""}, D)],
+      compare:       ['/api/trading/compare',              Object.assign({variety:v||"RB", horizon:5, fund_threshold:0.3, sent_threshold:0.2}, D)],
+      ma_cross:      ['/api/trading/ma_cross',             Object.assign({variety:v||""}, D)],
+      ma_cross_sent: ['/api/trading/ma_cross_sent',        Object.assign({variety:v||""}, D)],
+      macd:          ['/api/trading/macd',                 Object.assign({variety:v||""}, D)],
+      macd_sent:     ['/api/trading/macd_sent',            Object.assign({variety:v||""}, D)],
+      rsi:           ['/api/trading/rsi',                  Object.assign({variety:v||""}, D)],
+      rsi_sent:      ['/api/trading/rsi_sent',             Object.assign({variety:v||""}, D)],
+      bollinger:     ['/api/trading/bollinger',            Object.assign({variety:v||""}, D)],
+      bollinger_sent:['/api/trading/bollinger_sent',       Object.assign({variety:v||""}, D)],
+      turtle:        ['/api/trading/turtle',               Object.assign({variety:v||""}, D)],
+      turtle_sent:   ['/api/trading/turtle_sent',          Object.assign({variety:v||""}, D)],
+      atr:           ['/api/trading/atr',                  Object.assign({variety:v||""}, D)],
+      atr_sent:      ['/api/trading/atr_sent',             Object.assign({variety:v||""}, D)],
     };
     const ep = eps[strat];
     if (!ep) { this.toast("Unknown: "+strat, "error"); return; }
@@ -2310,18 +2444,57 @@ const App = {
       const d = await r.json();
 
       if (d.message && !d.curves && (d.total_trades||0)===0) {
-        out.innerHTML = "<span style='color:var(--amber)'>"+d.message+"</span>";
+        // 无回测交易时仍展示"今日操作"(今天该做什么是最关键的)
+        const nt = (v && d.today_signal && d.today_signal.action) ? d.today_signal : null;
+        if (nt) {
+          const nClr = nt.action==='buy' ? 'var(--green)' : nt.action==='sell' ? 'var(--red)' : 'var(--text-muted)';
+          const nTxt = nt.action==='buy' ? '买入' : nt.action==='sell' ? '卖出' : '不动';
+          out.innerHTML = "<span style='color:var(--amber)'>"+d.message+"</span><div style='margin-top:8px;font-size:0.85rem'>今日操作 <b style='color:"+nClr+"'>"+nTxt+"</b><span style='font-size:0.72rem;color:var(--text-muted)'>  "+nt.date+(nt.strength_pct!=null?" | 强度 "+this.fmtStrengthPct(nt):"")+(nt.reason?" | "+nt.reason:"")+"</span></div>";
+        } else {
+          out.innerHTML = "<span style='color:var(--amber)'>"+d.message+"</span>";
+        }
         stats.innerHTML = detail.innerHTML = "";
+        // 清掉旧图表,避免沿用上一次的曲线
+        if (this._chartInstances["chart-trading-pnl"]) { try { this._chartInstances["chart-trading-pnl"].dispose(); } catch(e){} }
+        const cel = document.getElementById("chart-trading-pnl");
+        if (cel) { cel.innerHTML = ""; cel.style.display = "none"; }
         return;
       }
 
-      // Collect sub-strategies
+      // 交易成本 + 风控:与多策略对比(runMultiCompare)同口径。
+      // 此前单卡回测忽略这两个开关 → 与多策略卡片数值不一致(如海龟 +5.58% vs -0.1%)。
+      // 顺序:先风控(apply_risk 对止损单会重算 pnl,会抹掉预先扣的成本),再扣成本。
+      let tradesAdj = d.recent_trades || [];
+      let totalAdj = (d.total_pnl != null ? d.total_pnl : d.avg_pnl_pct) || 0;
+      if (stopLoss > 0 || trailStop > 0) {
+        try {
+          const rk = await fetch('/api/trading/apply_risk', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({variety: v||'RB', trades: tradesAdj, stop_loss: stopLoss, trail_stop: trailStop})
+          });
+          const rkd = await rk.json();
+          if (rkd.trades) tradesAdj = rkd.trades;
+        } catch(e) {}
+      }
+      if (costOn && commRate > 0) {
+        tradesAdj = tradesAdj.map(t => ({...t, pnl: (t.pnl||0) - cpt}));
+      }
+      if (costOn || stopLoss > 0 || trailStop > 0) {
+        totalAdj = tradesAdj.reduce((a, t) => a + (t.pnl||0), 0);
+      }
+
+      // Collect sub-strategies — 与所选策略同名的子策略排最前(见 prefer),成本开关对曲线
+      // 形状的子树总收益也按 每笔交易×成本 扣减(与多策略对比的逐项扣减同思路)。
       const subs = [];
-      for (const k of ["adaptive","consensus","contrarian","momentum_baseline"]) {
-        if (d[k] && d[k].trades !== undefined) subs.push({key:k, label:d[k].label||k, trades:d[k].trades, win_rate:d[k].win_rate, total_pnl:d[k].total_pnl, advanced_metrics:d[k].advanced_metrics});
+      const subOrder = prefer ? [prefer].concat(["adaptive","consensus","contrarian","momentum_baseline"].filter(k => k !== prefer)) : ["adaptive","consensus","contrarian","momentum_baseline"];
+      for (const k of subOrder) {
+        if (d[k] && d[k].trades !== undefined) {
+          const subPnl = (d[k].total_pnl||0) - (cpt > 0 ? cpt * (d[k].trades||0) : 0);
+          subs.push({key:k, label:d[k].label||k, trades:d[k].trades, win_rate:d[k].win_rate, total_pnl:subPnl, advanced_metrics:d[k].advanced_metrics});
+        }
       }
       if (subs.length===0 && d.win_rate!==undefined) {
-        subs.push({key:"main", label:d.strategy||strat, trades:d.total_trades||0, win_rate:d.win_rate||0, total_pnl:d.avg_pnl_pct||0, advanced_metrics:d.advanced_metrics});
+        subs.push({key:"main", label:d.strategy||strat, trades:d.total_trades||0, win_rate:d.win_rate||0, total_pnl:totalAdj, advanced_metrics:d.advanced_metrics});
       }
       if (subs.length===0 && d.stats) {
         for (const [k,v] of Object.entries(d.stats)) {
@@ -2331,31 +2504,79 @@ const App = {
 
       const m = subs[0] || {};
       const pnl = m.total_pnl || 0;
-      out.innerHTML = "<div style='font-size:2rem;font-weight:900;color:"+(pnl>=0?"var(--green)":"var(--red)")+"'>"+(pnl>0?"+":"")+pnl+"%</div><div>"+(m.trades||0)+" trades | WR "+((m.win_rate||0)*100).toFixed(0)+"%</div>";
+      out.innerHTML = (m.trades ? "<div style='font-size:2rem;font-weight:900;color:"+(pnl>=0?"var(--green)":"var(--red)")+"'>"+(pnl>0?"+":"")+pnl+"%</div>" : "<div style='font-size:2rem;font-weight:900;color:var(--text-muted)'>无数据</div>")+"<div>"+(m.trades||0)+" trades | WR "+((m.win_rate||0)*100).toFixed(0)+"%</div>";
+
+      // 今日操作(仅选定具体品种时显示;后端 variety="" 时 today_signal 为 null,双保险)
+      if (v && d.today_signal && d.today_signal.action) {
+        const ts = d.today_signal;
+        const actClr = ts.action === 'buy' ? 'var(--green)' : ts.action === 'sell' ? 'var(--red)' : 'var(--text-muted)';
+        const actTxt = ts.action === 'buy' ? '买入' : ts.action === 'sell' ? '卖出' : '不动';
+        out.innerHTML += "<div style='margin-top:8px;font-size:0.85rem'>今日操作 <b style='color:"+actClr+"'>"+actTxt+"</b><span style='font-size:0.72rem;color:var(--text-muted)'>  "+ts.date+(ts.strength_pct!=null?" | 强度 "+this.fmtStrengthPct(ts):"")+(ts.reason?" | "+ts.reason:"")+"</span></div>";
+      }
 
       let cards = "";
       for (const s of subs) {
         const am = s.advanced_metrics || {};
-        cards += "<div class='card' style='border-left:3px solid var(--brand)'><h3>"+(s.label||s.key)+"</h3><div style='font-size:1.5rem;font-weight:700;color:"+((s.total_pnl||0)>=0?"var(--green)":"var(--red)")+"'>"+((s.total_pnl||0)>0?"+":"")+(s.total_pnl||0)+"%</div><div style='font-size:0.78rem;color:var(--text-secondary)'>"+(s.trades||0)+" trades | WR "+((s.win_rate||0)*100).toFixed(0)+"%</div><div style='font-size:0.72rem;color:var(--text-muted)'>Sharpe "+(am.sharpe_ratio||"?")+" | PF "+(am.profit_factor||"?")+" | MaxDD "+(am.max_drawdown_pct||"?")+"%</div></div>";
+        // 子策略今日操作行(仅具体品种且该子键存在信号时显示)
+        const subTs = (v && d.today_signals && d.today_signals[s.key]) || null;
+        const subLine = subTs ? "<div style='font-size:0.7rem;color:var(--text-muted);margin-top:3px'>今日:"+(subTs.action==='buy'?'买入':subTs.action==='sell'?'卖出':'不动')+" @ "+subTs.date+(subTs.strength_pct!=null?" 强度 "+this.fmtStrengthPct(subTs):"")+"</div>" : "";
+        cards += "<div class='card' style='border-left:3px solid var(--brand)'><h3>"+(s.label||s.key)+"</h3>"+(s.trades?"<div style='font-size:1.5rem;font-weight:700;color:"+((s.total_pnl||0)>=0?"var(--green)":"var(--red)")+"'>"+((s.total_pnl||0)>0?"+":"")+(s.total_pnl||0)+"%</div>":"<div style='font-size:1.5rem;font-weight:700;color:var(--text-muted)'>无数据</div>")+"<div style='font-size:0.78rem;color:var(--text-secondary)'>"+(s.trades||0)+" trades | WR "+((s.win_rate||0)*100).toFixed(0)+"%</div><div style='font-size:0.72rem;color:var(--text-muted)'>Sharpe "+(am.sharpe_ratio||"?")+" | PF "+(am.profit_factor||"?")+" | MaxDD "+(am.max_drawdown_pct||"?")+"%</div>"+subLine+"</div>";
       }
       if (d.decisions) {
         cards += "<div class='card' style='border-left:3px solid var(--amber)'><h3>Decisions</h3><div style='font-size:0.82rem'>"+Object.entries(d.decisions).map(([k,v])=>k+": "+v).join(" | ")+"</div></div>";
       }
       stats.innerHTML = cards;
 
-      // Chart
+      // Chart — 单策略曲线(累计 PnL)与品种价格线对比,避免沿用多策略图表
       const el = document.getElementById("chart-trading-pnl");
-      if (el && typeof echarts !== "undefined" && d.curves) {
+      if (el && typeof echarts !== "undefined") {
         el.style.display = "block"; el.style.height = "350px";
         if (this._chartInstances["chart-trading-pnl"]) { try { this._chartInstances["chart-trading-pnl"].dispose(); } catch(e){} }
+        // 品种价格线(百分比,覆盖回测窗口,最多 730 天)
+        const priceByDate = {}, priceDates = [];
+        try {
+          const pr = await fetch("/api/price/" + (v || "RB") + "?days=730");
+          const pd = await pr.json();
+          const prices = pd.prices || pd;
+          if (prices && prices.length > 1) {
+            const base = prices[0].close;
+            prices.forEach(function(p) {
+              const dt = p.date;
+              if (dt >= startDate && (!endDate || dt <= endDate)) {
+                priceByDate[dt] = ((p.close - base) / base * 100).toFixed(1);
+                priceDates.push(dt);
+              }
+            });
+          }
+        } catch(e) {}
+        // 策略曲线:多曲线形状取代表曲线;单策略形状从 recent_trades 累计
+        let chartDates, stratCurve;
+        if (d.curves && d.dates) {
+          chartDates = d.dates;
+          const key = (prefer && d.curves[prefer]) ? prefer : Object.keys(d.curves).find(k => k !== "price" && k !== "momentum");
+          stratCurve = (key && d.curves[key] ? d.curves[key] : Object.values(d.curves)[0] || []).map(Number);
+        } else {
+          const pnlMap = {}, allD = new Set();
+          tradesAdj.forEach(function(t) {
+            const dt = t.entry || t.exit || "";
+            if (dt) { allD.add(dt); pnlMap[dt] = (pnlMap[dt]||0) + (t.pnl||0); }
+          });
+          chartDates = priceDates.length ? priceDates : [...allD].sort();
+          let cum = 0;
+          stratCurve = chartDates.map(function(dt) { if (pnlMap[dt]) cum += pnlMap[dt]; return parseFloat(cum.toFixed(2)); });
+        }
+        const priceLine = chartDates.map(function(dt) { return priceByDate[dt] != null ? parseFloat(priceByDate[dt]) : null; });
         const chart = echarts.init(el);
         this._chartInstances["chart-trading-pnl"] = chart;
-        const series = Object.entries(d.curves).map(([k, v]) => ({name:k, type:"line", data:v, smooth:true, showSymbol:false, lineStyle:{width:k.includes("baseline")?1.5:2.5}}));
-        chart.setOption({backgroundColor:"transparent", title:{text:d.strategy||"PnL",left:"center",textStyle:{color:"#888",fontSize:12}}, tooltip:{trigger:"axis"}, legend:{data:Object.keys(d.curves),bottom:0,textStyle:{color:"#888"}}, grid:{left:60,right:30,top:40,bottom:35}, xAxis:{type:"category",data:d.dates||[],axisLabel:{show:false}}, yAxis:{type:"value",name:"PnL(%)",axisLabel:{formatter:function(v){return v+"%"}}}, series:series});
+        const series = [{name: d.strategy || strat, type: "line", data: stratCurve, smooth: true, showSymbol: false, lineStyle: {color: "#34d399", width: 3}}];
+        if (priceLine.some(function(v) { return v != null; })) {
+          series.push({name: "品种价格", type: "line", data: priceLine, smooth: true, showSymbol: false, lineStyle: {color: "#888", width: 1, type: "dashed"}, yAxisIndex: 1});
+        }
+        chart.setOption({backgroundColor: "transparent", title: {text: (d.strategy || strat) + " 回测", left: "center", textStyle: {color: "#888", fontSize: 12}}, tooltip: {trigger: "axis"}, legend: {data: [d.strategy || strat, "品种价格"].filter(Boolean), bottom: 0, textStyle: {color: "#888"}}, grid: {left: 60, right: 70, top: 40, bottom: 35}, xAxis: {type: "category", data: chartDates, axisLabel: {show: false}}, yAxis: [{type: "value", name: "PnL(%)", axisLabel: {formatter: v => v + "%"}}, {type: "value", name: "Price(%)", axisLabel: {formatter: v => v + "%"}, splitLine: {show: false}}], series: series});
       }
 
       // Trades table
-      const trades = d.recent_trades || [];
+      const trades = tradesAdj;
       detail.innerHTML = trades.length===0 ? "" : "<table><thead><tr><th>Variety</th><th>Entry</th><th>Exit</th><th>Dir</th><th>PnL</th><th>Result</th></tr></thead><tbody>"+trades.slice().reverse().map(function(t){return "<tr><td>"+(t.variety||"")+"</td><td>"+(t.entry||"")+"</td><td>"+(t.exit||"")+"</td><td style='color:"+((t.dir||t.direction)==="long"?"var(--green)":"var(--red)")+"'>"+(t.dir||t.direction||"")+"</td><td style='color:"+((t.pnl||0)>=0?"var(--green)":"var(--red)")+"'>"+((t.pnl||0)>0?"+":"")+(t.pnl||0)+"%</td><td>"+(t.outcome==="win"?"W":t.outcome==="loss"?"L":"=")+"</td></tr>"}).join("")+"</tbody></table>";
     } catch(e) { this.toast("Failed: "+e.message, "error"); }
   },
@@ -2596,41 +2817,52 @@ const App = {
     const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;
     const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;
     const strategies = Array.from(cbs).map(cb => cb.value);
-    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)'};
-    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4'};
+    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'};
+    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#a78bfa','bollinger_sent':'#8b5cf6','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#e879f9','atr_sent':'#d946ef'};
     document.getElementById('trading-summary').innerHTML = '<span class="node">Fetching...</span>';
 
     // Build per-strategy per-date PnL maps for common x-axis
     const allPnlMaps = {};  // {strategy: {date: pnl_delta}}
     const allStats = {};
+    const allToday = {};    // {strategy: today_signal|null} — 仅具体品种时非 null
     const allDatesSet = new Set();
+    const D = {start_date: startDate || "2025-01-01", end_date: endDate || ""};
 
     for (const s of strategies) {
       try {
         let url, body;
-        if (s === 'fixed') { url = '/api/trading/run'; body = JSON.stringify({variety:v||'', horizon:3}); }
-        else if (s === 'trailing') { url = '/api/trading/trailing'; body = JSON.stringify({variety:v||'', threshold:0.2, max_holding:10}); }
-        else if (s === 'donchian') { url = '/api/trading/donchian'; body = JSON.stringify({variety:v||''}); }
-        else if (s === 'momentum') { url = '/api/trading/momentum_strat'; body = JSON.stringify({variety:v||''}); }
-        else if (s === 'momentum_ad') { url = '/api/trading/momentum_adaptive'; body = JSON.stringify({variety:v||''}); }
-        else if (s === 'adaptive_sent') { url = '/api/trading/adaptive_sentiment'; body = JSON.stringify({variety:v||'', horizon:3}); }
-        else if (s === 'contrarian') { url = '/api/trading/contrarian'; body = JSON.stringify({variety:v||'', horizon:3}); }
+        if (s === 'fixed') { url = '/api/trading/run'; body = JSON.stringify(Object.assign({variety:v||'', horizon:3}, D)); }
+        else if (s === 'trailing') { url = '/api/trading/trailing'; body = JSON.stringify(Object.assign({variety:v||'', threshold:0.2, max_holding:10}, D)); }
+        else if (s === 'donchian') { url = '/api/trading/donchian'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'momentum') { url = '/api/trading/momentum_strat'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'momentum_ad') { url = '/api/trading/momentum_adaptive'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'adaptive_sent') { url = '/api/trading/adaptive_sentiment'; body = JSON.stringify(Object.assign({variety:v||'', horizon:3}, D)); }
+        else if (s === 'contrarian') { url = '/api/trading/contrarian'; body = JSON.stringify(Object.assign({variety:v||'', horizon:3}, D)); }
+        else if (s === 'ma_cross') { url = '/api/trading/ma_cross'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'ma_cross_sent') { url = '/api/trading/ma_cross_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'macd') { url = '/api/trading/macd'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'macd_sent') { url = '/api/trading/macd_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'rsi') { url = '/api/trading/rsi'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'rsi_sent') { url = '/api/trading/rsi_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'bollinger') { url = '/api/trading/bollinger'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'bollinger_sent') { url = '/api/trading/bollinger_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'turtle') { url = '/api/trading/turtle'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'turtle_sent') { url = '/api/trading/turtle_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'atr') { url = '/api/trading/atr'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'atr_sent') { url = '/api/trading/atr_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
         else continue;
 
         const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body});
         const d = await r.json();
+        allToday[s] = (v ? d.today_signal : null);
 
         // Build per-date PnL map
         let pnlMap = {}; let cum = 0;
         let trades = d.recent_trades || [];
 
-        // Deduct trading costs (from individual trades)
-        if (costOn && commRate > 0) {
-          const costPerTrade = (commRate * 2) + (slipTick * 0.02);
-          trades = trades.map(t => ({...t, pnl: (t.pnl||0) - costPerTrade}));
-        }
-
-        // Apply risk management via backend (uses real price data)
+        // Apply risk management via backend (uses real price data).
+        // 成本不在这一层预扣:apply_risk 会对止损单重算 pnl(预扣会被抹掉),
+        // 统一在下方 pnlMap 累计后一次扣减 → 与单卡回测口径一致,避免双重扣减。
         if (stopLoss > 0 || trailStop > 0) {
           try {
             const riskR = await fetch('/api/trading/apply_risk', {
@@ -2704,18 +2936,23 @@ const App = {
       const st = allStats[s]||{};
       const wr = ((st.win_rate||0)*100).toFixed(0);
       const pnl = (st.total_pnl||0);
+      const noTrades = !st.trades;   // 0 笔交易 → 无数据,避免误导性「0.0%」
       const adv = st.advanced || {};
       const sharpeColor = (adv.sharpe_ratio||0) >= 1 ? 'var(--green)' : (adv.sharpe_ratio||0) >= 0 ? 'var(--amber)' : 'var(--red)';
       const pf = adv.profit_factor != null ? adv.profit_factor : '—';
+      const ts = allToday[s] || null;
+      const todayLine = ts ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">今日:<b style="color:${ts.action==='buy'?'var(--green)':ts.action==='sell'?'var(--red)':'var(--text-muted)'}">${ts.action==='buy'?'买入':ts.action==='sell'?'卖出':'不动'}</b> @ ${ts.date}${ts.strength_pct!=null?' 强度 '+this.fmtStrengthPct(ts):''}</div>` : '';
       return `<div class="card" style="border-left:3px solid ${colors[s]}">
         <h3>${names[s]}</h3>
-        <div style="font-size:1.6rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>0?'+':''}${pnl.toFixed(1)}%</div>
+        ${noTrades ? `<div style="font-size:1.6rem;font-weight:700;color:var(--text-muted)">无数据</div>`
+                   : `<div style="font-size:1.6rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>0?'+':''}${pnl.toFixed(1)}%</div>`}
         <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px">
           ${st.trades||0}笔 | 胜率 ${wr}% | 夏普 <span style="color:${sharpeColor}">${adv.sharpe_ratio||'—'}</span>
         </div>
         <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">
           盈亏比${pf} | 回撤${adv.max_drawdown_pct!=null?adv.max_drawdown_pct+'%':'—'}
         </div>
+        ${todayLine}
       </div>`;
     }).join('');
 
@@ -2802,7 +3039,10 @@ const App = {
         const st = allStats[s]||{};
         const costAdj = costOn ? (st.trades||0) * ((commRate||0)*2 + (slipTick||0)*0.02) : 0;
         const pnl = (st.total_pnl||0) - costAdj; const vsMkt = pnl - marketReturn;
-        return `<span style=\"display:inline-block;margin:4px 12px 4px 0;padding:6px 12px;border-radius:6px;background:var(--bg-input);border-left:3px solid ${colors[s]}\"><b style=\"color:${colors[s]}\">${names[s]}</b> <span style=\"font-size:1.05rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}\">${pnl>0?'+':''}${pnl.toFixed(1)}%</span> <span style=\"font-size:0.72rem;color:${vsMkt>=0?'var(--green)':'var(--red)'}\">vs市场${vsMkt>0?'+':''}${vsMkt.toFixed(1)}%</span> <span style=\"font-size:0.72rem;color:var(--text-muted)\">${st.trades||0}笔/${((st.win_rate||0)*100).toFixed(0)}%</span></span>`;
+        const ts = allToday[s] || null;
+        const todayChip = ts ? `<span style=\"font-size:0.72rem;color:${ts.action==='buy'?'var(--green)':ts.action==='sell'?'var(--red)':'var(--text-muted)'}\">今日:${ts.action==='buy'?'买入':ts.action==='sell'?'卖出':'不动'}${ts.strength_pct!=null?' '+Math.round(ts.strength_pct*100)+'%':''}</span>` : '';
+        const noTrades = !st.trades;
+        return `<span style=\"display:inline-block;margin:4px 12px 4px 0;padding:6px 12px;border-radius:6px;background:var(--bg-input);border-left:3px solid ${colors[s]}\"><b style=\"color:${colors[s]}\">${names[s]}</b> ${noTrades ? `<span style=\"font-size:1.05rem;font-weight:700;color:var(--text-muted)\">无数据</span>` : `<span style=\"font-size:1.05rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}\">${pnl>0?'+':''}${pnl.toFixed(1)}%</span> <span style=\"font-size:0.72rem;color:${vsMkt>=0?'var(--green)':'var(--red)'}\">vs市场${vsMkt>0?'+':''}${vsMkt.toFixed(1)}%</span>`} <span style=\"font-size:0.72rem;color:var(--text-muted)\">${st.trades||0}笔/${((st.win_rate||0)*100).toFixed(0)}%</span> ${todayChip}</span>`;
       }).join('');
   },
 
@@ -2814,8 +3054,8 @@ const App = {
     if (cbs.length === 0) { this.toast('Select at least one strategy','error'); return; }
 
     const strategies = Array.from(cbs).map(cb => cb.value);
-    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)'};
-    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4'};
+    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'};
+    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#a78bfa','bollinger_sent':'#8b5cf6','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#e879f9','atr_sent':'#d946ef'};
 
     document.getElementById('trading-summary').innerHTML = '<span class="node">Running all strategies...</span>';
 

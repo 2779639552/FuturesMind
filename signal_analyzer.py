@@ -17,6 +17,10 @@ from path_utils import resolve_think2_dir
 SENTIMENT_DIR = Path(os.path.expanduser("~/.tradingagents/external_data"))
 THINK2_TRENDS = resolve_think2_dir() / "output" / "trends"
 
+# 数据文件名的中文简称与 VARIETY_METADATA 全称不一致的品种(code -> 文件名用名)。
+# 目前仅 HC:meta name「热轧卷板」,数据文件「热卷_price.json」/「热卷_sentiment.json」。
+_DATA_FILE_NAME_ALIASES = {"HC": "热卷"}
+
 # ── Helpers ────────────────────────────────────────────────────────
 
 
@@ -50,6 +54,14 @@ def _load_trends(variety: str) -> dict | None:
     except ImportError:
         pass
 
+    # Try explicit alias (meta 全称与文件名简称不一致,如 HC「热轧卷板」/「热卷」)
+    alias = _DATA_FILE_NAME_ALIASES.get(variety)
+    if alias:
+        path = THINK2_TRENDS / f"{alias}_sentiment.json"
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+
     # Try glob search
     for f in THINK2_TRENDS.glob("*_sentiment.json"):
         if variety in f.stem or f.stem.startswith(variety):
@@ -79,6 +91,14 @@ def _load_price(variety: str) -> dict | None:
                     return json.load(f)
     except ImportError:
         pass
+
+    # Try explicit alias (meta 全称与文件名简称不一致,如 HC「热轧卷板」/「热卷」)
+    alias = _DATA_FILE_NAME_ALIASES.get(variety)
+    if alias:
+        path = THINK2_TRENDS / f"{alias}_price.json"
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
 
     # Try glob
     for f in THINK2_TRENDS.glob("*_price.json"):
@@ -540,6 +560,7 @@ def run_contrarian_sentiment(
     horizon: int = 3,
     trend_window: int = 5,
     start_date: str = "2025-01-01",
+    end_date: str = "",
 ) -> dict:
     """Contrarian sentiment: trade AGAINST the trend when sentiment disagrees.
 
@@ -592,7 +613,7 @@ def run_contrarian_sentiment(
 
         for i in range(trend_window, n - horizon):
             d = dates[i]
-            if d < start_date:
+            if d < start_date or (end_date and d > end_date):
                 continue
             ss = sent_map.get(d, 0)
             px_now = closes[i]
@@ -760,6 +781,7 @@ def run_adaptive_sentiment(
     horizon: int = 3,
     trend_window: int = 5,
     start_date: str = "2025-01-01",
+    end_date: str = "",
 ) -> dict:
     """Adaptive sentiment: auto-choose contrarian or momentum based on conditions.
 
@@ -809,7 +831,7 @@ def run_adaptive_sentiment(
 
         for i in range(trend_window, n - horizon):
             d = dates[i]
-            if d < start_date:
+            if d < start_date or (end_date and d > end_date):
                 continue
             ss = sent_map.get(d, 0)
             px_now = closes[i]
@@ -1012,7 +1034,7 @@ def run_adaptive_sentiment(
 # ═══════════════════════════════════════════════════════════════════
 
 
-def run_donchian_strategy(variety="", period=20, start_date="2025-01-01"):
+def run_donchian_strategy(variety="", period=20, start_date="2025-01-01", end_date=""):
     """Donchian Channel Breakout — Turtle Trading classic.
     Entry: price breaks above N-day high → LONG; breaks below N-day low → SHORT
     Exit: price crosses back below/below the opposite side
@@ -1033,10 +1055,12 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01"):
         pos = 0
         entry_px = 0
         entry_d = ""
+        last_i = None  # 窗口内最后一根 bar;窗口末仍有持仓时按它强平
         for i in range(period, n):
             d = dates[i]
-            if d < start_date:
+            if d < start_date or (end_date and d > end_date):
                 continue
+            last_i = i
             hh = max(highs[i - period : i])
             ll = min(lows[i - period : i])
             cu = closes[i] > hh  # Breakout up
@@ -1085,8 +1109,8 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01"):
                     entry_px = closes[i]
                     entry_d = d
 
-        if pos != 0 and entry_px:
-            final = closes[-1]
+        if pos != 0 and entry_px and last_i is not None:
+            final = closes[last_i]
             pnl = (
                 (final - entry_px) / entry_px * 100
                 if pos == 1
@@ -1096,7 +1120,7 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01"):
                 {
                     "variety": var,
                     "entry": entry_d,
-                    "exit": dates[-1],
+                    "exit": dates[last_i],
                     "direction": "long" if pos == 1 else "short",
                     "pnl": round(pnl, 2),
                     "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
@@ -1140,6 +1164,7 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01"):
         "loss_count": len(all_trades) - len(wins),
         "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
         "avg_pnl_pct": round(avg, 2),
+        "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
         "max_drawdown_pct": advanced["max_drawdown_pct"],
         "long_trades": len([t for t in all_trades if t["direction"] == "long"]),
@@ -1151,11 +1176,700 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01"):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Technical strategies (MA cross / MACD / RSI / Bollinger / Turtle / ATR)
+# Shared indicator helpers + one uniform signal interface + one backtest
+# engine power the 12 new strategies: 6 indicators × (pure-price + sentiment-adaptive).
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _sma(vals: list[float], period: int) -> list[float | None]:
+    """Simple moving average; None before the first `period` values."""
+    out: list[float | None] = [None] * len(vals)
+    run = 0.0
+    for i, v in enumerate(vals):
+        run += v
+        if i >= period:
+            run -= vals[i - period]
+        if i >= period - 1:
+            out[i] = run / period
+    return out
+
+
+def _ema(vals: list[float], period: int) -> list[float | None]:
+    """Exponential moving average, seeded with the SMA of the first `period` values."""
+    out: list[float | None] = [None] * len(vals)
+    if len(vals) < period:
+        return out
+    prev = sum(vals[:period]) / period
+    out[period - 1] = prev
+    k = 2.0 / (period + 1)
+    for i in range(period, len(vals)):
+        prev = vals[i] * k + prev * (1 - k)
+        out[i] = prev
+    return out
+
+
+def _rsi(closes: list[float], period: int = 14) -> list[float | None]:
+    """Wilder RSI; None before the seed window."""
+    out: list[float | None] = [None] * len(closes)
+    if len(closes) < period + 1:
+        return out
+    avg_gain = 0.0
+    avg_loss = 0.0
+    for i in range(1, period + 1):
+        d = closes[i] - closes[i - 1]
+        avg_gain += max(d, 0.0)
+        avg_loss += max(-d, 0.0)
+    avg_gain /= period
+    avg_loss /= period
+    out[period] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    for i in range(period + 1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        avg_gain = (avg_gain * (period - 1) + max(d, 0.0)) / period
+        avg_loss = (avg_loss * (period - 1) + max(-d, 0.0)) / period
+        out[i] = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    return out
+
+
+def _macd(closes, fast=12, slow=26, signal=9):
+    """MACD 三序列 (dif, dea, hist);hist 从 index slow+signal-2 起有效。"""
+    ema_fast = _ema(closes, fast)
+    ema_slow = _ema(closes, slow)
+    dif = [None] * len(closes)
+    dense = []
+    for i in range(len(closes)):
+        if ema_fast[i] is not None and ema_slow[i] is not None:
+            v = ema_fast[i] - ema_slow[i]
+            dif[i] = v
+            dense.append(v)
+    start = len(closes) - len(dense)
+    dea_dense = _ema(dense, signal)
+    dea = [None] * start + dea_dense
+    hist = [
+        (dif[i] - dea[i]) if dif[i] is not None and dea[i] is not None else None
+        for i in range(len(closes))
+    ]
+    return dif, dea, hist
+
+
+def _bollinger(closes, period=20, num_std=2.0):
+    """布林带三序列 (mid, upper, lower)。"""
+    mid = _sma(closes, period)
+    upper = [None] * len(closes)
+    lower = [None] * len(closes)
+    for i in range(period - 1, len(closes)):
+        m = mid[i]
+        window = closes[i - period + 1 : i + 1]
+        std = (sum((x - m) ** 2 for x in window) / period) ** 0.5
+        upper[i] = m + num_std * std
+        lower[i] = m - num_std * std
+    return mid, upper, lower
+
+
+def _atr(highs, lows, closes, period=14):
+    """Average True Range (Wilder smoothing); None before the seed bar."""
+    out = [None] * len(closes)
+    if len(closes) < period + 1:
+        return out
+    trs = []
+    for i in range(1, len(closes)):
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+        trs.append(tr)
+    prev = sum(trs[:period]) / period
+    out[period] = prev
+    for i in range(period + 1, len(closes)):
+        prev = (prev * (period - 1) + trs[i - 1]) / period
+        out[i] = prev
+    return out
+
+
+def _build_tech_series(indicator, closes, highs, lows, P):
+    """预计算指标序列;返回 dict(含 warmup=循环起始索引)。"""
+    T = {}
+    if indicator == "ma_cross":
+        T["ma_fast"] = _sma(closes, P["fast"])
+        T["ma_slow"] = _sma(closes, P["slow"])
+        T["warmup"] = P["slow"]
+    elif indicator == "macd":
+        _, _, T["macd_hist"] = _macd(closes, P["macd_fast"], P["macd_slow"], P["macd_signal"])
+        T["warmup"] = P["macd_slow"] + P["macd_signal"]
+    elif indicator == "rsi":
+        T["rsi"] = _rsi(closes, P["rsi_period"])
+        T["warmup"] = P["rsi_period"]
+    elif indicator in ("bollinger", "atr"):
+        if indicator == "bollinger":
+            T["bb_mid"], T["bb_upper"], T["bb_lower"] = _bollinger(
+                closes, P["bb_period"], P["num_std"]
+            )
+            T["warmup"] = P["bb_period"]
+        else:
+            T["bb_mid"] = _sma(closes, P["keltner_period"])
+            T["atr"] = _atr(highs, lows, closes, P["keltner_period"])
+            T["bb_upper"] = [None] * len(closes)
+            T["bb_lower"] = [None] * len(closes)
+            for i in range(P["keltner_period"], len(closes)):
+                m = T["bb_mid"][i]
+                a = T["atr"][i]
+                if m is not None and a is not None:
+                    T["bb_upper"][i] = m + P["keltner_mult"] * a
+                    T["bb_lower"][i] = m - P["keltner_mult"] * a
+            T["warmup"] = P["keltner_period"]
+    elif indicator == "turtle":
+        e = P["turtle_entry"]
+        x = P["turtle_exit"]
+        T["turtle_hh"] = [None] * len(closes)
+        T["turtle_ll"] = [None] * len(closes)
+        T["turtle_exit_hh"] = [None] * len(closes)
+        T["turtle_exit_ll"] = [None] * len(closes)
+        for i in range(e, len(closes)):
+            T["turtle_hh"][i] = max(highs[i - e : i])
+            T["turtle_ll"][i] = min(lows[i - e : i])
+        for i in range(x, len(closes)):
+            T["turtle_exit_hh"][i] = max(highs[i - x : i])
+            T["turtle_exit_ll"][i] = min(lows[i - x : i])
+        T["atr"] = _atr(highs, lows, closes, P["atr_period"])
+        T["warmup"] = max(e, P["atr_period"])
+    return T
+
+
+def _tech_signal(indicator, i, closes, highs, lows, T, P):
+    """统一信号判定:返回 (enter_long, enter_short, exit_long, exit_short,
+    strength, scale, reason)。"""
+    if indicator == "ma_cross":
+        f, s = T["ma_fast"][i], T["ma_slow"][i]
+        f1, s1 = T["ma_fast"][i - 1], T["ma_slow"][i - 1]
+        if None in (f, s, f1, s1):
+            return False, False, False, False, 0.0, 0.05, "均线数据不足"
+        gap = (f - s) / closes[i]
+        return f > s and f1 <= s1, f < s and f1 >= s1, f < s, f > s, abs(gap), 0.05, "双均线交叉"
+    if indicator == "macd":
+        h, h1 = T["macd_hist"][i], T["macd_hist"][i - 1]
+        if h is None or h1 is None:
+            return False, False, False, False, 0.0, 0.02, "MACD 数据不足"
+        return (
+            h > 0 and h1 <= 0,
+            h < 0 and h1 >= 0,
+            h < 0,
+            h > 0,
+            abs(h) / closes[i],
+            0.02,
+            "MACD 金叉死叉",
+        )
+    if indicator == "rsi":
+        r = T["rsi"][i]
+        if r is None:
+            return False, False, False, False, 0.0, 1.0, "RSI 数据不足"
+        return (
+            r < P["rsi_oversold"],
+            r > P["rsi_overbought"],
+            r > 50,
+            r < 50,
+            abs(r - 50) / 50.0,
+            1.0,
+            "RSI 超买超卖",
+        )
+    if indicator == "bollinger":
+        m, u, lo = T["bb_mid"][i], T["bb_upper"][i], T["bb_lower"][i]
+        if None in (m, u, lo):
+            return False, False, False, False, 0.0, 1.0, "布林带数据不足"
+        c = closes[i]
+        z = abs(c - m) / (u - m) if u > m else 1.0
+        return c > u, c < lo, c < m, c > m, z, 1.0, "布林带突破"
+    if indicator == "turtle":
+        hh, ll = T["turtle_hh"][i], T["turtle_ll"][i]
+        ex_hh, ex_ll = T["turtle_exit_hh"][i], T["turtle_exit_ll"][i]
+        if None in (hh, ll, ex_hh, ex_ll):
+            return False, False, False, False, 0.0, 0.05, "海龟通道数据不足"
+        c = closes[i]
+        br = (c - hh) / hh if c > hh else (ll - c) / ll if c < ll else 0.0
+        return c > hh, c < ll, c < ex_ll, c > ex_hh, abs(br), 0.05, "海龟突破"
+    if indicator == "atr":
+        m, u, lo = T["bb_mid"][i], T["bb_upper"][i], T["bb_lower"][i]
+        if None in (m, u, lo):
+            return False, False, False, False, 0.0, 0.05, "ATR 通道数据不足"
+        c = closes[i]
+        br = (c - u) / c if c > u else (lo - c) / c if c < lo else 0.0
+        return c > u, c < lo, c < m, c > m, abs(br), 0.05, "ATR 通道突破"
+    return False, False, False, False, 0.0, 1.0, "未知指标"
+
+
+def _adapt_sentiment_signal(tsig, tech_strength, tech_scale, trend, ss):
+    """情绪自适应包装(镜像 adaptive_sent 的分歧/顺势/逆向哲学)。
+
+    情绪作为**自适应因子**,不是原始方向门控:
+      - tsig==0(无技术触发):弱趋势 + 极端情绪 → 逆向入场(镜像 adaptive ④)。
+      - 技术信号与情绪同向(|ss|>0.1)→ 顺势确认。
+      - 分歧:强趋势(>3%)信技术(动量市);弱趋势(<1%)逆情绪(逆向市);中等→信技术。
+      - 情绪中性 → 跟随技术。
+    返回 (action, strength, scale, reason)。
+    """
+    trend_pct = abs(trend) * 100
+    if tsig == 0:
+        if trend_pct < 1 and ss < -0.1:
+            return "buy", abs(ss), 1.0, "无技术信号 + 弱趋势看空 → 逆向买入"
+        if trend_pct < 1 and ss > 0.1:
+            return "sell", abs(ss), 1.0, "无技术信号 + 弱趋势看多 → 逆向卖出"
+        return "hold", abs(ss), 1.0, "无技术信号"
+    tech_dir = "buy" if tsig == 1 else "sell"
+    if (tsig == 1 and ss > 0.1) or (tsig == -1 and ss < -0.1):
+        if tech_strength >= abs(ss):
+            return tech_dir, tech_strength, tech_scale, "技术信号 + 情绪同向确认"
+        return tech_dir, abs(ss), 1.0, "技术信号 + 情绪同向确认"
+    if (tsig == 1 and ss < -0.1) or (tsig == -1 and ss > 0.1):
+        if trend_pct > 3:
+            return tech_dir, tech_strength, tech_scale, f"强趋势 {trend_pct:.1f}% 分歧 → 跟随技术"
+        if trend_pct < 1:
+            return (
+                ("buy" if tsig == -1 else "sell"),
+                abs(ss),
+                1.0,
+                f"弱趋势 {trend_pct:.1f}% 分歧 → 逆向情绪",
+            )
+        return tech_dir, tech_strength, tech_scale, f"中等趋势 {trend_pct:.1f}% 分歧 → 跟随技术"
+    return tech_dir, tech_strength, tech_scale, "技术信号(情绪中性)"
+
+
+def _run_technical_backtest(
+    variety="", indicator="ma_cross", sent_mode=False, start_date="2025-01-01", end_date="", **P
+):
+    """通用技术策略回测引擎,供 12 个薄包装调用。
+
+    indicator: ma_cross / macd / rsi / bollinger / turtle / atr。
+    sent_mode=True 时入场信号经 _adapt_sentiment_signal 用情绪自适应调整
+    (离场保持纯技术);False 为纯价格版本。参数经 P 传入(trend_window 供情绪版)。
+    返回与 donchian 相同的单策略 dict 形状。
+    """
+    all_trades = []
+    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
+    for var in vlist:
+        p = _load_price(var)
+        if not p or not p.get("prices"):
+            continue
+        px = p["prices"]
+        closes = [float(x["close"]) for x in px]
+        highs = [float(x["high"]) for x in px]
+        lows = [float(x["low"]) for x in px]
+        dates = [str(x["date"])[:10] for x in px]
+        n = len(closes)
+        T = _build_tech_series(indicator, closes, highs, lows, P)
+        if n <= T["warmup"]:
+            continue
+        sent_map = {}
+        if sent_mode:
+            sent_data = _load_trends(var) or _load_sentiment(var)
+            sent_map = _build_forward_filled_sent_map(sent_data, dates) if sent_data else {}
+
+        pos = 0
+        entry_px = 0.0
+        entry_d = ""
+        last_i = None  # 窗口内最后一根 bar;窗口末仍有持仓时按它强平(而非全数据最后一根)
+        for i in range(T["warmup"], n):
+            d = dates[i]
+            if d < start_date or (end_date and d > end_date):
+                continue
+            last_i = i
+            el, es, xl, xs, tstr, tscale, _ = _tech_signal(indicator, i, closes, highs, lows, T, P)
+            if indicator == "turtle" and pos != 0 and entry_px:
+                atr = T["atr"][i]
+                if atr and atr > 0:
+                    stop = P["atr_mult"] * atr
+                    if pos == 1 and closes[i] < entry_px - stop:
+                        xl = True
+                    if pos == -1 and closes[i] > entry_px + stop:
+                        xs = True
+            if sent_mode:
+                tw = P.get("trend_window", 5)
+                trend = (
+                    (closes[i] - closes[i - tw]) / closes[i - tw]
+                    if i >= tw and closes[i - tw]
+                    else 0.0
+                )
+                action, _, _, _ = _adapt_sentiment_signal(
+                    1 if el else (-1 if es else 0), tstr, tscale, trend, sent_map.get(d, 0.0)
+                )
+                el, es = action == "buy", action == "sell"
+
+            if pos == 1 and xl and entry_px:
+                pnl = (closes[i] - entry_px) / entry_px * 100
+                all_trades.append(_trade(var, entry_d, d, "long", pnl, indicator, sent_mode))
+                pos = 0
+            elif pos == -1 and xs and entry_px:
+                pnl = (entry_px - closes[i]) / entry_px * 100
+                all_trades.append(_trade(var, entry_d, d, "short", pnl, indicator, sent_mode))
+                pos = 0
+
+            if pos == 0:
+                if el:
+                    pos, entry_px, entry_d = 1, closes[i], d
+                elif es:
+                    pos, entry_px, entry_d = -1, closes[i], d
+
+        if pos != 0 and entry_px and last_i is not None:
+            final = closes[last_i]
+            pnl = (
+                (final - entry_px) / entry_px * 100
+                if pos == 1
+                else (entry_px - final) / entry_px * 100
+            )
+            all_trades.append(
+                _trade(
+                    var,
+                    entry_d,
+                    dates[last_i],
+                    "long" if pos == 1 else "short",
+                    pnl,
+                    indicator,
+                    sent_mode,
+                )
+            )
+
+    if not all_trades:
+        return {"total_trades": 0}
+    wins = [t for t in all_trades if t["outcome"] == "win"]
+    pnls = [t["pnl"] for t in all_trades]
+    avg = sum(pnls) / len(pnls)
+    cum = 0
+    peak = 0
+    dd = 0
+    for p in pnls:
+        cum += p
+        peak = max(peak, cum)
+        dd = max(dd, peak - cum)
+    entry_dates = sorted({t["entry"] for t in all_trades})
+    td = (
+        max(
+            (
+                datetime.strptime(entry_dates[-1], "%Y-%m-%d")
+                - datetime.strptime(entry_dates[0], "%Y-%m-%d")
+            ).days
+            * 252
+            // 365,
+            len(pnls) * P.get("trend_window", 5),
+        )
+        if len(entry_dates) >= 2
+        else len(pnls) * P.get("trend_window", 5)
+    )
+    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)
+    result = {
+        "strategy": f"{indicator}{'_sent' if sent_mode else ''}",
+        "total_trades": len(all_trades),
+        "win_count": len(wins),
+        "loss_count": len(all_trades) - len(wins),
+        "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
+        "avg_pnl_pct": round(avg, 2),
+        "total_pnl": round(sum(pnls), 2) if pnls else 0,
+        "sharpe_like": advanced["sharpe_like"],
+        "max_drawdown_pct": advanced["max_drawdown_pct"],
+        "long_trades": len([t for t in all_trades if t["direction"] == "long"]),
+        "short_trades": len([t for t in all_trades if t["direction"] == "short"]),
+        "advanced_metrics": advanced,
+        "recent_trades": all_trades,
+    }
+    for k in (
+        "fast",
+        "slow",
+        "macd_fast",
+        "macd_slow",
+        "macd_signal",
+        "rsi_period",
+        "rsi_overbought",
+        "rsi_oversold",
+        "bb_period",
+        "num_std",
+        "turtle_entry",
+        "turtle_exit",
+        "atr_period",
+        "atr_mult",
+        "keltner_period",
+        "keltner_mult",
+        "trend_window",
+    ):
+        if k in P:
+            result[k] = P[k]
+    return result
+
+
+def _trade(var, entry, exit, direction, pnl, indicator, sent_mode):
+    """构造一条技术策略交易记录(与 donchian 的记录字段一致)。"""
+    return {
+        "variety": var,
+        "entry": entry,
+        "exit": exit,
+        "direction": direction,
+        "pnl": round(pnl, 2),
+        "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
+        "signal": f"{indicator}{'_sent' if sent_mode else ''}",
+    }
+
+
+# 12 个策略键 → (indicator, sent_mode);today_signal 与回测共用。
+TECH_KEYS = {
+    "ma_cross": ("ma_cross", False),
+    "ma_cross_sent": ("ma_cross", True),
+    "macd": ("macd", False),
+    "macd_sent": ("macd", True),
+    "rsi": ("rsi", False),
+    "rsi_sent": ("rsi", True),
+    "bollinger": ("bollinger", False),
+    "bollinger_sent": ("bollinger", True),
+    "turtle": ("turtle", False),
+    "turtle_sent": ("turtle", True),
+    "atr": ("atr", False),
+    "atr_sent": ("atr", True),
+}
+
+
+def _latest_technical_signal(strategy, variety, closes, highs, lows, dates, today, i, n, **P):
+    """12 个技术策略的今日信号(纯价格或情绪自适应版)。"""
+    indicator, sent_mode = TECH_KEYS[strategy]
+    T = _build_tech_series(indicator, closes, highs, lows, P)
+    if n <= T["warmup"]:
+        return None
+    if sent_mode:
+        sent_data = _load_trends(variety) or _load_sentiment(variety)
+        if not sent_data:
+            return None
+        sent_map = _build_forward_filled_sent_map(sent_data, dates)
+        ss = sent_map.get(today, 0.0)
+    else:
+        ss = 0.0
+    el, es, _, _, tstr, tscale, treason = _tech_signal(indicator, i, closes, highs, lows, T, P)
+    if sent_mode:
+        tw = P["trend_window"]
+        trend = (closes[i] - closes[i - tw]) / closes[i - tw] if i >= tw and closes[i - tw] else 0.0
+        action, strength, scale, reason = _adapt_sentiment_signal(
+            1 if el else (-1 if es else 0), tstr, tscale, trend, ss
+        )
+    else:
+        action = "buy" if el else ("sell" if es else "hold")
+        strength, scale, reason = tstr, tscale, treason
+    if action == "hold" and not reason:
+        reason = "指标未触发"
+    sig = _make_signal(variety, today, action, strength, reason, scale=scale)
+    return {"today_signal": sig, "today_signals": {}}
+
+
+def run_ma_cross_strategy(variety="", fast=10, slow=30, start_date="2025-01-01", end_date=""):
+    """双均线交叉(纯价格):快线上穿慢线做多,下穿做空。"""
+    return _run_technical_backtest(
+        variety, "ma_cross", False, start_date, end_date, fast=fast, slow=slow
+    )
+
+
+def run_ma_cross_sent_strategy(
+    variety="", fast=10, slow=30, trend_window=5, start_date="2025-01-01", end_date=""
+):
+    """双均线交叉(情绪确认):入场经情绪自适应调整。"""
+    return _run_technical_backtest(
+        variety,
+        "ma_cross",
+        True,
+        start_date,
+        end_date,
+        fast=fast,
+        slow=slow,
+        trend_window=trend_window,
+    )
+
+
+def run_macd_strategy(
+    variety="", macd_fast=12, macd_slow=26, macd_signal=9, start_date="2025-01-01", end_date=""
+):
+    """MACD(纯价格):hist 上穿 0 做多,下穿做空。"""
+    return _run_technical_backtest(
+        variety,
+        "macd",
+        False,
+        start_date,
+        end_date,
+        macd_fast=macd_fast,
+        macd_slow=macd_slow,
+        macd_signal=macd_signal,
+    )
+
+
+def run_macd_sent_strategy(
+    variety="",
+    macd_fast=12,
+    macd_slow=26,
+    macd_signal=9,
+    trend_window=5,
+    start_date="2025-01-01",
+    end_date="",
+):
+    """MACD(情绪确认):入场经情绪自适应调整。"""
+    return _run_technical_backtest(
+        variety,
+        "macd",
+        True,
+        start_date,
+        end_date,
+        macd_fast=macd_fast,
+        macd_slow=macd_slow,
+        macd_signal=macd_signal,
+        trend_window=trend_window,
+    )
+
+
+def run_rsi_strategy(
+    variety="",
+    rsi_period=14,
+    rsi_overbought=70,
+    rsi_oversold=30,
+    start_date="2025-01-01",
+    end_date="",
+):
+    """RSI 均值回归(纯价格):超卖做多、超买卖出,回归 50 离场。"""
+    return _run_technical_backtest(
+        variety,
+        "rsi",
+        False,
+        start_date,
+        end_date,
+        rsi_period=rsi_period,
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
+    )
+
+
+def run_rsi_sent_strategy(
+    variety="",
+    rsi_period=14,
+    rsi_overbought=70,
+    rsi_oversold=30,
+    trend_window=5,
+    start_date="2025-01-01",
+    end_date="",
+):
+    """RSI 均值回归(情绪确认):入场经情绪自适应调整。"""
+    return _run_technical_backtest(
+        variety,
+        "rsi",
+        True,
+        start_date,
+        end_date,
+        rsi_period=rsi_period,
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
+        trend_window=trend_window,
+    )
+
+
+def run_bollinger_strategy(
+    variety="", bb_period=20, num_std=2.0, start_date="2025-01-01", end_date=""
+):
+    """布林带突破(纯价格):突破上轨做多、下轨做空,回归中轨离场。"""
+    return _run_technical_backtest(
+        variety, "bollinger", False, start_date, end_date, bb_period=bb_period, num_std=num_std
+    )
+
+
+def run_bollinger_sent_strategy(
+    variety="", bb_period=20, num_std=2.0, trend_window=5, start_date="2025-01-01", end_date=""
+):
+    """布林带突破(情绪确认):入场经情绪自适应调整。"""
+    return _run_technical_backtest(
+        variety,
+        "bollinger",
+        True,
+        start_date,
+        end_date,
+        bb_period=bb_period,
+        num_std=num_std,
+        trend_window=trend_window,
+    )
+
+
+def run_turtle_strategy(
+    variety="",
+    turtle_entry=20,
+    turtle_exit=10,
+    atr_period=14,
+    atr_mult=2.0,
+    start_date="2025-01-01",
+    end_date="",
+):
+    """海龟交易法(纯价格):entry 日通道突破入场,exit 日通道或 ATR 止损离场。"""
+    return _run_technical_backtest(
+        variety,
+        "turtle",
+        False,
+        start_date,
+        end_date,
+        turtle_entry=turtle_entry,
+        turtle_exit=turtle_exit,
+        atr_period=atr_period,
+        atr_mult=atr_mult,
+    )
+
+
+def run_turtle_sent_strategy(
+    variety="",
+    turtle_entry=20,
+    turtle_exit=10,
+    atr_period=14,
+    atr_mult=2.0,
+    trend_window=5,
+    start_date="2025-01-01",
+    end_date="",
+):
+    """海龟交易法(情绪确认):入场经情绪自适应调整。"""
+    return _run_technical_backtest(
+        variety,
+        "turtle",
+        True,
+        start_date,
+        end_date,
+        turtle_entry=turtle_entry,
+        turtle_exit=turtle_exit,
+        atr_period=atr_period,
+        atr_mult=atr_mult,
+        trend_window=trend_window,
+    )
+
+
+def run_atr_strategy(
+    variety="", keltner_period=20, keltner_mult=2.0, start_date="2025-01-01", end_date=""
+):
+    """ATR 通道突破(纯价格):收盘突破 mid±k·ATR 做多/做空,回归 mid 离场。"""
+    return _run_technical_backtest(
+        variety,
+        "atr",
+        False,
+        start_date,
+        end_date,
+        keltner_period=keltner_period,
+        keltner_mult=keltner_mult,
+    )
+
+
+def run_atr_sent_strategy(
+    variety="",
+    keltner_period=20,
+    keltner_mult=2.0,
+    trend_window=5,
+    start_date="2025-01-01",
+    end_date="",
+):
+    """ATR 通道突破(情绪确认):入场经情绪自适应调整。"""
+    return _run_technical_backtest(
+        variety,
+        "atr",
+        True,
+        start_date,
+        end_date,
+        keltner_period=keltner_period,
+        keltner_mult=keltner_mult,
+        trend_window=trend_window,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Time-Series Momentum (Moskowitz et al. 2012)
 # ═══════════════════════════════════════════════════════════════════
 
 
-def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01"):
+def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01", end_date=""):
     """Time-series momentum: go long if N-day return > 0, short if < 0, hold M days.
     Re-evaluates every day — much higher frequency than crossover strategies.
     """
@@ -1174,10 +1888,12 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
         entry_px = 0
         entry_d = ""
         entry_i = 0
+        last_i = None  # 窗口内最后一根 bar;窗口末仍有持仓时按它强平
         for i in range(lookback, n):
             d = dates[i]
-            if d < start_date:
+            if d < start_date or (end_date and d > end_date):
                 continue
+            last_i = i
             ret = (
                 (closes[i] - closes[i - lookback]) / closes[i - lookback]
                 if closes[i - lookback]
@@ -1215,8 +1931,8 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
                 entry_d = d
                 entry_i = i
 
-        if pos != 0 and entry_px:
-            final = closes[-1]
+        if pos != 0 and entry_px and last_i is not None:
+            final = closes[last_i]
             pnl = (
                 (final - entry_px) / entry_px * 100
                 if pos == 1
@@ -1226,7 +1942,7 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
                 {
                     "variety": var,
                     "entry": entry_d,
-                    "exit": dates[-1],
+                    "exit": dates[last_i],
                     "direction": "long" if pos == 1 else "short",
                     "pnl": round(pnl, 2),
                     "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
@@ -1269,6 +1985,7 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
         "loss_count": len(all_trades) - len(wins),
         "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
         "avg_pnl_pct": round(avg, 2),
+        "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
         "max_drawdown_pct": advanced["max_drawdown_pct"],
         "lookback": lookback,
@@ -1289,6 +2006,7 @@ def run_momentum_adaptive(
     hold: int = 3,
     trend_window: int = 5,
     start_date: str = "2025-01-01",
+    end_date: str = "",
 ) -> dict:
     """Pure price momentum + adaptive sentiment overlay.
 
@@ -1354,11 +2072,13 @@ def run_momentum_adaptive(
         # Rolling baseline quality tracker (last N closed trades)
         baseline_recent_pnls = []  # stores PnL of last 10 closed baseline trades
         BASELINE_WINDOW = 10
+        last_i = None  # 窗口内最后一根 bar;窗口末仍有持仓时按它强平
 
         for i in range(max(lookback, trend_window), n):
             d = dates[i]
-            if d < start_date:
+            if d < start_date or (end_date and d > end_date):
                 continue
+            last_i = i
             ss = sent_map.get(d, 0)
             px_now = closes[i]
 
@@ -1529,8 +2249,8 @@ def run_momentum_adaptive(
                     entry_i_b = i
 
         # Close final positions
-        final_px = closes[-1]
-        if pos_a != 0 and entry_px_a:
+        final_px = closes[last_i] if last_i is not None else None
+        if pos_a != 0 and entry_px_a and final_px is not None:
             pnl = (
                 (final_px - entry_px_a) / entry_px_a * 100
                 if pos_a == 1
@@ -1540,14 +2260,14 @@ def run_momentum_adaptive(
                 {
                     "variety": var,
                     "entry": entry_d_a,
-                    "exit": dates[-1],
+                    "exit": dates[last_i],
                     "direction": "long" if pos_a == 1 else "short",
                     "pnl": round(pnl, 2),
                     "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
                     "signal": "mom_ad",
                 }
             )
-        if pos_b != 0 and entry_px_b:
+        if pos_b != 0 and entry_px_b and final_px is not None:
             pnl = (
                 (final_px - entry_px_b) / entry_px_b * 100
                 if pos_b == 1
@@ -1557,7 +2277,7 @@ def run_momentum_adaptive(
                 {
                     "variety": var,
                     "entry": entry_d_b,
-                    "exit": dates[-1],
+                    "exit": dates[last_i],
                     "direction": "long" if pos_b == 1 else "short",
                     "pnl": round(pnl, 2),
                     "outcome": "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven"),
@@ -1744,7 +2464,6 @@ def apply_risk_management(
 
 
 @dataclass
-@dataclass
 class TradeRecord:
     variety: str
     entry_date: str
@@ -1915,6 +2634,7 @@ def run_simulated_trading(
     horizon: int = 3,
     signal_threshold: float = 0.2,
     start_date: str = "2025-01-01",
+    end_date: str = "",
 ) -> dict:
     """Simulated trading based on sentiment signals.
 
@@ -1947,7 +2667,7 @@ def run_simulated_trading(
         scores = []
         for s in series:
             d = s["date"]
-            if d in price_map and d >= start_date:
+            if d in price_map and d >= start_date and (not end_date or d <= end_date):
                 dates.append(d)
                 scores.append(s.get("avg_score", 0))
 
@@ -2031,6 +2751,7 @@ def run_simulated_trading(
         "loss_count": len(losses),
         "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
         "avg_pnl_pct": round(avg_pnl, 2),
+        "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
         "max_drawdown_pct": advanced["max_drawdown_pct"],
         "long_trades": len(long_trades),
@@ -2154,6 +2875,8 @@ def run_strategy_comparison(
     horizon: int = 5,
     signal_threshold: float = 0.2,
     fund_threshold: float = 0.3,
+    start_date: str = "2025-01-01",
+    end_date: str = "",
 ) -> dict:
     """Run three strategies and return PnL curves for comparison.
 
@@ -2209,7 +2932,7 @@ def run_strategy_comparison(
     sent_scores = []
     f_scores = []
     for i, d in enumerate(price_dates):
-        if d in sent_map:
+        if d in sent_map and d >= start_date and (not end_date or d <= end_date):
             dates.append(d)
             prices.append(price_map[d])
             sent_scores.append(sent_map[d])
@@ -2373,6 +3096,7 @@ def run_trailing_strategy(
     signal_threshold: float = 0.2,
     max_holding: int = 10,
     start_date: str = "2025-01-01",
+    end_date: str = "",
 ) -> dict:
     """Sentiment trailing exit strategy.
 
@@ -2412,7 +3136,7 @@ def run_trailing_strategy(
         scores = []
         for s in series:
             d = s["date"]
-            if d in price_map and d >= start_date:
+            if d in price_map and d >= start_date and (not end_date or d <= end_date):
                 dates.append(d)
                 scores.append(s.get("avg_score", 0))
 
@@ -2536,6 +3260,7 @@ def run_trailing_strategy(
         "loss_count": len(losses),
         "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
         "avg_pnl_pct": round(avg_pnl, 2),
+        "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
         "max_drawdown_pct": advanced["max_drawdown_pct"],
         "long_trades": len(long_trades),
@@ -2570,6 +3295,485 @@ def run_trailing_strategy(
             for t in all_trades
         ],
     }
+
+
+# ── "今日操作"信号 ──────────────────────────────────────────────────────────
+
+
+def _build_forward_filled_sent_map(
+    sent_data: dict | None, price_dates: list[str]
+) -> dict[str, float]:
+    """按价格日期向前填充情绪评分(forward-fill)。
+
+    镜像各回测函数(run_contrarian_sentiment :573-580 / run_adaptive_sentiment :792-799 /
+    run_momentum_adaptive :1335-1342)的填充逻辑:取 <= 当日的最新情绪评分作为该日情绪。
+    """
+    if not sent_data:
+        return {}
+    series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))
+    raw = {str(s.get("date", ""))[:10]: float(s.get("avg_score", 0)) for s in series}
+    sd_sorted = sorted(raw)
+    out: dict[str, float] = {}
+    last_s = 0.0
+    si = 0
+    for d in price_dates:
+        while si < len(sd_sorted) and sd_sorted[si] <= d:
+            last_s = raw[sd_sorted[si]]
+            si += 1
+        out[d] = last_s
+    return out
+
+
+def _make_signal(
+    variety: str, date: str, action: str, strength: float, reason: str, scale: float = 1.0
+) -> dict:
+    """构建"今日操作"信号 dict。action 取值:buy(买入)/sell(卖出)/hold(不动)。
+
+    ``strength`` 是各策略的原生信号幅度(情绪得分 / 收益率小数 / 突破幅度),
+    量纲各不相同,不可跨策略比较。``strength_pct`` 将其归一化到 [0,1]:
+    情绪/基本面得分 scale=1.0(得分本身 ≈ [-1,1]);收益率/突破幅度 scale=0.05
+    (回看累计 5% 视为极强)。截断到 1.0,保证跨策略同一标尺。
+    """
+    return {
+        "date": date,
+        "variety": variety,
+        "action": action,
+        "strength": round(strength, 3),
+        "strength_pct": round(min(abs(strength) / scale, 1.0), 3),
+        "reason": reason,
+    }
+
+
+def latest_trading_signal(
+    strategy: str,
+    variety: str = "",
+    horizon: int = 3,
+    signal_threshold: float = 0.2,
+    trend_window: int = 5,
+    lookback: int = 5,
+    hold: int = 3,
+    period: int = 20,
+    fund_threshold: float = 0.3,
+    max_holding: int = 10,
+    fast: int = 10,
+    slow: int = 30,
+    macd_fast: int = 12,
+    macd_slow: int = 26,
+    macd_signal: int = 9,
+    rsi_period: int = 14,
+    rsi_overbought: float = 70,
+    rsi_oversold: float = 30,
+    bb_period: int = 20,
+    num_std: float = 2.0,
+    turtle_entry: int = 20,
+    turtle_exit: int = 10,
+    atr_period: int = 14,
+    atr_mult: float = 2.0,
+    keltner_period: int = 20,
+    keltner_mult: float = 2.0,
+) -> dict | None:
+    """计算策略在数据最新交易日(而非用户选择的 end_date)的买入/卖出/不动信号。
+
+    "今天" = 该品种价格数据最后一条记录的日期(prices[-1]["date"]),与回测的
+    start_date/end_date 无关——回看窗需要 today 之前的完整历史。
+
+    返回 None:variety 为空、无价格数据、或数据不足(少于该策略所需回看窗)。
+    有信号时返回 {"today_signal": <主信号>, "today_signals": {子键: 信号, ...}}:
+      - 单策略(fixed/trailing/momentum/donchian):today_signals 为空 dict。
+      - 多子策略:today_signals 键与前端 subs 遍历键一致
+        (contrarian/adaptive_sent → {主, consensus};momentum_ad → {adaptive, momentum_baseline};
+         compare → {fund_only, fund_plus_sentiment});today_signal = today_signals[主键]。
+    每个信号含 strength(策略原生幅度,不可跨策略比较)与 strength_pct(归一化到 [0,1],
+    跨策略可比):情绪/基本面得分按 [-1,1] 计,收益率/突破幅度按 5% 封顶。
+
+    注意:fixed/trailing/compare 的回测对情绪做"精确日期对齐"(只取价格与情绪都有的
+    交易日),而本函数的 today 信号将情绪向前填充到 today——这是有意行为,以获得
+    "今天"可执行的答案。
+    """
+    if not variety:
+        return None
+    price_data = _load_price(variety)
+    if not price_data or not price_data.get("prices"):
+        return None
+    px = price_data["prices"]
+    closes = [float(x["close"]) for x in px]
+    highs = [float(x["high"]) for x in px]
+    lows = [float(x["low"]) for x in px]
+    dates = [str(x["date"])[:10] for x in px]
+    n = len(closes)
+    if n == 0:
+        return None
+    today = dates[-1]
+    i = n - 1
+
+    # 情绪加载(按各策略原样选择)并向前填充到 today
+    if strategy in ("fixed", "trailing"):
+        sent_data = _load_sentiment(variety)
+    elif strategy in ("contrarian", "adaptive_sent", "momentum_ad"):
+        sent_data = _load_trends(variety) or _load_sentiment(variety)
+    elif strategy == "compare":
+        sent_data = _load_trends(variety)
+    else:
+        sent_data = None
+    sent_map = _build_forward_filled_sent_map(sent_data, dates)
+    ss = sent_map.get(today, 0.0)
+
+    # ── 技术策略(MA cross / MACD / RSI / Bollinger / Turtle / ATR)──
+    if strategy in TECH_KEYS:
+        return _latest_technical_signal(
+            strategy,
+            variety,
+            closes,
+            highs,
+            lows,
+            dates,
+            today,
+            i,
+            n,
+            fast=fast,
+            slow=slow,
+            macd_fast=macd_fast,
+            macd_slow=macd_slow,
+            macd_signal=macd_signal,
+            rsi_period=rsi_period,
+            rsi_overbought=rsi_overbought,
+            rsi_oversold=rsi_oversold,
+            bb_period=bb_period,
+            num_std=num_std,
+            turtle_entry=turtle_entry,
+            turtle_exit=turtle_exit,
+            atr_period=atr_period,
+            atr_mult=atr_mult,
+            keltner_period=keltner_period,
+            keltner_mult=keltner_mult,
+            trend_window=trend_window,
+        )
+
+    # ── fixed / trailing:纯情绪阈值 ──
+    if strategy in ("fixed", "trailing"):
+        if n < 20 or not sent_data:
+            return None
+        if ss > signal_threshold:
+            sig = _make_signal(
+                variety, today, "buy", abs(ss), f"情绪评分 {ss:.2f} > 阈值 {signal_threshold:.2f}"
+            )
+        elif ss < -signal_threshold:
+            sig = _make_signal(
+                variety, today, "sell", abs(ss), f"情绪评分 {ss:.2f} < -阈值 {signal_threshold:.2f}"
+            )
+        else:
+            sig = _make_signal(
+                variety,
+                today,
+                "hold",
+                abs(ss),
+                f"情绪评分 {ss:.2f} 在阈值 ±{signal_threshold:.2f} 内",
+            )
+        return {"today_signal": sig, "today_signals": {}}
+
+    # ── momentum:回看收益 ──
+    if strategy == "momentum":
+        if n < lookback + 1:
+            return None
+        mom_ret = (
+            (closes[i] - closes[i - lookback]) / closes[i - lookback] if closes[i - lookback] else 0
+        )
+        pct = mom_ret * 100
+        if mom_ret > 0.005:
+            sig = _make_signal(
+                variety,
+                today,
+                "buy",
+                abs(mom_ret),
+                f"回看{lookback}日收益 {pct:.2f}% > 0.5%",
+                scale=0.05,
+            )
+        elif mom_ret < -0.005:
+            sig = _make_signal(
+                variety,
+                today,
+                "sell",
+                abs(mom_ret),
+                f"回看{lookback}日收益 {pct:.2f}% < -0.5%",
+                scale=0.05,
+            )
+        else:
+            sig = _make_signal(
+                variety,
+                today,
+                "hold",
+                abs(mom_ret),
+                f"回看{lookback}日收益 {pct:.2f}%,动量不足",
+                scale=0.05,
+            )
+        return {"today_signal": sig, "today_signals": {}}
+
+    # ── donchian:通道突破 ──
+    if strategy == "donchian":
+        if n < period + 1:
+            return None
+        hh = max(highs[i - period : i])
+        ll = min(lows[i - period : i])
+        if closes[i] > hh:
+            sig = _make_signal(
+                variety,
+                today,
+                "buy",
+                (closes[i] - hh) / hh,
+                f"突破{period}日高点 {hh:.2f}",
+                scale=0.05,
+            )
+        elif closes[i] < ll:
+            sig = _make_signal(
+                variety,
+                today,
+                "sell",
+                (ll - closes[i]) / ll,
+                f"跌破{period}日低点 {ll:.2f}",
+                scale=0.05,
+            )
+        else:
+            sig = _make_signal(variety, today, "hold", 0.0, f"价格在{period}日通道内")
+        return {"today_signal": sig, "today_signals": {}}
+
+    # ── contrarian:主=逆情绪,子=情绪共识(顺势) ──
+    if strategy == "contrarian":
+        if n < trend_window + 1:
+            return None
+        trend = (
+            (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
+            if closes[i - trend_window]
+            else 0
+        )
+        if trend < -0.01 and ss > 0.1:
+            main = _make_signal(
+                variety,
+                today,
+                "buy",
+                abs(ss),
+                f"{trend_window}日趋势 {trend * 100:.2f}% 下跌 + 情绪看多 → 逆向买入",
+            )
+        elif trend > 0.01 and ss < -0.1:
+            main = _make_signal(
+                variety,
+                today,
+                "sell",
+                abs(ss),
+                f"{trend_window}日趋势 {trend * 100:.2f}% 上涨 + 情绪看空 → 逆向卖出",
+            )
+        else:
+            main = _make_signal(variety, today, "hold", abs(ss), "趋势与情绪未背离,观望")
+        if trend > 0.01 and ss > 0.1:
+            sub = _make_signal(variety, today, "buy", abs(ss), "趋势与情绪同向看多")
+        elif trend < -0.01 and ss < -0.1:
+            sub = _make_signal(variety, today, "sell", abs(ss), "趋势与情绪同向看空")
+        else:
+            sub = _make_signal(variety, today, "hold", abs(ss), "趋势与情绪未同向")
+        return {"today_signal": main, "today_signals": {"contrarian": main, "consensus": sub}}
+
+    # ── adaptive_sent:自适应选择顺势/逆势 ──
+    if strategy == "adaptive_sent":
+        if n < trend_window + 1:
+            return None
+        trend = (
+            (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
+            if closes[i - trend_window]
+            else 0
+        )
+        trend_pct = abs(trend) * 100
+        diverge_bearish = trend > 0.01 and ss < -0.1
+        diverge_bullish = trend < -0.01 and ss > 0.1
+        if diverge_bearish:
+            main = _make_signal(variety, today, "sell", abs(ss), "价格上涨 + 情绪看空(背离)→ 卖出")
+        elif diverge_bullish:
+            if trend_pct > 3:
+                main = _make_signal(
+                    variety,
+                    today,
+                    "hold",
+                    abs(ss),
+                    f"强跌 {trend_pct:.1f}% + 情绪看多(接飞刀)→ 观望",
+                )
+            else:
+                main = _make_signal(variety, today, "buy", abs(ss), "回调 + 情绪看多 → 逆向买入")
+        elif trend_pct > 2:
+            if trend > 0.01 and ss > 0.1:
+                main = _make_signal(
+                    variety, today, "buy", abs(ss), f"强趋势 {trend_pct:.1f}% + 看多 → 顺势买入"
+                )
+            elif trend < -0.01 and ss < -0.1:
+                main = _make_signal(
+                    variety, today, "sell", abs(ss), f"强趋势 {trend_pct:.1f}% + 看空 → 顺势卖出"
+                )
+            else:
+                main = _make_signal(
+                    variety, today, "hold", abs(ss), f"强趋势 {trend_pct:.1f}% 但情绪中性"
+                )
+        elif trend_pct < 1:
+            if trend < -0.01 and ss > 0.1:
+                main = _make_signal(variety, today, "buy", abs(ss), "弱趋势 + 情绪看多 → 逆向买入")
+            elif trend > 0.01 and ss < -0.1:
+                main = _make_signal(variety, today, "sell", abs(ss), "弱趋势 + 情绪看空 → 逆向卖出")
+            else:
+                main = _make_signal(variety, today, "hold", abs(ss), "弱趋势 + 情绪中性")
+        else:
+            if trend > 0.01 and ss > 0.1:
+                main = _make_signal(variety, today, "buy", abs(ss), "中等趋势 + 看多 → 顺势买入")
+            elif trend < -0.01 and ss < -0.1:
+                main = _make_signal(variety, today, "sell", abs(ss), "中等趋势 + 看空 → 顺势卖出")
+            else:
+                main = _make_signal(variety, today, "hold", abs(ss), "中等趋势但情绪中性")
+        if trend > 0.01 and ss > 0.1:
+            sub = _make_signal(variety, today, "buy", abs(ss), "趋势与情绪同向看多")
+        elif trend < -0.01 and ss < -0.1:
+            sub = _make_signal(variety, today, "sell", abs(ss), "趋势与情绪同向看空")
+        else:
+            sub = _make_signal(variety, today, "hold", abs(ss), "趋势与情绪未同向")
+        return {"today_signal": main, "today_signals": {"adaptive": main, "consensus": sub}}
+
+    # ── momentum_ad:质量门控自适应决策 + 基线重放 ──
+    if strategy == "momentum_ad":
+        if n < max(lookback, trend_window) + 1:
+            return None
+        # O(n) 纯动量基线重放,复刻 run_momentum_adaptive :1387-1394 的 baseline_is_good
+        # 运行态(依赖最近 10 笔已平仓基线动量交易的盈亏)。重放窗口按默认回测
+        # start_date="2025-01-01"(本函数不接收回测日期,聚焦"今天"视角)。
+        baseline_recent_pnls: list[float] = []
+        pos_b = 0
+        entry_px_b = 0.0
+        entry_d_b = ""
+        entry_i_b = 0
+        for j in range(max(lookback, trend_window), n - 1):
+            dj = dates[j]
+            if dj < "2025-01-01":
+                continue
+            b_ret = (
+                (closes[j] - closes[j - lookback]) / closes[j - lookback]
+                if closes[j - lookback]
+                else 0
+            )
+            b_sig = 1 if b_ret > 0.005 else (-1 if b_ret < -0.005 else 0)
+            b_exit_px = closes[min(j + hold, n - 1)]
+            if pos_b != 0 and entry_d_b and j - entry_i_b >= hold:
+                if pos_b == 1:
+                    bl_pnl = (b_exit_px - entry_px_b) / entry_px_b * 100
+                else:
+                    bl_pnl = (entry_px_b - b_exit_px) / entry_px_b * 100
+                baseline_recent_pnls.append(bl_pnl)
+                if len(baseline_recent_pnls) > 10:
+                    baseline_recent_pnls.pop(0)
+                pos_b = 0
+            if pos_b == 0:
+                if b_sig == 1:
+                    pos_b = 1
+                    entry_px_b = closes[j]
+                    entry_d_b = dj
+                    entry_i_b = j
+                elif b_sig == -1:
+                    pos_b = -1
+                    entry_px_b = closes[j]
+                    entry_d_b = dj
+                    entry_i_b = j
+        baseline_is_good = False
+        if len(baseline_recent_pnls) >= 5:
+            recent_wr = sum(1 for p in baseline_recent_pnls if p > 0.15) / len(baseline_recent_pnls)
+            recent_total = sum(baseline_recent_pnls)
+            baseline_is_good = recent_total > 0 and recent_wr >= 0.45
+
+        # 今日决策(镜像 run_momentum_adaptive :1396-1432)
+        mom_ret = (
+            (closes[i] - closes[i - lookback]) / closes[i - lookback] if closes[i - lookback] else 0
+        )
+        mom_sig = 1 if mom_ret > 0.005 else (-1 if mom_ret < -0.005 else 0)
+        trend = (
+            (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
+            if closes[i - trend_window]
+            else 0
+        )
+        trend_pct = abs(trend) * 100
+        diverge_bearish = trend > 0.01 and ss < -0.1
+        diverge_bullish = trend < -0.01 and ss > 0.1
+
+        strength_scale = 1.0
+        if diverge_bearish:
+            action, strength, reason = "sell", abs(ss), "价格上涨 + 情绪看空(背离)→ 卖出"
+        elif diverge_bullish:
+            if baseline_is_good:
+                action = "buy" if mom_sig == 1 else ("sell" if mom_sig == -1 else "hold")
+                strength = abs(mom_ret)
+                strength_scale = 0.05
+                reason = "跌 + 看多但基线盈利 → 跟随动量"
+            elif trend_pct > 3:
+                action, strength, reason = (
+                    "hold",
+                    abs(ss),
+                    f"强跌 {trend_pct:.1f}% + 看多(接飞刀)→ 观望",
+                )
+            else:
+                action, strength, reason = "buy", abs(ss), "回调 + 情绪看多 → 逆向买入"
+        elif trend_pct > 2:
+            action = "buy" if mom_sig == 1 else ("sell" if mom_sig == -1 else "hold")
+            strength = abs(mom_ret)
+            strength_scale = 0.05
+            reason = f"强趋势 {trend_pct:.1f}% → 跟随动量"
+        elif baseline_is_good:
+            action = "buy" if mom_sig == 1 else ("sell" if mom_sig == -1 else "hold")
+            strength = abs(mom_ret)
+            strength_scale = 0.05
+            reason = "弱趋势 + 基线盈利 → 跟随动量"
+        else:
+            action = "buy" if ss < -0.1 else ("sell" if ss > 0.1 else "hold")
+            strength = abs(ss)
+            reason = "弱趋势 + 基线亏损 → 逆情绪"
+        main = _make_signal(variety, today, action, strength, reason, scale=strength_scale)
+        if mom_sig == 1:
+            sub = _make_signal(variety, today, "buy", abs(mom_ret), "纯动量基线看多", scale=0.05)
+        elif mom_sig == -1:
+            sub = _make_signal(variety, today, "sell", abs(mom_ret), "纯动量基线看空", scale=0.05)
+        else:
+            sub = _make_signal(variety, today, "hold", abs(mom_ret), "纯动量基线无信号", scale=0.05)
+        return {"today_signal": main, "today_signals": {"adaptive": main, "momentum_baseline": sub}}
+
+    # ── compare:基本面 / 基本面+情绪 ──
+    if strategy == "compare":
+        if n < 21 or not sent_data:
+            return None
+        factors = _compute_fundamental_factors(px)
+        fs = factors["fund_score"][i]
+        if fs > fund_threshold:
+            fund_sig = _make_signal(
+                variety, today, "buy", abs(fs), f"基本面得分 {fs:.3f} > 阈值 {fund_threshold:.2f}"
+            )
+        elif fs < -fund_threshold:
+            fund_sig = _make_signal(
+                variety, today, "sell", abs(fs), f"基本面得分 {fs:.3f} < -阈值 {fund_threshold:.2f}"
+            )
+        else:
+            fund_sig = _make_signal(
+                variety,
+                today,
+                "hold",
+                abs(fs),
+                f"基本面得分 {fs:.3f} 在阈值 ±{fund_threshold:.2f} 内",
+            )
+        if fs > fund_threshold and ss > 0:
+            combo_sig = _make_signal(
+                variety, today, "buy", abs(fs), f"基本面 {fs:.3f} + 情绪 {ss:.2f} 同向看多"
+            )
+        elif fs < -fund_threshold and ss < 0:
+            combo_sig = _make_signal(
+                variety, today, "sell", abs(fs), f"基本面 {fs:.3f} + 情绪 {ss:.2f} 同向看空"
+            )
+        else:
+            combo_sig = _make_signal(
+                variety, today, "hold", abs(fs), f"基本面 {fs:.3f} 与情绪 {ss:.2f} 未同向确认"
+            )
+        return {
+            "today_signal": combo_sig,
+            "today_signals": {"fund_only": fund_sig, "fund_plus_sentiment": combo_sig},
+        }
+
+    return None
 
 
 def _get_all_varieties_with_data() -> list[str]:

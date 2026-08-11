@@ -51,14 +51,27 @@ from signal_analyzer import (  # noqa: E402
     extract_events,
     get_all_variety_scores,
     get_top_authors,
+    latest_trading_signal,
     run_adaptive_sentiment,
+    run_atr_sent_strategy,
+    run_atr_strategy,
+    run_bollinger_sent_strategy,
+    run_bollinger_strategy,
     run_contrarian_sentiment,
     run_donchian_strategy,
+    run_ma_cross_sent_strategy,
+    run_ma_cross_strategy,
+    run_macd_sent_strategy,
+    run_macd_strategy,
     run_momentum_adaptive,
     run_momentum_strategy,
+    run_rsi_sent_strategy,
+    run_rsi_strategy,
     run_simulated_trading,
     run_strategy_comparison,
     run_trailing_strategy,
+    run_turtle_sent_strategy,
+    run_turtle_strategy,
 )
 from tradingagents.dataflows.commodity_futures import (  # noqa: E402
     VARIETY_METADATA,
@@ -1701,11 +1714,19 @@ def api_trading_run():
         variety=variety,
         horizon=horizon,
         signal_threshold=threshold,
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
     )
     # Save trades to DB
     db = get_db()
     for t in result.get("recent_trades", []):
         db.save_trade_signal(t["variety"], t["entry"], 0, t["dir"], 0, horizon)
+    sig = latest_trading_signal(
+        "fixed", variety=variety, horizon=horizon, signal_threshold=threshold
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    if sig and sig.get("today_signals"):
+        result["today_signals"] = sig["today_signals"]
     return jsonify(result)
 
 
@@ -1716,7 +1737,19 @@ def api_trading_contrarian():
         variety=data.get("variety", ""),
         horizon=data.get("horizon", 3),
         trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
     )
+    variety = data.get("variety", "")
+    sig = latest_trading_signal(
+        "contrarian",
+        variety=variety,
+        horizon=data.get("horizon", 3),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    if sig and sig.get("today_signals"):
+        result["today_signals"] = sig["today_signals"]
     return jsonify(result)
 
 
@@ -1727,7 +1760,18 @@ def api_trading_adaptive_sentiment():
         variety=data.get("variety", ""),
         horizon=data.get("horizon", 3),
         trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
     )
+    sig = latest_trading_signal(
+        "adaptive_sent",
+        variety=data.get("variety", ""),
+        horizon=data.get("horizon", 3),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    if sig and sig.get("today_signals"):
+        result["today_signals"] = sig["today_signals"]
     return jsonify(result)
 
 
@@ -1789,7 +1833,13 @@ def api_trading_multi():
                 }
 
             elif s == "trailing":
-                r = run_trailing_strategy(variety=variety, signal_threshold=0.2, max_holding=10)
+                r = run_trailing_strategy(
+                    variety=variety,
+                    signal_threshold=0.2,
+                    max_holding=10,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
                 trades = r.get("recent_trades", [])
                 pnl_map = {}
                 for t in trades:
@@ -1806,7 +1856,9 @@ def api_trading_multi():
                 }
 
             elif s == "adaptive_sent":
-                r = run_adaptive_sentiment(variety=variety)
+                r = run_adaptive_sentiment(
+                    variety=variety, start_date=start_date, end_date=end_date
+                )
                 c = r.get("curves", {}).get("adaptive", [])
                 dates = r.get("dates", [])
                 pnl_map = {}
@@ -1827,7 +1879,9 @@ def api_trading_multi():
                 }
 
             elif s == "contrarian":
-                r = run_contrarian_sentiment(variety=variety)
+                r = run_contrarian_sentiment(
+                    variety=variety, start_date=start_date, end_date=end_date
+                )
                 c = r.get("curves", {}).get("contrarian", [])
                 dates = r.get("dates", [])
                 pnl_map = {}
@@ -1847,7 +1901,7 @@ def api_trading_multi():
                     "advanced_metrics": r.get("contrarian", {}).get("advanced_metrics", {}),
                 }
             elif s == "momentum_ad":
-                r = run_momentum_adaptive(variety=variety)
+                r = run_momentum_adaptive(variety=variety, start_date=start_date, end_date=end_date)
                 c = r.get("curves", {}).get("adaptive", [])
                 dates = r.get("dates", [])
                 pnl_map = {}
@@ -1911,7 +1965,15 @@ def api_trading_multi():
 @app.route("/api/trading/momentum_strat", methods=["POST"])
 def api_trading_momentum():
     data = request.json or {}
-    result = run_momentum_strategy(variety=data.get("variety", ""))
+    result = run_momentum_strategy(
+        variety=data.get("variety", ""),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal("momentum", variety=data.get("variety", ""))
+    result["today_signal"] = sig["today_signal"] if sig else None
+    if sig and sig.get("today_signals"):
+        result["today_signals"] = sig["today_signals"]
     return jsonify(result)
 
 
@@ -1923,14 +1985,314 @@ def api_trading_momentum_adaptive():
         lookback=data.get("lookback", 5),
         hold=data.get("hold", 3),
         trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
     )
+    sig = latest_trading_signal(
+        "momentum_ad",
+        variety=data.get("variety", ""),
+        lookback=data.get("lookback", 5),
+        hold=data.get("hold", 3),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    if sig and sig.get("today_signals"):
+        result["today_signals"] = sig["today_signals"]
     return jsonify(result)
 
 
 @app.route("/api/trading/donchian", methods=["POST"])
 def api_trading_donchian():
     data = request.json or {}
-    result = run_donchian_strategy(variety=data.get("variety", ""))
+    result = run_donchian_strategy(
+        variety=data.get("variety", ""),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal("donchian", variety=data.get("variety", ""))
+    result["today_signal"] = sig["today_signal"] if sig else None
+    if sig and sig.get("today_signals"):
+        result["today_signals"] = sig["today_signals"]
+    return jsonify(result)
+
+
+@app.route("/api/trading/ma_cross", methods=["POST"])
+def api_trading_ma_cross():
+    """双均线交叉(纯价格)。"""
+    data = request.json or {}
+    result = run_ma_cross_strategy(
+        variety=data.get("variety", ""),
+        fast=data.get("fast", 10),
+        slow=data.get("slow", 30),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "ma_cross",
+        variety=data.get("variety", ""),
+        fast=data.get("fast", 10),
+        slow=data.get("slow", 30),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/ma_cross_sent", methods=["POST"])
+def api_trading_ma_cross_sent():
+    """双均线交叉(情绪确认)。"""
+    data = request.json or {}
+    result = run_ma_cross_sent_strategy(
+        variety=data.get("variety", ""),
+        fast=data.get("fast", 10),
+        slow=data.get("slow", 30),
+        trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "ma_cross_sent",
+        variety=data.get("variety", ""),
+        fast=data.get("fast", 10),
+        slow=data.get("slow", 30),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/macd", methods=["POST"])
+def api_trading_macd():
+    """MACD(纯价格)。"""
+    data = request.json or {}
+    result = run_macd_strategy(
+        variety=data.get("variety", ""),
+        macd_fast=data.get("macd_fast", 12),
+        macd_slow=data.get("macd_slow", 26),
+        macd_signal=data.get("macd_signal", 9),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "macd",
+        variety=data.get("variety", ""),
+        macd_fast=data.get("macd_fast", 12),
+        macd_slow=data.get("macd_slow", 26),
+        macd_signal=data.get("macd_signal", 9),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/macd_sent", methods=["POST"])
+def api_trading_macd_sent():
+    """MACD(情绪确认)。"""
+    data = request.json or {}
+    result = run_macd_sent_strategy(
+        variety=data.get("variety", ""),
+        macd_fast=data.get("macd_fast", 12),
+        macd_slow=data.get("macd_slow", 26),
+        macd_signal=data.get("macd_signal", 9),
+        trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "macd_sent",
+        variety=data.get("variety", ""),
+        macd_fast=data.get("macd_fast", 12),
+        macd_slow=data.get("macd_slow", 26),
+        macd_signal=data.get("macd_signal", 9),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/rsi", methods=["POST"])
+def api_trading_rsi():
+    """RSI 均值回归(纯价格)。"""
+    data = request.json or {}
+    result = run_rsi_strategy(
+        variety=data.get("variety", ""),
+        rsi_period=data.get("rsi_period", 14),
+        rsi_overbought=data.get("rsi_overbought", 70),
+        rsi_oversold=data.get("rsi_oversold", 30),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "rsi",
+        variety=data.get("variety", ""),
+        rsi_period=data.get("rsi_period", 14),
+        rsi_overbought=data.get("rsi_overbought", 70),
+        rsi_oversold=data.get("rsi_oversold", 30),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/rsi_sent", methods=["POST"])
+def api_trading_rsi_sent():
+    """RSI 均值回归(情绪确认)。"""
+    data = request.json or {}
+    result = run_rsi_sent_strategy(
+        variety=data.get("variety", ""),
+        rsi_period=data.get("rsi_period", 14),
+        rsi_overbought=data.get("rsi_overbought", 70),
+        rsi_oversold=data.get("rsi_oversold", 30),
+        trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "rsi_sent",
+        variety=data.get("variety", ""),
+        rsi_period=data.get("rsi_period", 14),
+        rsi_overbought=data.get("rsi_overbought", 70),
+        rsi_oversold=data.get("rsi_oversold", 30),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/bollinger", methods=["POST"])
+def api_trading_bollinger():
+    """布林带突破(纯价格)。"""
+    data = request.json or {}
+    result = run_bollinger_strategy(
+        variety=data.get("variety", ""),
+        bb_period=data.get("bb_period", 20),
+        num_std=data.get("num_std", 2.0),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "bollinger",
+        variety=data.get("variety", ""),
+        bb_period=data.get("bb_period", 20),
+        num_std=data.get("num_std", 2.0),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/bollinger_sent", methods=["POST"])
+def api_trading_bollinger_sent():
+    """布林带突破(情绪确认)。"""
+    data = request.json or {}
+    result = run_bollinger_sent_strategy(
+        variety=data.get("variety", ""),
+        bb_period=data.get("bb_period", 20),
+        num_std=data.get("num_std", 2.0),
+        trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "bollinger_sent",
+        variety=data.get("variety", ""),
+        bb_period=data.get("bb_period", 20),
+        num_std=data.get("num_std", 2.0),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/turtle", methods=["POST"])
+def api_trading_turtle():
+    """海龟交易法(纯价格)。"""
+    data = request.json or {}
+    result = run_turtle_strategy(
+        variety=data.get("variety", ""),
+        turtle_entry=data.get("turtle_entry", 20),
+        turtle_exit=data.get("turtle_exit", 10),
+        atr_period=data.get("atr_period", 14),
+        atr_mult=data.get("atr_mult", 2.0),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "turtle",
+        variety=data.get("variety", ""),
+        turtle_entry=data.get("turtle_entry", 20),
+        turtle_exit=data.get("turtle_exit", 10),
+        atr_period=data.get("atr_period", 14),
+        atr_mult=data.get("atr_mult", 2.0),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/turtle_sent", methods=["POST"])
+def api_trading_turtle_sent():
+    """海龟交易法(情绪确认)。"""
+    data = request.json or {}
+    result = run_turtle_sent_strategy(
+        variety=data.get("variety", ""),
+        turtle_entry=data.get("turtle_entry", 20),
+        turtle_exit=data.get("turtle_exit", 10),
+        atr_period=data.get("atr_period", 14),
+        atr_mult=data.get("atr_mult", 2.0),
+        trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "turtle_sent",
+        variety=data.get("variety", ""),
+        turtle_entry=data.get("turtle_entry", 20),
+        turtle_exit=data.get("turtle_exit", 10),
+        atr_period=data.get("atr_period", 14),
+        atr_mult=data.get("atr_mult", 2.0),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/atr", methods=["POST"])
+def api_trading_atr():
+    """ATR 通道突破(纯价格)。"""
+    data = request.json or {}
+    result = run_atr_strategy(
+        variety=data.get("variety", ""),
+        keltner_period=data.get("keltner_period", 20),
+        keltner_mult=data.get("keltner_mult", 2.0),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "atr",
+        variety=data.get("variety", ""),
+        keltner_period=data.get("keltner_period", 20),
+        keltner_mult=data.get("keltner_mult", 2.0),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    return jsonify(result)
+
+
+@app.route("/api/trading/atr_sent", methods=["POST"])
+def api_trading_atr_sent():
+    """ATR 通道突破(情绪确认)。"""
+    data = request.json or {}
+    result = run_atr_sent_strategy(
+        variety=data.get("variety", ""),
+        keltner_period=data.get("keltner_period", 20),
+        keltner_mult=data.get("keltner_mult", 2.0),
+        trend_window=data.get("trend_window", 5),
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
+    )
+    sig = latest_trading_signal(
+        "atr_sent",
+        variety=data.get("variety", ""),
+        keltner_period=data.get("keltner_period", 20),
+        keltner_mult=data.get("keltner_mult", 2.0),
+        trend_window=data.get("trend_window", 5),
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
     return jsonify(result)
 
 
@@ -1945,7 +2307,15 @@ def api_trading_trailing():
         variety=variety,
         signal_threshold=threshold,
         max_holding=max_holding,
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
     )
+    sig = latest_trading_signal(
+        "trailing", variety=variety, signal_threshold=threshold, max_holding=max_holding
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    if sig and sig.get("today_signals"):
+        result["today_signals"] = sig["today_signals"]
     return jsonify(result)
 
 
@@ -1962,7 +2332,19 @@ def api_trading_compare():
         horizon=horizon,
         signal_threshold=sent_threshold,
         fund_threshold=fund_threshold,
+        start_date=data.get("start_date", "2025-01-01"),
+        end_date=data.get("end_date", ""),
     )
+    sig = latest_trading_signal(
+        "compare",
+        variety=variety,
+        horizon=horizon,
+        signal_threshold=sent_threshold,
+        fund_threshold=fund_threshold,
+    )
+    result["today_signal"] = sig["today_signal"] if sig else None
+    if sig and sig.get("today_signals"):
+        result["today_signals"] = sig["today_signals"]
     return jsonify(result)
 
 
