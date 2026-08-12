@@ -1,6 +1,26 @@
 """
 模块2：情感深度分析 (P0)
 — 7级情感分布、高确信信号、时间维度、品种-情感矩阵
+
+
+本文件在"情绪数据生产链"中的角色
+--------------------------------
+    这是【情感结果的事后深度分析 + 可视化】模块 (报表层), 不是情感打分引擎。
+    它读取的是"已经打好情感标签"的数据表 (DataFrame), 产出:
+      1. 7 级情感分布与牛熊比
+      2. 高确信度信号 (confidence > 0.5 的非中性帖子)
+      3. 时间维度分布 (短期/中期/长期)
+      4. 品种 × 情感 矩阵 (提及 >= 3 次的品种)
+    同时生成 HTML 图表 (堆叠柱状图 / 热力图 / 置信度直方图)。
+
+    ⚠️ 与任务描述的澄清:
+      任务描述把 sentiment_deep.py 称为"LLM 深度情感引擎"。
+      实际代码是 pandas + plotly 的统计分析模块, 并不调用 LLM。
+      真正的 LLM 深度情感引擎在 llm_sentiment.py。
+      【待确认】若期望此处调用 LLM, 请确认版本或参考 llm_sentiment.py。
+    输入数据来源: analyze.py 加载 batch_*.jsonl 后构造的 DataFrame,
+      其中 sentiment / sentiment_confidence / variety_sentiments 等字段
+      由 sentiment.py / batch_collect.py 的 enrich 流程提前打好。
 """
 
 from collections import Counter
@@ -20,11 +40,20 @@ from report_utils import (
 
 
 def analyze(df: pd.DataFrame) -> dict:
-    """情感深度分析"""
+    """
+    【功能】对已打好情感标签的数据做"深度分析", 返回终端文本 + HTML 图表。
+    【参数】df: pandas.DataFrame, 至少应包含 sentiment / sentiment_confidence 等字段。
+    【返回】dict, 形如 {"text": 终端可读的文本报告, "html": 拼接好的 HTML 片段}。
+    【关键逻辑】
+      - expand_varieties(df): 把"一条帖子多个品种"拆成"多行", 每行一个品种,
+        便于做品种级统计 (来自 report_utils)。
+      - 文本报告与 HTML 图表并行构建, 最后一起返回。
+    """
     vdf = expand_varieties(df)
     vdf_valid = vdf[vdf["variety_name"] != ""].copy()
 
     # === 1. 7级情感分布 ===
+    # Counter 统计每个 7 级标签出现的次数 (即情感分布的直方图数据)
     sent_dist = Counter()
     for s in df["sentiment"]:
         sent_dist[s] += 1
@@ -43,7 +72,8 @@ def analyze(df: pd.DataFrame) -> dict:
         col_widths=[14, 6, 8, 30],
     )
 
-    # 牛熊比
+    # 牛熊比: 把三档看多(strong/bullish/slightly)合成"牛", 三档看空合成"熊",
+    # 再算比例; 分母 +1 避免除零。
     bull_total = (
         sent_dist.get("strong_bullish", 0)
         + sent_dist.get("bullish", 0)
@@ -58,6 +88,7 @@ def analyze(df: pd.DataFrame) -> dict:
     text += f"\n  牛熊比: {bull_total}牛 / {neutral_total}中 / {bear_total}熊 = {bull_total / (bear_total + 1):.2f}:1"
 
     # === 2. 高确信度信号 ===
+    # 布尔索引筛选: 只保留"置信度>0.5 且非中性"的帖子, 视为高确信信号
     high_conf = df[(df["sentiment_confidence"] > 0.5) & (df["sentiment"] != "neutral")]
     high_conf_bull = high_conf[high_conf["sentiment"].str.contains("bullish")]
     high_conf_bear = high_conf[high_conf["sentiment"].str.contains("bearish")]
@@ -95,6 +126,7 @@ def analyze(df: pd.DataFrame) -> dict:
         )
 
     # === 3. 时间维度分析 ===
+    # 统计各条品种级记录的时间维度 (short/mid/long), 看观点是偏短期还是偏长期
     time_horizon_dist = Counter()
     for _, row in vdf_valid.iterrows():
         th = row.get("var_time_horizon", "") or ""
@@ -107,7 +139,7 @@ def analyze(df: pd.DataFrame) -> dict:
         text += ", ".join(f"{th_labels.get(k, k)}: {v}" for k, v in time_horizon_dist.most_common())
 
     # === 4. 品种-情感矩阵 ===
-    # 取提及次数 >= 3 的品种
+    # 取提及次数 >= 3 的品种 (样本太少统计无意义), 最多展示 Top 20
     vc = vdf_valid["variety_name"].value_counts()
     top_varieties = vc[vc >= 3].index.tolist()[:20]  # Top 20
 
@@ -125,6 +157,11 @@ def analyze(df: pd.DataFrame) -> dict:
     # ================================================================
     # HTML 图表
     # ================================================================
+    # 以下用 Plotly 生成 3 张图并转成内嵌 HTML 片段, 拼接进 charts_html:
+    #   fig1: 7级情感分布柱状图
+    #   fig2: 品种 × 情感 热力图
+    #   fig3: 置信度分布直方图 (看多/看空/中性 叠加)
+    # chart_to_html() 来自 report_utils, 负责把 Plotly 图转成离线可用的 HTML。
 
     charts_html = ""
 

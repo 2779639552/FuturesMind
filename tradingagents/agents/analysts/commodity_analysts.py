@@ -6,6 +6,29 @@ Each analyst node internally handles the tool-calling loop: LLM decides to call
 a tool → node executes it → LLM processes the result → repeat until report is ready.
 """
 
+# =============================================================================
+# 【文件角色】本文件是"分析师节点生成器"模块，产出 3 位商品期货分析师节点。
+#
+# 【在分析管线中的位置】
+#   数据采集(dataflows) → 图编排(commodity_demo.py) → 分析师并行分析(本文件)
+#   → 辩论(commodity_debate.py) → 综合结论。
+#   本文件只负责"单点分析"：把"LLM + 一组工具"封装成一个可被 LangGraph 调用的节点。
+#
+# 【四位分析师分工】（前 3 位在本文件生成，第 4 位在 sentiment_analyst.py 生成）
+#   1. Technical   技术面 : 价格趋势、均线、MACD、RSI、布林带、成交量、持仓量(OI)。
+#   2. Fundamental 基本面 : 供需平衡、库存周期、基差结构、产业链利润传导。
+#   3. Macro/News  宏观面 : 宏观经济数据、政策、新闻、地缘政治。
+#   4. Sentiment   情绪面 : 社交媒体情绪与市场心理（由 sentiment_analyst.py 提供）。
+#   四者并行产出各自报告（报告以 BIAS 观点行开头），供后续讨论与综合使用。
+#
+# 【与其它文件的关系】
+#   - dataflows/ 负责数据采集/清洗与品种元数据；本文件不直接调用它，而是通过
+#     tradingagents/agents/utils/commodity_futures_tools.py 中的 @tool 工具读取数据
+#     （这些工具内部再调用 dataflows.interface 的路由）。
+#   - commodity_demo.py  负责把分析师节点接入 LangGraph 图、串联整体执行流程。
+#   - commodity_debate.py 负责让多位分析师的报告进入"辩论"环节并做综合。
+# =============================================================================
+
 import logging
 
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -26,6 +49,8 @@ from tradingagents.agents.utils.commodity_futures_tools import (
 
 logger = logging.getLogger(__name__)
 
+# 工具调用循环的最大轮数（安全上限）。
+# 防止 LLM 无休止地调用工具导致死循环或 token 超限；到达该上限后强制结束。
 MAX_TOOL_ITERATIONS = 6  # safety limit
 
 
@@ -51,27 +76,55 @@ def _run_tool_loop(
 
     Returns the final LLM response (text content) or raises on error.
     """
+
+    # 【中文说明】本函数是 Agent 的"核心引擎"——工具调用循环。
+    # 整体思路：让 LLM 自己决定"下一步要查什么"→ 本函数代为执行该工具 → 把结果回填给 LLM
+    # → LLM 基于新信息再次决策 …… 直到 LLM 认为信息足够、不再要求调用工具（输出最终报告），
+    # 或达到最大轮数上限。
+    # 这相当于让 LLM 像"分析师查资料"一样：一手调取行情/库存/新闻等数据，一手写分析报告。
+    #
+    # 【功能】循环执行"LLM 决策 → 执行工具 → 回填结果"直到产出最终报告。
+    # 【参数】llm: LLM 客户端；tools: @tool 装饰的工具函数列表；
+    #         initial_messages: 对话初始消息（含系统提示与历史消息）；
+    #         max_iterations: 最大轮数；progress_callback: 进度回调(事件, 数据)；
+    #         label: 该分析师的显示名。
+    # 【返回】LLM 最终输出的报告文本（response.content）。
+    # 【关键逻辑】两个终止条件：①LLM 不再请求调用工具；②达到 max_iterations。
+    #            单个工具异常不中断整体，而是包装成 TOOL_ERROR 文本回填给 LLM。
+
     # Build a tool map for fast lookup
+    # 建立"工具名 → 工具函数"的查找表，之后按名字快速定位要执行的工具。
     tool_map = {t.name: t for t in tools}
 
     messages = list(initial_messages)  # copy
+    # 复制一份初始消息，避免直接改动调用方传入的列表（不污染外部状态）。
     iteration = 0
+    # 已执行的分析轮数计数（每轮循环先 +1）。
 
+    # ----- 循环主体：只要没达到最大轮数，就一直让 LLM 思考并(可能)调用工具 -----
     while iteration < max_iterations:
         iteration += 1
         if progress_callback:
+            # 通知外部（如 Web 前端）：新一轮开始，便于展示"正在思考第几轮"。
             progress_callback("iteration", {"current": iteration, "max": max_iterations})
 
+        # 关键一步：把全部历史消息（含此前工具结果）连同工具定义一起交给 LLM。
+        # LLM 返回的 response 中可能带 tool_calls（它想调用哪些工具及其参数）。
         response = llm.bind_tools(tools).invoke(messages)
+        # 把 LLM 本轮的回答追加进对话历史，保持上下文连贯（含它的思考过程）。
         messages.append(response)
 
         # Emit LLM reasoning text between tool calls (if any)
+        # 若 LLM 在调用工具前先输出了思考文字，截取前 500 字符推送给外部作实时展示
+        # （纯展示用途，不影响后续逻辑）。
         if progress_callback and response.content:
             content_preview = (
                 response.content[:500] if len(response.content) > 500 else response.content
             )
             progress_callback("llm_thinking", {"content": content_preview, "iteration": iteration})
 
+        # ---- 循环终止条件之一：LLM 不再请求调用工具 ----
+        # 说明 LLM 认为已收集到足够信息，本次输出就是它的最终分析报告，直接返回。
         if not response.tool_calls:
             # No more tool calls — this is the final report
             if progress_callback:
@@ -79,14 +132,16 @@ def _run_tool_loop(
             return response.content
 
         # Execute tool calls
+        # 逐条执行 LLM 本轮请求的所有工具调用（一轮可能同时请求多个工具）。
         for tc in response.tool_calls:
-            tool_name = tc.get("name", "")
-            tool_args = tc.get("args", {})
-            tool_id = tc.get("id", "")
+            tool_name = tc.get("name", "")  # 工具名，如 get_futures_price
+            tool_args = tc.get("args", {})  # 传给工具的参数（字典）
+            tool_id = tc.get("id", "")      # 本次调用的唯一 ID，后续靠它把结果"对上号"
 
             logger.info("Tool call: %s(%s)", tool_name, tool_args)
 
             # Format args for display (brief)
+            # 参数可能很长，压缩到 100 字符内，仅供前端展示使用（不影响真实传参）。
             args_brief = str(tool_args)
             if len(args_brief) > 100:
                 args_brief = args_brief[:97] + "..."
@@ -103,18 +158,25 @@ def _run_tool_loop(
                     },
                 )
 
+            # 只在"白名单"内执行工具：防止 LLM 调用到不存在的工具或误拼写。
             if tool_name in tool_map:
                 try:
+                    # 真正执行工具函数（@tool 装饰的函数可通过 .invoke(args) 调用）。
                     result = tool_map[tool_name].invoke(tool_args)
                     # Truncate very long results to avoid token overflow
+                    # 工具返回可能很长（如新闻/库存列表），截断到 8000 字符，避免撑爆 LLM 上下文。
                     if isinstance(result, str) and len(result) > 8000:
                         result = result[:8000] + "\n... (truncated for length)"
                 except Exception as e:
+                    # 错误处理：单个工具失败不应让整个分析崩溃，
+                    # 而是把错误信息包装成一段"工具返回文本"，让 LLM 自行判断如何处理。
                     result = f"TOOL_ERROR: {type(e).__name__}: {e}"
             else:
+                # LLM "幻觉"调用了不存在的工具：回填一条提示文本，避免程序中断。
                 result = f"Unknown tool: {tool_name}"
 
             if progress_callback:
+                # 把工具执行结果的长度与前 300 字符预览推送给外部（展示"已取回数据"）。
                 result_str = str(result)
                 progress_callback(
                     "tool_result",
@@ -126,9 +188,12 @@ def _run_tool_loop(
                     },
                 )
 
+            # 关键一步：把工具执行结果以 ToolMessage 形式"回填"给 LLM。
+            # tool_call_id 必须与上文 LLM 请求中的 id 完全一致，LLM 才知道这段结果对应哪次调用。
             messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
 
     # Hit max iterations
+    # 循环终止条件之二：达到最大轮数仍未结束。强制返回最后一次 LLM 输出，避免无限循环。
     logger.warning("Tool loop hit max iterations (%d). Returning last response.", max_iterations)
     return response.content if hasattr(response, "content") else str(response)
 
@@ -141,7 +206,26 @@ def _run_tool_loop(
 def create_commodity_technical_analyst(llm, label="Technical", progress_callback=None):
     """Technical analyst for commodity futures: price action, indicators, volume/OI."""
 
+    # 【中文说明】
+    # 【功能】创建"技术面分析师"节点（工厂函数）。
+    # 【立场/关注点】只看价格行为与市场微观结构：趋势/支撑阻力、均线、MACD、RSI、
+    #               布林带、成交量、持仓量(OI)、ATR。刻意不看基本面与消息面。
+    # 【工具清单】get_variety_info, get_futures_price, get_futures_indicators, get_verified_quote
+    # 【输出结构】报告第一行必须是
+    #            "BIAS: 看多/偏多/中性/偏空/看空 | CONFIDENCE: 高/中/低"
+    #            （机器解析用，供回测/辩论使用），末尾附关键信号汇总表；
+    #            节点返回 {"messages": [HumanMessage], "technical_report": 报告文本}。
+    # 【参数】llm: LLM 客户端；label: 进度显示名（默认 "Technical"）；
+    #         progress_callback: 进度回调 callback(event_type, data)。
+    # 【返回】node 函数，签名 node(state)，兼容 LangGraph StateGraph 节点。
+    # 注：返回的是闭包 node——工厂函数只负责"造"节点，真正的执行逻辑在 node 内部。
+
     def node(state):
+        # 【功能】技术面分析节点本体：被 LangGraph 调用一次，产出技术面报告。
+        # 【参数】state: 图状态字典，其中 trade_date 为当前交易日、company_of_interest 为品种代码。
+        # 【返回】dict：{"messages": [HumanMessage(技术报告)], "technical_report": 报告文本}。
+        # 【关键逻辑】组装系统提示(中文 System Prompt) → 构造 prompt → 调用 _run_tool_loop
+        #            让 LLM 自行调工具取数并写报告 → 报告出错时兜底为 ANALYSIS_ERROR 文本。
         current_date = state["trade_date"]
         symbol = state["company_of_interest"]
 
@@ -256,7 +340,25 @@ End your report with:
 def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_callback=None):
     """Fundamental analyst for commodity futures: supply/demand, inventory, basis, industrial chain."""
 
+    # 【中文说明】
+    # 【功能】创建"基本面分析师"节点（工厂函数）。
+    # 【立场/关注点】供需平衡、库存周期（重点看库存"速度"而非绝对值）、基差结构、
+    #               产业链成本传导与利润分配。不看价格图形，也不看新闻情绪。
+    # 【工具清单】get_variety_info, get_futures_price, get_futures_basis, get_futures_inventory,
+    #            get_futures_supply_demand, get_verified_quote
+    # 【输出结构】报告第一行必须是
+    #            "BIAS: 看多/偏多/中性/偏空/看空 | CONFIDENCE: 高/中/低"（机器解析用）；
+    #            末尾附关键信号汇总表；节点返回
+    #            {"messages": [HumanMessage], "fundamental_report": 报告文本}。
+    # 【参数】llm: LLM 客户端；label: 进度显示名（默认 "Fundamental"）；
+    #         progress_callback: 进度回调 callback(event_type, data)。
+    # 【返回】node 函数，签名 node(state)，兼容 LangGraph StateGraph 节点。
+
     def node(state):
+        # 【功能】基本面分析节点本体：被 LangGraph 调用一次，产出基本面报告。
+        # 【参数】state: 图状态字典，其中 trade_date 为当前交易日、company_of_interest 为品种代码。
+        # 【返回】dict：{"messages": [HumanMessage(基本面报告)], "fundamental_report": 报告文本}。
+        # 【关键逻辑】与技术面节点一致：构造提示 → _run_tool_loop 取数写报告 → 异常兜底。
         current_date = state["trade_date"]
         symbol = state["company_of_interest"]
 
@@ -406,7 +508,25 @@ End with:
 def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=None):
     """Macro & news analyst for commodity futures: policy, macro cycles, geopolitical events."""
 
+    # 【中文说明】
+    # 【功能】创建"宏观与新闻分析师"节点（工厂函数）。
+    # 【立场/关注点】宏观经济数据（GDP/PMI/固投/房地产指数等）、政策面（供给端改革、
+    #               环保限产、货币/财政政策）、新闻叙事与地缘政治事件。
+    # 【工具清单】get_variety_info, get_futures_news, get_futures_price, get_futures_macro,
+    #            get_verified_quote
+    # 【输出结构】报告第一行必须是
+    #            "BIAS: 看多/偏多/中性/偏空/看空 | CONFIDENCE: 高/中/低"（机器解析用）；
+    #            末尾附关键信号汇总表；节点返回
+    #            {"messages": [HumanMessage], "macro_report": 报告文本}。
+    # 【参数】llm: LLM 客户端；label: 进度显示名（默认 "Macro/News"）；
+    #         progress_callback: 进度回调 callback(event_type, data)。
+    # 【返回】node 函数，签名 node(state)，兼容 LangGraph StateGraph 节点。
+
     def node(state):
+        # 【功能】宏观与新闻分析节点本体：被 LangGraph 调用一次，产出宏观面报告。
+        # 【参数】state: 图状态字典，其中 trade_date 为当前交易日、company_of_interest 为品种代码。
+        # 【返回】dict：{"messages": [HumanMessage(宏观报告)], "macro_report": 报告文本}。
+        # 【关键逻辑】与技术/基本面节点一致：构造提示 → _run_tool_loop 取数写报告 → 异常兜底。
         current_date = state["trade_date"]
         symbol = state["company_of_interest"]
 

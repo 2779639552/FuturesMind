@@ -22,6 +22,22 @@
   sa = SentimentAnalyzer()
   result = sa.analyze("螺纹钢今天增仓大涨，多头力量很强")
   # → {sentiment: "bullish", score: 0.52, confidence: 0.8, ...}
+
+
+本文件在"情绪数据生产链"中的角色
+--------------------------------
+    这是【情感打分引擎】的实现文件, 处于生产链的"分析"环节:
+      输入: 采集到的帖子文本 (来自 batch_collect.py / hybrid_pipeline 采集的数据)。
+      输出: 结构化情感结果 {sentiment, score, confidence, certainty, time_horizon, ...}。
+
+    与 sentiment_deep.py 的区别 (重要澄清):
+      - 本文件 (sentiment.py) = 情感分析的【引擎】: 对一条文本实时打分。
+      - sentiment_deep.py 并不是"LLM 深度情感引擎", 而是一个"事后统计分析
+        + 可视化"的报表模块 (7级情感分布 / 高确信信号 / 时间维度 / 品种-情感矩阵),
+        它读的是已经打好的 sentiment 字段。
+      - 真正的 LLM 深度情感引擎在 llm_sentiment.py (调用 Claude/GPT/DeepSeek)。
+      【待确认】任务描述把 sentiment_deep.py 说成 LLM 引擎, 与当前代码不符,
+      请以实际代码为准。
 """
 
 from dataclasses import asdict, dataclass, field
@@ -29,6 +45,14 @@ from dataclasses import asdict, dataclass, field
 # ================================================================
 # 情感词库 — 期货领域专用
 # ================================================================
+# 规则引擎的核心"知识"全部在这几个词典里:
+#   BULLISH_LEXICON / BEARISH_LEXICON: 看多/看空词 → 权重 (正负号表示方向,
+#       绝对值越大表示信号越强)。扫描文本时, 命中一个词就把权重累加。
+#   NEUTRAL_SIGNALS: 中性词, 用于对过强的情感做"降温"。
+#   CERTAINTY_MODIFIERS: 确定性修饰词 ("一定/可能"), 影响 confidence/certainty。
+#   TIME_HORIZON_SIGNALS: 时间维度词, 判断观点是短期/中期/长期。
+#   NEGATION_WORDS / NEGATION_FALSE_POSITIVES: 否定词及其误判排除。
+#   TRANSITION_WORDS: 转折词 ("但是/然而"), 转折后的内容情感加权。
 
 # 看多信号词 (正向权重)
 BULLISH_LEXICON = {
@@ -290,7 +314,20 @@ TRANSITION_WORDS = {"但", "但是", "然而", "不过", "可是", "却", "虽�
 
 @dataclass
 class SentimentResult:
-    """情感分析结果"""
+    """
+    【功能】单条文本的情感分析结果容器 (数据类)。
+    【字段说明】
+      sentiment: 7 级情感标签, 取值为
+        strong_bullish | bullish | slightly_bullish | neutral |
+        slightly_bearish | bearish | strong_bearish
+      score: 综合得分, 范围 -1.0(最强空) ~ +1.0(最强多)。
+      confidence: 0~1, 判断置信度 (信号越多越确定)。
+      certainty: 0~1, 表达确定性 (由"一定/可能"等修饰词推断)。
+      time_horizon: 时间维度, short|mid|long|"" (空表示未提及)。
+      key_phrases: 触发情感的关键原文片段 (最多 5 个)。
+      bull_signals / bear_signals: 看多/看空信号命中个数。
+      engine: 由哪个引擎产出, "rule"(规则) 或 "finbert"(模型)。
+    """
 
     sentiment: str = "neutral"  # strong_bullish|bullish|slightly_bullish|neutral|slightly_bearish|bearish|strong_bearish
     score: float = 0.0  # -1.0(最强空) ~ +1.0(最强多)
@@ -309,10 +346,20 @@ class SentimentResult:
 
 
 class RuleEngine:
-    """基于词典+规则的情感分析"""
+    """
+    【功能】基于词典 + 规则的轻量情感分析引擎 (零依赖, 秒级, 可解释)。
+    【适用场景】实时流处理、大批量快速打分、离线冷启动、没有 GPU/API 的环境。
+    【关键逻辑】完全靠上面定义的词库, 依次完成:
+      信号扫描 → 否定翻转 → 转折加权 → 得分归一化 → 7级分类 → 置信度/确定性/时间维度。
+    """
 
     def analyze(self, text: str) -> SentimentResult:
-        """对文本做情感分析"""
+        """
+        【功能】对一段文本做情感分析, 返回完整的 SentimentResult。
+        【参数】text: str, 待分析的文本 (可含中文期货术语)。
+        【返回】SentimentResult: 情感标签/得分/置信度等。
+        【关键逻辑】9 个步骤见方法体内注释。
+        """
         if not text:
             return SentimentResult()
 
@@ -391,7 +438,10 @@ class RuleEngine:
         return result
 
     def _scan_lexicon(self, text: str, lexicon: dict) -> tuple[float, list]:
-        """扫描词库，返回(加权得分, 匹配短语列表)"""
+        """【功能】在文本中逐词扫描给定词库, 返回(加权得分, 命中短语列表)。
+        【参数】text: 原文; lexicon: {词: 权重} 词典。
+        【返回】(score, phrases): 累计权重分 + 命中的词列表。
+        【关键逻辑】简单的 `if phrase in text` 子串匹配, 不区分位置。"""
         score = 0.0
         phrases = []
         for phrase, weight in lexicon.items():
@@ -401,7 +451,12 @@ class RuleEngine:
         return score, phrases
 
     def _apply_negation(self, text: str, bull: float, bear: float) -> tuple[float, float]:
-        """否定词翻转: "不会涨" → 看多变看空。排除固定搭配误判。"""
+        """【功能】否定词翻转: "不会涨"应视为看空, 把看多分翻到看空分。
+        【参数】text: 原文; bull/bear: 当前看多/看空得分。
+        【返回】修正后的 (bull, bear) 得分。
+        【关键逻辑】
+          - 单字否定词("不/未/无/非")需额外排除固定搭配, 防止 "不错/不明" 被误判。
+          - 只检查否定词之后 12 个字符范围内出现的情感词, 做方向翻转。"""
         all_negations = list(NEGATION_WORDS)
 
         # 单字否定词：需额外验证不是固定搭配
@@ -437,7 +492,10 @@ class RuleEngine:
         return bull, bear
 
     def _apply_transition(self, text: str, bull: float, bear: float) -> tuple[float, float]:
-        """转折词处理: 转折后的情感权重加倍"""
+        """【功能】转折词处理: 转折("但是/然而")之后的内容情感权重更高。
+        【参数】text: 原文; bull/bear: 当前看多/看空得分。
+        【返回】修正后的 (bull, bear)。
+        【关键逻辑】找到转折词后, 对转折词往后的所有情感词再各加 50% 权重。"""
         for trans in TRANSITION_WORDS:
             pos = text.find(trans)
             if pos < 0:
@@ -453,7 +511,9 @@ class RuleEngine:
         return bull, bear
 
     def _score_to_sentiment(self, score: float) -> str:
-        """数值 → 7级情感标签"""
+        """【功能】把 -1~+1 的连续得分映射为 7 级离散情感标签。
+        【参数】score: 综合得分。 【返回】7 级标签字符串。
+        【关键逻辑】分档阈值: >=0.6 强多, >=0.3 看多, >=0.1 略多, |score|<0.1 中性, 向下对称。"""
         if score >= 0.6:
             return "strong_bullish"
         elif score >= 0.3:
@@ -470,7 +530,9 @@ class RuleEngine:
             return "strong_bearish"
 
     def _compute_certainty(self, text: str) -> float:
-        """从修饰词计算表达确定性"""
+        """【功能】根据确定性修饰词("一定/可能/估计")计算表达确定性。
+        【参数】text: 原文。 【返回】0~1 的确定性分数。
+        【关键逻辑】没有修饰词时返回 0.5 (中等); 有修饰词则取平均权重并归一化。"""
         total_mod = 0.0
         count = 0
         for mod, weight in CERTAINTY_MODIFIERS.items():
@@ -483,7 +545,9 @@ class RuleEngine:
         return round(min(1.0, max(0.1, total_mod / count / 2.0)), 2)
 
     def _compute_time_horizon(self, text: str) -> str:
-        """提取时间维度"""
+        """【功能】从时间维度词表判断观点属于短期/中期/长期。
+        【参数】text: 原文。 【返回】"short"|"mid"|"long"|"" (未提及返回空串)。
+        【关键逻辑】分别统计三类词命中次数, 返回命中最多的一类; 全没命中返回空。"""
         horizons = {"short": 0, "mid": 0, "long": 0}
         for phrase, horizon in TIME_HORIZON_SIGNALS.items():
             if phrase in text:
@@ -500,9 +564,11 @@ class RuleEngine:
 
 class FinBERTEngine:
     """
-    使用中文金融BERT做情感分析。
-    需要: pip install transformers torch
-    首次运行自动下载模型 (~400MB)
+    【功能】基于中文金融 BERT 模型的深度学习情感引擎 (可选引擎)。
+    【适用场景】对准确度要求高、且环境允许安装 transformers/torch 的场景。
+    【与 RuleEngine 的区别】规则引擎是"查词典打分", 可解释但覆盖有限;
+    FinBERT 是"神经网络理解语义", 能识别词典外的表达, 但需要下载模型 (~400MB)、
+    速度较慢, 且不可解释。当前代码模型名是英文 FinBERT。
     """
 
     MODEL_NAME = "ProsusAI/finBERT"  # 英文FinBERT
@@ -514,6 +580,9 @@ class FinBERTEngine:
         self._loaded = False
 
     def _lazy_load(self):
+        """【功能】懒加载模型: 首次调用 analyze 时才下载/加载 BERT 模型。
+        【关键逻辑】只加载一次 (_loaded 标记); 若未安装 transformers 则抛出
+        带安装提示的 ImportError。"""
         if self._loaded:
             return
         try:
@@ -531,7 +600,11 @@ class FinBERTEngine:
             ) from None
 
     def analyze(self, text: str) -> SentimentResult:
-        """用FinBERT分析情感"""
+        """【功能】用 FinBERT 分析单条文本情感。
+        【参数】text: 待分析文本 (截断到 512 token)。
+        【返回】SentimentResult, engine 字段为 "finbert"。
+        【关键逻辑】模型输出 [positive, negative, neutral] 三类概率,
+        score = pos - neg; confidence = 三类中最大概率。"""
         self._lazy_load()
         import torch
 
@@ -553,6 +626,7 @@ class FinBERTEngine:
         return result
 
     def _score_to_sentiment(self, score: float) -> str:
+        """【功能】复用规则引擎的分档逻辑, 把连续分数映射为 7 级标签。"""
         return RuleEngine()._score_to_sentiment(score)
 
 
@@ -563,11 +637,18 @@ class FinBERTEngine:
 
 class SentimentAnalyzer:
     """
-    统一情感分析入口。
-    默认使用规则引擎。如果装了FinBERT自动使用双引擎。
+    【功能】统一情感分析入口。外部代码通常只 import 这个类使用。
+    【关键逻辑】
+      - 默认只用规则引擎 (RuleEngine), 秒级、零依赖。
+      - use_finbert=True 且环境装了 transformers 时, 额外启用 FinBERT,
+        并在 analyze() 里加入"双引擎共识"(consensus) 判断。
+      - 还提供品种级情感 analyze_aspects 与批量增强 enrich_notes。
     """
 
     def __init__(self, use_finbert: bool = False):
+        """【功能】构造统一分析器。
+        【参数】use_finbert: 是否尝试启用 FinBERT 双引擎。
+        【返回】无。FinBERT 装不上时自动降级为纯规则引擎。"""
         self.rule_engine = RuleEngine()
         self.finbert_engine = None
         if use_finbert:
@@ -577,7 +658,12 @@ class SentimentAnalyzer:
                 print("Warning: FinBERT not available, using rule engine only.")
 
     def analyze(self, text: str) -> dict:
-        """分析单条文本，返回完整结果dict"""
+        """【功能】分析单条文本, 返回完整结果 dict (可直接写盘/传给下游)。
+        【参数】text: 待分析文本。 【返回】dict, 含 sentiment/score/confidence 等。
+        【关键逻辑】
+          - 规则引擎结果 asdict 打底。
+          - 若双引擎启用, 额外附加 finbert_* 字段与 consensus:
+            两引擎情感标签一致 → consensus=True 且 confidence 取两者较大值。"""
         rule_result = self.rule_engine.analyze(text)
 
         output = asdict(rule_result)
@@ -601,20 +687,25 @@ class SentimentAnalyzer:
         return output
 
     def analyze_batch(self, texts: list[str]) -> list[dict]:
-        """批量分析"""
+        """【功能】批量分析一批文本。
+        【参数】texts: 文本列表。 【返回】dict 列表, 顺序与输入一致。"""
         return [self.analyze(t) for t in texts]
 
     def analyze_aspects(self, text: str, varieties: list[dict], window: int = 80) -> list[dict]:
         """
-        品种级情感分析: 对每个品种，提取其上下文并单独做情感判断。
-
-        Args:
-          text: 完整原文
-          varieties: NER提取的品种列表 [{"name":"螺纹钢","matched":"螺纹",...}]
-          window: 品种名前后各取多少字符做上下文
-
-        Returns:
-          [{"variety":"螺纹钢","context":"...","sentiment":"bullish","score":+0.5,...}, ...]
+        【功能】品种级(细粒度)情感分析: 对文本中提到的每个品种, 截取它周围的
+                上下文片段, 分别做一次情感判断 —— 解决"一篇帖子多个品种、各自看法
+                不同"的问题。
+        【参数】
+          text: 完整原文。
+          varieties: NER 提取的品种列表, 如 [{"name":"螺纹钢","matched":"螺纹",...}]。
+          window: 品种名前后各取多少字符作为上下文 (默认 80)。
+        【返回】list[dict], 每个元素形如:
+          {"variety":"螺纹钢","context":"...","sentiment":"bullish","score":+0.5,...}
+        【关键逻辑】
+          - 用 matched(实际匹配到的别名) 在原文中定位品种出现位置。
+          - 取 [pos-window, pos+len(matched)+window] 片段并尝试在句号处截断。
+          - 对上下文片段复用 analyze() 打分。
         """
         results = []
 
@@ -678,12 +769,15 @@ class SentimentAnalyzer:
         self, notes: list[dict], text_field: str = "desc", title_field: str = "title"
     ) -> list[dict]:
         """
-        批量丰富笔记数据：对每条笔记的 title+desc 做情感分析，
-        将结果直接合并到原 dict 中。
-
-        Usage:
-          sa = SentimentAnalyzer()
-          enriched = sa.enrich_notes(deep_notes)
+        【功能】批量丰富笔记数据: 对每条笔记的 title+desc 做情感分析,
+                并把结果字段直接合并进原 dict (原地修改)。
+        【参数】
+          notes: list[dict], 笔记列表 (通常来自采集器)。
+          text_field / title_field: 正文与标题的字段名 (默认 desc/title)。
+        【返回】list[dict]: 同一列表, 每条被追加 sentiment 相关字段。
+        【关键逻辑】
+          - 文本为空时填默认 neutral。
+          - sentiment_signals 里汇总看多/看空信号计数与关键短语, 供排查解释。
         """
         for note in notes:
             text = (note.get(title_field, "") or "") + " " + (note.get(text_field, "") or "")

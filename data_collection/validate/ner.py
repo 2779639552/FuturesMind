@@ -16,6 +16,22 @@
   ner = FuturesNER()
   entities = ner.extract("螺纹钢2501合约今天大涨，永安期货看多到4000")
   # → {varieties:["螺纹钢"], contracts:["RB2501"], prices:[...], ...}
+
+
+本文件在"情绪数据生产链"中的角色
+--------------------------------
+    这是【命名实体识别 (NER)】模块, 处于生产链的"文本结构化"环节:
+      输入: 一条帖子文本 (title + desc)。
+      输出: 结构化的实体清单, 包括:
+        varieties(标准品种名) / contracts(合约代码) / exchanges(交易所) /
+        sectors(板块) / prices(价格) / institutions(机构)。
+    为什么 NER 重要: 情感打分需要知道"在说哪个品种", 聚合(如
+    trend_aggregator.py)也要按品种分组, 所以采集后第一步就是 NER。
+
+    NER 方法: 不是机器学习, 而是"基于品种知识库(VARIETY_KB) + 正则"的规则匹配:
+      - 品种名: 用"别名→标准名"字典做最长子串匹配 + 位置去重。
+      - 合约代码: 每个品种配一个正则, 如 RB2501 / I2505。
+      - 交易所/机构: 直接查表 (EXCHANGES / INSTITUTIONS)。
 """
 
 import re
@@ -24,6 +40,15 @@ from dataclasses import asdict, dataclass, field
 # ================================================================
 # 品种知识库 — 标准名 + 全部别名 + 合约代码模式
 # ================================================================
+# 这是 NER 的"核心知识库", 结构为:
+#   标准品种名(如 "螺纹钢") → {
+#     aliases: 该品种的所有叫法 (中文别名/英文代码/大小写变体),
+#     exchange: 上市交易所,  sector: 所属板块,
+#     contract_pattern: 合约代码的正则, 如 r"[Rr][Bb]\d{2,4}" 匹配 RB2501,
+#     price_unit: 常用计价单位,  related: 相关品种(用于关联分析),
+#   }
+# 注意: aliases 里包含"单字母"合约代码(如 "I" 表示铁矿石),
+# 单字母匹配时会做词边界检查, 避免把 "IC"(中证500) 误认成 "I"。
 
 VARIETY_KB = {
     # ============ 黑色系 ============
@@ -474,6 +499,8 @@ VARIETY_KB = {
 # ================================================================
 # 交易所
 # ================================================================
+# 交易所知识库: 规范名(如 "上期所") → 一组别名 (中文全称/英文代码)。
+# __init__ 里会把别名反向映射回规范名, 文本中出现任意别名即可识别。
 
 EXCHANGES = {
     "上期所": ["上期所", "上海期货交易所", "SHFE", "上期"],
@@ -494,6 +521,7 @@ EXCHANGES = {
 # ================================================================
 # 知名期货机构
 # ================================================================
+# 机构/公司名单, 识别"谁在说话"。extract() 里直接做子串匹配。
 
 INSTITUTIONS = [
     "永安期货",
@@ -546,7 +574,17 @@ INSTITUTIONS = [
 
 @dataclass
 class NERResult:
-    """NER 结果"""
+    """
+    【功能】单条文本的 NER 识别结果容器 (数据类)。
+    【字段说明】
+      varieties: 识别到的品种, 每项为
+        {"name": 标准名, "matched": 实际命中的别名, "sector": 板块, "exchange": 交易所, "position": 出现位置}。
+      contracts: 合约代码, 每项为 {"code", "variety", "exchange"}。
+      exchanges / sectors: 去重后的交易所 / 板块列表。
+      prices: 价格, 每项为 {"value", "context"} (value 保留原文数字串)。
+      institutions: 识别到的机构列表。
+      variety_count / contract_count: 品种与合约的数量。
+    """
 
     varieties: list = field(
         default_factory=list
@@ -565,10 +603,17 @@ class NERResult:
 
 
 class FuturesNER:
-    """期货领域命名实体识别"""
+    """
+    【功能】期货领域命名实体识别引擎。
+    【关键逻辑】基于"知识库 + 正则"的规则匹配 (非机器学习), 三步:
+      1. 品种名: 别名 → 标准名映射, 按别名长度降序匹配 (最长优先), 并做位置去重。
+      2. 合约代码 / 价格: 用每个品种预编译的正则去 finditer。
+      3. 交易所 / 机构: 直接查表匹配。
+    """
 
     def __init__(self):
         # 构建别名→标准名映射 (长别名优先覆盖短别名)
+        # 每个别名都记下对应的标准名和完整信息(板块/交易所/正则等)
         self._alias_to_variety = {}
         self._alias_to_info = {}
         for std_name, info in VARIETY_KB.items():
@@ -578,9 +623,10 @@ class FuturesNER:
                     self._alias_to_info[alias] = info
 
         # 按长度降序排列（优先匹配长别名）
+        # 例: "铁矿石" 应优先于 "铁矿"/"铁", 避免短的先把位置占掉
         self._sorted_aliases = sorted(self._alias_to_variety.keys(), key=len, reverse=True)
 
-        # 交易所映射
+        # 交易所映射: 别名 → 规范名 (如 "SHFE" → "上期所")
         self._exchange_to_canonical = {}
         for canonical, aliases in EXCHANGES.items():
             for a in aliases:
@@ -588,6 +634,7 @@ class FuturesNER:
         self._sorted_exchanges = sorted(self._exchange_to_canonical.keys(), key=len, reverse=True)
 
         # 合约代码正则（聚合所有品种）
+        # 例: "螺纹钢" → r"[Rr][Bb]\d{2,4}" 可匹配 RB2501 / rb2501
         self._contract_patterns = {}
         for name, info in VARIETY_KB.items():
             pat = info.get("contract_pattern")
@@ -609,7 +656,9 @@ class FuturesNER:
         ]
 
     def _dedup_varieties(self, varieties: list) -> list:
-        """去重: 合并同一品种的多次匹配，保留最长匹配文本"""
+        """【功能】品种去重: 同一标准品种可能出现多次匹配, 合并成一条, 保留最长匹配文本。
+        【参数】varieties: 识别到的品种列表。
+        【返回】去重后的列表 (每个标准品种最多一条)。"""
         by_name = {}
         for v in varieties:
             name = v["name"]
@@ -619,8 +668,15 @@ class FuturesNER:
 
     def extract(self, text: str) -> dict:
         """
-        从文本中提取所有期货相关实体。
-        返回易序列化的dict。
+        【功能】从一段文本中提取所有期货相关实体 (品种/合约/交易所/板块/价格/机构)。
+        【参数】text: str, 待识别的文本。
+        【返回】dict: 可 JSON 序列化的实体字典 (与 NERResult 字段一致)。
+        【关键逻辑】
+          1. 品种名: 按别名长度降序逐词查找, 用 matched_positions 集合
+             防止重叠匹配; 单字母别名做词边界检查。
+          2. 合约代码: 对每个品种的正则在全文 finditer。
+          3. 交易所/机构: 查表匹配。
+          4. 最后去重并统计 variety_count / contract_count。
         """
         result = NERResult()
 
@@ -715,10 +771,18 @@ class FuturesNER:
 
     def extract_per_variety_context(self, text: str, window: int = 80) -> list[dict]:
         """
-        提取每个品种的上下文片段，用于品种级情感分析。
-        返回: [{"variety":"螺纹钢","context":"螺纹钢今天大涨...","position":42}, ...]
-
-        window: 品种名前后各取多少字符
+        【功能】为每个品种提取"上下文片段", 供品种级情感分析使用
+                (sentiment.SentimentAnalyzer.analyze_aspects 也做类似的事)。
+        【参数】
+          text: 完整原文。
+          window: 品种名前后各取多少字符作为上下文 (默认 80)。
+        【返回】list[dict], 每项为:
+          {"variety": 标准名, "matched_alias": 命中的别名, "context": 上下文片段,
+           "sector": 板块, "position": 出现位置}。
+        【关键逻辑】
+          - 与 extract() 相同的"最长别名 + 单字母边界"匹配逻辑。
+          - 每个品种只取第一次出现的位置记录, 避免重复 (seen_names 去重)。
+          - context 取窗口片段后在句号处截断, 让片段尽量是完整句子。
         """
         results = []
         seen_names = set()
@@ -778,11 +842,14 @@ class FuturesNER:
         self, notes: list[dict], text_field: str = "desc", title_field: str = "title"
     ) -> list[dict]:
         """
-        批量丰富笔记数据：对每条笔记做NER，将结果合并到原dict中。
-
-        Usage:
-          ner = FuturesNER()
-          enriched = ner.enrich_notes(deep_notes)
+        【功能】批量丰富笔记数据: 对每条笔记的 title+desc 做 NER,
+                并把识别结果字段直接合并进原 dict (原地修改)。
+        【参数】
+          notes: list[dict], 笔记列表。
+          text_field / title_field: 正文与标题字段名 (默认 desc/title)。
+        【返回】list[dict]: 同一列表, 每条被追加 varieties/contracts/exchanges/
+                sectors/prices/institutions/variety_count/contract_count。
+        【关键逻辑】对每条笔记拼出 title+" "+desc 后调用 extract()。
         """
         for note in notes:
             text = (note.get(title_field, "") or "") + " " + (note.get(text_field, "") or "")

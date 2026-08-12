@@ -1,6 +1,23 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+<!-- ============================================================
+     页面角色: AgentSense 前端单页应用 (SPA)
+     —— 项目约 80% 的业务逻辑都集中在页面底部 script 代码块中的 App 对象里，
+        本页只是 1 个 HTML 文件, 用 CSS 变量实现暗/亮主题, 用 ECharts 画图。
+     8 个标签页 (由顶部导航 <nav id="nav"> 的 8 个按钮切换, 见 App.switchTab):
+         tab-run       运行分析   —— 10 节点多智能体分析管线
+         tab-sentiment 情绪数据   —— 情绪得分/价格走势叠加图 + 采集帖子
+         tab-analysis  分析工具   —— 异常检测/分歧度/领先滞后/作者/事件/Agent验证等
+         tab-backtest  回测       —— 平台预测力与品种方向准确率
+         tab-trading   模拟交易   —— 各种策略的单卡回测 + 多策略对比
+         tab-update    数据更新   —— 一键触发多平台采集更新
+         tab-history   历史报告   —— 历史分析报告列表与查看/下载
+         tab-system    系统       —— 定时调度/数据概览/告警/采集历史
+     图表库: ECharts (/static/echarts.min.js), 所有图表容器见 _initChart。
+     Markdown 渲染: marked.js (/static/marked.min.js), 用于展示报告正文。
+     主题: 暗色为主, 品牌色 #ff5a1f (橙色), 支持亮/暗切换 (localStorage 记忆)。
+     ============================================================ -->
 <meta charset="UTF-8">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
@@ -560,6 +577,8 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <h1><span class="brand-orange">Agent</span><span class="brand-white">Sense</span></h1>
     <span class="header-badge">v2.5</span>
   </div>
+  <!-- 顶部导航: 8 个按钮对应 8 个标签页, data-tab 值 = 各 <div id="tab-xxx"> 的 xxx。
+       App._bindNav 会给每个按钮绑定点击事件 → App.switchTab(t) 完成切换(含懒加载)。 -->
   <nav id="nav">
     <button class="active" data-tab="run">运行分析</button>
     <button data-tab="sentiment">情绪数据</button>
@@ -579,6 +598,10 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 <!-- ================================================================
      TAB: Run Analysis
      ================================================================ -->
+<!-- ============ 标签页 1: 运行分析 ============
+     做什么: 选择品种/日期 → 点击「开始分析」→ 后台运行 10 节点多智能体管线
+     (4位分析师并行 → 3轮辩论 → 裁决 → 综合研判 → 情景分析),
+     页面顶部显示进度条(流水线阶段点)与实时日志, 完成后渲染 4 份分析师报告 + 辩论记录 + RATING 信号。 -->
 <div id="tab-run" class="tab active">
   <!-- Info -->
   <div class="expander" style="margin-bottom:14px">
@@ -607,7 +630,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
         <div style="flex:1;min-width:140px">
           <label>品种</label>
-          <select id="sym" onchange="App.updateSentimentStats()"></select>
+          <select id="sym" onchange="App.updateSentimentStats(); App._resetFeedback()"></select>
         </div>
         <div style="flex:1;min-width:140px">
           <label>日期</label>
@@ -665,6 +688,9 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 <!-- ================================================================
      TAB: Sentiment
      ================================================================ -->
+<!-- ============ 标签页 2: 情绪数据 ============
+     做什么: 展示选定品种的情绪得分 vs 价格走势叠加图(双 Y 轴), 可调回看天数,
+     下方列出采集到的社交媒体帖子(微博/知乎/小红书/雪球), 支持按品种过滤。 -->
 <div id="tab-sentiment" class="tab">
   <!-- Info -->
   <div class="expander" style="margin-bottom:14px">
@@ -729,6 +755,9 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 <!-- ================================================================
      TAB: Backtest
      ================================================================ -->
+<!-- ============ 标签页 4: 回测 ============
+     做什么: 展示情绪信号的方向预测力回测结果 —— 各平台预测力(柱状图)、
+     品种级方向准确率(柱状图, 绿≥55%)与三个统计卡片(作者加权/简单平均/加权来源)。 -->
 <div id="tab-backtest" class="tab">
   <div class="expander" style="margin-bottom:14px">
     <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
@@ -750,6 +779,9 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 <!-- ================================================================
      TAB: Data Update
      ================================================================ -->
+<!-- ============ 标签页 6: 数据更新 ============
+     做什么: 配置各平台采集参数(每关键词条数/最低帖数/起始日期/勾选平台),
+     点击「一键更新」通过 SSE 实时日志展示 多平台采集→粉丝解析→情绪聚合→回测→生成JSON 的流水线进度。 -->
 <div id="tab-update" class="tab">
   <div class="expander" style="margin-bottom:14px">
     <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
@@ -794,6 +826,9 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 <!-- ================================================================
      TAB: History
      ================================================================ -->
+<!-- ============ 标签页 7: 历史报告 ============
+     做什么: 列出所有历史分析报告(品种/时间/大小), 点击查看详细内容(含 RATING 信号横幅),
+     可下载 Markdown 或 PDF 版本。 -->
 <div id="tab-history" class="tab">
   <div class="card"><h3>历史分析报告</h3><div id="history-list"></div></div>
   <div class="card" id="report-viewer" style="display:none;margin-top:16px">
@@ -812,6 +847,10 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 <!-- ================================================================
      TAB: Analysis Tools (P1)
      ================================================================ -->
+<!-- ============ 标签页 3: 分析工具 ============
+     做什么: 一套情绪数据衍生分析工具, 顶部子导航切换 6 个子模块:
+     综合分析(异常检测/分歧度/领先滞后/排名/对比)、作者影响力、事件提取、
+     框架说明(架构介绍)、Agent验证、Agent回测。 -->
 <div id="tab-analysis" class="tab">
   <!-- Info -->
   <div class="expander" style="margin-bottom:14px">
@@ -1009,6 +1048,10 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 <!-- ================================================================
      TAB: Simulated Trading (P3)
      ================================================================ -->
+<!-- ============ 标签页 5: 模拟交易 ============
+     做什么: 策略回测的核心页 —— 顶部实时行情滚动条, 中部配置(品种/日期/策略/参数),
+     可选交易成本与风控开关, 单卡「运行回测」或「多策略对比」, 下方展示
+     统计卡片、累计PnL曲线图(叠加品种价格线)与交易明细表。 -->
 <div id="tab-trading" class="tab">
   <!-- Live Price Ticker -->
   <div id="live-prices" style="background:var(--bg-input);border-radius:8px;padding:8px 14px;margin-bottom:14px;overflow:hidden;white-space:nowrap;font-size:0.82rem">
@@ -1154,6 +1197,9 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 <!-- ================================================================
      TAB: System (P0 status)
      ================================================================ -->
+<!-- ============ 标签页 8: 系统 ============
+     做什么: 运维监控 —— 定时采集调度的启停、数据库帖子总量与各平台概况、
+     告警列表(可确认)、采集历史表格。 -->
 <div id="tab-system" class="tab">
   <div class="grid grid-3" style="margin-bottom:14px">
     <div class="card">
@@ -1181,12 +1227,29 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
      JAVASCRIPT — App State & Logic
      ================================================================ -->
 <script>
-// Configure marked.js
+// ================================================================
+// 前端核心逻辑入口。所有业务逻辑封装在全局单例 App 对象中 (下方 const App = {...})。
+// 页面加载流程: 底部 DOMContentLoaded 事件 → App.init()。
+//   1. 绑定顶部导航按钮 (8 个标签页切换)
+//   2. 读取本地主题设置 (亮/暗)
+//   3. 从后端加载品种列表 (GET /api/varieties)
+// 与后端 Flask 服务通信全部走 /api/* JSON 接口 (每个方法里的 fetch 调用即后端端点)。
+// 图表: ECharts; 报告正文: marked 渲染 Markdown。
+// ================================================================
+// Configure marked.js — 开启 Markdown 换行 (breaks) 与 GFM 语法 (表格/删除线等)
 marked.setOptions({ breaks: true, gfm: true });
 
 // ================================================================
 // App State
 // ================================================================
+// App 对象结构速览 (按功能分区, 每区有中文注释):
+//   [状态字段] _currentTab 当前标签页 / _chartInstances 所有 ECharts 实例
+//   ── Init ── init / _bindNav / switchTab: 初始化与标签页切换 (懒加载)
+//   ── Toast / Theme / Varieties ── 提示、主题切换、品种下拉
+//   ── Run Analysis ── runAnalysis 主分析(轮询进度) + 反馈/对比图
+//   ── Charts ── _initChart 图表生命周期(创建/复用/dispose) + 各图表加载
+//   ── History / Data Update / Analysis Tab / Trading Tab / System Tab ── 各标签页逻辑
+// 关键方法: runAnalysis / runTradingBacktest / runMultiCompare / startAgentValidation
 const App = {
   // State
   _currentTab: 'run',
@@ -1197,6 +1260,10 @@ const App = {
   _isAnalysisRunning: false,
 
   // ── Init ──
+  // 【功能】页面初始化入口, DOMContentLoaded 后由底部事件调用一次
+  // 【输入】无
+  // 【渲染】触发品种下拉填充、主题图标、多策略计数徽标; 注册窗口 resize 与 Ctrl+1~8 快捷键
+  // 【后端】GET /api/varieties (经 _loadVarieties)
   async init() {
     this._bindNav();
     this._loadTheme();
@@ -1215,6 +1282,10 @@ const App = {
     });
   },
 
+  // 【功能】给顶部导航每个按钮绑定点击 → 切换到对应标签页 (data-tab 属性决定目标)
+  // 【输入】无
+  // 【渲染】无 (由 switchTab 完成)
+  // 【后端】无
   _bindNav() {
     document.querySelectorAll('nav button').forEach(btn => {
       btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
@@ -1222,6 +1293,10 @@ const App = {
   },
 
   // ── Tab switching ──
+  // 【功能】切换标签页: 更新 .active 类(显示对应 tab + 高亮导航按钮), 并对各页做"懒加载"
+  // 【输入】t: 标签页标识, 如 'run' / 'sentiment' / 'trading'
+  // 【渲染】显示/隐藏 8 个 <div class="tab">; 首次进入某页时拉取该页数据
+  // 【后端】视目标页而定, 见各 loadXxx 方法
   switchTab(t) {
     this._currentTab = t;
     document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
@@ -1243,6 +1318,10 @@ const App = {
   },
 
   // ── Toast ──
+  // 【功能】右上角弹出轻量通知(成功/错误/信息), 3.5 秒后自动淡出消失
+  // 【输入】msg: 显示文本; type: 'info'|'success'|'error' (决定背景色)
+  // 【渲染】在 #toasts 容器中追加一个 .toast 元素
+  // 【后端】无
   toast(msg, type='info') {
     const container = document.getElementById('toasts');
     const el = document.createElement('div');
@@ -1253,6 +1332,10 @@ const App = {
   },
 
   // ── Theme ──
+  // 【功能】暗色↔亮色切换; 写入 <html data-theme> 属性(驱动 CSS 变量)并记住到 localStorage
+  // 【输入】无
+  // 【渲染】更新主题图标/文字; 因主题色变化需重设图表尺寸
+  // 【后端】无
   toggleTheme() {
     const current = document.documentElement.getAttribute('data-theme') || 'dark';
     const next = current === 'dark' ? 'light' : 'dark';
@@ -1262,18 +1345,30 @@ const App = {
     this._resizeAllCharts();
   },
 
+  // 【功能】初始化时从 localStorage 读取已保存的主题并应用 (默认暗色)
+  // 【输入】无
+  // 【渲染】设置 <html data-theme> 与主题按钮图标/文字
+  // 【后端】无
   _loadTheme() {
     const saved = localStorage.getItem('agentsense-theme') || 'dark';
     document.documentElement.setAttribute('data-theme', saved);
     this._updateThemeUI(saved);
   },
 
+  // 【功能】根据主题刷新顶栏按钮上的图标与文字 (🌙暗色 / ☀️亮色)
+  // 【输入】theme: 'dark' 或 'light'
+  // 【渲染】#theme-icon 与 #theme-label 两个 span 的文本
+  // 【后端】无
   _updateThemeUI(theme) {
     document.getElementById('theme-icon').textContent = theme === 'dark' ? '🌙' : '☀️';
     document.getElementById('theme-label').textContent = theme === 'dark' ? '暗色' : '亮色';
   },
 
   // ── Varieties ──
+  // 【功能】从后端加载品种列表并填充「运行分析」页的品种下拉框 #sym
+  // 【输入】无
+  // 【渲染】#sym 下拉选项(代码-名称-帖子数); 顶部统计卡 #stat-varieties 品种覆盖数; 触发 updateSentimentStats
+  // 【后端】GET /api/varieties
   async _loadVarieties() {
     try {
       const r = await fetch('/api/varieties');
@@ -1291,6 +1386,10 @@ const App = {
     } catch (e) { console.error('Failed to load varieties', e); }
   },
 
+  // 【功能】品种下拉框 onchange 时刷新该品种的情绪概览(顶部统计卡与品种信息卡)
+  // 【输入】无 (读取 #sym 当前值)
+  // 【渲染】#stat-posts 情绪帖数 / #sentiment-badge 情绪标签 / #variety-info 品种详情(板块/多空比/趋势/数据覆盖)
+  // 【后端】GET /api/sentiment/{sym}
   async updateSentimentStats() {
     const sym = document.getElementById('sym').value;
     try {
@@ -1312,6 +1411,10 @@ const App = {
   },
 
   // ── SSE Reader (shared) ──
+  // 【功能】通用的"服务器流式事件"读取器: 后端用 chunked/SSE 推送日志时, 逐行解析 `data: {...}` JSON
+  // 【输入】response: fetch 返回的可读流对象; handlers: {消息类型: 回调函数} 映射, 另支持 '*' 通配
+  // 【渲染】由调用方传的 handlers 决定 (如 runDataUpdate 用它渲染更新日志)
+  // 【后端】配合返回 text/event-stream 的端点使用 (如 POST /api/update_data)
   async _readSSE(response, handlers) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -1334,6 +1437,14 @@ const App = {
   },
 
   // ── Run Analysis (polling — reliable, no network errors) ──
+  // 【功能】核心方法: 启动一次完整的 10 节点多智能体分析, 并通过轮询实时刷新进度
+  //   1. 先 POST /api/run_analysis 发起分析(参数: symbol/date/include_sentiment)
+  //   2. 之后每 2 秒轮询 GET /api/progress 获取阶段状态(is_running/is_complete/stages)
+  //   3. 完成后再拉取全部报告结果渲染到页面
+  // 【输入】无 (读取 #sym 品种 / #date 日期 / #include-sentiment 是否含情绪分析师)
+  // 【渲染】顶部 10 个流水线阶段点(techn→fund→macro→sent→bull→bear→rebuttal→judge→synth→scenario)
+  //          的 done/active/pending 状态; 实时日志 #progress-log; 状态统计卡; 完成后渲染报告区
+  // 【后端】POST /api/run_analysis → 轮询 GET /api/progress → 完成时 GET /api/analysis_results
   async runAnalysis() {
     if (this._isAnalysisRunning) return;
     this._isAnalysisRunning = true;
@@ -1368,6 +1479,12 @@ const App = {
     ).join('');
 
     const sym = document.getElementById('sym').value;
+    // 【关键逻辑】换品种分析时清空「讨论进化」历史, 避免对话框残留上一个品种的辩论内容。
+    // 只在新品种与上一次讨论所属品种不同时清空, 同一品种重复分析则保留已有讨论。
+    if (sym !== this._feedbackSymbol) {
+      this._feedbackSymbol = sym;
+      this._resetFeedback();
+    }
     const date = document.getElementById('date').value;
     const start = Date.now();
     const timer = setInterval(() => {
@@ -1431,8 +1548,12 @@ const App = {
     }, 2000);
   },
 
-  _feedbackVisible: false, _feedbackHistory: [],
+  _feedbackVisible: false, _feedbackHistory: [], _feedbackSymbol: undefined,
 
+  // 【功能】展开/收起「讨论进化」对话输入框(与 Agent 多轮辩论)
+  // 【输入】无
+  // 【渲染】切换 #feedback-box 显示/隐藏, 展开时滚动到可视区域
+  // 【后端】无
   toggleFeedback() {
     this._feedbackVisible = !this._feedbackVisible;
     const box = document.getElementById('feedback-box');
@@ -1440,6 +1561,10 @@ const App = {
     if (this._feedbackVisible) box.scrollIntoView({behavior:'smooth'});
   },
 
+  // 【功能】把用户输入的辩论观点发给后端, 并把 Agent 回复追加进对话历史
+  // 【输入】无 (读取 #feedback-input 内容与当前品种 #sym)
+  // 【渲染】#feedback-msgs 里追加用户气泡与 Agent 气泡 (Agent 回复用 marked 渲染 Markdown)
+  // 【后端】POST /api/feedback (body: {symbol, message, history})
   async sendFeedback() {
     const input = document.getElementById('feedback-input');
     const msg = input.value.trim();
@@ -1460,6 +1585,10 @@ const App = {
     } catch(e) { this._feedbackHistory.push({role:'agent', content:'Error: '+e.message}); this._renderFeedback(); }
   },
 
+  // 【功能】把 _feedbackHistory 对话数组渲染成气泡列表并滚到底部
+  // 【输入】无 (读取 this._feedbackHistory)
+  // 【渲染】#feedback-msgs 内多行 .debate-round 气泡
+  // 【后端】无
   _renderFeedback() {
     const box = document.getElementById('feedback-msgs');
     box.innerHTML = this._feedbackHistory.map(h =>
@@ -1470,6 +1599,21 @@ const App = {
     box.scrollTop = box.scrollHeight;
   },
 
+  // 【功能】更换分析品种时清空「讨论进化」的对话历史(讨论内容跟随当前品种)
+  // 【输入】无 (读取 _feedbackSymbol; 被 #sym 的 onchange 与 runAnalysis 换品种时调用)
+  // 【渲染】清空 _feedbackHistory 数组与 #feedback-msgs 气泡区域
+  // 【后端】无
+  _resetFeedback() {
+    this._feedbackHistory = [];
+    const box = document.getElementById('feedback-msgs');
+    if (box) box.innerHTML = '';
+  },
+
+  // 【功能】(旧版定义) 绘制「预测 vs 实盘价格」对比折线图, 在价格曲线上用虚线标出分析日
+  // 【输入】sym: 品种代码; date: 分析日期
+  // 【渲染】#chart-compare-price 折线图; 显示 #comparison-charts 容器
+  // 【后端】GET /api/compare/{sym}/{date}
+  // 注意: 本文件里该方法定义了两次, JS 对象字面量同名属性以最后一次定义为准(见后文新版)
   async loadComparisonChart(sym, date) {
     try {
       const r = await fetch('/api/compare/' + sym + '/' + date);
@@ -1495,6 +1639,11 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】(旧版定义) 绘制「平台权重」柱状图 —— 各平台在回测中的 Softmax 权重(越接近 1 代表预测力越强)
+  // 【输入】无
+  // 【渲染】#chart-platform-weights 柱状图, 标签显示百分比
+  // 【后端】GET /api/backtest
+  // 注意: 该方法同样定义了两次, 运行时以新版(下方)为准
   async loadPlatformWeightsChart() {
     try {
       const r = await fetch('/api/backtest');
@@ -1514,6 +1663,10 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】分析完成后拉取全部报告, 按固定顺序渲染 10 份报告 + RATING 信号横幅 + 背离提示
+  // 【输入】sym: 品种代码; date: 分析日期
+  // 【渲染】#results-area: 分析师/辩论报告卡片、RATING 信号横幅(绿≥6/红≤4/黄中)、预测背离警告卡; 并触发两幅对比图
+  // 【后端】GET /api/analysis_results (报告正文用 marked 渲染 Markdown)
   async loadAnalysisResults(sym, date) {
     try {
       const r = await fetch('/api/analysis_results');
@@ -1561,6 +1714,10 @@ const App = {
     } catch(e) { console.error(e); }
   },
 
+  // 【功能】暂停正在运行的分析(后端进入 paused 状态), 并把按钮切换为「恢复」
+  // 【输入】无
+  // 【渲染】#btn-pause 隐藏 / #btn-resume 显示; 状态卡 #stat-status 显示「已暂停」
+  // 【后端】POST /api/pause
   async pauseAnalysis() {
     try {
       const r = await fetch('/api/pause', { method: 'POST' });
@@ -1574,6 +1731,10 @@ const App = {
     } catch (e) { this.toast('暂停失败', 'error'); }
   },
 
+  // 【功能】恢复已暂停的分析, 按钮切回「暂停」
+  // 【输入】无
+  // 【渲染】#btn-resume 隐藏 / #btn-pause 显示; 状态卡显示「分析中...」; 弹出成功提示
+  // 【后端】POST /api/resume
   async resumeAnalysis() {
     try {
       const r = await fetch('/api/resume', { method: 'POST' });
@@ -1587,6 +1748,10 @@ const App = {
     } catch (e) { this.toast('恢复失败', 'error'); }
   },
 
+  // 【功能】请求后端停止当前分析
+  // 【输入】无
+  // 【渲染】状态卡显示「停止中...」; 弹提示
+  // 【后端】POST /api/stop
   async stopAnalysis() {
     try {
       const r = await fetch('/api/stop', { method: 'POST' });
@@ -1599,6 +1764,12 @@ const App = {
   },
 
   // ── Charts (ECharts) ──
+  // 【功能】图表生命周期入口: 获取 ECharts 实例。若该容器已有旧实例, 先 dispose() 销毁
+  //         (原因: ECharts 实例不能重复 init 同一 DOM, 不销毁会报 "There is a chart instance already initialized")
+  //         保证每次渲染都是全新图表, 也避免内存/事件堆积。
+  // 【输入】containerId: 图表容器 div 的 id
+  // 【渲染】返回 echarts 实例并存入 _chartInstances (供 resize/统一管理)
+  // 【后端】无
   _initChart(containerId) {
     const el = document.getElementById(containerId);
     if (!el) { console.warn('Chart container not found:', containerId); return null; }
@@ -1613,15 +1784,25 @@ const App = {
     return chart;
   },
 
+  // 【功能】返回 ECharts 主题名(占位方法)
+  // 【说明】标准 ECharts 未打包暗色主题, 故始终返回 undefined, 由 _baseChartOptions 手写颜色适配暗/亮
+  // 【输入】无 【渲染】无 【后端】无
   _getEChartsTheme() {
     // Standard ECharts CDN doesn't include dark theme; use undefined always
     return undefined;
   },
 
+  // 【功能】遍历所有已创建的图表实例调用 resize(), 使图表在容器尺寸变化(窗口缩放/主题切换/切页)时自适应
+  // 【输入】无 【渲染】所有活动图表 【后端】无
   _resizeAllCharts() {
     Object.values(this._chartInstances).forEach(c => { try { c.resize(); } catch(e){} });
   },
 
+  // 【功能】生成一份"通用图表配置"基础对象(标题/提示框/坐标轴颜色), 按当前主题适配暗/亮色,
+  //         供各图表的 setOption 用展开运算符 {...} 覆盖/追加 series
+  // 【输入】title: 图表标题文本
+  // 【渲染】返回 ECharts option 片段(不直接画图)
+  // 【后端】无
   _baseChartOptions(title) {
     const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
     return {
@@ -1635,6 +1816,10 @@ const App = {
     };
   },
 
+  // 【功能】绘制单品种价格走势折线图(带橙色渐变面积)
+  // 【输入】无 (读取 #sym 品种与 #lookback-days 回看天数)
+  // 【渲染】#chart-price 折线图
+  // 【后端】GET /api/price/{sym}?days={days}
   async loadPriceChart() {
     const sym = document.getElementById('sym').value;
     const days = document.getElementById('lookback-days')?.value || 180;
@@ -1658,6 +1843,11 @@ const App = {
   },
 
   // ── Sentiment-Price Overlay Chart (dual Y-axis) ──
+  // 【功能】绘制情绪数据页的核心叠加图: 左轴价格(橙) + 右轴作者加权情绪(绿)与简单平均情绪(黄虚线)
+  //         双 Y 轴让"情绪与价格是否同向/背离"一眼可辨
+  // 【输入】无 (读取 #sym 与 #lookback-days)
+  // 【渲染】#chart-overlay 三线叠加图; 同时更新时间范围统计卡(情绪/价格起止)与 #overlay-badge 交易日数
+  // 【后端】GET /api/overlay/{sym}?days={days}
   async loadOverlayChart() {
     const sym = document.getElementById('sym').value;
     const days = document.getElementById('lookback-days')?.value || 180;
@@ -1761,6 +1951,10 @@ const App = {
   },
 
   // ── Sentiment Posts (separated from chart loading) ──
+  // 【功能】加载情绪数据页的帖子列表: 先拉取帖子, 再从帖子中收集所有品种做下拉过滤, 默认渲染前 100 条
+  // 【输入】无 (读取 #lookback-days 决定时间范围)
+  // 【渲染】#sentiment-posts 帖子卡片; #post-filter 品种过滤下拉; 时间范围徽标与统计卡
+  // 【后端】GET /api/sentiment_posts?days={days}
   async loadSentimentPosts() {
     // Load posts with lookback filter
     const days = document.getElementById('lookback-days')?.value || 180;
@@ -1791,6 +1985,8 @@ const App = {
   },
 
   // ── Lookback days change handler ──
+  // 【功能】回看天数下拉 onchange 回调: 仅当当前在情绪数据页时, 重新加载叠加图与帖子
+  // 【输入】无 【渲染】#chart-overlay 与 #sentiment-posts 【后端】无
   onLookbackChange() {
     if (this._currentTab === 'sentiment') {
       this.loadOverlayChart();
@@ -1799,17 +1995,24 @@ const App = {
   },
 
   // ── Old loadSentimentData kept for backward compat, now just calls new functions ──
+  // 【功能】旧接口的兼容壳: 现在只需要分别调用叠加图与帖子加载
   async loadSentimentData() {
     this.loadOverlayChart();
     this.loadSentimentPosts();
   },
 
+  // 【功能】帖子列表按品种过滤(下拉框 onchange 触发), 重新渲染前 100 条
+  // 【输入】无 (读取 #post-filter)
+  // 【渲染】#sentiment-posts 帖子卡片 【后端】无
   filterPosts() {
     const sel = document.getElementById('post-filter').value;
     const filtered = sel ? this._allPosts.filter(p => p.varieties.includes(sel)) : this._allPosts;
     this.renderPostCards(filtered.slice(0, 100));
   },
 
+  // 【功能】把帖子数组渲染成卡片列表: 平台标签(配色区分) + 作者(粉丝数) + 多空标签 + 品种 + 标题链接 + 时间/点赞
+  // 【输入】posts: 帖子对象数组 (字段: platform/author/fans/score/varieties/url/title/time/likes)
+  // 【渲染】#sentiment-posts 内多个 .post-card 【后端】无
   renderPostCards(posts) {
     document.getElementById('sentiment-posts').innerHTML = posts.map(p => `
       <div class="post-card">
@@ -1824,12 +2027,20 @@ const App = {
       </div>`).join('');
   },
 
+  // 【功能】HTML 转义: 把用户/帖子文本当作纯文本塞进 <div> 再取回 innerHTML,
+  //         浏览器会自动把 <>& 等转义 → 防止 XSS 注入
+  // 【输入】s: 任意字符串
+  // 【渲染】返回转义后的 HTML 安全字符串 【后端】无
   _escHtml(s) {
     const div = document.createElement('div');
     div.textContent = s || '';
     return div.innerHTML;
   },
 
+  // 【功能】(新版定义, 运行时以此为准) 绘制「预测 vs 实盘价格」对比折线图, 虚线标注分析日
+  // 【输入】sym: 品种代码; date: 分析日期
+  // 【渲染】#chart-compare-price 折线图(用统一 _baseChartOptions 主题); 显示 #comparison-charts 容器
+  // 【后端】GET /api/compare/{sym}/{date}
   async loadComparisonChart(sym, date) {
     try {
       const r = await fetch(`/api/compare/${sym}/${date}`);
@@ -1855,6 +2066,10 @@ const App = {
     } catch (e) { console.error(e); }
   },
 
+  // 【功能】(新版定义, 运行时以此为准) 绘制「平台权重」柱状图, 使用渐变橙色条
+  // 【输入】无
+  // 【渲染】#chart-platform-weights 柱状图(用 _baseChartOptions 统一主题, 渐变色柱)
+  // 【后端】GET /api/backtest
   async loadPlatformWeightsChart() {
     try {
       const r = await fetch('/api/backtest');
@@ -1879,6 +2094,10 @@ const App = {
     } catch (e) { /* ignore */ }
   },
 
+  // 【功能】「回测」标签页数据加载: 两幅柱状图(平台预测力 + 品种方向准确率)与三个统计卡片
+  // 【输入】无
+  // 【渲染】#chart-platforms、#chart-varieties(绿≥55%红<55%)、#backtest-stats(作者加权/简单平均/加权来源)
+  // 【后端】GET /api/backtest
   async loadBacktest() {
     try {
       const r = await fetch('/api/backtest');
@@ -1925,6 +2144,10 @@ const App = {
   },
 
   // ── History ──
+  // 【功能】加载历史报告列表, 每条可点击查看详情
+  // 【输入】无
+  // 【渲染】#history-list 报告条目(品种/时间/大小KB)
+  // 【后端】GET /api/history
   async loadHistory() {
     try {
       const r = await fetch('/api/history');
@@ -1939,6 +2162,10 @@ const App = {
     } catch (e) { /* ignore */ }
   },
 
+  // 【功能】打开某份历史报告: 拉取详情, 渲染 RATING 横幅 + 各章节卡片(Markdown), 并平滑滚动到报告区
+  // 【输入】filename: 报告文件名
+  // 【渲染】#report-viewer 显示; #report-content 报告正文
+  // 【后端】GET /api/report/{filename}
   async viewReport(filename) {
     this._currentReportFile = filename;
     try {
@@ -1962,6 +2189,9 @@ const App = {
     } catch (e) { this.toast('加载报告失败', 'error'); }
   },
 
+  // 【功能】在新窗口打开报告下载链接 (MD 或 PDF 格式), 由后端生成文件
+  // 【输入】format: 'md' 或 'pdf'
+  // 【渲染】无 (触发浏览器下载) 【后端】GET /api/report/{file}/{format}
   downloadReport(format) {
     if (!this._currentReportFile) return;
     const url = `/api/report/${encodeURIComponent(this._currentReportFile)}/${format}`;
@@ -1969,6 +2199,10 @@ const App = {
   },
 
   // ── Data Update ──
+  // 【功能】「数据更新」页概览: 统计品种数与总帖子数, 展示前 8 个有数据的品种
+  // 【输入】无
+  // 【渲染】#update-stats 徽标(品种·帖)、#update-summary 概览文本
+  // 【后端】GET /api/varieties (必要时)
   async loadUpdateStats() {
     try {
       const vars = this._varieties.length ? this._varieties : await fetch('/api/varieties').then(r => r.json());
@@ -1979,6 +2213,9 @@ const App = {
     } catch (e) { /* ignore */ }
   },
 
+  // 【功能】根据勾选的平台与起始日期, 实时更新配置卡下方的提示文案与预计耗时
+  // 【输入】无 (读取各平台 checkbox 与 #update-since)
+  // 【渲染】#platform-hint 文案 【后端】无
   updatePlatformHint() {
     const plats = []; let t = 0;
     if (document.getElementById('plat-weibo').checked) { plats.push('微博'); t += 4; }
@@ -1992,6 +2229,11 @@ const App = {
       (document.getElementById('update-since').value ? ' | 仅保留 ' + document.getElementById('update-since').value + ' 之后' : '');
   },
 
+  // 【功能】一键数据更新: 收集配置参数后 POST 启动, 用 _readSSE 消费流式日志
+  //          (step 阶段名 / log 日志 / platform_summary 平台汇总卡片 / complete 完成 / error 错误)
+  // 【输入】无 (读取 #update-perkw/#update-minnotes/#update-since 与 4 个平台 checkbox)
+  // 【渲染】#update-log 实时日志; 完成时刷新概览/叠加图/帖子/品种列表并弹成功提示
+  // 【后端】POST /api/update_data (SSE 流式响应)
   async runDataUpdate() {
     const btn = document.getElementById('btn-update');
     btn.disabled = true; btn.textContent = '更新中...';
@@ -2057,16 +2299,23 @@ const App = {
   },
 
   // ═══════════════════════════════════════════════════════
-  // ANALYSIS TAB
+  // ANALYSIS TAB — 分析工具页(6 个子模块)
   // ═══════════════════════════════════════════════════════
   _analysisSub: 'comprehensive',
 
+  // 【功能】进入「分析工具」页时初始化: 填充 3 个品种下拉框, 切到上次的子模块, 加载事件列表
+  // 【输入】无 【渲染】各子模块面板 【后端】GET /api/analysis/events 等
   initAnalysisTab() {
     this._populateVarietySelects(['comp-variety', 'trade-variety', 'event-variety']);
     this.switchAnalysisSub(this._analysisSub);
     this.loadEvents();
   },
 
+  // 【功能】分析工具页的子导航切换(综合分析/作者/事件/框架说明/Agent验证/Agent回测),
+  //         切换后按需触发对应子模块的数据加载
+  // 【输入】sub: 子模块标识, 如 'comprehensive' / 'agentval'
+  // 【渲染】显示对应 .analysis-sub 面板并高亮子导航按钮
+  // 【后端】视子模块而定 (comprehensive→5 个分析接口; authors→/api/analysis/authors; events→/api/analysis/events)
   switchAnalysisSub(sub) {
     this._analysisSub = sub;
     document.querySelectorAll('.analysis-sub').forEach(el => el.style.display = 'none');
@@ -2081,6 +2330,10 @@ const App = {
   },
 
   // Load ALL comprehensive analysis sections
+  // 【功能】综合分析子模块的总入口: 对当前品种并发/依次加载 5 个分析板块
+  // 【输入】无 (读取 #comp-variety 品种)
+  // 【渲染】异动、分歧度、全品种分歧度、领先滞后、排名、对比 6 块区域
+  // 【后端】/api/analysis/anomalies/{v}、/divergence/{v}、/divergence/all、/leadlag/{v}、/ranking、/compare
   async loadComprehensive() {
     const v = document.getElementById('comp-variety').value;
     this.loadAnomalies(v);
@@ -2091,6 +2344,9 @@ const App = {
     this.loadCompare();
   },
 
+  // 【功能】把品种列表填充进多个下拉框; 若下拉已有选项(>1 个)则跳过, 避免重复填充
+  // 【输入】ids: 下拉框 id 数组
+  // 【渲染】各下拉框的 <option> 【后端】无 (数据来自 this._varieties)
   _populateVarietySelects(ids) {
     ids.forEach(id => {
       const sel = document.getElementById(id);
@@ -2103,6 +2359,10 @@ const App = {
     });
   },
 
+  // 【功能】情绪异动检测: 用 Z-score(阈值 2.0)找当日情绪显著偏离 7 日均值的日期
+  // 【输入】forceV: 可选的强制品种(不传则读下拉)
+  // 【渲染】#anomalies-result 异动列表或"未检测到"
+  // 【后端】GET /api/analysis/anomalies/{v}?threshold=2.0
   async loadAnomalies(forceV) {
     const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
     const t = 2.0;
@@ -2119,6 +2379,10 @@ const App = {
     } catch(e) { this.toast('检测失败', 'error'); }
   },
 
+  // 【功能】加载单品种多空分歧度: 1-|看多%-看空%|, 值越高共识越强
+  // 【输入】forceV: 可选品种(不传则读下拉)
+  // 【渲染】#divergence-detail 大号百分比(红<40%黄<70%绿≥70%)与多空占比
+  // 【后端】GET /api/analysis/divergence/{v}
   async loadDivergence(forceV) {
     const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
     try {
@@ -2134,6 +2398,10 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】全品种分歧度: 列表 + 柱状图(红<40%黄<70%绿≥70%)
+  // 【输入】无
+  // 【渲染】#divergence-all-list 逐品种列表; #chart-divergence 柱状图
+  // 【后端】GET /api/analysis/divergence/all
   async loadDivergenceAll() {
     try {
       const r = await fetch('/api/analysis/divergence/all');
@@ -2158,6 +2426,10 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】领先滞后分析: 比较"情绪→价格"与"价格→情绪"的时滞相关系数, 判断谁领先
+  // 【输入】forceV: 可选品种
+  // 【渲染】#leadlag-conclusion 结论文字; #chart-leadlag 双线相关系数图(绿=情绪→价格, 橙=价格→情绪)
+  // 【后端】GET /api/analysis/leadlag/{v}
   async loadLeadLag(forceV) {
     const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
     try {
@@ -2180,6 +2452,10 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】多品种横截面对比: 表格(品种/板块/得分/多空%/帖子/7日趋势) + 柱线图(情绪得分柱 + 趋势线)
+  // 【输入】无
+  // 【渲染】#compare-table 表格; #chart-compare 图
+  // 【后端】GET /api/analysis/compare
   async loadCompare() {
     try {
       const r = await fetch('/api/analysis/compare');
@@ -2208,6 +2484,10 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】品种情绪排名: 表格(前 30) + 得分分布柱状图(前 20, 绿多红空)
+  // 【输入】无
+  // 【渲染】#ranking-table 表格; #chart-ranking 柱状图
+  // 【后端】GET /api/analysis/ranking
   async loadRanking() {
     try {
       const r = await fetch('/api/analysis/ranking');
@@ -2231,6 +2511,10 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】跨平台情绪对比: 各平台得分/帖子/多空占比表格 + 分歧度与解读 + 柱状图
+  // 【输入】无 (读取 #cp-variety; 注: 当前 HTML 无此下拉, 属保留接口)
+  // 【渲染】#crossplat-detail 表格、#crossplat-interp 解读、#chart-crossplat 图
+  // 【后端】GET /api/analysis/crossplatform/{v}
   async loadCrossPlatform() {
     const v = document.getElementById('cp-variety').value;
     try {
@@ -2257,6 +2541,10 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】作者影响力排行(前 30): 表格展示 影响力/帖子/粉丝/互动
+  // 【输入】无
+  // 【渲染】#authors-table 表格
+  // 【后端】GET /api/analysis/authors?limit=30
   async loadAuthors() {
     try {
       const r = await fetch('/api/analysis/authors?limit=30');
@@ -2271,6 +2559,10 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】舆情事件提取: 按品种/天数加载事件帖子卡片(含事件类别徽标、品种方向箭头、链接)
+  // 【输入】无 (读取 #event-variety 与 #event-days)
+  // 【渲染】#events-list 事件卡片列表
+  // 【后端】GET /api/analysis/events?variety={v}&days={days}
   async loadEvents() {
     const v = document.getElementById('event-variety')?.value || '';
     const days = document.getElementById('event-days')?.value || 7;
@@ -2298,8 +2590,11 @@ const App = {
   },
 
   // ═══════════════════════════════════════════════════════
-  // TRADING TAB
+  // TRADING TAB — 模拟交易页(单卡回测 + 多策略对比)
   // ═══════════════════════════════════════════════════════
+  // 【功能】进入「模拟交易」页时初始化: 填充品种下拉、拉取实时行情、更新多策略计数,
+  //         并注册全局点击事件(点面板外任意处关闭多策略下拉)
+  // 【输入】无 【渲染】#price-ticker 行情条等 【后端】GET /api/live-prices (经 fetchLivePrices)
   initTradingTab() {
     this._populateVarietySelects(['trade-variety']);
     this.fetchLivePrices();
@@ -2315,6 +2610,10 @@ const App = {
     });
   },
 
+  // 【功能】拉取实时行情并渲染成滚动文本条; 带 40 秒超时(AbortController), 失败/超时有友好提示
+  // 【输入】无
+  // 【渲染】#price-ticker 各品种价格 + 涨跌幅(绿↑红↓)
+  // 【后端】GET /api/live-prices (首次可能较慢)
   async fetchLivePrices() {
     const ticker = document.getElementById('price-ticker');
     if (!ticker) return;
@@ -2338,15 +2637,22 @@ const App = {
     }
   },
 
+  // 【功能】「风控」勾选框 onchange: 展开/收起 止损%与移动止盈%输入框
+  // 【输入】无 【渲染】#risk-params 显示/隐藏 【后端】无
   toggleRisk() {
     const rp = document.getElementById('risk-params');
     rp.style.display = document.getElementById('risk-enabled').checked ? 'flex' : 'none';
   },
+  // 【功能】「交易成本」勾选框 onchange: 展开/收起 手续费(万分之)与滑点(tick)输入框
+  // 【输入】无 【渲染】#cost-params 显示/隐藏 【后端】无
   toggleCost() {
     const cp = document.getElementById('cost-params');
     cp.style.display = document.getElementById('cost-enabled').checked ? 'flex' : 'none';
   },
 
+  // 【功能】策略下拉 onchange: 按策略类型显示对应参数(固定持仓→持仓天数; 反转→最大持仓天数)
+  // 【输入】无 (读取 #trade-strategy)
+  // 【渲染】#param-horizon / #param-maxhold 显示/隐藏 【后端】无
   onStrategyChange() {
     const strat = document.getElementById('trade-strategy').value;
     document.getElementById('param-horizon').style.display = (strat === 'fixed' || strat === 'compare') ? 'block' : 'none';
@@ -2357,6 +2663,8 @@ const App = {
   },
 
   // 多策略选择下拉面板:展开/收起 + 组内全选
+  // 【功能】「多策略选择」按钮: 展开/收起选择面板, 并刷新已选计数徽标
+  // 【输入】无 【渲染】#multi-strat-panel 显示/隐藏 【后端】无
   toggleMultiPanel() {
     const panel = document.getElementById('multi-strat-panel');
     if (!panel) return;
@@ -2365,6 +2673,9 @@ const App = {
     this.updateMultiCount();
   },
 
+  // 【功能】「全选本组」checkbox: 把同组(data-group)下所有策略 checkbox 同步为同一选中态
+  // 【输入】el: 被点击的全选 checkbox
+  // 【渲染】同组 .multi-cb 的 checked 状态; 刷新计数徽标 【后端】无
   toggleGroupAll(el) {
     const group = el.dataset.group;
     document.querySelectorAll('.multi-group-cbs[data-group="'+group+'"] .multi-cb')
@@ -2372,6 +2683,8 @@ const App = {
     this.updateMultiCount();
   },
 
+  // 【功能】更新多策略按钮上的计数徽标(已勾选策略数), 0 时变灰
+  // 【输入】无 【渲染】#multi-strat-count 数字与背景色 【后端】无
   updateMultiCount() {
     const el = document.getElementById('multi-strat-count');
     if (!el) return;
@@ -2381,6 +2694,11 @@ const App = {
   },
 
   // 归一化强度条:strength_pct ∈ [0,1],跨策略可比(情绪/基本面分按 [-1,1],收益率/突破按 5% 封顶)
+  // 【功能】格式化"信号强度"为内联小进度条 + 百分比: 用嵌套 span 画一个 36px 宽的条,
+  //         填充宽度 = strength_pct×100%, 颜色按动作(买绿/卖红/其他灰)
+  // 【输入】ts: 今日信号对象 {strength_pct, action}
+  // 【渲染】返回一段 HTML 字符串(进度条+百分比), 供卡片/摘要内联插入
+  // 【后端】无
   fmtStrengthPct(ts) {
     if (!ts || ts.strength_pct == null) return "";
     const pct = Math.round((ts.strength_pct || 0) * 100);
@@ -2391,6 +2709,14 @@ const App = {
       "<b style='color:" + c + ";font-size:0.72rem'>" + pct + "%</b></span>";
   },
 
+  // 【功能】核心方法: 单策略回测(单卡)。读取配置 → 调对应策略端点 → 应用成本/风控 → 渲染
+  //   1. 读取 UI 上的品种/日期/策略/阈值, 并按"成本/风控"开关组装参数
+  //   2. 按策略映射表 eps 找到后端端点并 POST
+  //   3. 对返回结果做【成本/风控口径修正】(见下方 cpt 与 apply_risk 注释)
+  //   4. 渲染: 摘要(总PnL/笔数/胜率) + 今日操作 + 子策略卡片 + 累计PnL曲线(叠加品种价格) + 交易明细表
+  // 【输入】无 (读取 #trade-* 系列输入框)
+  // 【渲染】#trading-summary / #trading-stats / #chart-trading-pnl / #trading-detail
+  // 【后端】POST /api/trading/{策略名} 或 /api/trading/run 等; 成本/风控还调 POST /api/trading/apply_risk、GET /api/price
   async runTradingBacktest() {
     const v = document.getElementById('trade-variety').value;
     const strat = document.getElementById('trade-strategy').value;
@@ -2407,6 +2733,10 @@ const App = {
     const costOn = document.getElementById('cost-enabled').checked;
     const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;
     const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;
+    // cpt = 单笔往返交易成本(%)。为什么这么算:
+    //   commRate 是"万分之"手续费(如 3 = 万分之3 = 0.0003), 一买一卖收两次 → ×2;
+    //   slipTick 是滑点 tick 数, 1 tick 约等于价格的 0.02% (近似) → ×0.02。
+    // 所以 cpt 直接作为每笔交易的收益扣减百分比(如 3万3滑点 → 0.06%+0.02%=0.08%)。
     const cpt = costOn ? (commRate * 2) + (slipTick * 0.02) : 0;
     // 与多策略对比 prefer 口径一致:曲线形状策略展示与自身同名的子策略
     // (adaptive_sent→adaptive, contrarian→contrarian, momentum_ad→adaptive),
@@ -2464,6 +2794,9 @@ const App = {
       // 交易成本 + 风控:与多策略对比(runMultiCompare)同口径。
       // 此前单卡回测忽略这两个开关 → 与多策略卡片数值不一致(如海龟 +5.58% vs -0.1%)。
       // 顺序:先风控(apply_risk 对止损单会重算 pnl,会抹掉预先扣的成本),再扣成本。
+      //   tradesAdj = 修正后的交易数组(逐笔), totalAdj = 修正后的总收益。
+      //   为什么先风控后成本: 止损/移动止盈会改写每笔的 pnl(强制平仓价), 若先扣成本会被覆盖;
+      //   所以顺序必须是 ①apply_risk ②每笔减 cpt。
       let tradesAdj = d.recent_trades || [];
       let totalAdj = (d.total_pnl != null ? d.total_pnl : d.avg_pnl_pct) || 0;
       if (stopLoss > 0 || trailStop > 0) {
@@ -2477,18 +2810,23 @@ const App = {
         } catch(e) {}
       }
       if (costOn && commRate > 0) {
+        // 逐笔扣成本: 每笔 pnl 减去往返成本 cpt
         tradesAdj = tradesAdj.map(t => ({...t, pnl: (t.pnl||0) - cpt}));
       }
       if (costOn || stopLoss > 0 || trailStop > 0) {
+        // 开了任一开关后, 总收益用"修正后的逐笔 pnl 求和"(不能再信后端原始 total_pnl)
         totalAdj = tradesAdj.reduce((a, t) => a + (t.pnl||0), 0);
       }
 
       // Collect sub-strategies — 与所选策略同名的子策略排最前(见 prefer),成本开关对曲线
       // 形状的子树总收益也按 每笔交易×成本 扣减(与多策略对比的逐项扣减同思路)。
+      //   subOrder: prefer 命中时把同名子键放首位, 其余(adaptive/consensus/contrarian/momentum_baseline)依次排后
+      //   subs: 汇总各子策略的 笔数/胜率/总收益(含成本扣减) 供下方卡片与总览使用
       const subs = [];
       const subOrder = prefer ? [prefer].concat(["adaptive","consensus","contrarian","momentum_baseline"].filter(k => k !== prefer)) : ["adaptive","consensus","contrarian","momentum_baseline"];
       for (const k of subOrder) {
         if (d[k] && d[k].trades !== undefined) {
+          // 子策略总收益同样按"每笔交易×cpt"扣成本, 与主曲线口径一致
           const subPnl = (d[k].total_pnl||0) - (cpt > 0 ? cpt * (d[k].trades||0) : 0);
           subs.push({key:k, label:d[k].label||k, trades:d[k].trades, win_rate:d[k].win_rate, total_pnl:subPnl, advanced_metrics:d[k].advanced_metrics});
         }
@@ -2528,6 +2866,8 @@ const App = {
       stats.innerHTML = cards;
 
       // Chart — 单策略曲线(累计 PnL)与品种价格线对比,避免沿用多策略图表
+      // 为什么先 dispose 再 init: 同一容器重复 echarts.init 会报错/泄漏,
+      // 且要清除上一张图(比如多策略对比画的图), 保证当前只画单策略曲线。
       const el = document.getElementById("chart-trading-pnl");
       if (el && typeof echarts !== "undefined") {
         el.style.display = "block"; el.style.height = "350px";
@@ -2582,6 +2922,8 @@ const App = {
   },
 
   //   // Kept for backward compat — delegates to unified renderer
+  // 以下 4 个是旧版渲染入口的兼容壳, 委托给 _renderUnifiedResult
+  // (当前文件已无该统一渲染方法, 实际未被调用, 仅保留不删以免破坏引用)。
   renderAdaptiveResult(d) { this._renderUnifiedResult(d, 'adaptive_sent'); },
   renderContrarianResult(d) { this._renderUnifiedResult(d, 'contrarian'); },
   renderMomAdResult(d) { this._renderUnifiedResult(d, 'momentum_ad'); },
@@ -2590,6 +2932,11 @@ const App = {
   // // ── Agent Validation ──
   _valPoll: null,
 
+  // 【功能】启动 Agent 方向预测验证: 对每个品种跑完整 10 节点分析, 与 5 日后实际价格方向对比。
+  //         启动后每 3 秒轮询一次状态。可指定品种(逗号分隔), 空=后端默认全部。
+  // 【输入】无 (读取 #val-date 日期 / #val-varieties 品种列表)
+  // 【渲染】#val-progress 进度与 #val-stats/#val-detail 结果
+  // 【后端】POST /api/agent_validation/start → 轮询 GET /api/agent_validation/status
   async startAgentValidation() {
     const date = document.getElementById('val-date').value;
     const varietiesStr = document.getElementById('val-varieties').value.trim();
@@ -2613,6 +2960,11 @@ const App = {
     } catch(e) { this.toast('Failed','error'); btn.disabled=false; }
   },
 
+  // 【功能】轮询 Agent 验证进度: 更新进度条/阶段/最近结果; 有结果时渲染统计卡、明细表与两幅图
+  //         (方向准确率、高/中/低置信度校准柱状图、SCORE vs 实际涨幅散点图)
+  // 【输入】无
+  // 【渲染】#val-progress / #val-stats / #val-detail / #chart-val-dir / #chart-val-score
+  // 【后端】GET /api/agent_validation/status (由 startAgentValidation 的定时器每 3 秒调用)
   async pollAgentValidation() {
     try {
       const r = await fetch('/api/agent_validation/status');
@@ -2699,6 +3051,11 @@ const App = {
   // ── Batch Backtest ──
   _btPollInterval: null,
 
+  // 【功能】启动批量回测: 对比"纯情绪信号" vs "完整 Agent 管线"的方向准确率。
+  //         可选 run_agent 让后端逐个品种跑 Agent; 启动后每 2 秒轮询状态。
+  // 【输入】无 (读取 #bt-date / #bt-run-agent / #bt-varieties)
+  // 【渲染】#bt-summary / #bt-stats / #bt-detail
+  // 【后端】POST /api/batch_backtest/start → 轮询 GET /api/batch_backtest/status
   async startBatchBacktest() {
     const date = document.getElementById('bt-date').value;
     const runAgent = document.getElementById('bt-run-agent').checked;
@@ -2725,6 +3082,8 @@ const App = {
     } catch(e) { this.toast('Failed to start','error'); btn.disabled=false; }
   },
 
+  // 【功能】轮询批量回测进度: 更新摘要(纯情绪/Agent 准确率), 有结果即渲染
+  // 【输入】无 【渲染】#bt-summary / #bt-stats / #bt-detail 【后端】GET /api/batch_backtest/status
   async pollBatchBacktest() {
     try {
       const r = await fetch('/api/batch_backtest/status');
@@ -2748,6 +3107,9 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】把批量回测结果渲染成 3 个统计卡(纯情绪/Agent/增量) + 品种明细表 + 准确率对比柱状图
+  // 【输入】d: 状态接口返回的结果对象 {results, summary, date}
+  // 【渲染】#bt-stats / #bt-detail / #chart-bt-compare 【后端】无(数据来自轮询)
   renderBatchBacktestResults(d) {
     const results = d.results||[];
     const summary = d.summary||{};
@@ -2804,6 +3166,12 @@ const App = {
 
   // ── Multi-Strategy Comparison ──
   // Simple multi-compare: fetch each strategy separately, plot individual curves
+  // 【功能】核心方法: 多策略对比。对勾选的每个策略单独 POST 其端点, 把各策略的逐笔 PnL
+  //         按日期累计成曲线, 再对齐到同一日期轴, 一次性渲染多条曲线 + 每策略统计卡。
+  //   与单卡回测(runTradingBacktest)共用同一套 成本/风控/子策略prefer 口径, 保证两视图数值一致。
+  // 【输入】无 (读取 #trade-* 与多策略面板勾选 .multi-cb:checked)
+  // 【渲染】#trading-summary 摘要条(含市场基准) / #trading-stats 各策略卡 / #chart-trading-pnl 多曲线图 / #trading-detail 说明
+  // 【后端】对每个策略 POST /api/trading/{策略名}; 风控再 POST /api/trading/apply_risk; 基准价 GET /api/price
   async runMultiCompare() {
     const v = document.getElementById('trade-variety').value;
     const startDate = document.getElementById('trade-start').value;
@@ -2879,6 +3247,9 @@ const App = {
           if (dt) { allDatesSet.add(dt); pnlMap[dt] = (pnlMap[dt]||0) + (t.pnl||0); }
         });
         // `curves` format: has `dates` array and `curves.{key}` array
+        // 子策略 prefer 口径(与单卡回测一致): 自适应类策略优先取与自身同名的子曲线
+        // (adaptive_sent→adaptive, contrarian→contrarian, momentum_ad→adaptive),
+        // 因为后端返回的 curves 里子键顺序不固定, 若不 prefer 可能取到 consensus 顶替同名子策略。
         if (Object.keys(pnlMap).length === 0 && d.curves && d.dates) {
           const prefer = s === 'adaptive_sent' ? 'adaptive' :
                          s === 'contrarian' ? 'contrarian' :
@@ -2905,6 +3276,9 @@ const App = {
           }
         }
         // Apply costs to pnlMap entries
+        // 成本扣减: 注意这里是在"累计成 pnlMap 后"对整个 Map 的每个日期统一减一次 costPerTrade,
+        // 而不是逐笔减 —— 因为风控(apply_risk)改写 pnl 会抹掉预扣成本,
+        // 所以先让风控跑完, 再一次性扣成本, 与单卡回测先风控后成本的顺序等价。
         if (costOn && commRate > 0) {
           const costPerTrade = (commRate * 2) + (slipTick * 0.02);
           for (const d of Object.keys(pnlMap)) {
@@ -2998,7 +3372,8 @@ const App = {
       allStats[s].total_pnl = parseFloat(cum.toFixed(2));
     }
 
-    // Chart
+    // Chart — 多策略对比曲线(每条策略一条累计PnL线, 叠加品种价格基准)
+    // 同样先 dispose 旧实例再 init, 避免上一张单卡图表残留。
     const el = document.getElementById('chart-trading-pnl');
     if (el) {
       el.style.display = 'block'; el.style.height = '350px';
@@ -3046,6 +3421,8 @@ const App = {
       }).join('');
   },
 
+  // 【功能】(已废弃的旧版多策略对比) 改用一个后端合并端点 /api/trading/multi_compare 一次取全部曲线。
+  //         保留仅为参考, 当前界面已改走上方逐策略拉取的 runMultiCompare。
   async _old_runMultiCompare() {
     const v = document.getElementById('trade-variety').value;
     const startDate = document.getElementById('trade-start').value;
@@ -3125,12 +3502,17 @@ const App = {
   },
 
   // ═══════════════════════════════════════════════════════
-  // SYSTEM TAB
+  // SYSTEM TAB — 系统运维页
   // ═══════════════════════════════════════════════════════
+  // 【功能】进入「系统」页时并行加载三块数据: 调度状态 / 数据库概览 / 告警列表
+  // 【输入】无 【渲染】#scheduler-status / #db-stats / #alerts-list 等
+  // 【后端】GET /api/scheduler/status、GET /api/db/stats、GET /api/db/alerts
   async loadSystemTab() {
     await Promise.all([this.loadSchedulerStatus(), this.loadDbStats(), this.loadAlerts()]);
   },
 
+  // 【功能】加载定时采集调度状态: 显示运行中/未启动, 运行中则列出每个任务的下次执行时间
+  // 【输入】无 【渲染】#scheduler-status 【后端】GET /api/scheduler/status
   async loadSchedulerStatus() {
     try {
       const r = await fetch('/api/scheduler/status');
@@ -3142,6 +3524,9 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】启动/停止定时采集调度(每天 08:00 与 18:00 自动采集), 1 秒后刷新状态
+  // 【输入】action: 'start' 或 'stop'
+  // 【渲染】toast 提示 + 刷新 #scheduler-status 【后端】POST /api/scheduler/{action}
   async schedulerControl(action) {
     try {
       const r = await fetch(`/api/scheduler/${action}`, {method:'POST',headers:{'Content-Type':'application/json'},
@@ -3151,6 +3536,8 @@ const App = {
     } catch(e) { this.toast('操作失败', 'error'); }
   },
 
+  // 【功能】加载数据库概览: 帖子总数 + 各平台数量/时间范围 + 采集历史表格
+  // 【输入】无 【渲染】#db-stats、#collection-history 【后端】GET /api/db/stats
   async loadDbStats() {
     try {
       const r = await fetch('/api/db/stats');
@@ -3171,6 +3558,8 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】确认某条告警(标记已读), 然后刷新告警列表
+  // 【输入】id: 告警 id 【渲染】#alerts-list 刷新 【后端】POST /api/db/alerts/{id}/ack
   async ackAlert(id) {
     try {
       await fetch('/api/db/alerts/' + id + '/ack', {method:'POST'});
@@ -3178,6 +3567,9 @@ const App = {
     } catch(e) {}
   },
 
+  // 【功能】加载告警列表(最近 20 条): 标题/严重度配色/时间, 未确认的显示"确认"按钮;
+  //         同时在系统页顶部 #alert-count 徽标显示未读告警数
+  // 【输入】无 【渲染】#alerts-list、#alert-count 【后端】GET /api/db/alerts?limit=20
   async loadAlerts() {
     try {
       const r = await fetch('/api/db/alerts?limit=20');
@@ -3198,6 +3590,8 @@ const App = {
 };
 
 // Diagnostic: test ECharts loading
+// 启动引导: DOM 就绪后先诊断两个外部库是否加载成功(失败则页顶红色警告条),
+// 一切正常就调用 App.init() 完成页面初始化。
 document.addEventListener('DOMContentLoaded', () => {
   if (typeof echarts === 'undefined') {
     document.body.insertAdjacentHTML('afterbegin', '<div style=\"background:red;color:white;padding:10px;text-align:center;position:fixed;top:0;z-index:9999;width:100%\">ERROR: ECharts library failed to load. Charts will not render.</div>');

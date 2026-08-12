@@ -7,6 +7,31 @@ Usage:
     stats = db.get_collection_stats()
 """
 
+# =============================================================================
+# 【模块角色】
+#   database.py 是整个项目的"数据持久化层"——所有需要"记住"的数据(采集到的
+#   帖子、每日情感统计、告警、采集日志、用户账号、自选列表、交易信号)最终都
+#   落进本地 SQLite 数据库 agentsense.db,由本模块统一读写。
+#
+#   SQLite 是单文件数据库,无需单独安装服务端;数据库文件默认存放在
+#   ~/.tradingagents/agentsense.db。全项目其他模块(采集器、调度器、Web 前端、
+#   情感分析、回测)都通过 get_db() 拿到同一个 AgentSenseDB 实例来操作数据。
+#
+#  本文件定义了一张"表清单"与对应操作函数,共 7 张表:
+#     1. posts            采集到的帖子(微博/知乎原文、作者、情感、点赞等)
+#     2. sentiment_daily  每个品种每日的情感统计汇总(多空比例、平均分等)
+#     3. alerts           告警/消息中心(采集失败、管道事件、健康检查警告)
+#     4. collection_log   每次采集任务的日志(平台、条数、成功/失败)
+#     5. users            登录用户(用户名 + SHA256 密码哈希 + 是否管理员)
+#     6. watchlist        用户自选品种清单(关注哪些品种的行情/情感)
+#     7. trade_signals    交易信号及其回测结果(信号方向、入场/出场价、盈亏)
+#
+# 【工程实践】
+#   - 线程局部单例(get_db):SQLite 连接不能跨线程共享,这里按线程各持一个实例。
+#   - WAL 模式(journal_mode=WAL):允许多个连接并发读写,读写互不阻塞。
+#   - 默认管理员:首次启动时自动创建 admin / agentsense2026(见 ensure_default_user)。
+# =============================================================================
+
 import hashlib
 import json
 import os
@@ -21,17 +46,43 @@ DB_PATH = DB_DIR / "agentsense.db"
 
 # ── Singleton connection with thread-local ──────────────────────────────
 
+# 线程局部存储对象:每个线程访问 _local.db 时都会得到"只属于该线程"的属性副本。
+# 因为 SQLite 连接对象默认不允许跨线程使用,用线程局部变量保证线程安全。
 _local = threading.local()
 
 
 def get_db() -> "AgentSenseDB":
+    """获取当前线程的数据库实例(线程局部单例)。
+
+    【功能】返回当前线程唯一的 AgentSenseDB 对象,供全项目统一读写数据库。
+    【参数】无。
+    【返回】AgentSenseDB:数据库操作对象(每线程只有一个实例)。
+    【关键逻辑】利用 threading.local():第一次调用时创建实例并存入 _local.db,
+               后续同一线程内的调用直接复用,避免重复建连与重复建表。
+    """
     if not hasattr(_local, "db"):
         _local.db = AgentSenseDB()
     return _local.db
 
 
 class AgentSenseDB:
+    """AgentSense 数据库封装类。
+
+    【功能】集中封装对 SQLite 数据库的全部读写操作:建表、帖子写入、情感统计、
+            告警、采集日志、用户认证、自选列表、交易信号等。
+    【关键逻辑】实例化时自动确保数据库目录存在并初始化 7 张表(_init_tables);
+               每次数据库操作都通过 _conn() 上下文管理器获取新连接,用完即关。
+    """
+
     def __init__(self, path=None):
+        """初始化数据库连接路径并确保表结构存在。
+
+        【功能】设定数据库文件路径,自动创建父目录,并初始化数据表。
+        【参数】path: 数据库文件路径;为 None 时使用全局默认 DB_PATH
+                     (~/.tradingagents/agentsense.db)。
+        【返回】无。
+        【关键逻辑】self.path 为实际连接使用的路径;Path 对象用于目录创建。
+        """
         self.path = str(path or DB_PATH)
         self.path_obj = Path(self.path)
         self.path_obj.parent.mkdir(parents=True, exist_ok=True)
@@ -39,6 +90,17 @@ class AgentSenseDB:
 
     @contextmanager
     def _conn(self):
+        """数据库连接上下文管理器(自动提交/回滚/关闭)。
+
+        【功能】为 with 语句提供一条 SQLite 连接:正常结束时自动 commit,
+                异常时自动 rollback,最后总是关闭连接释放资源。
+        【参数】无(使用 self.path 连接数据库)。
+        【返回】生成器,产出 sqlite3 连接对象 conn。
+        【关键逻辑】
+            - row_factory=sqlite3.Row:让查询结果支持按列名访问(如 row["id"])。
+            - PRAGMA journal_mode=WAL:开启 WAL 日志模式,读写可并发,性能更好。
+            - PRAGMA foreign_keys=ON:开启外键约束(本项目表间关联较弱,为健壮性保留)。
+        """
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -53,6 +115,31 @@ class AgentSenseDB:
             conn.close()
 
     def _init_tables(self):
+        """创建 7 张数据表及索引(若不存在)。
+
+        【功能】执行建表 SQL,确保数据库结构就绪;重复调用不会报错(IF NOT EXISTS)。
+        【参数】无。
+        【返回】无。
+        【关键逻辑】executescript 一次性执行整段建表语句;每张表都尽量带上
+                   常用查询索引以加速按平台/时间/情感/品种的检索。
+
+        【7 张表用途速览】
+        (1) posts —— 帖子主表:采集到的每一条社区帖子/评论。
+            note_id 唯一,是去重依据;varieties 存该帖子涉及的品种 JSON 数组;
+            sentiment / sentiment_score 存情感分析结果。
+        (2) sentiment_daily —— 每日情感统计:每个品种每个自然日一行,
+            汇总简单平均分、加权平均分、多/空/中性占比、帖子数与作者数等;
+            (variety, date) 联合唯一,upsert 时按此冲突更新。
+        (3) alerts —— 告警中心:采集失败、低数据量、超时、管道事件、健康检查
+            等系统消息;acknowledged 标记是否已被用户确认。
+        (4) collection_log —— 采集任务日志:每次运行 batch_collect.py 记一行,
+            含平台、关键词数、采集/过滤后条数、状态(running/success/error)。
+        (5) users —— 用户表:用户名唯一,password_hash 存 SHA256 哈希,
+            is_admin 标记是否管理员。
+        (6) watchlist —— 自选清单:user_id + variety 唯一,记录用户关注品种。
+        (7) trade_signals —— 交易信号:情感/动量等策略产出的买卖信号,
+            记录方向、入场/出场价、预测周期、实际盈亏 pnl_pct 与结果 outcome。
+        """
         with self._conn() as c:
             c.executescript("""
                 CREATE TABLE IF NOT EXISTS posts (
@@ -156,7 +243,21 @@ class AgentSenseDB:
     # ── Posts ──────────────────────────────────────────────────────────
 
     def insert_posts_batch(self, posts: list[dict]) -> int:
-        """Insert or ignore posts. Returns count of new posts inserted."""
+        """批量插入帖子(重复 note_id 自动忽略)。
+
+        【功能】把一批采集到的帖子写入 posts 表;已存在的帖子(note_id 相同)
+                会被忽略,函数返回"真正新增"的条数。
+        【参数】posts: 帖子字典列表,字段见 posts 表结构(如 note_id、platform、
+                author_name、sentiment、varieties 等)。
+        【返回】int: 本次成功插入的新帖子数量。
+        【关键逻辑】
+            - INSERT OR IGNORE + note_id 唯一索引实现天然去重。
+            - author_name/title/publish_time 会被截断到合理长度,避免脏数据过长。
+            - varieties 列表经 json.dumps 存成 JSON 字符串。
+            - 单条失败仅跳过该条(except Exception: pass),不影响整批写入。
+
+        Insert or ignore posts. Returns count of new posts inserted.
+        """
         count = 0
         with self._conn() as c:
             for p in posts:
@@ -194,6 +295,18 @@ class AgentSenseDB:
     def get_posts(
         self, platform=None, variety=None, sentiment=None, since=None, limit=200
     ) -> list[dict]:
+        """按条件查询帖子列表。
+
+        【功能】支持按平台、品种、情感、发布时间起点的多条件组合过滤查询。
+        【参数】
+            platform   : 平台名(如 "weibo"/"zhihu"),可选。
+            variety    : 品种代码(如 "RB"),可选;用 LIKE '%"RB"%' 匹配 JSON。
+            sentiment  : 情感值("positive"/"negative"/"neutral"),可选。
+            since      : 起始时间字符串(>=),可选,如 "2026-01-01"。
+            limit      : 最多返回条数,默认 200。
+        【返回】list[dict]: 匹配的帖子字典列表,按发布时间倒序。
+        【关键逻辑】动态拼接 WHERE 条件;品种按 JSON 数组文本模糊匹配。
+        """
         conditions = []
         params = []
         if platform:
@@ -217,6 +330,13 @@ class AgentSenseDB:
         return [dict(r) for r in rows]
 
     def get_platform_stats(self) -> dict:
+        """统计各平台帖子数量与时间范围。
+
+        【功能】按平台分组统计帖子数量、最早与最晚发布时间。
+        【参数】无。
+        【返回】dict: {平台名: {"count":数量, "earliest":最早日期, "latest":最晚日期}}。
+        【关键逻辑】GROUP BY platform 分组;earliest/latest 截取前 10 位(YYYY-MM-DD)。
+        """
         with self._conn() as c:
             rows = c.execute("""
                 SELECT platform, COUNT(*) as cnt, MIN(publish_time) as earliest, MAX(publish_time) as latest
@@ -232,12 +352,32 @@ class AgentSenseDB:
         return result
 
     def get_total_posts(self) -> int:
+        """统计帖子总数。
+
+        【功能】返回 posts 表中的总记录数,用于展示数据规模。
+        【参数】无。
+        【返回】int: 帖子总数。
+        """
         with self._conn() as c:
             return c.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
 
     # ── Sentiment Daily ────────────────────────────────────────────────
 
     def upsert_sentiment_daily(self, variety: str, date: str, data: dict):
+        """写入或更新某个品种某一天的每日情感统计。
+
+        【功能】将计算好的每日情感汇总 upsert 进 sentiment_daily 表;
+                当天数据已存在则覆盖更新,否则插入新行。
+        【参数】
+            variety : 品种代码(如 "RB")。
+            date    : 日期字符串(YYYY-MM-DD)。
+            data    : 统计字典,含 simple_avg/avg_score/bullish_ratio/
+                      bearish_ratio/neutral_ratio/total_notes/author_count/
+                      platform_breakdown 等字段。
+        【返回】无。
+        【关键逻辑】利用 SQLite 的 ON CONFLICT(variety, date) DO UPDATE 语法实现
+                   "存在则更新、不存在则插入";platform_breakdown 存为 JSON 字符串。
+        """
         with self._conn() as c:
             c.execute(
                 """
@@ -266,6 +406,13 @@ class AgentSenseDB:
             )
 
     def get_sentiment_series(self, variety: str, days: int = 180) -> list[dict]:
+        """获取某品种最近 N 天的每日情感时间序列。
+
+        【功能】按时间升序返回指定品种近 days 天的每日情感统计,供图表展示。
+        【参数】variety: 品种代码;days: 回溯天数,默认 180 天。
+        【返回】list[dict]: sentiment_daily 表中的记录列表(按日期升序)。
+        【关键逻辑】先计算起始日期(since),再按 variety 与 date 范围查询。
+        """
         since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         with self._conn() as c:
             rows = c.execute(
@@ -285,6 +432,18 @@ class AgentSenseDB:
         severity: str = "info",
         data: dict = None,
     ) -> int:
+        """新增一条告警记录。
+
+        【功能】向 alerts 表插入一条系统告警/消息(采集失败、管道事件等)。
+        【参数】
+            alert_type : 告警类型(如 collection_failed/pipeline_started)。
+            title      : 告警标题。
+            message    : 告警详情文本。
+            variety    : 关联品种(可选)。
+            severity   : 严重程度(info/warning/error)。
+            data       : 附加数据字典,序列化为 JSON 存储。
+        【返回】int: 新告警的自增 id(c.lastrowid)。
+        """
         with self._conn() as c:
             c.execute(
                 "INSERT INTO alerts (alert_type, variety, title, message, severity, data) VALUES (?, ?, ?, ?, ?, ?)",
@@ -300,6 +459,13 @@ class AgentSenseDB:
             return c.lastrowid
 
     def get_alerts(self, limit=50, unacknowledged_only=False) -> list[dict]:
+        """查询告警列表。
+
+        【功能】获取告警记录,可只看未确认的告警,按创建时间倒序。
+        【参数】limit: 最多返回条数(默认 50);unacknowledged_only: 仅返回未确认。
+        【返回】list[dict]: 告警字典列表。
+        【关键逻辑】unacknowledged_only=True 时拼接 WHERE acknowledged=0 条件。
+        """
         where = "WHERE acknowledged=0" if unacknowledged_only else ""
         with self._conn() as c:
             rows = c.execute(
@@ -308,16 +474,35 @@ class AgentSenseDB:
         return [dict(r) for r in rows]
 
     def acknowledge_alert(self, alert_id: int):
+        """把指定告警标记为"已确认/已读"。
+
+        【功能】将 alerts 表中对应 id 的 acknowledged 置为 1。
+        【参数】alert_id: 告警自增 id。
+        【返回】无。
+        """
         with self._conn() as c:
             c.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (alert_id,))
 
     def get_unacknowledged_count(self) -> int:
+        """统计未确认告警的数量。
+
+        【功能】返回 acknowledged=0 的告警条数,常用于界面红点提示。
+        【参数】无。
+        【返回】int: 未确认告警数。
+        """
         with self._conn() as c:
             return c.execute("SELECT COUNT(*) FROM alerts WHERE acknowledged=0").fetchone()[0]
 
     # ── Collection Log ─────────────────────────────────────────────────
 
     def start_collection(self, platform: str, keywords_count: int) -> int:
+        """开始一次采集任务:写入一条状态为 running 的日志。
+
+        【功能】在 collection_log 表插入一行"采集进行中"记录。
+        【参数】platform: 平台名;keywords_count: 使用的关键词数量。
+        【返回】int: 本次采集日志的自增 id,后续 finish_collection 用它更新结果。
+        【关键逻辑】status 初始为 'running',结束时由 finish_collection 改写。
+        """
         with self._conn() as c:
             c.execute(
                 "INSERT INTO collection_log (platform, keywords_count, status) VALUES (?, ?, 'running')",
@@ -328,6 +513,17 @@ class AgentSenseDB:
     def finish_collection(
         self, log_id: int, posts_collected: int, posts_after_filter: int = 0, error: str = ""
     ):
+        """结束一次采集任务,更新结果状态。
+
+        【功能】把 start_collection 创建的日志行更新为最终状态(成功/失败)及条数。
+        【参数】
+            log_id            : start_collection 返回的日志 id。
+            posts_collected   : 采集到的帖子条数。
+            posts_after_filter: 过滤后保留的条数;未传则默认等于采集数。
+            error             : 错误信息;非空时状态记为 'error'。
+        【返回】无。
+        【关键逻辑】status 由 error 是否为空决定;finished_at 由 SQL 写为当前时间。
+        """
         status = "error" if error else "success"
         with self._conn() as c:
             c.execute(
@@ -336,6 +532,12 @@ class AgentSenseDB:
             )
 
     def get_collection_history(self, limit=20) -> list[dict]:
+        """查询最近的采集任务历史。
+
+        【功能】按开始时间倒序返回最近 limit 次采集日志。
+        【参数】limit: 返回条数,默认 20。
+        【返回】list[dict]: 采集日志字典列表。
+        """
         with self._conn() as c:
             rows = c.execute(
                 "SELECT * FROM collection_log ORDER BY started_at DESC LIMIT ?", (limit,)
@@ -345,6 +547,14 @@ class AgentSenseDB:
     # ── Users / Auth ───────────────────────────────────────────────────
 
     def create_user(self, username: str, password: str, is_admin: bool = False) -> bool:
+        """创建新用户。
+
+        【功能】向 users 表插入一个用户,密码以 SHA256 哈希存储。
+        【参数】username: 用户名;password: 明文密码(内部立即哈希);
+                is_admin: 是否为管理员。
+        【返回】bool: 创建成功返回 True;用户名重复时捕获 IntegrityError 返回 False。
+        【关键逻辑】密码绝不明文存储;sha256 哈希后落库。
+        """
         pwd_hash = hashlib.sha256(password.encode()).hexdigest()
         try:
             with self._conn() as c:
@@ -357,6 +567,12 @@ class AgentSenseDB:
             return False
 
     def verify_user(self, username: str, password: str) -> bool:
+        """校验用户名与密码是否匹配。
+
+        【功能】将输入密码哈希后与库中记录比对,判断登录是否成功。
+        【参数】username: 用户名;password: 明文密码。
+        【返回】bool: 匹配返回 True,否则 False。
+        """
         pwd_hash = hashlib.sha256(password.encode()).hexdigest()
         with self._conn() as c:
             row = c.execute(
@@ -365,7 +581,15 @@ class AgentSenseDB:
         return row is not None
 
     def ensure_default_user(self):
-        """Create default admin if no users exist."""
+        """确保存在默认管理员账号(首次启动时自动创建)。
+
+        【功能】若 users 表为空,则创建默认管理员 admin / agentsense2026。
+        【参数】无。
+        【返回】无。
+        【关键逻辑】只在用户表为空时创建,避免覆盖已有账号;默认管理员可登录管理。
+
+        Create default admin if no users exist.
+        """
         with self._conn() as c:
             count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if count == 0:
@@ -374,11 +598,24 @@ class AgentSenseDB:
     # ── Watchlist ──────────────────────────────────────────────────────
 
     def get_watchlist(self, user_id=1) -> list[str]:
+        """获取用户的自选品种列表。
+
+        【功能】按 user_id 返回 watchlist 表中的品种代码列表。
+        【参数】user_id: 用户 id,默认 1(当前单用户/默认用户)。
+        【返回】list[str]: 品种代码列表(如 ["RB","J","AU"])。
+        """
         with self._conn() as c:
             rows = c.execute("SELECT variety FROM watchlist WHERE user_id=?", (user_id,)).fetchall()
         return [r["variety"] for r in rows]
 
     def add_to_watchlist(self, variety: str, user_id=1):
+        """添加品种到用户自选列表。
+
+        【功能】向 watchlist 插入 (user_id, variety);已存在则忽略。
+        【参数】variety: 品种代码;user_id: 用户 id,默认 1。
+        【返回】无。
+        【关键逻辑】INSERT OR IGNORE + (user_id, variety) 唯一约束,避免重复自选。
+        """
         with self._conn() as c:
             c.execute(
                 "INSERT OR IGNORE INTO watchlist (user_id, variety) VALUES (?, ?)",
@@ -386,6 +623,12 @@ class AgentSenseDB:
             )
 
     def remove_from_watchlist(self, variety: str, user_id=1):
+        """从用户自选列表移除品种。
+
+        【功能】删除 watchlist 中指定的 (user_id, variety) 记录。
+        【参数】variety: 品种代码;user_id: 用户 id,默认 1。
+        【返回】无。
+        """
         with self._conn() as c:
             c.execute("DELETE FROM watchlist WHERE user_id=? AND variety=?", (user_id, variety))
 
@@ -400,6 +643,19 @@ class AgentSenseDB:
         entry_price: float,
         horizon_days: int = 3,
     ):
+        """保存一条新的交易信号。
+
+        【功能】把策略产出的交易信号写入 trade_signals 表,供后续回测/评价。
+        【参数】
+            variety     : 品种代码。
+            date        : 信号日期。
+            signal_value: 信号强度数值。
+            direction   : 方向("buy"/"sell"/"hold" 等)。
+            entry_price : 入场价。
+            horizon_days: 预测持有周期(天数),默认 3。
+        【返回】无。
+        【关键逻辑】outcome 初始为 'pending',等待回测结算后更新。
+        """
         with self._conn() as c:
             c.execute(
                 """
@@ -410,6 +666,16 @@ class AgentSenseDB:
             )
 
     def resolve_trade_signal(self, signal_id: int, exit_price: float, pnl_pct: float, outcome: str):
+        """结算/更新一条交易信号的结果。
+
+        【功能】回测结束后,把出场价、盈亏比例、结果(win/loss)写回该信号记录。
+        【参数】
+            signal_id : 信号自增 id。
+            exit_price: 出场/结算价。
+            pnl_pct   : 盈亏百分比。
+            outcome   : 结果('win'/'loss' 等)。
+        【返回】无。
+        """
         with self._conn() as c:
             c.execute(
                 "UPDATE trade_signals SET exit_price=?, pnl_pct=?, outcome=? WHERE id=?",
@@ -417,6 +683,13 @@ class AgentSenseDB:
             )
 
     def get_trade_signals(self, variety=None, outcome=None, limit=100) -> list[dict]:
+        """按条件查询交易信号。
+
+        【功能】可按品种与结果过滤交易信号,按创建时间倒序返回。
+        【参数】variety: 品种代码(可选);outcome: 结果(可选);limit: 条数上限。
+        【返回】list[dict]: 交易信号字典列表。
+        【关键逻辑】动态拼接 WHERE 条件,类似 get_posts。
+        """
         conditions = []
         params = []
         if variety:
@@ -434,6 +707,13 @@ class AgentSenseDB:
         return [dict(r) for r in rows]
 
     def get_trade_stats(self) -> dict:
+        """汇总交易信号的统计指标(胜率、平均盈亏等)。
+
+        【功能】计算已结算信号的总数、胜/负场数、胜率与平均盈亏。
+        【参数】无。
+        【返回】dict: {total_trades, wins, losses, win_rate, avg_pnl_pct}。
+        【关键逻辑】只统计 outcome != 'pending' 的已结算信号;胜率=胜场/总场。
+        """
         with self._conn() as c:
             total = c.execute(
                 "SELECT COUNT(*) FROM trade_signals WHERE outcome != 'pending'"

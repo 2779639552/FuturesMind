@@ -24,6 +24,29 @@ Data sources (via akshare):
     - futures_news_shmet: SHMET commodity news
 """
 
+# ===========================================================================
+# 【本文件在数据流中的角色】
+#   这是 TradingAgents 的"商品期货实时数据供应商(Data Vendor)"。
+#   Agent(如期货分析师)需要行情/基差/库存/新闻/宏观等数据时,由本文件的
+#   get_futures_* 系列函数实时联网获取(通过免费库 akshare 或公开 HTTP 接口),
+#   再把结果整理成 CSV/文本返回给大模型,供其分析使用。
+#
+# 【与 signal_analyzer 回测引擎数据源的区别】
+#   - 本文件:      实时 / 半实时联网拉取(AKShare、东方财富接口),返回的是
+#                  当下最新的市场数据,适合 Agent 做实时分析与多空判断。
+#   - signal_analyzer.py 回测引擎: 读取本地 JSON 文件
+#                  (~/.tradingagents/external_data/ 与 think2/output/trends/ 下的
+#                   *_price.json / *_sentiment.json),这些文件由"思路2"项目先采集
+#                  落地,再做技术指标回测、情绪回测等。它不联网,依赖落盘数据。
+#   - 一句话总结: 本文件是"取实时数据",signal_analyzer 是"读本地历史数据回测"。
+#
+# 【Hybrid Mode(混合模式)】
+#   用户可以把自己付费买到的更高质量数据(Mysteel/Wind 等)写成 JSON 文件放到
+#   ~/.tradingagents/external_data/{品种}.json。本文件在基差/库存/供需等函数里
+#   会"先看外部 JSON,有且未过期就用它;没有或过期才退回免费 AKShare"。
+#   具体格式与合并逻辑见 external_data.py。
+# ===========================================================================
+
 import json
 import logging
 import random
@@ -34,6 +57,11 @@ from datetime import timedelta
 import pandas as pd
 import requests
 
+# 从 external_data.py(外部数据注入层)导入 Hybrid Mode 需要的工具函数:
+#   load_external_data      读取外部 JSON(没有/过期则返回 None)
+#   get_external_source_label  生成来源标签(如 "[source: Mysteel ..., updated: ...]")
+#   merge_basis_data        把外部现货价合并进基差结果
+#   merge_inventory_data    把外部社会/钢厂库存合并进仓单库存结果
 from tradingagents.dataflows.external_data import (
     get_external_source_label,
     load_external_data,
@@ -50,6 +78,13 @@ warnings.filterwarnings("ignore", message=r".*非交易日.*", category=UserWarn
 # ---------------------------------------------------------------------------
 # Cache
 # ---------------------------------------------------------------------------
+# 【缓存机制说明】
+# _response_cache: 内存字典,保存 AKShare 拉取过的行情 DataFrame。
+#                  键形如 "price:RB0"(主力连续合约代码),值是一个元组
+#                  (拉取时刻的时间戳, DataFrame)。
+# _CACHE_TTL:      缓存有效期,单位秒,这里 300 秒 = 5 分钟。
+#                  在 TTL 内再次请求同一品种会直接复用缓存,避免重复请求免费接口;
+#                  超过 TTL 则视为过期,重新联网拉取。
 _response_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 _CACHE_TTL = 300  # 5 minutes
 
@@ -57,6 +92,28 @@ _CACHE_TTL = 300  # 5 minutes
 # ---------------------------------------------------------------------------
 # Variety metadata & symbol mapping
 # ---------------------------------------------------------------------------
+# 【VARIETY_METADATA——品种元信息字典】
+# 这是本文件的数据"字典"。顶部英文文档写的是 20 品种,但字典里实际收录 21 个
+# 品种键:AP/CF/CJ/FG/HC/I/J/JM/M/MA/OI/PF/PK/RB/RM/SA/SF/SM/SR/TA/UR
+# (文档里的"共20品种"与字典略有出入,以字典实际键数为准)。
+# 每个品种的键是大写代码(如 "RB" 螺纹钢),值是一个小字典,包含:
+#   name              中文名称
+#   name_en           英文名称
+#   exchange          交易所英文缩写(ZCE 郑商所 / SHFE 上期所 / DCE 大商所 / INE 上能所)
+#   exchange_cn       交易所中文全称
+#   main_contract     主力连续合约代码(用于 futures_main_sina,如 "RB0")
+#   spot_code         现货报价代码(用于 futures_spot_price_daily,如 "RB")
+#   inv_code          库存接口代码(用于 futures_inventory_em,如 "rb")
+#   unit              合约单位(如 "10吨/手")
+#   price_limit       涨跌停幅度
+#   margin_rate       保证金比例
+#   trading_hours     交易时间段
+#   sector_cn         所属板块(黑色系/能化/农产品等)
+#   description       基本面一句话介绍
+#   key_factors       影响价格的关键因素列表
+#   related_varieties 产业链相关品种代码列表
+# 作用:把"不同接口各自不同的品种代码"统一成一份映射,让后面的行情/基差/库存
+# 等函数都能通过同一个 symbol 找到各自需要的接口代码,实现"一处配置、处处使用"。
 
 VARIETY_METADATA = {
     "RB": {
@@ -561,6 +618,11 @@ VARIETY_METADATA = {
 }
 
 
+# 【功能】校验并规范化品种代码:统一转大写;支持中文名(如"螺纹钢")转代码。
+# 【参数】symbol: 用户传入的品种代码,如 "RB"、"rb"、"螺纹钢"。
+# 【返回】规范化后的大写代码(如 "RB")。
+# 【关键逻辑】先在 VARIETY_METADATA 里按大写代码匹配;匹配不到再用中文名反查;
+#           都不支持则抛 ValueError,异常信息里列出全部支持的品种。
 def _validate_symbol(symbol: str) -> str:
     """Validate and normalize commodity variety code.
 
@@ -586,6 +648,11 @@ def _validate_symbol(symbol: str) -> str:
     raise ValueError(f"Unsupported variety: '{symbol}'. Supported: {supported}")
 
 
+# 【功能】返回单个品种的元信息(品种介绍、合约规格、关键影响因素、相关品种等)。
+# 【参数】symbol: 品种代码(如 "RB")。
+# 【返回】JSON 字符串;若品种不受支持则直接返回错误信息字符串。
+# 【关键逻辑】先 _validate_symbol 校验,再取 VARIETY_METADATA 的副本,
+#          用 json.dumps 序列化成带缩进的、保留中文的 JSON。
 def get_variety_info(symbol: str) -> str:
     """Get metadata for a commodity variety.
 
@@ -609,6 +676,16 @@ def get_variety_info(symbol: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# 【功能】获取商品期货的日线行情(开高低收 OHLCV + 成交量 + 持仓量)。
+# 【参数】symbol: 品种代码(如 "RB");start_date/end_date: 起止日期 "YYYY-MM-DD"。
+# 【返回】CSV 字符串(列为 date, open, high, low, close, volume, open_interest);
+#        失败时返回以 "DATA_ERROR:" 或 "NO_DATA_AVAILABLE:" 开头的错误提示。
+# 【关键逻辑】1) 使用"主力连续合约"(main_contract,如 RB0)避免换月跳空;
+#           2) 调用 AKShare 的 futures_main_sina(新浪财经接口),固定从 "20200101"
+#              拉全量历史(便于后续指标计算),再按日期范围过滤;
+#           3) 结果带 5 分钟缓存(_response_cache),命中缓存则跳过联网;
+#           4) 把中文列名重命名为英文标准列名,最后转成 CSV。
+#           ★ 注意:此函数是纯免费 API 拉取,不走 Hybrid Mode 的外部 JSON。
 def get_futures_price(
     symbol: str,
     start_date: str,
@@ -714,6 +791,15 @@ def get_futures_price(
     return result.to_csv(index=False)
 
 
+# 【功能】计算商品期货的技术指标(均线/EMA/MACD/RSI/布林带/ATR/量能/持仓变化)。
+# 【参数】symbol: 品种代码;start_date/end_date: 起止日期 "YYYY-MM-DD"。
+# 【返回】CSV 字符串,在原行情列基础上附加指标列;数据不足时返回 NO_DATA_AVAILABLE。
+# 【关键逻辑】1) 复用 get_futures_price 相同的缓存键 "price:{main_sym}" 取全量历史,
+#              保证与价格接口口径一致且不重复联网;
+#           2) 用 pandas 的 rolling/ewm 计算各指标:
+#              SMA5/10/20/50、EMA12/26、MACD(含信号线与柱)、RSI(14)、
+#              布林带(20,2)、ATR(14)、量比、持仓量变化率、偏离20日线幅度;
+#           3) 最后只保留 [start_date, end_date] 区间,浮点列四舍五入到 4 位小数。
 def get_futures_indicators(
     symbol: str,
     start_date: str,
@@ -857,6 +943,16 @@ def get_futures_indicators(
     return result.to_csv(index=False)
 
 
+# 【功能】获取商品现货与期货的基差数据(基差 = 现货价格 - 期货价格)。
+# 【参数】symbol: 品种代码;start_date/end_date: 起止日期 "YYYY-MM-DD"。
+# 【返回】CSV 字符串(含现货价、主力/近月合约价、基差、基差率),末尾追加一行
+#        对最新基差的解读(Backwardation 现货升水 / Contango 期货升水)。
+# 【关键逻辑】1) 调用 AKShare 的 futures_spot_price_daily(东财现货+基差接口),
+#              vars_list 传品种的 spot_code,日期去掉横杠转成 YYYYMMDD;
+#           2) 中文列名重命名为英文;只保留主力/近月相关列;
+#           3) ★ Hybrid Mode:函数末尾调用 merge_basis_data(code, api_output),
+#              即"外部 JSON 里有现货价就追加一条外部数据说明;没有则原样返回"。
+#              这是本文件"外部数据优先、免费接口兜底"机制的一部分。
 def get_futures_basis(
     symbol: str,
     start_date: str,
@@ -963,10 +1059,28 @@ def get_futures_basis(
     api_output = csv_out + basis_note
 
     # --- Hybrid injection: merge with external spot price if available ---
+    # 【Hybrid Mode 回退逻辑(基差)】
+    # merge_basis_data 会先尝试读取 ~/.tradingagents/external_data/{code}.json:
+    #   有外部现货价且未过期 -> 在结果前追加一行外部现货价说明(视为更可信);
+    #   没有/过期              -> 原样返回免费接口的 CSV,并打上 FREE_API 来源标记。
+    # 返回元组第二项 used_external 标记是否用到了外部数据(当前调用方未使用)。
     merged, used_external = merge_basis_data(code, api_output)
     return merged
 
 
+# 【功能】获取商品期货的库存数据(交易所仓单库存)。
+# 【参数】symbol: 品种代码;_start_date/_end_date: 形参保留但实际未用
+#        (该接口一次返回全部历史,由函数内部只取最近 60 条)。
+# 【返回】CSV 字符串(日期、库存、变化),末尾追加趋势解读注释(累库/去库/平稳)。
+# 【关键逻辑】1) 调用 AKShare 的 futures_inventory_em(东方财富库存接口),
+#              symbol 传品种的 inv_code(小写);
+#           2) 只取最后 60 条以便阅读,并做趋势分析:
+#              最近5日均值 vs 更早期均值的百分比变化,>+3% 记为 BUILDING 累库,
+#              <-3% 记为 DRAINING 去库,否则 STABLE 平稳;
+#           3) 明确提示:这是"仓单库存",不等于 35 城社会库存;
+#           4) ★ Hybrid Mode:函数末尾调用 merge_inventory_data(code, api_output),
+#              外部 JSON 里有社会库存/钢厂库存就合并成"Part1 仓单 + Part2 社会库存"
+#              两部分一并返回给大模型。
 def get_futures_inventory(
     symbol: str,
     _start_date: str = "",
@@ -1042,10 +1156,29 @@ def get_futures_inventory(
     api_output = result.to_csv(index=False) + trend_note
 
     # --- Hybrid injection: merge with external social/mill inventory if available ---
+    # 【Hybrid Mode 回退逻辑(库存)】
+    # merge_inventory_data 先读外部 JSON:
+    #   有社会库存/钢厂库存 -> 输出"仓单(免费API) + 社会/钢厂库存(外部)"合并报告,
+    #                           并附给大模型的解读指引(两部分同向/反向的含义);
+    #   没有                 -> 仅返回免费 API 仓单 CSV,标注 FREE_API 来源。
     merged, used_external = merge_inventory_data(code, api_output)
     return merged
 
 
+# 【功能】抓取与商品期货相关的新闻,并按关键词过滤后返回文本。
+# 【参数】symbol: 品种代码(用于追加品种专属关键词,如 RB 追加"螺纹/地产"等);
+#        _start_date/_end_date: 形参保留,当前未使用。
+# 【返回】格式化的新闻文本(标题+时间+来源);全部来源失败时返回 NO_DATA_AVAILABLE。
+# 【关键逻辑】1) 数据源按优先级:
+#              - Eastmoney 7x24 快讯(公开 HTTP 接口 np-weblist.eastmoney.com),
+#                抓 30 条后用 commodity_kw(通用商品关键词)+ symbol_specific
+#                (品种专属关键词)过滤,命中才保留;
+#              - SHMET 商品新闻(AKShare 的 futures_news_shmet)作为兜底,
+#                商品属性强,直接全部保留(取前 15 条);
+#              财联社 CLS 源已停用(旧接口 404),代码被注释保留待恢复;
+#           2) 两源合并后按"标题前 35 字符"去重,最多输出 20 条;
+#           3) 文档明确提醒:免费接口没有 Mysteel/SMM 级别的行业细节,
+#              事件类数据请走外部 JSON 机制。
 def get_futures_news(
     symbol: str = "",
     _start_date: str = "",
@@ -1338,6 +1471,16 @@ def get_futures_news(
 # ---------------------------------------------------------------------------
 
 
+# 【功能】抓取影响商品期货的中国宏观指标,汇总成文本报告。
+# 【参数】start_date/end_date: 形参保留,当前未使用(接口默认返回全量最新)。
+# 【返回】格式化文本:GDP(季度同比)、制造业PMI(含荣枯线判断)、固定资产投资、
+#        房地产景气指数、工业增加值、建筑业指数(日度)。
+# 【关键逻辑】1) 全部来自 akshare 的 macro_* 系列免费接口:
+#              macro_china_gdp / macro_china_pmi / macro_china_gdzctz /
+#              macro_china_real_estate / macro_china_gyzjz / macro_china_construction_index;
+#           2) 每个指标各自 try/except,单个接口失败不影响其他指标,
+#              失败处输出 "UNAVAILABLE (异常信息)";
+#           3) 在房地产/建筑业部分给出与螺纹钢需求的联动解读(供大模型参考)。
 def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
     """Fetch key China macroeconomic indicators for commodity analysis.
 
@@ -1498,6 +1641,15 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
     return "\n".join(parts)
 
 
+# 【功能】汇总一个品种的供需两侧指标(产量、成交、开工率、利润、库存、事件等)。
+# 【参数】variety: 品种代码(如 "RB");start_date/end_date: 形参保留,当前未使用。
+# 【返回】格式化供需报告文本;无外部数据时也会给出免费 API 的建筑业/地产指数部分。
+# 【关键逻辑】1) ★ Hybrid Mode 核心体现:先 load_external_data(variety) 读外部 JSON,
+#              有则把周度产量/铁水产量/开工率/钢厂利润/建材成交/社会库存/
+#              铁矿港口库存/关键事件 逐项输出,并标注来源(get_external_source_label);
+#              没有外部文件则提示如何创建(见 RB.json.sample);
+#           2) 后半部分始终用免费 API(建筑业指数、房地产景气指数)补充;
+#           3) 外部数据字段缺失时用 .get(key, 'N/A') 兜底,不会崩。
 def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str = "") -> str:
     """Fetch supply-side and demand-side indicators for a commodity variety.
 
@@ -1681,6 +1833,18 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
 # ---------------------------------------------------------------------------
 
 
+# 【功能】返回某个目标日期"确定性的、经过核验"的行情快照(开高低收+量+仓+关键指标)。
+#        设计为数值主张的唯一真相来源:所有分析师做"精确数字"论断时必须用这里。
+# 【参数】symbol: 品种代码;date: 目标日期 "YYYY-MM-DD";
+#        start_date/end_date: 形参保留(兼容调用方),内部由 date 自动推算。
+# 【返回】VERIFIED_SNAPSHOT 格式文本(含精确 OHLCV、日涨跌%、SMA5/SMA20、
+#        价格相对20日线的位置);出错时返回 VERIFIED_SNAPSHOT_ERROR/UNAVAILABLE。
+# 【关键逻辑】1) 以 date 为基准,拉取 [date-30天, date+5天] 的价格窗口
+#              (复用 get_futures_price);
+#           2) 手工解析 CSV 找目标日期那一行;若目标日是非交易日,则退而取
+#              区间内最新一天并注明;
+#           3) 由全部收盘价序列计算日涨跌%、SMA5、SMA20;
+#           4) 输出中强调"冲突要上报,不要自己编一个调和数字"。
 def get_verified_quote(
     symbol: str, date: str = "", start_date: str = "", end_date: str = ""
 ) -> str:
@@ -1815,6 +1979,11 @@ def get_verified_quote(
 # ---------------------------------------------------------------------------
 
 
+# 【功能】获取商品品种的社交媒体情绪数据(来自"思路2"项目采集的微博/知乎/小红书)。
+# 【参数】symbol: 品种代码(如 "RB");start_date/end_date: 形参保留,当前未使用。
+# 【返回】格式化情绪报告文本;无数据时返回对应的"无数据"提示。
+# 【关键逻辑】本函数只是薄封装:真正实现转发给 sentiment_data 模块里的同名函数,
+#          由它去读 ~/.tradingagents/external_data/{symbol}_sentiment.json。
 def get_futures_sentiment(symbol: str, start_date: str = "", end_date: str = "") -> str:
     """Get social media sentiment data for a commodity variety.
 
@@ -1836,6 +2005,8 @@ def get_futures_sentiment(symbol: str, start_date: str = "", end_date: str = "")
 # ---------------------------------------------------------------------------
 # Quick test
 # ---------------------------------------------------------------------------
+# 直接运行本文件(python tradingagents/dataflows/commodity_futures.py)时,
+# 会用螺纹钢 RB 依次自测:品种信息 / 行情 / 技术指标 / 基差 / 库存 / 新闻。
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("=== Testing Commodity Futures Data Layer for Rebar (RB) ===\n")

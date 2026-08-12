@@ -16,6 +16,20 @@
   python batch_collect.py --safe-mode                          # 安全模式(更慢更安全)
   python batch_collect.py --turbo                              # 极速模式
   python batch_collect.py --no-detail                          # 不深挖(微博推荐,速度快)
+
+
+本文件在"情绪数据生产链"中的角色
+--------------------------------
+    这是多平台【批量采集入口】, 也是 scheduler(定时任务)调用的核心脚本。
+    它把"平台差异"抽象成适配器(adapter), 统一完成:
+      搜索(search) → 详情(get_detail) → 归一化(normalize) → 去重(dedup)
+      → NER品种识别 + 情感分析(enrich) → 增量写盘(batch_*.jsonl)
+
+    与 hybrid_pipeline.py 的关系:
+      - hybrid_pipeline 是"小红书专用"的两层(Playwright+API拦截)采集器。
+      - 本文件是"多平台通用"采集器, 通过 platforms 模块的 get_adapter()
+        按 --platform 参数获取对应平台适配器 (xhs/weibo/zhihu/xueqiu)。
+      下游: 采集出的 JSONL 交给 analyze.py / trend_aggregator.py 做分析聚合。
 """
 
 import argparse
@@ -43,7 +57,8 @@ logger = logging.getLogger("batch.collect")
 # 配置
 # ============================================================
 
-# 采集控制
+# ============ 采集控制参数 (限流/延时相关) ============
+# 这些数值共同决定"多快"地访问平台, 是避免被封号的核心调参点。
 DEFAULT_PER_KW = 30  # 每关键词采集条数
 MIN_DELAY_MS = 300  # 最小请求间隔(ms) — 实测API耗时~750ms, 300ms间隔安全
 MAX_DELAY_MS = 1000  # 最大请求间隔(ms)
@@ -216,7 +231,17 @@ DEFAULT_KEYWORDS = {
 
 @dataclass
 class CollectStats:
-    """采集统计"""
+    """
+    【功能】采集过程统计信息的容器 (数据类)。
+    【字段说明】
+      started: 开始时间 (ISO 字符串)。
+      keywords_total / keywords_done: 关键词总数 / 已完成数。
+      searched_total: 搜索到的条目总数。
+      detail_fetched / detail_failed: 详情成功获取数 / 失败数。
+      rate_limits_hit: 触发限流次数 (预留给统计, 当前未在此处累加)。
+      errors: 采集过程中的错误信息列表。
+    【关键逻辑】供 run() 结束时的汇总打印与中断提示使用。
+    """
 
     started: str = ""
     keywords_total: int = 0
@@ -229,9 +254,20 @@ class CollectStats:
 
 
 class RateLimiter:
-    """自适应延时控制器 (平台无关)"""
+    """
+    【功能】自适应请求延时控制器 (平台无关)。
+            根据请求成功/失败动态调整每次请求前的等待时间,
+            降低触发平台反爬/限流的概率。
+    【关键逻辑】
+      - 三档模式: TURBO(极速)/SAFE(安全)/FAST(默认)。
+      - 成功: 逐渐缩短延时 (report_success)。
+      - 失败: 指数退避延长延时; 若是限流则翻倍并进入冷却 (report_failure)。
+    """
 
     def __init__(self, safe_mode: bool = False, turbo_mode: bool = False):
+        """【功能】初始化延时区间与抖动幅度。
+        【参数】safe_mode: 是否安全模式; turbo_mode: 是否极速模式。
+        【返回】无。"""
         if turbo_mode:
             self.min_delay = TURBO_MIN_DELAY_MS / 1000
             self.max_delay = TURBO_MAX_DELAY_MS / 1000
@@ -251,7 +287,9 @@ class RateLimiter:
         self.turbo_mode = turbo_mode
 
     def wait(self):
-        """等待适当的时间"""
+        """【功能】在每次发请求前调用, 若距上次请求时间不足"目标延时"则睡眠补齐。
+        【参数】无。 【返回】无。
+        【关键逻辑】在基础延时上加随机抖动(jitter), 让请求间隔不像机器一样均匀。"""
         elapsed = time.time() - self.last_request_time
         wait_time = max(0, self.current_delay - elapsed)
         if wait_time > 0:
@@ -260,12 +298,18 @@ class RateLimiter:
         self.last_request_time = time.time()
 
     def report_success(self):
-        """请求成功 → 逐渐恢复最小延时"""
+        """【功能】请求成功后调用: 逐步把延时恢复回最小值 (乘以 0.9 逼近 min_delay)。
+        【参数】无。 【返回】无。"""
         self.consecutive_failures = 0
         self.current_delay = max(self.min_delay, self.current_delay * 0.9)
 
     def report_failure(self, is_rate_limit: bool = False):
-        """请求失败 → 增加延时"""
+        """【功能】请求失败后调用: 提高延时, 限流时加倍并进入冷却休眠。
+        【参数】is_rate_limit: 是否被判定为限流。
+        【返回】无。
+        【关键逻辑】
+          - 限流: current_delay 翻倍 + 睡 RATE_LIMIT_COOLDOWN 秒。
+          - 普通失败: 按连续失败次数指数退避 (2^n 封顶 5 倍), 且不超过 max_delay。"""
         self.consecutive_failures += 1
         if is_rate_limit:
             self.current_delay *= 2.0
@@ -276,13 +320,23 @@ class RateLimiter:
             self.current_delay = min(self.max_delay, self.current_delay * backoff)
 
     def cooldown(self, seconds: float = 10):
-        """批次间冷却"""
+        """【功能】批次之间主动休息 (默认 10 秒), 降低连续大批请求的暴露风险。
+        【参数】seconds: 休息秒数。 【返回】无。"""
         logger.info(f"Batch cooldown: {seconds}s...")
         time.sleep(seconds)
 
 
 class MultiPlatformCollector:
-    """多平台批量采集器 — 通过 adapter 注入解耦平台差异"""
+    """
+    【功能】多平台批量采集器。核心思路是"适配器(adapter)注入":
+            平台差异被封装进 platforms 模块的 PlatformAdapter 接口,
+            本类只面向接口编程, 换平台只需换 adapter, 采集逻辑完全复用。
+    【关键逻辑】
+      - adapter.search / adapter.get_detail / adapter.normalize 完成平台对接。
+      - self.ner (FuturesNER) 与 self.sentiment (SentimentAnalyzer) 是
+        平台无关的纯文本处理模块, 用于采集后的 enrich (NER + 情感)。
+      - self.seen_ids 用 (platform, note_id) 元组做跨关键词全局去重。
+    """
 
     def __init__(
         self,
@@ -290,9 +344,12 @@ class MultiPlatformCollector:
         safe_mode: bool = False,
         turbo_mode: bool = False,
     ):
+        # 平台名 + 通过工厂函数 get_adapter 拿到对应适配器实例
         self.platform_name = platform
         self.adapter: PlatformAdapter = get_adapter(platform)
+        # 自适应延时控制器 (三档模式在构造时决定)
         self.limiter = RateLimiter(safe_mode=safe_mode, turbo_mode=turbo_mode)
+        # NER 与情感分析器 (纯文本, 平台无关)
         self.ner = FuturesNER()
         self.sentiment = SentimentAnalyzer()
         self.stats = CollectStats(started=datetime.now().isoformat())
@@ -300,7 +357,10 @@ class MultiPlatformCollector:
         self.seen_ids: set = set()  # (platform, note_id) 跨关键词去重
 
     def init_api(self):
-        """初始化平台适配器"""
+        """【功能】初始化平台适配器 (登录/建立会话等), 凭证缺失时给出提示并退出。
+        【参数】无。 【返回】无。
+        【关键逻辑】adapter.init() 若抛出 CredentialError (凭证缺失/过期),
+        打印友好提示后 sys.exit(1), 避免带着坏会话继续空跑。"""
         try:
             self.adapter.init()
         except CredentialError as e:
@@ -314,18 +374,26 @@ class MultiPlatformCollector:
 
     def collect_one_keyword(self, keyword: str, count: int, max_detail: int) -> list[dict]:
         """
-        采集一个关键词 (平台无关)。
-        流程: search → [get_detail for each] → normalize → filter seen
+        【功能】采集单个关键词的全流程 (平台无关)。
+        【参数】
+          keyword: str, 本次要搜索的关键词。
+          count: int, 搜索时目标返回条数。
+          max_detail: int, 最多对其中多少条做详情深挖。
+        【返回】list[dict]: 通过去重、归一化后的笔记字典列表 (未做 NER/情感)。
+        【关键逻辑】
+          流程: search(搜索) → get_detail(逐条详情) → normalize(归一化) → 去重。
+          每一步的限流/失败都会通过 self.limiter 反馈给延时控制器。
         """
         notes = []
         logger.info(f"Searching: '{keyword}' (target {count})")
 
-        # Step 1: 搜索
+        # Step 1: 搜索 (发请求前先 wait 遵守延时)
         self.limiter.wait()
         try:
             items = self.adapter.search(keyword, count)
         except Exception as e:
             logger.error(f"Search failed for '{keyword}': {e}")
+            # classify_error 把异常归类为 rate_limit 或其他, 决定退避策略
             self.limiter.report_failure(
                 is_rate_limit=(self.adapter.classify_error(e) == "rate_limit")
             )
@@ -340,18 +408,20 @@ class MultiPlatformCollector:
         logger.info(f"  Found {len(items)} items for '{keyword}'")
 
         # Step 2: 逐条获取详情 + 归一化
-        detail_count = 0
+        detail_count = 0  # 已成功采集的条数 (用作进度计数)
+        # 需要详情深挖的平台按 max_detail 限制; 否则(如微博)全部 items 都算成功
         detail_limit = max_detail if self.adapter.needs_detail_fetch else len(items)
 
         for _item_idx, item in enumerate(items):
             if detail_count >= detail_limit:
                 break
 
+            # 从平台原始条目里取出唯一 ID (不同平台字段名不同: id / mid)
             nid = item.get("id", "") or item.get("mid", "")
             if not nid:
                 continue
 
-            # 详情获取
+            # 详情获取 (仅对需要详情深挖的平台生效, 如 xhs)
             detail = None
             fetch_ok = True
             if self.adapter.needs_detail_fetch:
@@ -381,7 +451,8 @@ class MultiPlatformCollector:
             if not fetch_ok:
                 continue
 
-            # 归一化为统一 Schema
+            # 归一化为统一 Schema:
+            # 各平台原始字段千差万别, normalize() 统一成 note_id/title/desc/... 标准字段
             try:
                 note_dict = self.adapter.normalize(item, detail, keyword)
             except Exception as e:
@@ -391,7 +462,8 @@ class MultiPlatformCollector:
             if note_dict is None:
                 continue
 
-            # 去重
+            # 去重: 用 (platform, note_id) 作为全局唯一键,
+            # 同一个帖子即使被多个关键词搜到, 也只保留第一份
             pid = note_dict.get("platform", self.platform_name)
             note_id = note_dict.get("note_id", "")
             dedup_key = (pid, note_id)
@@ -426,7 +498,15 @@ class MultiPlatformCollector:
         return notes
 
     def _enrich_notes(self, notes: list[dict]) -> list[dict]:
-        """NER + 情感分析 enrich (平台无关, 只吃文本)"""
+        """
+        【功能】对一批笔记做"文本增强": NER 品种识别 + 情感分析 (平台无关)。
+        【参数】notes: list[dict], 归一化后的笔记列表。
+        【返回】list[dict]: 原列表, 但每个 dict 被原地追加 NER/情感字段。
+        【关键逻辑】
+          - 把 title 和 desc 拼起来作为分析文本 (标题通常信息密度高)。
+          - 无文本的笔记直接填默认值 (neutral, 空品种)。
+          - 情感分三层: 整篇情感 (sentiment_*) + 品种级情感 (variety_sentiments)。
+        """
         for note in notes:
             text = (note.get("title", "") + " " + note.get("desc", "")).strip()
             if not text:
@@ -440,19 +520,19 @@ class MultiPlatformCollector:
                 note.setdefault("variety_sentiments", [])
                 continue
 
-            # NER
+            # NER: 从文本中提取品种/合约, 得到 varieties(品种列表) 等字段
             entities = self.ner.extract(text)
             note["varieties"] = entities["varieties"]
             note["contracts"] = entities["contracts"]
             note["variety_count"] = entities["variety_count"]
 
-            # 整篇情感
+            # 整篇情感: 规则引擎对全文打分, 得到 7 级情感 + 分数 + 置信度
             r = self.sentiment.analyze(text)
             note["sentiment"] = r["sentiment"]
             note["sentiment_score"] = r["score"]
             note["sentiment_confidence"] = r["confidence"]
 
-            # 品种级情感
+            # 品种级情感: 对每个提到的品种, 截取其上下文分别打情感分
             var_sent = self.sentiment.analyze_aspects(text, entities["varieties"])
             note["variety_sentiments"] = var_sent
 
@@ -466,10 +546,20 @@ class MultiPlatformCollector:
         no_enrich: bool = False,
         since: str | None = None,
     ) -> list[dict]:
-        """主采集循环 (平台无关)。
-
-        Args:
-            since: 可选日期过滤 (YYYY-MM-DD)，只保留此日期及之后的帖子。
+        """
+        【功能】主采集循环 (平台无关): 逐关键词采集 → enrich → 时间过滤 → 增量写盘。
+        【参数】
+          keywords: list[str], 本次要采集的关键词列表。
+          per_kw: int, 每个关键词搜索多少条。
+          max_detail: int, 每个关键词最多深挖详情多少条。
+          no_enrich: bool, 为 True 时跳过 NER + 情感 enrich (提速)。
+          since: str | None, 形如 "YYYY-MM-DD", 只保留此日期及之后的帖子。
+        【返回】list[dict] (当前实现总是返回空列表; 数据直接落盘到 JSONL)。
+        【关键逻辑】
+          - 输出文件: output/batch_{platform}_{时间戳}.jsonl (逐关键词追加)。
+          - 每个关键词: collect_one_keyword → _enrich_notes → since 时间过滤
+            → 追加写盘, 因此中途中断也不会丢已完成的批次。
+          - 批次间用 limiter.cooldown 冷却, 无结果的关键词不等待省时间。
         """
         self.init_api()
         self.stats.keywords_total = len(keywords)
@@ -504,9 +594,11 @@ class MultiPlatformCollector:
 
         start_time = time.time()
 
+        # ===== 逐关键词主循环 =====
         for kw_idx, kw in enumerate(keywords):
             print(f"\n--- [{kw_idx + 1}/{len(keywords)}] '{kw}' ---")
 
+            # 采集单个关键词; 整体失败时记录错误并继续下一个关键词
             try:
                 notes = self.collect_one_keyword(kw, count=per_kw, max_detail=max_detail)
             except Exception as e:
@@ -514,11 +606,12 @@ class MultiPlatformCollector:
                 self.stats.errors.append(f"{kw}: {e}")
                 notes = []
 
-            # NER + 情感 enrich
+            # NER + 情感 enrich: 给每条笔记补充品种/合约/情感字段
             if notes and not no_enrich:
                 self._enrich_notes(notes)
 
-            # Time filter (since_date)
+            # Time filter (since_date):
+            # 若指定了 --since, 只保留 publish_time >= since_date 的帖子
             if since_date and notes:
                 filtered = []
                 skipped = 0
@@ -541,7 +634,8 @@ class MultiPlatformCollector:
                     )
                 notes = filtered
 
-            # 增量写盘: 每个关键词完成后追加 (中断不丢数据)
+            # 增量写盘: 每个关键词完成后立即追加到 JSONL (逐行 JSON),
+            # 好处: 即使程序中途被 Ctrl+C / 报错打断, 已完成的关键词数据不丢失
             with open(self.output_file, "a", encoding="utf-8") as f:
                 for note in notes:
                     f.write(json.dumps(note, ensure_ascii=False) + "\n")
@@ -588,6 +682,14 @@ class MultiPlatformCollector:
 
 
 def main():
+    """
+    【功能】命令行入口: 解析参数 → 打印采集计划 → 构造采集器 → run()。
+    【关键逻辑】
+      - 关键词优先级: 命令行 --keywords 参数 > 平台预设关键词列表。
+      - --no-detail 会把 max_detail 置为 0 (微博等平台本就无需详情)。
+      - 打印预估详情 API 调用次数, 便于用户判断请求量。
+      - KeyboardInterrupt / 异常时都提示"部分结果已保存到 output 文件"。
+    """
     parser = argparse.ArgumentParser(
         description="多平台期货社交媒体数据批量采集",
         formatter_class=argparse.RawDescriptionHelpFormatter,

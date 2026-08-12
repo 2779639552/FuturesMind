@@ -25,6 +25,39 @@ Examples:
     venv/Scripts/python commodity_demo.py RB --no-feedback      # Skip feedback
 """
 
+# ===========================================================================
+# 中文模块级说明
+# 本文件 (commodity_demo.py) 是"商品期货智能分析管线"的入口脚本,也是整个
+# AgentSense 项目的演示主程序。运行方式: venv/Scripts/python commodity_demo.py [品种] [日期]
+#
+# 整体分析流水线(一张 LangGraph 图,由 build_commodity_graph() 组装):
+#   START
+#     -> 四类分析师并行分析(技术面 / 基本面 / 宏观与新闻 / 情绪面,可选)
+#     -> 多空对抗辩论(多方开篇 -> 空方反驳 -> 多方再反驳 -> 主持人裁决)
+#     -> 综合研判(create_synthesis_node,产出最终评级 RATING)
+#     -> 情景分析(create_scenario_node,牛市/基准/熊市三情景压力测试)
+#     -> (可选)用户反馈节点(create_user_feedback_node,自我进化/记忆沉淀)
+#     -> END
+#
+# 与 tradingagents 包的关系:
+#   - 本文件是"组装者":真正干活的分析师节点、情感分析节点、用户反馈节点都定义在
+#     tradingagents 包内(如 tradingagents.agents.analysts.commodity_analysts 的
+#     create_commodity_technical_analyst 等),本文件只负责 import 并把它们挂到图上;
+#   - 辩论节点来自同目录的 commodity_debate.py(create_bull_debater 等);
+#   - LLM 实例、配置、进化记忆、行情数据都从 tradingagents 包中按需获取。
+#
+# 与 web_app.py 的关系:
+#   - web_app.py 是 Web 前端服务(提供浏览器界面);本文件是命令行演示入口。
+#     两者共享同一套图构建逻辑(分析师/辩论/综合研判节点),只是"呈现层"不同
+#     (CLI 用 console_progress_callback 实时打印,Web 用富文本/接口推送)。
+#   - 因此本文件里 final_state 中保存的字段(如 investment_plan、scenario_analysis、
+#     discussion_summary)也是 Web 端展示所需的关键数据结构。
+#
+# 关键设计点:
+#   - 双 LLM 分工(v2.4):分析师/辩论用 "quick_llm"(快而省),综合研判/情景用
+#     "deep_llm"(质量更高),兼顾速度与关键决策的质量。
+# ===========================================================================
+
 import logging
 import os
 import sys
@@ -81,9 +114,18 @@ def console_progress_callback(event_type, data):
     analysts run in parallel their output may interleave — the label prefix
     makes it easy to tell which analyst is doing what.
     """
+    # 【功能】CLI 实时进度回调:当分析师节点内的工具调用循环(_run_tool_loop)发生
+    #          事件时,把"正在调用哪个工具、结果多长"实时打印到终端,让用户看到分析进度。
+    # 【参数】event_type: 事件类型字符串,如 "tool_call" / "tool_result" / "report_start";
+    #          data: 事件数据字典,含 label(分析师标签)、tool_name、iteration、args_brief、
+    #                result_length 等字段。
+    # 【返回】无。
+    # 【关键逻辑】因四名分析师并行运行,各回调可能交错打印,因此用 label 前缀区分来源;
+    #            只打印对用户有意义的三种事件,过滤掉过于嘈杂的 "iteration"/"llm_thinking"。
     label = data.get("label", "?")
 
     if event_type == "tool_call":
+        # LLM 请求调用某个工具:打印"第几轮迭代、工具名、参数摘要"
         logger.info(
             "[%s] R%s: %s(%s)",
             label,
@@ -93,40 +135,60 @@ def console_progress_callback(event_type, data):
         )
 
     elif event_type == "tool_result":
+        # 工具返回结果:打印结果文本长度,让用户感知数据量级
         logger.info(
             "[%s] <- %s chars from %s", label, data.get("result_length", 0), data["tool_name"]
         )
 
     elif event_type == "report_start":
+        # 分析师开始撰写最终报告
         logger.info("[%s] Writing report...", label)
 
     # "iteration" and "llm_thinking" events are intentionally silent in the
     # console callback — they'd be too noisy.  Other callback implementations
     # (like the CLI's Rich Live dashboard) can use them for richer displays.
+    # (注:以上两种事件在 CLI 回调中刻意不打印,否则会太嘈杂;其他实现如
+    #  CLI 的 Rich 实时面板可借助它们做更丰富的展示。)
 
 
 # ---------------------------------------------------------------------------
 # Output formatting helpers
 # ---------------------------------------------------------------------------
 
-SEP = "-" * 70
-SEP_DOUBLE = "=" * 70
+SEP = "-" * 70  # 单线分隔符(用于普通分隔线)
+SEP_DOUBLE = "=" * 70  # 双线分隔符(用于更醒目的大分隔)
 
 
 def print_banner(symbol, trade_date):
+    """打印开场横幅:显示被分析的期货品种与日期。
+
+    【功能】程序启动时向用户宣告分析对象。
+    【参数】symbol: 品种代码(如 "RB");trade_date: 交易日期字符串。
+    【返回】无。
+    """
     logger.info("FuturesMind Analysis: %s @ %s", symbol, trade_date)
 
 
 def print_stage_header(title):
+    """打印一个阶段标题,标记当前流程进行到哪一步。
+
+    【功能】在管线各阶段(如 "[Discussion]" "[Synthesis]")输出醒目标题,便于跟踪进度。
+    【参数】title: 标题字符串。
+    【返回】无。
+    """
     logger.info("--- %s ---", title)
 
 
 def print_report_summary(report_text, max_chars=500):
     """Print the first few lines of a report as a summary preview."""
+    # 【功能】把一份很长的分析报告压缩成"前几行 + 省略号"的预览,只打印摘要而非全文。
+    # 【参数】report_text: 报告全文;max_chars: 预览最多保留的字符数(默认 500)。
+    # 【返回】无。
+    # 【关键逻辑】逐行累计字符数,一旦超过上限就截断并加 "..." 标记;空报告给出提示。
     if not report_text:
         logger.warning("  (no content)")
         return
-    # Extract first meaningful paragraph(s)
+    # Extract first meaningful paragraph(s) —— 提取第一个有意义的段落
     lines = report_text.strip().split("\n")
     preview_lines = []
     char_count = 0
@@ -134,7 +196,7 @@ def print_report_summary(report_text, max_chars=500):
         line = line.strip()
         if not line:
             if preview_lines:
-                break  # blank line after content = end of first paragraph
+                break  # blank line after content = end of first paragraph —— 遇到空行说明段落结束
             continue
         if char_count + len(line) > max_chars:
             remaining = max_chars - char_count
@@ -157,6 +219,11 @@ def safe_print(text, max_chars=2000):
     某些特殊Unicode字符  will raise UnicodeEncodeError. This function
      falls back to ASCII with replace-on-error for such cases.
     """
+    # 【功能】安全打印长文本,规避 Windows 终端 GBK 编码导致的 UnicodeEncodeError 崩溃。
+    # 【参数】text: 要打印的文本;max_chars: 单次打印最多字符数(默认 2000,防止刷屏)。
+    # 【返回】无。
+    # 【关键逻辑】先用 UTF-8 方式打印;若遇到无法编码的字符(如 emoji/生僻字),则把
+    #            内容编码为 ASCII 并把无法表示的字符替换为 "?",保证打印永不抛异常。
     if not text:
         return
     content = text[:max_chars]
@@ -183,8 +250,19 @@ def create_discussion_node(llm):
     and disagreement, and surface key assumptions — making the reasoning
     chain visible to the user before the final recommendation.
     """
+    # 【功能】创建"圆桌讨论"图节点:首席策略师阅读四名分析师(技术/基本面/宏观/情绪)
+    #          的报告,要求 LLM 显式比较各方观点、找出共识与分歧、标注关键假设、做
+    #          反事实检验(近因偏差抑制),输出一份"圆桌讨论纪要"存入 discussion_summary。
+    # 【参数】llm: 语言模型客户端,用于生成讨论纪要。
+    # 【返回】node: 符合 LangGraph 节点签名的闭包函数 node(state) -> dict。
+    # 【关键逻辑】该节点位于"并行分析师"与"综合研判"之间:它把四份报告拼进同一个提示词
+    #           (每份截断 3000/2000 字符以控制 token 消耗),强制模型先"综合对比"再给结论,
+    #           让最终建议背后的推理链条对用户可见。
+    # 【待确认】函数名虽为 create_discussion_node,但在 build_commodity_graph() 中
+    #           当前并未被直接使用(已由 commodity_debate 的辩论流程取代),此处保留。
 
     def node(state):
+        # 从共享状态取出四份分析师报告(可能为空字符串)
         technical = state.get("technical_report", "")
         fundamental = state.get("fundamental_report", "")
         macro = state.get("macro_report", "")
@@ -266,9 +344,10 @@ Remember: You are moderating a DISCUSSION, not making the final call. Be fair to
 """
 
         print_stage_header("[Discussion] Roundtable discussion...")
-        result = llm.invoke(prompt_text)
+        result = llm.invoke(prompt_text)  # 调用 LLM 生成讨论纪要
         logger.info("Discussion done.")
 
+        # 返回状态更新:discussion_summary 供"综合研判"节点参考;messages 追加到历史
         return {
             "discussion_summary": result.content,
             "messages": [HumanMessage(content=f"[Roundtable Discussion]\n{result.content}")],
@@ -284,8 +363,18 @@ Remember: You are moderating a DISCUSSION, not making the final call. Be fair to
 
 def create_synthesis_node(llm):
     """Synthesize four analyst reports + discussion summary into final recommendation."""
+    # 【功能】创建"综合研判"图节点:把四份分析师报告 + 圆桌/辩论纪要综合成最终推荐。
+    #          核心产出是首行机器可解析的评级头: RATING: [强烈看多/偏多/中性/偏空/强烈看空]
+    #          | CONFIDENCE: [高/中/低] | SCORE: [0-10],同时要求模型按"证据强度"动态加权。
+    # 【参数】llm: 语言模型客户端(通常是 deep_llm,质量优先)。
+    # 【返回】node: 符合 LangGraph 节点签名的闭包函数 node(state) -> dict。
+    # 【关键逻辑】提示词要求模型用 Evidence Strength = 信号清晰度×数据具体性×共识度×时效性
+    #           给四维度打分并归一化为权重(总和=10),还内置多种特殊规则(如情绪与价格背离
+    #           时情绪权重翻倍、基差结构突变时基本面权重翻倍),并强制做近因偏差自检与
+    #           "评级与正文一致性"检查,防止评级与推理自相矛盾。
 
     def node(state):
+        # 取出四份分析师报告与讨论纪要作为输入
         technical = state.get("technical_report", "")
         fundamental = state.get("fundamental_report", "")
         macro = state.get("macro_report", "")
@@ -422,6 +511,9 @@ Remember: This is for research/educational purposes only. Do NOT provide specifi
         result = llm.invoke(prompt_text)
         logger.info("Synthesis done.")
 
+        # 返回状态更新:
+        #   investment_plan       —— 完整综合研判文本(也是"情景分析"节点的输入);
+        #   final_trade_decision  —— 与 investment_plan 相同内容,兼容旧字段名(供下游统一读取)。
         return {
             "investment_plan": result.content,
             "final_trade_decision": result.content,
@@ -442,13 +534,21 @@ def create_scenario_node(llm):
     (Research → Trader → Risk → PM). After Synthesis produces the base-case
     recommendation, this node stress-tests it with bull and bear scenarios.
     """
+    # 【功能】创建"情景分析"图节点:在综合研判给出基准结论之后,用"牛市/基准/熊市"
+    #          三种情景对其进行压力测试,要求模型给每个情景分配概率(总和必须为 100%),
+    #          并说明触发条件、目标价位、证伪条件与概率分配理由。
+    # 【参数】llm: 语言模型客户端(通常是 deep_llm,质量优先)。
+    # 【返回】node: 符合 LangGraph 节点签名的闭包函数 node(state) -> dict。
+    # 【关键逻辑】对应 TradingAgents 原始框架中 "研究→交易员→风控→PM" 的多层决策思想:
+    #           综合研判产出的是"基准情景",本节点负责校验该基准是否经得起牛熊两端的考验。
 
     def node(state):
+        # 取综合研判结果与技术/基本面报告作为输入(宏观/情绪报告被读取但未使用,属历史遗留)
         synthesis = state.get("investment_plan", "")
         technical = state.get("technical_report", "")
         fundamental = state.get("fundamental_report", "")
-        state.get("macro_report", "")
-        state.get("sentiment_report", "")
+        state.get("macro_report", "")  # 【待确认】读取后未使用,疑为历史遗留
+        state.get("sentiment_report", "")  # 【待确认】同上,读取后未使用
         symbol = state["company_of_interest"]
 
         prompt_text = f"""You are a scenario analyst. The synthesis strategist has produced a base-case recommendation for `{symbol}`. Your job is to stress-test it with three explicit scenarios.
@@ -513,6 +613,7 @@ Assign probability weights to each scenario (they MUST sum to 100%).
         result = llm.invoke(prompt_text)
         logger.info("Scenario analysis done.")
 
+        # 返回状态更新:scenario_analysis 保存三情景文本;messages 追加到历史供展示
         return {
             "messages": [HumanMessage(content=f"[Scenario Analysis]\n{result.content}")],
             "scenario_analysis": result.content,
@@ -543,18 +644,35 @@ def build_commodity_graph(
     output, then synthesis produces the final weighted recommendation,
     then the user feedback node collects feedback for self-evolution.
     """
+    # 【功能】构建整张商品分析 LangGraph 图,返回"已编译的可执行图"和"独立的用户反馈节点"。
+    # 【参数】config: 配置字典(含 llm_provider、quick_think_llm、deep_think_llm 等);
+    #          enable_feedback: 是否启用用户反馈(自我进化)节点;
+    #          max_feedback_rounds: 反馈对话最多轮数;include_sentiment: 是否包含情绪分析师。
+    # 【返回】(graph.compile() 编译后的 app, feedback_node)。feedback_node 可单独调用,
+    #         用于在分析完成后与用户进行独立讨论。
+    # 【关键逻辑】完整的节点链(实际)为:
+    #           START -> [技术/基本面/宏观/(情绪)] 并行分析师
+    #                 -> bull_opening(多方开篇) -> bear_refute(空方反驳)
+    #                 -> bull_rebuttal(多方再反驳,拥有最后发言权)
+    #                 -> debate_moderator(主持人裁决)
+    #                 -> synthesis(综合研判) -> scenario_analysis(三情景) -> END
+    #           其中分析师与辩论用 quick_llm(快而省),综合研判与情景用 deep_llm(质量更高),
+    #           这是 v2.4 引入的"双 LLM 分工"。
 
     # Dual LLM: quick for analysts/debate, deep for synthesis/scenario (v2.4)
+    # quick_llm —— 快而省,用于分析师与辩论(高频、量大,不需要最高质量)
     quick_llm = create_llm_client(
         config["llm_provider"],
-        config.get("quick_think_llm", config["deep_think_llm"]),
+        config.get("quick_think_llm", config["deep_think_llm"]),  # 若未配置 quick 模型则回退到 deep 模型
     ).get_llm()
-    deep_llm = create_llm_client(
+    deep_llm = create_llm_client(  # deep_llm —— 质量优先,用于关键决策(综合研判/情景分析)
         config["llm_provider"],
         config["deep_think_llm"],
     ).get_llm()
 
     # Create analyst nodes (quick_llm — faster, cheaper)
+    # 创建四名并行分析师节点,全部使用 quick_llm;progress_callback 传入
+    # console_progress_callback,让工具调用在 CLI 实时可见。
     tech_node = create_commodity_technical_analyst(
         quick_llm, label="Technical", progress_callback=console_progress_callback
     )
@@ -564,43 +682,50 @@ def build_commodity_graph(
     macro_node = create_commodity_macro_analyst(
         quick_llm, label="Macro/News", progress_callback=console_progress_callback
     )
+    # 可选的情绪分析师:由 include_sentiment 控制是否创建/加入图(默认加入)
     if include_sentiment:
         sentiment_node = create_commodity_sentiment_analyst(
             quick_llm, label="Sentiment", progress_callback=console_progress_callback
         )
 
     # Multi-round debate (quick_llm) — Bull opening + Bull rebuttal (fair last-word)
-    bull_opening_node = create_bull_debater(quick_llm)  # R1: opening statement
-    bear_node = create_bear_debater(quick_llm)  # R1: refutation
-    bull_rebuttal_node = create_bull_debater(quick_llm)  # R2: rebuttal (LAST WORD)
-    moderator_node = create_debate_moderator(quick_llm)  # Judge
+    # 多轮对抗辩论节点(用 quick_llm)。注意:多方被创建了两个节点 —— 开篇(R1)
+    # 与再反驳(R2)。这样安排是为了让多方拥有"最后发言权"(公平反驳权)。
+    bull_opening_node = create_bull_debater(quick_llm)  # R1: opening statement —— 多方开篇立论
+    bear_node = create_bear_debater(quick_llm)  # R1: refutation —— 空方第一轮反驳
+    bull_rebuttal_node = create_bull_debater(quick_llm)  # R2: rebuttal (LAST WORD) —— 多方再反驳(最后发言)
+    moderator_node = create_debate_moderator(quick_llm)  # Judge —— 主持人裁决
 
     # Key decision nodes (deep_llm — higher quality for critical decisions)
+    # 关键决策节点统一用 deep_llm,保证综合研判与情景分析的输出质量。
     synthesis_node = create_synthesis_node(deep_llm)
     scenario_node = create_scenario_node(deep_llm)
+    # 用户反馈(自我进化)节点:在分析结束后与用户讨论,并把心得写入进化记忆
     feedback_node = create_user_feedback_node(
         deep_llm,
-        max_rounds=max_feedback_rounds,
-        enabled=enable_feedback,
+        max_rounds=max_feedback_rounds,  # 反馈对话最多轮数(命令行参数可调)
+        enabled=enable_feedback,  # 由 --no-feedback 控制是否启用
     )
 
-    # Build graph
+    # Build graph —— 用 LangGraph 的 StateGraph 构建有状态图,状态类型为 AgentState
     graph = StateGraph(AgentState)
 
-    # Add nodes
+    # Add nodes —— 注册所有节点:每个节点对应一个可调用对象(闭包函数)
     graph.add_node("technical_analyst", tech_node)
     graph.add_node("fundamental_analyst", fund_node)
     graph.add_node("macro_analyst", macro_node)
     if include_sentiment:
         graph.add_node("sentiment_analyst", sentiment_node)
-    graph.add_node("bull_opening", bull_opening_node)
-    graph.add_node("bear_refute", bear_node)
-    graph.add_node("bull_rebuttal", bull_rebuttal_node)
-    graph.add_node("debate_moderator", moderator_node)
-    graph.add_node("synthesis", synthesis_node)
-    graph.add_node("scenario_analysis", scenario_node)
+    graph.add_node("bull_opening", bull_opening_node)  # 多方开篇
+    graph.add_node("bear_refute", bear_node)  # 空方反驳
+    graph.add_node("bull_rebuttal", bull_rebuttal_node)  # 多方再反驳(最后发言)
+    graph.add_node("debate_moderator", moderator_node)  # 主持人裁决
+    graph.add_node("synthesis", synthesis_node)  # 综合研判
+    graph.add_node("scenario_analysis", scenario_node)  # 三情景分析
 
     # Fan-out: START → analysts in parallel (sentiment optional)
+    # 扇出:从 START 同时连到所有分析师 —— 这是 LangGraph 实现"并行"的方式,
+    # 多个分析师节点会并行执行(读取同一份共享状态,各写各的报告字段)。
     graph.add_edge(START, "technical_analyst")
     graph.add_edge(START, "fundamental_analyst")
     graph.add_edge(START, "macro_analyst")
@@ -608,6 +733,7 @@ def build_commodity_graph(
         graph.add_edge(START, "sentiment_analyst")
 
     # Fan-in → Bull Opening (R1)
+    # 扇入:四名分析师全部完成后才进入多方开篇节点 —— 保证辩论开始时四份报告都已就绪。
     graph.add_edge("technical_analyst", "bull_opening")
     graph.add_edge("fundamental_analyst", "bull_opening")
     graph.add_edge("macro_analyst", "bull_opening")
@@ -616,15 +742,18 @@ def build_commodity_graph(
 
     # Debate: Bull(R1) → Bear(R1) → Bull(R2 rebuttal) → Moderator
     # Both sides get equal turns; Bull gets LAST WORD (fair rebuttal right)
+    # 辩论主线:双方各发言两轮对等,且多方拥有"最后发言权"(公平反驳权)。
     graph.add_edge("bull_opening", "bear_refute")
     graph.add_edge("bear_refute", "bull_rebuttal")
     graph.add_edge("bull_rebuttal", "debate_moderator")
 
     # Moderator → Synthesis → Scenario → END
+    # 裁决后顺序执行:综合研判 -> 三情景分析 -> 结束。
     graph.add_edge("debate_moderator", "synthesis")
     graph.add_edge("synthesis", "scenario_analysis")
     graph.add_edge("scenario_analysis", END)
 
+    # 编译图并返回;同时把 feedback_node 单独返回,供 main() 在分析结束后独立调用。
     return graph.compile(), feedback_node  # Return feedback_node for standalone use
 
 
@@ -634,41 +763,53 @@ def build_commodity_graph(
 
 
 def main():
-    # Parse arguments
+    """CLI 主入口:解析命令行参数 -> 加载配置/进化记忆 -> 构建并流式执行分析图 -> 保存报告。
+
+    【功能】把"参数解析、初始化、图构建、流式执行、结果落盘、交互循环"串起来,跑完整条分析管线。
+    【参数】无(命令行参数通过 sys.argv 读取)。
+    【返回】无(正常结束返回;分析失败会 sys.exit(1))。
+    【关键逻辑】参数解析用手写 while 循环(而非 argparse),支持 [品种] [日期] 两个位置参数,
+               以及 --no-feedback / --feedback-rounds N 两个开关;图用 app.stream(..., stream_mode="updates")
+               逐节点流式执行,实时打印每个节点的产出。
+    """
+    # Parse arguments —— 手动解析命令行参数(未用 argparse,以支持灵活的位置参数)
     # Support: commodity_demo.py [symbol] [date] [--no-feedback] [--feedback-rounds N]
     args = sys.argv[1:]
-    symbol = "RB"
-    trade_date = "2026-07-14"
-    enable_feedback = True
-    max_feedback_rounds = 5
+    symbol = "RB"  # 默认品种:螺纹钢
+    trade_date = "2026-07-14"  # 默认交易日期
+    enable_feedback = True  # 默认开启用户反馈(自我进化)
+    max_feedback_rounds = 5  # 反馈对话默认最多 5 轮
 
     i = 0
     while i < len(args):
         a = args[i]
         if a == "--no-feedback":
-            enable_feedback = False
+            enable_feedback = False  # 关闭用户反馈
         elif a == "--feedback-rounds" and i + 1 < len(args):
             i += 1
+            # contextlib.suppress 吞掉 ValueError:参数不是数字时静默保留默认值
             with contextlib.suppress(ValueError):
                 max_feedback_rounds = int(args[i])
         elif not a.startswith("--"):
+            # 位置参数:第一个非 "--" 开头的当作品种(默认 RB 时),第二个当作日期。
+            # "202" 前缀用于区分"日期"与"品种"(避免把日期误判为品种)。
             if symbol == "RB" and not a.startswith("202"):
                 symbol = a
             elif trade_date == "2026-07-14":
                 trade_date = a
         i += 1
 
-    symbol = symbol.upper()
+    symbol = symbol.upper()  # 品种代码统一转大写(如 rb -> RB)
 
     print_banner(symbol, trade_date)
 
-    # Show variety info
+    # Show variety info —— 打印品种基础信息(规格、保证金、交易时段等)
     print("[*] 品种信息:")
     info = get_variety_info(symbol)
     safe_print(info[:500])
     print()
 
-    # Configure the system
+    # Configure the system —— 拷贝默认配置并写入全局(供 tradingagents 各模块读取)
     config = DEFAULT_CONFIG.copy()
     set_config(config)
 
@@ -680,6 +821,7 @@ def main():
     print()
 
     # Load evolution memory for this variety (injected into analyst prompts)
+    # 加载该品种的历史进化记忆(过去用户反馈的总结),会注入分析师提示词,实现自我进化
     evolution_context = get_evolution_context(symbol)
     if evolution_context:
         print(f"[Evolution] Loaded past feedback for {symbol} ({len(evolution_context)} chars)")
@@ -687,13 +829,15 @@ def main():
         print(f"[Evolution] No prior feedback for {symbol} (first run)")
 
     # Build graph (returns compiled app + standalone feedback node)
+    # 构建并编译整张图;返回的可执行 app 用于流式运行,feedback_node 用于后续独立反馈会话
     app, feedback_node = build_commodity_graph(
         config,
         enable_feedback=enable_feedback,
         max_feedback_rounds=max_feedback_rounds,
     )
 
-    # Create initial state
+    # Create initial state —— 构造图的起始输入
+    # 起始消息:告诉 LLM 要分析哪个品种、哪个日期,并提示它调用工具采集数据
     initial_msg = HumanMessage(
         content=(
             f"Analyze commodity futures variety '{symbol}' as of {trade_date}. "
@@ -701,53 +845,58 @@ def main():
         )
     )
 
+    # 初始化共享状态:所有字段初始为空字符串/空字典,各图节点执行后会写入各自的字段
     initial_state = {
-        "messages": [initial_msg],
-        "company_of_interest": symbol,
-        "asset_type": "commodity_futures",
-        "trade_date": trade_date,
-        "past_context": evolution_context,  # Self-evolution memory injection
-        "technical_report": "",
-        "fundamental_report": "",
-        "macro_report": "",
-        "discussion_summary": "",
-        "user_feedback_summary": "",
-        "market_report": "",
-        "sentiment_report": "",
-        "news_report": "",
-        "fundamentals_report": "",
-        "investment_plan": "",
-        "final_trade_decision": "",
-        "scenario_analysis": "",
-        "debate_state": {
-            "bull_history": "",
-            "bear_history": "",
-            "bull_last": "",
-            "bear_last": "",
-            "round": 0,
+        "messages": [initial_msg],  # 对话历史(从起始消息开始累积)
+        "company_of_interest": symbol,  # 分析对象品种
+        "asset_type": "commodity_futures",  # 资产类型(区分股票/期货)
+        "trade_date": trade_date,  # 交易日期
+        "past_context": evolution_context,  # Self-evolution memory injection —— 注入进化记忆(自我进化关键)
+        "technical_report": "",  # 技术面分析师报告(会被 tech_node 写入)
+        "fundamental_report": "",  # 基本面分析师报告
+        "macro_report": "",  # 宏观/新闻分析师报告
+        "discussion_summary": "",  # 圆桌讨论/辩论裁决摘要
+        "user_feedback_summary": "",  # 用户反馈总结
+        "market_report": "",  # 【待确认】历史兼容字段,当前流程未直接写入
+        "sentiment_report": "",  # 情绪面分析师报告(仅 include_sentiment=True 时写入)
+        "news_report": "",  # 【待确认】历史兼容字段
+        "fundamentals_report": "",  # 【待确认】历史兼容字段
+        "investment_plan": "",  # 综合研判文本(最终推荐)
+        "final_trade_decision": "",  # 最终交易决策(与 investment_plan 同内容,兼容旧字段)
+        "scenario_analysis": "",  # 三情景分析文本
+        "debate_state": {  # 辩论共享状态(多空互读的数据载体)
+            "bull_history": "",  # 多方全部历史论点(拼接)
+            "bear_history": "",  # 空方全部历史论点(拼接)
+            "bull_last": "",  # 多方最新一轮论点
+            "bear_last": "",  # 空方最新一轮论点
+            "round": 0,  # 当前辩论轮次计数
         },
     }
 
     # -------------------------------------------------------------------
     # Stream execution — shows progress in real time
     # -------------------------------------------------------------------
+    # 提示用户:四名分析师即将并行启动
     print(SEP)
     print("  四分析师并行启动 (Parallel Analysts)")
     print(SEP)
 
-    final_state = {}
-    analysis_start = datetime.now()
+    final_state = {}  # 逐节点累积最终状态
+    analysis_start = datetime.now()  # 记录开始时间,用于统计耗时
 
     try:
+        # stream_mode="updates":每次产出"一个节点更新后的状态块",可实时打印各节点结果
         for chunk in app.stream(initial_state, stream_mode="updates"):
-            node_names = list(chunk.keys())
+            node_names = list(chunk.keys())  # 本块涉及的节点名(可能多个节点同时完成)
 
             for node_name in node_names:
                 node_data = chunk[node_name]
                 # Safety: skip None updates (can happen with certain LangGraph versions)
+                # 安全保护:某些 LangGraph 版本可能产出 None 更新,直接跳过
                 if node_data is None:
                     continue
 
+                # 每个节点完成时,按节点名实时打印其结果摘要(报告/辩论/裁决)
                 if node_name == "technical_analyst":
                     report = node_data.get("technical_report", "")
                     print_stage_header(f"[Technical] Analysis complete ({len(report):,} chars)")
@@ -769,6 +918,7 @@ def main():
                     print_report_summary(report)
 
                 elif node_name == "bull_opening":
+                    # 从辩论状态中取出多方最新论点长度
                     bull = node_data.get("debate_state", {}).get("bull_last", "")
                     print(f"  [Bull R1 Opening] ({len(bull):,} chars)")
 
@@ -783,14 +933,14 @@ def main():
                 elif node_name == "debate_moderator":
                     disc = node_data.get("discussion_summary", "")
                     print_stage_header(f"[Moderator] Debate summary ({len(disc):,} chars)")
-                    safe_print(disc)
+                    safe_print(disc)  # 完整打印主持人裁决(可能较长,用 safe_print)
 
                 elif node_name == "synthesis":
                     synthesis = node_data.get("investment_plan", "")
                     print_stage_header(
                         f"[Synthesis] Final recommendation ({len(synthesis):,} chars)"
                     )
-                    safe_print(synthesis)
+                    safe_print(synthesis)  # 完整打印综合研判结果
 
                 elif node_name == "scenario_analysis":
                     scenario = node_data.get("scenario_analysis", "")
@@ -799,32 +949,37 @@ def main():
                     )
                     safe_print(scenario)
 
-            # Accumulate state from each chunk
+            # Accumulate state from each chunk —— 把每个节点的更新合并进 final_state,
+            # 图跑完后 final_state 即包含所有节点的最终输出(供保存报告/预测入库使用)。
             for node_name in node_names:
                 final_state.update(chunk[node_name])
 
     except Exception as e:
+        # 图执行过程中任何异常:记录日志、打印堆栈,并以退出码 1 结束程序
         logger.error("Analysis failed: %s", e)
         import traceback
 
         traceback.print_exc()
         sys.exit(1)
 
-    elapsed = (datetime.now() - analysis_start).total_seconds()
+    elapsed = (datetime.now() - analysis_start).total_seconds()  # 计算总耗时(秒)
 
     # -------------------------------------------------------------------
     # Final output
     # -------------------------------------------------------------------
+    # 分析完成,打印总耗时
     print(f"\n{SEP_DOUBLE}")
     print(f"  ANALYSIS COMPLETE  |  Elapsed: {elapsed:.0f}s")
     print(f"{SEP_DOUBLE}")
 
-    # Save full report to file
+    # Save full report to file —— 把全部报告拼成一份 Markdown 保存到用户主目录下
+    # 的文件日志目录 .tradingagents/logs
     output_dir = os.path.join(os.path.expanduser("~"), ".tradingagents", "logs")
-    os.makedirs(output_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(output_dir, exist_ok=True)  # 目录不存在则创建
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # 时间戳用于文件名唯一化
     output_file = os.path.join(output_dir, f"commodity_{symbol}_{timestamp}.md")
 
+    # 汇总各阶段产物:报告顺序 = 分析流程顺序(分析师 -> 辩论 -> 研判 -> 情景)
     reports = [
         ("Technical Analysis", final_state.get("technical_report", "")),
         ("Fundamental Analysis", final_state.get("fundamental_report", "")),
@@ -835,6 +990,7 @@ def main():
         ("Scenario Analysis", final_state.get("scenario_analysis", "")),
     ]
 
+    # 以 UTF-8 写入报告文件(跳过为空的内容段)
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"# Commodity Futures Analysis: {symbol}\n\n")
         f.write(f"**Date**: {trade_date}\n")
@@ -850,6 +1006,8 @@ def main():
     # -------------------------------------------------------------------
     # Deferred outcome: store structured prediction for next-run backtest
     # -------------------------------------------------------------------
+    # 延迟结果入库:从综合研判文本中用正则解析出结构化评级(RATING/CONFIDENCE/SCORE),
+    # 存入"进化记忆",供下一次运行时回测参考(评分历史)。
     import re as _re
 
     syn_text = final_state.get("investment_plan", "")
@@ -859,22 +1017,24 @@ def main():
     if rating_match:
         try:
             store_prediction(
-                variety=symbol,
-                trade_date=trade_date,
-                rating=rating_match.group(1).strip(),
-                confidence=rating_match.group(2).strip(),
-                score=int(rating_match.group(3)),
-                key_levels=final_state.get("investment_plan", "")[:500],
+                variety=symbol,  # 品种
+                trade_date=trade_date,  # 交易日期
+                rating=rating_match.group(1).strip(),  # 评级(如"偏多")
+                confidence=rating_match.group(2).strip(),  # 置信度(如"中")
+                score=int(rating_match.group(3)),  # 分数(0-10)
+                key_levels=final_state.get("investment_plan", "")[:500],  # 关键价位摘录
             )
             print("\n[*] Prediction stored for deferred backtesting")
         except Exception:
-            pass
+            pass  # 入库失败静默忽略,不影响主流程
     # -------------------------------------------------------------------
     # Market Comparison Visualization
     # -------------------------------------------------------------------
+    # 生成"Agent 分析 vs 市场研报"的对比报告(纯展示辅助)
     try:
         print_comparison_report(final_state, symbol, trade_date, output_file)
     except UnicodeEncodeError:
+        # Windows GBK 终端下部分字符无法打印时,跳过对比报告(完整报告已在文件中)
         print("\n[!] Comparison report skipped (Windows GBK encoding conflict)")
         print("[*] The full report with correct encoding is saved to the output file.")
     # -------------------------------------------------------------------
@@ -882,6 +1042,7 @@ def main():
     # Analysis is done but we stay in interactive mode so the user can
     # discuss results, start a debate, or explicitly exit.
     # -------------------------------------------------------------------
+    # 进入交互循环:分析已完成,但保持程序运行,允许用户输入 /feedback /exit /help 等命令
     _run_interactive_demo(final_state, symbol, output_file, feedback_node, enable_feedback)
 
 
@@ -898,6 +1059,13 @@ def _run_interactive_demo(
     enable_feedback: bool = True,
 ):
     """Post-analysis interactive loop — user must explicitly /exit to leave."""
+    # 【功能】分析结束后的交互式命令行循环:持续读取用户输入,支持 /feedback(与 AI 讨论
+    #          分析结果,触发自我进化)、/exit(退出)、/help(帮助)等命令,直到用户明确退出。
+    # 【参数】final_state: 图执行后的完整最终状态;symbol: 品种;output_file: 报告保存路径;
+    #          feedback_node: 独立的用户反馈节点(来自 build_commodity_graph);enable_feedback: 是否允许反馈。
+    # 【返回】无。
+    # 【关键逻辑】死循环直到 /exit;feedback 会话通过 feedback_node(final_state) 运行,
+    #           结果写入 user_feedback_summary 并打印摘要。
     print(f"\n{SEP}")
     print("  Analysis complete! Interactive mode active.")
     print("  Commands: /feedback | /exit | /help")
@@ -905,27 +1073,30 @@ def _run_interactive_demo(
 
     while True:
         try:
-            cmd = input("> ").strip()
+            cmd = input("> ").strip()  # 读取用户输入
         except (EOFError, KeyboardInterrupt):
+            # 用户按 Ctrl+C 或输入流结束:优雅退出
             print("\nExiting...")
             break
 
         if not cmd:
-            continue
+            continue  # 空输入继续
 
-        cmd_lower = cmd.lower()
+        cmd_lower = cmd.lower()  # 统一转小写比较
 
         if cmd_lower in ("/exit", "/quit", "/q", "exit", "quit", "q"):
             print("Goodbye.")
-            break
+            break  # 退出命令
 
         elif cmd_lower in ("/help", "/h", "help"):
+            # 帮助命令:打印可用命令
             print("  /feedback — Discuss the analysis with the AI")
             print("  /exit     — Exit the program")
             print("  /help     — Show this help")
             print("  Ctrl+C    — Force quit")
 
         elif cmd_lower in ("/feedback", "/fb", "feedback"):
+            # 反馈命令:若反馈被禁用或没有反馈节点,提示并跳过
             if not enable_feedback or feedback_node is None:
                 print("  Feedback is disabled for this run.")
                 continue
@@ -934,6 +1105,7 @@ def _run_interactive_demo(
             print("  (Type /done to end debate, /skip to skip)")
             print(f"{SEP}\n")
             try:
+                # 运行反馈节点:它会与用户对话讨论分析,并把心得写回最终状态
                 feedback_result = feedback_node(final_state)
                 fb_summary = feedback_result.get("user_feedback_summary", "")
                 if fb_summary:
@@ -958,25 +1130,34 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     structured comparison framework. The market research columns are prompts
     to be filled in by searching recent institutional reports.
     """
+    # 【功能】生成"Agent 分析 vs 市场研报"的多维度对比报告,并保存一份对比文件。
+    #          从 Agent 各阶段报告里用正则解析出方向判断、权重、多空因素、关键价位等信息,
+    #          以表格形式与"市场研报"对照展示;市场研报列是占位提示,需人工/搜索填充。
+    # 【参数】final_state: 图执行后的最终状态字典;symbol: 品种;trade_date: 日期;
+    #          report_path: 主报告 .md 路径(对比文件会基于它生成 "_comparison.md")。
+    # 【返回】无。
+    # 【关键逻辑】大量使用正则从 LLM 生成的中文报告中抽取结构化字段(评级、权重、关键价位),
+    #           并做新旧格式兼容回退;对比列(market)多为提示文案而非真实研报数据。
     # --- Extract Agent's key metrics ---
+    # 取出各阶段报告文本
     technical = final_state.get("technical_report", "")
     fundamental = final_state.get("fundamental_report", "")
     macro = final_state.get("macro_report", "")
     sentiment = final_state.get("sentiment_report", "")
     synthesis = final_state.get("investment_plan", "")
 
-    # Extract structured RATING (v2.3.2 format)
+    # Extract structured RATING (v2.3.2 format) —— 解析综合研判中的结构化评级头
     rating_match = __import__("re").search(
         r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", synthesis
     )
     if rating_match:
         agent_direction = f"{rating_match.group(1).strip()} (信心={rating_match.group(2).strip()}, 分数={rating_match.group(3).strip()}/10)"
     else:
-        # Fallback to old format
+        # Fallback to old format —— 兼容旧格式:尝试匹配"方向判断："行
         direction_match = __import__("re").search(r"方向判断[：:]\s*(.+?)(?:\n|$)", synthesis)
         agent_direction = direction_match.group(1).strip() if direction_match else "N/A"
 
-    # Extract weights (v2.3.2: 4 dimensions)
+    # Extract weights (v2.3.2: 4 dimensions) —— 解析四维权重,如"技术面权重: X/10"
     weights = {}
     for dim, label in [
         ("技术面", "tech"),
@@ -988,17 +1169,19 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
         if m:
             weights[label] = int(m.group(1))
 
-    # Extract key factors from fundamental report
-    key_bullish = []
-    key_bearish = []
+    # Extract key factors from fundamental report —— 从基本面报告中抽取利多/利空关键词行
+    key_bullish = []  # 利多因素列表(最多 5 条)
+    key_bearish = []  # 利空因素列表(最多 5 条)
     for line in fundamental.split("\n"):
         line = line.strip()
+        # 命中"看多/利多/支撑/strong"等关键词的行判定为利多
         if (
             len(line) > 10
             and len(key_bullish) < 5
             and ("看多" in line or "利多" in line or "支撑" in line or "strong" in line.lower())
         ):
             key_bullish.append(line[:120])
+        # 命中"看空/利空/压力/疲弱/累库"等关键词的行判定为利空
         if (
             len(line) > 10
             and len(key_bearish) < 5
@@ -1012,13 +1195,13 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
         ):
             key_bearish.append(line[:120])
 
-    # Extract price range
+    # Extract price range —— 解析综合研判中"关键价位"段落的文本
     price_match = __import__("re").search(
         r"关键价位.*?\n(.*?)(?:\n\n|$)", synthesis, __import__("re").DOTALL
     )
     price_range = price_match.group(1).strip()[:500] if price_match else "N/A"
 
-    # Extract BIAS from each analyst (v2.3.2: structured header)
+    # Extract BIAS from each analyst (v2.3.2: structured header) —— 解析每位分析师的"方向倾向"
     biases = {}
     for label, report in [
         ("Technical", technical),
@@ -1026,17 +1209,18 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
         ("Macro", macro),
         ("Sentiment", sentiment),
     ]:
-        # Try new structured format first
+        # Try new structured format first —— 优先匹配新格式 "BIAS: X | CONFIDENCE: Y"
         m = __import__("re").search(r"BIAS:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)(?:\n|$)", report)
         if m:
             biases[label] = f"{m.group(1).strip()} (信心={m.group(2).strip()})"
         else:
-            # Fallback to old format
+            # Fallback to old format —— 兼容旧格式 "Bias: X"
             m2 = __import__("re").search(r"Bias[：:]*\s*(.+?)(?:\n|$)", report)
             if m2:
                 biases[label] = m2.group(1).strip()
 
     # --- Build comparison visualization ---
+    # 对比报告的可视化:分隔线(双线/单线)
     sep = "=" * 80
     sep2 = "-" * 80
 
@@ -1045,7 +1229,7 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     print(f"  {symbol} | {trade_date} | Generated by TradingAgents AI")
     print(f"{sep}")
 
-    # === Section 1: Direction Comparison ===
+    # === Section 1: Direction Comparison === 一、方向判断对比(Agent vs 市场研报)
     print(f"\n{'=' * 80}")
     print("  一、方向判断对比")
     print(f"{'=' * 80}")
@@ -1057,7 +1241,7 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     print(f"  {'宏观面Bias':<20} {biases.get('Macro', 'N/A'):<30} {'':<30}")
     print(f"  {'情绪面Bias':<20} {biases.get('Sentiment', 'N/A'):<30} {'':<30}")
 
-    # === Section 2: Weighting ===
+    # === Section 2: Weighting === 二、权重分配对比
     print(f"\n{'=' * 80}")
     print("  二、权重分配对比")
     print(f"{'=' * 80}")
@@ -1067,7 +1251,7 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     )
     print("  市场研报权重倾向：[通常基本面/供需 > 宏观/政策 > 技术/资金]")
 
-    # === Section 3: Key Factors ===
+    # === Section 3: Key Factors === 三、核心多空因素(展示利多/利空清单)
     print(f"\n{'=' * 80}")
     print("  三、核心多空因素")
     print(f"{'=' * 80}")
@@ -1082,7 +1266,7 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
         for i, f in enumerate(key_bearish[:3]):
             print(f"  {str(i + 1):<15} {f:<40} {'':<25}")
 
-    # === Section 4: Price Range ===
+    # === Section 4: Price Range === 四、关键价位(打印前 8 行)
     print(f"\n{'=' * 80}")
     print("  四、关键价位")
     print(f"{'=' * 80}")
@@ -1092,7 +1276,7 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
             print(f"    {line.strip()[:100]}")
     print("  市场研报价位：[搜索各机构研报填入]")
 
-    # === Section 5: Methodology Comparison ===
+    # === Section 5: Methodology Comparison === 五、方法论对比
     print(f"\n{'=' * 80}")
     print("  五、方法论对比")
     print(f"{'=' * 80}")
@@ -1111,18 +1295,18 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     for dim, agent_val, mkt_val in methods:
         print(f"  {dim:<20} {agent_val:<30} {mkt_val:<30}")
 
-    # === Section 6: Coverage ===
+    # === Section 6: Coverage === 六、数据覆盖度(用基本面报告长度粗略估算数据来源)
     print(f"\n{'=' * 80}")
     print("  六、数据覆盖度")
     print(f"{'=' * 80}")
     # Detect what data was available
-    has_external = len(fundamental) > 3000  # rough heuristic
+    has_external = len(fundamental) > 3000  # rough heuristic —— 粗略启发式:基本面报告超 3000 字视为有外源 JSON 数据
     coverage = "85% (含外源JSON)" if has_external else "45-60% (仅免费API)"
     print(f"  Agent 数据覆盖度: {coverage}")
     print("  市场研报覆盖率: 100% (含Mysteel/专有数据库)")
     print("  缺失数据类型: 表观消费量、矿山/钢厂周度开工率、蒙煤通关量等Mysteel级专有数据")
 
-    # === Section 7: Overall Score ===
+    # === Section 7: Overall Score === 七、综合评分(维度评分 + 说明)
     print(f"\n{'=' * 80}")
     print("  七、综合评分")
     print(f"{'=' * 80}")
@@ -1140,7 +1324,7 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     for dim, score, note in scores:
         print(f"  {dim:<20} {score:<15} {note:<45}")
 
-    # === Section 8: Key Gaps to Fill ===
+    # === Section 8: Key Gaps to Fill === 八、需补充的市场研报信息(给用户的搜索指引)
     print(f"\n{'=' * 80}")
     print("  八、需补充的市场研报信息")
     print(f"{'=' * 80}")
@@ -1158,6 +1342,7 @@ def print_comparison_report(final_state: dict, symbol: str, trade_date: str, rep
     print(f"{sep}")
 
     # --- Save comparison to file ---
+    # 把对比框架(方向/权重/关键价位/方法论)另存为 _comparison.md 文件
     comparison_path = report_path.replace(".md", "_comparison.md")
     try:
         with open(comparison_path, "w", encoding="utf-8") as f:

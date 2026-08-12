@@ -2,6 +2,51 @@
 
 Anomaly detection, bull-bear divergence, lead-lag analysis (Granger),
 cross-platform divergence, author profiling, event extraction, simulated trading.
+
+═══════════════════════════════════════════════════════════════════════
+中文导读(面向零基础学习者)
+═══════════════════════════════════════════════════════════════════════
+【本文件在项目中的角色】
+  这是 AgentSense 的【确定性回测引擎 / 信号计算核心】。它不调用任何 LLM,
+  全部基于本地 JSON 数据(情绪/趋势/价格)做纯规则、纯数值计算,因此同一份
+  数据永远得到同一份结果——可复现、可写单测、结果稳定。
+
+【本文件包含哪些部分】
+  1) 数据加载(_load_sentiment / _load_trends / _load_price 等)
+     从磁盘读取"情绪、趋势、价格"三类 JSON;含中文文件名别名
+     (_DATA_FILE_NAME_ALIASES,如 HC→热卷)与多级 fallback 顺序。
+  2) 情绪统计指标(P1 系列)
+     异常检测 detect_anomalies、牛熊分歧 compute_divergence、领先滞后分析
+     analyze_lead_lag、跨平台分歧 analyze_cross_platform、作者画像
+     get_top_authors、事件抽取 extract_events。
+  3) 20+ 个回测策略
+     · 旧策略:逆向情绪 run_contrarian_sentiment、自适应情绪 run_adaptive_sentiment、
+       Donchian 通道 run_donchian_strategy、时间序列动量 run_momentum_strategy、
+       动量+自适应 run_momentum_adaptive、情绪模拟交易 run_simulated_trading、
+       情绪追踪离场 run_trailing_strategy、多策略对比 run_strategy_comparison。
+     · 12 个技术策略(6 种指标 × 纯价格/情绪自适应两版):MA cross / MACD / RSI /
+       Bollinger / Turtle / ATR。它们共用一套指标序列构建器(_build_tech_series)、
+       统一信号判定(_tech_signal)、统一回测引擎(_run_technical_backtest),
+       由 TECH_KEYS 注册,12 个薄包装(run_ma_cross_strategy 等)暴露给上层。
+  4) 指标计算器 compute_advanced_metrics
+     夏普/索提诺/卡玛/年化收益/最大回撤/盈亏因子等;无风险利率取
+     中国 10 年期国债约 2.5%。
+  5) 风控包装 apply_risk_management
+     对任意策略产出的交易列表施加固定止损/移动止损/最长持仓限制。
+  6) "今日操作"信号 latest_trading_signal 及辅助
+     _build_forward_filled_sent_map(情绪前向填充)、_make_signal(信号 dict)。
+  7) 品种横向对比 compare_varieties / get_all_variety_scores。
+
+【与 web_app.py / web_template.html 如何协同】
+  · web_app.py 是 Flask 后端,文件顶部 `from signal_analyzer import ...` 导入本文件
+    的策略函数与 latest_trading_signal。每个"策略详情"路由先调用对应的 run_*_strategy
+    得到回测 dict,再调 latest_trading_signal 得到"今日操作"信号,两者拼进同一个
+    dict 返回给前端。
+  · web_template.html 是前端模板,读取返回 dict 中的 total_trades / win_rate /
+    total_pnl / advanced_metrics / curves / today_signal / today_signals 等字段,
+    渲染成策略卡片、归一化强度条(strength_pct)与"今日操作"提示。
+  · 因此本文件只负责"算数据、出结果",不负责 HTTP、渲染、数据库——职责单一,
+    可脱离 Web 单独 import 与测试。
 """
 
 import json
@@ -19,12 +64,25 @@ THINK2_TRENDS = resolve_think2_dir() / "output" / "trends"
 
 # 数据文件名的中文简称与 VARIETY_METADATA 全称不一致的品种(code -> 文件名用名)。
 # 目前仅 HC:meta name「热轧卷板」,数据文件「热卷_price.json」/「热卷_sentiment.json」。
+# 为什么需要它:不同数据流水线(思路2 采集 vs VARIETY_METADATA 元数据)命名口径
+# 不一致,别名表把"品种代码"硬映射到"磁盘文件名用名",保证按代码也能读到文件。
+# _load_trends / _load_price 在"直接代码名"和"meta 中文全称"都失败后,会回退到这里。
 _DATA_FILE_NAME_ALIASES = {"HC": "热卷"}
 
 # ── Helpers ────────────────────────────────────────────────────────
 
 
 def _load_sentiment(variety: str) -> dict | None:
+    """【功能】读取某品种的"情绪"JSON 文件(来自思路2 采集目录)。
+
+    【参数】variety:品种代码,如 "RB"(螺纹钢)/ "HC"(热卷)。
+
+    【返回】解析后的 dict;文件不存在时返回 None(调用方需自行兜底)。
+
+    【关键逻辑】路径固定为 SENTIMENT_DIR / "<代码>_sentiment.json",不做任何
+    别名/通配符 fallback——与 _load_trends 不同,这里只认"代码_文件名"。
+    情绪文件是各策略判断"市场看多/看空"的主要数据源。
+    """
     path = SENTIMENT_DIR / f"{variety}_sentiment.json"
     if not path.exists():
         return None
@@ -33,7 +91,19 @@ def _load_sentiment(variety: str) -> dict | None:
 
 
 def _load_trends(variety: str) -> dict | None:
-    """Load trends sentiment JSON, trying multiple naming conventions."""
+    """Load trends sentiment JSON, trying multiple naming conventions.
+
+    【功能】读取某品种的"趋势/情绪"JSON 文件(位于 THINK2_TRENDS 目录)。
+    【参数】variety:品种代码,如 "RB" / "HC"。
+    【返回】解析后的 dict;所有尝试都失败时返回 None。
+    【关键逻辑】按 4 级 fallback 顺序依次尝试,直到第一个成功:
+        ① 直接代码名  <code>_sentiment.json;
+        ② meta 中文全称(如 HC→热轧卷板),来自 VARIETY_METADATA;
+        ③ 显式别名表 _DATA_FILE_NAME_ALIASES(如 HC→热卷);
+        ④ 通配符 glob 扫描,只要文件名里含代码或代码是文件名前缀即命中。
+    为什么有这么多 fallback:同一品种在不同流水线里可能用"代码 / meta 中文全称 /
+    采集简称"三种名字存文件,多级回退保证按代码尽量找到数据。
+    """
     # Try direct code match first
     path = THINK2_TRENDS / f"{variety}_sentiment.json"
     if path.exists():
@@ -52,6 +122,7 @@ def _load_trends(variety: str) -> dict | None:
                 with open(path, encoding="utf-8") as f:
                     return json.load(f)
     except ImportError:
+        # 元数据包不可用时静默跳过第②级,继续走别名/glob
         pass
 
     # Try explicit alias (meta 全称与文件名简称不一致,如 HC「热轧卷板」/「热卷」)
@@ -72,7 +143,15 @@ def _load_trends(variety: str) -> dict | None:
 
 
 def _load_price(variety: str) -> dict | None:
-    """Load price JSON, trying multiple naming conventions."""
+    """Load price JSON, trying multiple naming conventions.
+
+    【功能】读取某品种的"价格/OHLCV"JSON 文件(位于 THINK2_TRENDS 目录)。
+    【参数】variety:品种代码,如 "RB" / "HC"。
+    【返回】解析后的 dict;所有尝试都失败时返回 None。
+    【关键逻辑】fallback 顺序与 _load_trends 完全同构,只是把文件名后缀从
+    "_sentiment" 换成 "_price",仍是 4 级:①代码名 → ②meta 中文全称 →
+    ③显式别名 → ④glob 扫描。三级(实际四级)兜底保证按代码尽量拿到行情。
+    """
     path = THINK2_TRENDS / f"{variety}_price.json"
     if path.exists():
         with open(path, encoding="utf-8") as f:
@@ -90,6 +169,7 @@ def _load_price(variety: str) -> dict | None:
                 with open(path, encoding="utf-8") as f:
                     return json.load(f)
     except ImportError:
+        # 元数据包不可用时静默跳过,继续走别名/glob
         pass
 
     # Try explicit alias (meta 全称与文件名简称不一致,如 HC「热轧卷板」/「热卷」)
@@ -110,6 +190,14 @@ def _load_price(variety: str) -> dict | None:
 
 
 def pearson_r(x, y):
+    """【功能】计算两组序列的皮尔逊相关系数(衡量线性相关程度与方向)。
+
+    【参数】x, y:等长的数值列表。
+    【返回】相关系数 ∈ [-1, 1];样本数 < 3 或任一方标准差为 0 时返回 0.0
+    (数据不足以判断相关性,干脆当作"无相关")。
+    【关键逻辑】corr = cov(x,y) / (std(x)*std(y))。zip(..., strict=True) 要求
+    两序列长度严格相等,长度不一时会抛 ValueError——调用方需保证对齐。
+    """
     n = len(x)
     if n < 3:
         return 0.0
@@ -132,6 +220,14 @@ def detect_anomalies(variety: str, threshold_std: float = 2.0) -> list[dict]:
     """Detect days where sentiment deviates significantly from its moving average.
 
     Uses: z-score = (score - MA_7d) / std_7d.  |z| > threshold = anomaly.
+
+    【功能】情绪异常检测:找出情绪评分相对其 7 日均值显著偏离的日子。
+    【参数】variety:品种代码;threshold_std:z-score 阈值,默认 2.0(±2 个标准差)。
+    【返回】异常日列表,每项含 date / score / ma_7d / z_score / direction / type;
+    数据缺失或不足 14 天时返回空列表。
+    【关键逻辑】z = (当日评分 - 前7日均值) / 前7日标准差。z>0 记 bullish(spike_up),
+    z<0 记 bearish(spike_down)。注意窗口用"前 7 天"(不含当日),避免把当日混进
+    自己的基准里。当 7 日波动为 0(异常平坦市)时跳过该日,避免除以 0。
     """
     sent_data = _load_sentiment(variety)
     if not sent_data:
@@ -177,6 +273,15 @@ def compute_divergence(variety: str) -> dict | None:
 
     Divergence = 1 - |bullish_ratio - bearish_ratio|
     High divergence (>0.7) = strong consensus; Low (<0.4) = split/uncertain.
+
+    【功能】计算牛熊分歧度:衡量市场情绪是多空一致还是严重分裂。
+    【参数】variety:品种代码。
+    【返回】含 variety / date / bullish_ratio / bearish_ratio / neutral_ratio /
+    divergence / label / signal / trend / total_notes 的 dict;无数据返回 None。
+    【关键逻辑】divergence = 1 - |看多占比 - 看空占比|。值越接近 1 表示越一致
+    (高度共识),越接近 0 表示越分裂(分歧)。label/signal 的中文档位是硬编码的
+    业务解释:如 divergence<0.3 → "极度分歧 / 趋势可能反转"。trend 是把最近 7 天
+    与更早 7 天的均分对比:改善(绝对值变小)/ diverging / steady。
     """
     sent_data = _load_sentiment(variety)
     if not sent_data:
@@ -249,6 +354,17 @@ def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
       - Price(t) → Sentiment(t+lag): does today's price move predict future mood?
 
     Returns correlations at each lag to determine which leads.
+
+    【功能】领先-滞后分析(简化版 Granger):判断是"情绪领先价格"还是"价格领先情绪"。
+    【参数】variety:品种代码;max_lag:考察的最大滞后天数,默认 5 天。
+    【返回】含 variety / data_points / sentiment_leads_price / price_leads_sentiment /
+    conclusion / max_sent_corr / max_price_corr 的 dict;情绪或价格数据不足时返回 None。
+    【关键逻辑】
+      - 先按"两个日期集合的交集"对齐情绪与价格(价格只取 close,换算成日收益率)。
+      - 对每个滞后 lag:算两组相关系数——情绪(t) vs 价格变化(t+lag),以及
+        价格变化(t) vs 情绪(t+lag)。
+      - 最后取"最大绝对相关"更大的一方为结论(sentiment_leads 或 price_leads)。
+      注意这是简化 Granger:只是同步/滞后相关,不控制其他变量,【待确认】不保证因果。
     """
     sent_data = _load_sentiment(variety)
     price_data = _load_price(variety)
@@ -262,6 +378,8 @@ def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
         return None
 
     # Build aligned arrays
+    # 先把价格按日期建成查表,再遍历情绪序列,只保留"情绪与价格都有的交易日"——
+    # 两列日期对齐后才能算相关,缺失日一律跳过。
     price_map = {str(p["date"])[:10]: float(p["close"]) for p in prices_raw}
     dates = []
     scores = []
@@ -329,6 +447,15 @@ def analyze_cross_platform(variety: str) -> dict | None:
     """Compare sentiment across platforms. Weibo=retail, Zhihu=informed, XHS=social.
 
     Cross-platform divergence may signal: retail bullish + informed bearish = danger.
+
+    【功能】跨平台情绪对比:比较微博(散户)/知乎(专业)/小红书(社交)等平台的
+    情绪得分差异。跨平台分歧可能预示风险,如"散户看多 + 专业社区看空"。
+    【参数】variety:品种代码。
+    【返回】含 variety / date / platforms / spread / conflict_level /
+    interpretation 的 dict;无趋势数据或数据不完整返回 None。
+    【关键逻辑】取最新一天各平台的 avg_score,极差 spread = max - min;按 spread
+    大小划分为 high(>0.5)/ moderate(>0.3)/ low 三档冲突等级;interpretation
+    交由 _interpret_cross_platform 生成中文解释。
     """
     trends = _load_trends(variety)
     if not trends:
@@ -375,6 +502,15 @@ def analyze_cross_platform(variety: str) -> dict | None:
 
 
 def _interpret_cross_platform(platforms: dict, conflict: str) -> str:
+    """【功能】把跨平台分歧的量化结果翻译成一句中文投资提示。
+
+    【参数】platforms:各平台 {platform: {avg_score, ...}};conflict:冲突等级
+    (high / moderate / low / insufficient)。
+    【返回】中文解释字符串。
+    【关键逻辑】业务规则:若"微博(散户)>0.1 且 知乎(专业)<-0.1"→ 散户狂热而专业
+    谨慎,提示"警惕情绪泡沫";反向则提示"抄底机会"。仅 high 档才会看平台间方向差,
+    其余档返回通用提示。
+    """
     if conflict == "insufficient":
         return "数据不足，无法判断"
     if conflict == "low":
@@ -398,7 +534,19 @@ def _interpret_cross_platform(platforms: dict, conflict: str) -> str:
 
 
 def get_top_authors(limit: int = 20) -> list[dict]:
-    """Get top authors ranked by influence (posts * engagement * log(fans))."""
+    """Get top authors ranked by influence (posts * engagement * log(fans)).
+
+    【功能】作者影响力排行:从作者索引文件读取全部作者并按"影响力"降序取前 limit 名。
+    【参数】limit:返回前多少名,默认 20。
+    【返回】作者 dict 列表,每项含 name / uid / posts / fans / avg_engagement / influence;
+    索引文件不存在返回空列表。
+    【关键逻辑】影响力公式是经验加权:
+      - 有粉丝:influence = log10(粉丝数+1)*0.70 + sqrt(发帖数)*0.10 + log(互动+1)*0.20。
+        log10 使 1千→3、1万→4、10万→5、100万→6,把"数量级"变成可加的量纲;
+        sqrt 对发帖数做开方压平(抑制刷帖);互动取 log 同理。
+      - 无粉丝但有发帖:退化为 sqrt(发帖数)*0.5。
+      排序用 -influence(降序),最后截断到 limit 条。
+    """
     index_path = THINK2_TRENDS / "_author_index.json"
     if not index_path.exists():
         return []
@@ -446,6 +594,8 @@ def get_top_authors(limit: int = 20) -> list[dict]:
 # P1-5: Event Extraction (keyword-based)
 # ═══════════════════════════════════════════════════════════════════
 
+# 事件类别 → 触发关键词。extract_events 用"标题/正文里是否出现关键词"做规则匹配,
+# 命中即归入对应类别。这是纯关键词硬匹配,不涉及语义理解。
 EVENT_KEYWORDS = {
     "停产/检修": ["停产", "检修", "停工", "限产", "减产"],
     "政策/监管": ["发改委", "工信部", "证监会", "交易所", "保证金", "手续费", "限仓"],
@@ -459,7 +609,17 @@ EVENT_KEYWORDS = {
 
 
 def extract_events(variety: str = "", days: int = 7) -> list[dict]:
-    """Extract key events from recent posts using keyword matching."""
+    """Extract key events from recent posts using keyword matching.
+
+    【功能】从最近的社交媒体帖子里抽取"关键事件",按 EVENT_KEYWORDS 关键词归类。
+    【参数】variety:若指定则只保留涉及该品种的帖子;days:只看最近 N 天,默认 7 天。
+    【返回】去重后的事件 dict 列表(最多 50 条),每项含 date / platform / title /
+    categories / url / varieties / sentiment / sentiment_score。
+    【关键逻辑】数据源是批量 JSONL(batch_*.jsonl)而非数据库——注释写明"数据库可能
+    未填充"。流程:①按 note_id 去重并只留最近 days 天、匹配 variety 的帖子(上限 500);
+    ②标题+正文拼起来做关键词匹配,可命中多个类别;③varieties 字段可能是 JSON 字符串
+    或列表,统一解析成名字;④按标题前 50 字去重(近似去重),截断到 50 条。
+    """
     # Read directly from JSONL batch files (database may not be populated)
     import glob as _glob
 
@@ -571,6 +731,18 @@ def run_contrarian_sentiment(
 
     This exploits the finding that sentiment is a CONTRARIAN indicator (55.9% accurate
     when opposing the trend vs 50.0% when following it).
+
+    【功能】逆向情绪策略:当情绪与价格趋势背离时,逆着情绪方向交易。
+    【参数】variety:品种代码,空串表示遍历全部有数据品种;horizon:持仓天数(固定
+    周期离场),默认 3;trend_window:N 日趋势窗口,默认 5;start_date/end_date:
+    回测日期窗(过滤用,默认从 2025-01-01 开始,空串表示不限)。
+    【返回】dict,含 strategy / contrarian / consensus / dates / curves / variety /
+    horizon / trend_window;无信号时返回 {"total_trades": 0, "message": "No signals"}。
+    【关键逻辑】同时跑两条路径做对比:
+      - contrarian(逆情绪):跌+看多→做多(抄底),涨+看空→做空(逃顶)。
+      - consensus/momentum(情绪共识,对照组):逻辑正好相反,顺势而为。
+      两条路径共用同一份价格/情绪数据与同一套持仓状态机(pos: 0/1/-1),
+      因此输出天然可比,用于验证"逆向"相对"顺向"是否真的更优。
     """
     all_contrarian = []
     all_momentum = []  # Comparison: follow-the-trend (same signals, reversed logic)
@@ -587,6 +759,9 @@ def run_contrarian_sentiment(
             continue
 
         # Build forward-filled sentiment
+        # 情绪日期与价格日期不一定每天对齐,这里把情绪"向前填充"(forward-fill):
+        # 对每个价格日期 d,取"情绪日期 <= d 的最新一条"作为该日的情绪值。这模拟了
+        # 当日开盘前能看到的"最新已知情绪",而不是未来数据——避免未来函数。
         sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))
         raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}
         sd_sorted = sorted(raw_sent.keys())
@@ -604,6 +779,7 @@ def run_contrarian_sentiment(
         n = len(closes)
 
         # Positions: 0=flat, 1=long, -1=short. Tracks last entry for both strategies
+        # 0=空仓, 1=持多, -1=持空。pos_c 是逆向路径,pos_m 是顺向(共识)路径。
         pos_c = 0
         entry_px_c = 0
         entry_d_c = ""  # contrarian
@@ -624,6 +800,7 @@ def run_contrarian_sentiment(
             )
 
             # --- Contrarian Entry ---
+            # 趋势阈值 ±1%(0.01)、情绪阈值 ±0.1:数值太小当噪音、太大错过信号。
             # Price down + sentiment up → potential bottom → LONG
             c_long = trend < -0.01 and ss > 0.1
             # Price up + sentiment down → potential top → SHORT
@@ -636,9 +813,11 @@ def run_contrarian_sentiment(
             m_long = trend > 0.01 and ss > 0.1
 
             # Exit conditions (both strategies use fixed horizon)
+            # 固定周期离场:入场后第 horizon 天收盘离场;越界则用最后一根 bar。
             exit_idx = min(i + horizon, n - 1)
 
             # Process contrarian
+            # 用 dates.index(entry_d_c) 反查入场下标来判断是否已持仓 horizon 天。
             if pos_c != 0 and entry_d_c and i >= dates.index(entry_d_c) + horizon:
                 exit_px = closes[exit_idx]
                 if pos_c == 1:
@@ -725,6 +904,7 @@ def run_contrarian_sentiment(
         m_curve.append(round(cum_m, 2))
 
     def wr(ts):
+        """胜率:win 笔数 / 总笔数;空列表返回 0。"""
         return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
 
     # Compute advanced metrics per sub-strategy
@@ -790,6 +970,20 @@ def run_adaptive_sentiment(
       - Trend < 1% → CONTRARIAN (sentiment as reversal signal in ranges)
       - Sentiment DISAGREES with trend → CONTRARIAN (divergence = reversal)
       - Otherwise → MOMENTUM (default follow)
+
+    【功能】自适应情绪策略:按"趋势强弱 + 情绪是否同向"动态选择顺势(动量)或
+    逆向(逆向情绪)交易,并统计每次选择的决策类别。
+    【参数】variety / horizon / trend_window / start_date / end_date:含义与
+    run_contrarian_sentiment 一致(horizon=持仓天数,trend_window=趋势窗口)。
+    【返回】dict,含 strategy / adaptive / consensus / decisions / dates / curves /
+    variety / horizon / trend_window;无信号时返回 {"total_trades": 0, ...}。
+    【关键逻辑】决策树(经验验证,代码注释里写了准确率):
+      1. 涨+看空(Type A)→ 高置信逆向做空(60% 准确率);
+      2. 跌+看多(Type B)→ 若强跌(>3%)视为"接飞刀"跳过,否则视为抄底做多;
+      3. 强趋势(>2%)→ 顺势(情绪跟着价格走);
+      4. 弱趋势(<1%)→ 逆向(震荡市里情绪当反转信号);
+      5. 其余 → 默认顺势。
+      与 contrarian 一样,同时维护 adaptive 与纯 momentum 基线两条路径作对比。
     """
     all_adaptive = []
     all_momentum = []  # baseline
@@ -877,6 +1071,10 @@ def run_adaptive_sentiment(
                 # Default: MOMENTUM
                 use_contrarian = False
 
+            # 决策计数:注意第一个分支是 `diverge_bearish or (diverge_bullish and
+            # use_contrarian)`(and 优先级高于 or),即"看空背离"或"被采纳的看多背离"
+            # 计入 contrarian;未被采纳的看多背离计入 skipped;其余按 use_contrarian
+            # 决定计 contrarian 还是 momentum。计数仅用于回传展示,不改变交易行为。
             if diverge_bearish or diverge_bullish and use_contrarian:
                 decisions["contrarian"] += 1
             elif diverge_bullish:
@@ -982,6 +1180,7 @@ def run_adaptive_sentiment(
         m_curve.append(round(cum_m, 2))
 
     def wr(ts):
+        """胜率:win 笔数 / 总笔数;空列表返回 0。"""
         return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
 
     # Compute advanced metrics per sub-strategy
@@ -1038,6 +1237,20 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01", end_da
     """Donchian Channel Breakout — Turtle Trading classic.
     Entry: price breaks above N-day high → LONG; breaks below N-day low → SHORT
     Exit: price crosses back below/below the opposite side
+
+    【功能】唐奇安通道突破(海龟交易经典):价格突破 N 日最高做多,跌破 N 日最低做空;
+    反向突破/跌穿另一侧通道时离场。
+    【参数】variety:品种,空串取前 10 个有数据品种;period:通道天数 N,默认 20;
+    start_date / end_date:回测日期窗。
+    【返回】dict,含 strategy / total_trades / win_count / loss_count / win_rate /
+    avg_pnl_pct / total_pnl / sharpe_like / max_drawdown_pct / long_trades /
+    short_trades / period / advanced_metrics / recent_trades;无交易返回 {"total_trades": 0}。
+    【关键逻辑】
+      - 入场:收盘价 > 前 period 日最高(hh,不含当日)做多;收盘价 < 前 period 日
+        最低(ll)做空。hh/ll 用 "i-period:i" 切片,即"不含当日"的滚动窗口。
+      - 离场:持多时若收盘跌破 ll(反向突破)→ 平多;持空时若收盘涨破 hh → 平空。
+      - 末尾强平:日期窗内最后一根 bar(last_i)仍持仓时,按该 bar 收盘价强平,避免
+        把回测窗口之外的数据算进结果。
     """
     all_trades = []
     vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
@@ -1183,7 +1396,14 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01", end_da
 
 
 def _sma(vals: list[float], period: int) -> list[float | None]:
-    """Simple moving average; None before the first `period` values."""
+    """Simple moving average; None before the first `period` values.
+
+    【功能】简单移动平均。
+    【参数】vals:价格序列;period:窗口天数。
+    【返回】与 vals 等长的列表,前 period-1 个为 None(数据不足),其余为均值。
+    【关键逻辑】用"滑动和"实现 O(n):每步加新值、减掉 period 步之前的值,
+    除以 period 即窗口均值,不必每次重算整个窗口。
+    """
     out: list[float | None] = [None] * len(vals)
     run = 0.0
     for i, v in enumerate(vals):
@@ -1196,7 +1416,14 @@ def _sma(vals: list[float], period: int) -> list[float | None]:
 
 
 def _ema(vals: list[float], period: int) -> list[float | None]:
-    """Exponential moving average, seeded with the SMA of the first `period` values."""
+    """Exponential moving average, seeded with the SMA of the first `period` values.
+
+    【功能】指数移动平均,对近期价格赋予更高权重。
+    【参数】vals:价格序列;period:窗口天数。
+    【返回】与 vals 等长的列表;前 period-1 个为 None(seed 之前无效)。
+    【关键逻辑】平滑系数 k = 2/(period+1),EMA 递推:ema = v*k + 上一EMA*(1-k)。
+    初始值用前 period 个的 SMA 作为 seed,避免从 0 起步的偏置。
+    """
     out: list[float | None] = [None] * len(vals)
     if len(vals) < period:
         return out
@@ -1210,7 +1437,15 @@ def _ema(vals: list[float], period: int) -> list[float | None]:
 
 
 def _rsi(closes: list[float], period: int = 14) -> list[float | None]:
-    """Wilder RSI; None before the seed window."""
+    """Wilder RSI; None before the seed window.
+
+    【功能】相对强弱指标 RSI(Wilder 平滑版本),衡量近期涨跌动能。
+    【参数】closes:收盘价序列;period:窗口,默认 14。
+    【返回】与 closes 等长的列表;seed 之前为 None。
+    【关键逻辑】RSI = 100 - 100/(1 + 平均涨幅/平均跌幅),范围 [0,100]。
+    涨跌幅的平均用 Wilder 递推(avg = (前值*(period-1) + 当日值)/period),
+    等效于变相 EMA。avg_loss 为 0(纯上涨)时 RSI=100。
+    """
     out: list[float | None] = [None] * len(closes)
     if len(closes) < period + 1:
         return out
@@ -1232,7 +1467,17 @@ def _rsi(closes: list[float], period: int = 14) -> list[float | None]:
 
 
 def _macd(closes, fast=12, slow=26, signal=9):
-    """MACD 三序列 (dif, dea, hist);hist 从 index slow+signal-2 起有效。"""
+    """MACD 三序列 (dif, dea, hist);hist 从 index slow+signal-2 起有效。
+
+    【功能】MACD 指标,输出三条序列。
+    【参数】closes:收盘价;fast/slow/signal:快慢 EMA 与信号线周期,默认 12/26/9。
+    【返回】(dif, dea, hist) 三个与 closes 等长的列表:
+      - dif = EMA(fast) - EMA(slow),快慢线差值;
+      - dea = dif 的 signal 期 EMA(信号线);
+      - hist = dif - dea(柱状体,金叉/死叉看它是否穿越 0)。
+    【关键逻辑】dif 只在两条 EMA 都有效后才有值;为了保证 dea 从对应位置起就连续,
+    先把有效的 dif 抽成"密集段"做 EMA,再在开头补回同样数量的 None,与 closes 对齐。
+    """
     ema_fast = _ema(closes, fast)
     ema_slow = _ema(closes, slow)
     dif = [None] * len(closes)
@@ -1253,7 +1498,14 @@ def _macd(closes, fast=12, slow=26, signal=9):
 
 
 def _bollinger(closes, period=20, num_std=2.0):
-    """布林带三序列 (mid, upper, lower)。"""
+    """布林带三序列 (mid, upper, lower)。
+
+    【功能】布林带指标。
+    【参数】closes:收盘价;period:中轨 SMA 周期,默认 20;num_std:带宽(标准差倍数)。
+    【返回】(mid, upper, lower) 三个与 closes 等长的列表;period-1 之前为 None。
+    【关键逻辑】mid = 20 日 SMA;上/下轨 = mid ± num_std * 窗口标准差(总体标准差,
+    分母 period)。价格触上轨视为超买、触下轨视为超卖,突破轨线则是趋势信号。
+    """
     mid = _sma(closes, period)
     upper = [None] * len(closes)
     lower = [None] * len(closes)
@@ -1267,7 +1519,15 @@ def _bollinger(closes, period=20, num_std=2.0):
 
 
 def _atr(highs, lows, closes, period=14):
-    """Average True Range (Wilder smoothing); None before the seed bar."""
+    """Average True Range (Wilder smoothing); None before the seed bar.
+
+    【功能】平均真实波幅 ATR:衡量市场波动幅度,常被用作止损距离。
+    【参数】highs / lows / closes:最高/最低/收盘价;period:窗口,默认 14。
+    【返回】与 closes 等长的列表;seed 之前为 None。
+    【关键逻辑】真实波幅 TR = max(当日振幅, |当日高-昨收|, |当日低-昨收|),
+    取三者最大,覆盖跳空缺口带来的波动。ATR 用 Wilder 平滑(递推加权平均),
+    seed 为前 period 个 TR 的均值。海龟策略用它计算 ATR 止损距离。
+    """
     out = [None] * len(closes)
     if len(closes) < period + 1:
         return out
@@ -1284,12 +1544,23 @@ def _atr(highs, lows, closes, period=14):
 
 
 def _build_tech_series(indicator, closes, highs, lows, P):
-    """预计算指标序列;返回 dict(含 warmup=循环起始索引)。"""
+    """预计算指标序列;返回 dict(含 warmup=循环起始索引)。
+
+    【功能】一次性预计算某个技术指标所需的全部序列,供回测/今日信号共用。
+    【参数】indicator:ma_cross / macd / rsi / bollinger / turtle / atr;
+    closes/highs/lows:行情序列;P:策略参数字典(键见各分支)。
+    【返回】dict T,内含各指标序列 + warmup(循环可以从第几根 K 线开始,之前的
+    数据不足)。warmup 由指标自己定义,回测和今日信号据此跳过数据不足的头部。
+    【关键逻辑】为什么"先建序列再判定":指标计算开销大且重复,预计算一次后,
+    回测循环里每根 K 线只做 O(1) 的查表/判定,避免每根都重算整个序列。
+    turtle 特殊:入场用 e 日通道、离场用 x 日通道(海龟原版是 20 入 10 出),
+    并额外算 ATR 供止损。
+    """
     T = {}
     if indicator == "ma_cross":
         T["ma_fast"] = _sma(closes, P["fast"])
         T["ma_slow"] = _sma(closes, P["slow"])
-        T["warmup"] = P["slow"]
+        T["warmup"] = P["slow"]  # 慢线起算点 = 可用的最早位置
     elif indicator == "macd":
         _, _, T["macd_hist"] = _macd(closes, P["macd_fast"], P["macd_slow"], P["macd_signal"])
         T["warmup"] = P["macd_slow"] + P["macd_signal"]
@@ -1303,6 +1574,7 @@ def _build_tech_series(indicator, closes, highs, lows, P):
             )
             T["warmup"] = P["bb_period"]
         else:
+            # ATR 通道 = 肯特纳通道变体:mid = 周期 SMA,上下轨 = mid ± mult*ATR。
             T["bb_mid"] = _sma(closes, P["keltner_period"])
             T["atr"] = _atr(highs, lows, closes, P["keltner_period"])
             T["bb_upper"] = [None] * len(closes)
@@ -1321,9 +1593,11 @@ def _build_tech_series(indicator, closes, highs, lows, P):
         T["turtle_ll"] = [None] * len(closes)
         T["turtle_exit_hh"] = [None] * len(closes)
         T["turtle_exit_ll"] = [None] * len(closes)
+        # 入场通道:前 e 日(不含当日)最高/最低
         for i in range(e, len(closes)):
             T["turtle_hh"][i] = max(highs[i - e : i])
             T["turtle_ll"][i] = min(lows[i - e : i])
+        # 离场通道:前 x 日最高/最低,通常比入场通道窄 → 更快触发反向离场
         for i in range(x, len(closes)):
             T["turtle_exit_hh"][i] = max(highs[i - x : i])
             T["turtle_exit_ll"][i] = min(lows[i - x : i])
@@ -1334,18 +1608,34 @@ def _build_tech_series(indicator, closes, highs, lows, P):
 
 def _tech_signal(indicator, i, closes, highs, lows, T, P):
     """统一信号判定:返回 (enter_long, enter_short, exit_long, exit_short,
-    strength, scale, reason)。"""
+    strength, scale, reason)。
+
+    【功能】对第 i 根 K 线做统一的技术信号判定,返回 4 个布尔 + 强度 + 标尺 + 原因。
+    【参数】indicator:指标名;i:当前下标;closes/highs/lows:行情;T:指标序列 dict;
+    P:策略参数。
+    【返回】元组 (enter_long, enter_short, exit_long, exit_short, strength, scale, reason):
+      - enter_*:是否触发"新开多/新开空";
+      - exit_*:是否触发"平多/平空"(通常与反向入场条件重合,即"对向离场");
+      - strength:信号强度(量纲随指标不同,如均线间隙比、RSI 偏离度、突破幅度);
+      - scale:该指标 strength 的归一化标尺(供 _make_signal 把 strength 折算成
+        [0,1] 的 strength_pct);
+      - reason:中文信号原因,用于展示/日志。
+    【关键逻辑】每个指标内部先用"数据不足 → 全 False + reason"做保护;随后按各指标
+    的规则给出信号。数值口径(0.05 / 0.02 / 1.0 等 scale)是经验取值,含义见各分支。
+    """
     if indicator == "ma_cross":
         f, s = T["ma_fast"][i], T["ma_slow"][i]
         f1, s1 = T["ma_fast"][i - 1], T["ma_slow"][i - 1]
         if None in (f, s, f1, s1):
             return False, False, False, False, 0.0, 0.05, "均线数据不足"
-        gap = (f - s) / closes[i]
+        gap = (f - s) / closes[i]  # 快慢线间距相对价格,作强度
+        # 金叉(f>s 且昨日未金叉)开多;死叉开空;快线跌破慢线平多;反之平空
         return f > s and f1 <= s1, f < s and f1 >= s1, f < s, f > s, abs(gap), 0.05, "双均线交叉"
     if indicator == "macd":
         h, h1 = T["macd_hist"][i], T["macd_hist"][i - 1]
         if h is None or h1 is None:
             return False, False, False, False, 0.0, 0.02, "MACD 数据不足"
+        # 金叉:hist 从 <=0 上穿 0 开多;死叉开空;hist<0 平多、hist>0 平空
         return (
             h > 0 and h1 <= 0,
             h < 0 and h1 >= 0,
@@ -1359,12 +1649,13 @@ def _tech_signal(indicator, i, closes, highs, lows, T, P):
         r = T["rsi"][i]
         if r is None:
             return False, False, False, False, 0.0, 1.0, "RSI 数据不足"
+        # 均值回归:超卖(<oversold)开多、超买(>overbought)开空;回归 50 线平仓
         return (
             r < P["rsi_oversold"],
             r > P["rsi_overbought"],
             r > 50,
             r < 50,
-            abs(r - 50) / 50.0,
+            abs(r - 50) / 50.0,  # RSI 离 50 越远强度越大,50 为分界
             1.0,
             "RSI 超买超卖",
         )
@@ -1373,7 +1664,8 @@ def _tech_signal(indicator, i, closes, highs, lows, T, P):
         if None in (m, u, lo):
             return False, False, False, False, 0.0, 1.0, "布林带数据不足"
         c = closes[i]
-        z = abs(c - m) / (u - m) if u > m else 1.0
+        z = abs(c - m) / (u - m) if u > m else 1.0  # 价格在带内的归一化位置,作强度
+        # 突破上轨开多、跌破下轨开空;回归中轨(mid)平仓
         return c > u, c < lo, c < m, c > m, z, 1.0, "布林带突破"
     if indicator == "turtle":
         hh, ll = T["turtle_hh"][i], T["turtle_ll"][i]
@@ -1381,7 +1673,9 @@ def _tech_signal(indicator, i, closes, highs, lows, T, P):
         if None in (hh, ll, ex_hh, ex_ll):
             return False, False, False, False, 0.0, 0.05, "海龟通道数据不足"
         c = closes[i]
+        # br = 突破超过通道的幅度(相对通道边界),突破越多强度越大
         br = (c - hh) / hh if c > hh else (ll - c) / ll if c < ll else 0.0
+        # 入场:突破 e 日通道;离场:反向跌破 x 日离场通道(比入场通道窄,更快出场)
         return c > hh, c < ll, c < ex_ll, c > ex_hh, abs(br), 0.05, "海龟突破"
     if indicator == "atr":
         m, u, lo = T["bb_mid"][i], T["bb_upper"][i], T["bb_lower"][i]
@@ -1389,6 +1683,7 @@ def _tech_signal(indicator, i, closes, highs, lows, T, P):
             return False, False, False, False, 0.0, 0.05, "ATR 通道数据不足"
         c = closes[i]
         br = (c - u) / c if c > u else (lo - c) / c if c < lo else 0.0
+        # 与布林带同构:突破 ATR 通道上/下轨入场,回归 mid 离场
         return c > u, c < lo, c < m, c > m, abs(br), 0.05, "ATR 通道突破"
     return False, False, False, False, 0.0, 1.0, "未知指标"
 
@@ -1404,6 +1699,7 @@ def _adapt_sentiment_signal(tsig, tech_strength, tech_scale, trend, ss):
     返回 (action, strength, scale, reason)。
     """
     trend_pct = abs(trend) * 100
+    # ── 无技术信号:弱趋势(<1%)+ 极端情绪 → 用情绪做逆向入场(镜像自适应④)──
     if tsig == 0:
         if trend_pct < 1 and ss < -0.1:
             return "buy", abs(ss), 1.0, "无技术信号 + 弱趋势看空 → 逆向买入"
@@ -1411,14 +1707,18 @@ def _adapt_sentiment_signal(tsig, tech_strength, tech_scale, trend, ss):
             return "sell", abs(ss), 1.0, "无技术信号 + 弱趋势看多 → 逆向卖出"
         return "hold", abs(ss), 1.0, "无技术信号"
     tech_dir = "buy" if tsig == 1 else "sell"
+    # ── 技术信号与情绪同向(|ss|>0.1)→ 顺势确认;强度取两者中较大者 ──
     if (tsig == 1 and ss > 0.1) or (tsig == -1 and ss < -0.1):
         if tech_strength >= abs(ss):
             return tech_dir, tech_strength, tech_scale, "技术信号 + 情绪同向确认"
         return tech_dir, abs(ss), 1.0, "技术信号 + 情绪同向确认"
+    # ── 技术信号与情绪分歧(背离)──
     if (tsig == 1 and ss < -0.1) or (tsig == -1 and ss > 0.1):
         if trend_pct > 3:
+            # 强趋势下的分歧:动量市,信技术
             return tech_dir, tech_strength, tech_scale, f"强趋势 {trend_pct:.1f}% 分歧 → 跟随技术"
         if trend_pct < 1:
+            # 弱趋势下的分歧:逆向市,逆情绪交易
             return (
                 ("buy" if tsig == -1 else "sell"),
                 abs(ss),
@@ -1426,6 +1726,7 @@ def _adapt_sentiment_signal(tsig, tech_strength, tech_scale, trend, ss):
                 f"弱趋势 {trend_pct:.1f}% 分歧 → 逆向情绪",
             )
         return tech_dir, tech_strength, tech_scale, f"中等趋势 {trend_pct:.1f}% 分歧 → 跟随技术"
+    # 情绪中性 → 完全跟随技术信号
     return tech_dir, tech_strength, tech_scale, "技术信号(情绪中性)"
 
 
@@ -1438,6 +1739,26 @@ def _run_technical_backtest(
     sent_mode=True 时入场信号经 _adapt_sentiment_signal 用情绪自适应调整
     (离场保持纯技术);False 为纯价格版本。参数经 P 传入(trend_window 供情绪版)。
     返回与 donchian 相同的单策略 dict 形状。
+
+    【功能】12 个技术策略共用的统一回测引擎。
+    【参数】variety:品种(空串取前 10 个有数据品种);indicator:指标名;
+    sent_mode:是否启用情绪自适应入场;start_date/end_date:回测日期窗;
+    P:各指标参数(fast/slow/macd_*/rsi_*/bb_*/turtle_*/atr_*/keltner_*/trend_window)。
+    【返回】单策略 dict:strategy / total_trades / win_count / loss_count / win_rate /
+    avg_pnl_pct / total_pnl / sharpe_like / max_drawdown_pct / long_trades /
+    short_trades / advanced_metrics / recent_trades;并把传入的参数原样回显
+    (result[k] = P[k],方便前端展示用了哪些参数);无交易返回 {"total_trades": 0}。
+    【关键逻辑】
+      - 多空仓位循环:pos ∈ {0, 1, -1}(0 空仓 / 1 持多 / -1 持空),每根 K 线
+        "先离场、后入场":先检查平仓条件,再在空仓状态下开新仓,避免同根 K 线
+        先平后开导致的重复信号。
+      - 对向离场:多数指标"平多条件"就是反向入场条件(如 MA 死叉平多),也就是
+        _tech_signal 返回的 exit_long/exit_short。
+      - turtle 额外叠加 ATR 止损:持仓时若价格跌破 entry - atr_mult*ATR(多)/涨破
+        entry + atr_mult*ATR(空),强制平仓(覆盖 _tech_signal 的普通离场)。
+      - sent_mode 时,用情绪自适应函数改写 el/es(只改入场,离场 xl/xs 不变)。
+      - 末尾强平:日期窗内最后一根 bar(last_i)仍持仓则按该 bar 收盘强平,保证回测
+        只用到窗口内数据。
     """
     all_trades = []
     vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
@@ -1470,6 +1791,7 @@ def _run_technical_backtest(
             last_i = i
             el, es, xl, xs, tstr, tscale, _ = _tech_signal(indicator, i, closes, highs, lows, T, P)
             if indicator == "turtle" and pos != 0 and entry_px:
+                # 海龟 ATR 止损:距入场价超过 atr_mult*ATR 即离场,价格越烈越早止损
                 atr = T["atr"][i]
                 if atr and atr > 0:
                     stop = P["atr_mult"] * atr
@@ -1484,11 +1806,13 @@ def _run_technical_backtest(
                     if i >= tw and closes[i - tw]
                     else 0.0
                 )
+                # 用情绪自适应改写入场信号;action 返回 buy/sell/hold
                 action, _, _, _ = _adapt_sentiment_signal(
                     1 if el else (-1 if es else 0), tstr, tscale, trend, sent_map.get(d, 0.0)
                 )
                 el, es = action == "buy", action == "sell"
 
+            # ── 先离场:多单看 xl、空单看 xs,按对向信号平仓 ──
             if pos == 1 and xl and entry_px:
                 pnl = (closes[i] - entry_px) / entry_px * 100
                 all_trades.append(_trade(var, entry_d, d, "long", pnl, indicator, sent_mode))
@@ -1498,6 +1822,7 @@ def _run_technical_backtest(
                 all_trades.append(_trade(var, entry_d, d, "short", pnl, indicator, sent_mode))
                 pos = 0
 
+            # ── 后入场:空仓时才开新仓,避免持仓期内反复开仓 ──
             if pos == 0:
                 if el:
                     pos, entry_px, entry_d = 1, closes[i], d
@@ -1505,6 +1830,7 @@ def _run_technical_backtest(
                     pos, entry_px, entry_d = -1, closes[i], d
 
         if pos != 0 and entry_px and last_i is not None:
+            # 末尾强平:窗口内最后一根 bar 仍持仓时,按该 bar 收盘价结算一笔交易。
             final = closes[last_i]
             pnl = (
                 (final - entry_px) / entry_px * 100
@@ -1528,6 +1854,7 @@ def _run_technical_backtest(
     wins = [t for t in all_trades if t["outcome"] == "win"]
     pnls = [t["pnl"] for t in all_trades]
     avg = sum(pnls) / len(pnls)
+    # 手算最大回撤:沿累计 PnL 走,peak 记历史最高,dd = peak - 当前累计,取最大
     cum = 0
     peak = 0
     dd = 0
@@ -1535,6 +1862,8 @@ def _run_technical_backtest(
         cum += p
         peak = max(peak, cum)
         dd = max(dd, peak - cum)
+    # 估计交易天数:用首末入场日的自然日天数 * 252/365 折算成交易日,
+    # 但至少给 len(pnls)*trend_window 天,避免样本极少时年化指标被放大失真。
     entry_dates = sorted({t["entry"] for t in all_trades})
     td = (
         max(
@@ -1590,7 +1919,16 @@ def _run_technical_backtest(
 
 
 def _trade(var, entry, exit, direction, pnl, indicator, sent_mode):
-    """构造一条技术策略交易记录(与 donchian 的记录字段一致)。"""
+    """构造一条技术策略交易记录(与 donchian 的记录字段一致)。
+
+    【功能】把一笔已结算交易格式化成统一 dict,供回测结果收集。
+    【参数】var:品种;entry/exit:入场/离场日期;direction:long/short;pnl:盈亏%
+    (已乘 100 的百分比);indicator:指标名;sent_mode:是否情绪版。
+    【返回】交易 dict,含 variety/entry/exit/direction/pnl/outcome/signal。
+    【关键逻辑】outcome 用 ±0.15% 分档:>0.15% 记 win,<-0.15% 记 loss,中间记
+    breakeven(打平)。这个 0.15% 阈值是全文件统一的"赢/亏"判定口径,各策略共用,
+    保证对比时标准一致。
+    """
     return {
         "variety": var,
         "entry": entry,
@@ -1603,6 +1941,10 @@ def _trade(var, entry, exit, direction, pnl, indicator, sent_mode):
 
 
 # 12 个策略键 → (indicator, sent_mode);today_signal 与回测共用。
+# 键名即对外暴露的策略名(如 "ma_cross"/"ma_cross_sent"),值里的 indicator 是
+# 统一的指标名,sent_mode 表示是否情绪自适应版。12 个 = 6 指标 × (纯价格 + 情绪)。
+# _latest_technical_signal 与 web 前端都通过这个表把"策略名"翻译成"指标+模式",
+# 避免在回测与今日信号两处各写一份映射导致口径分裂。
 TECH_KEYS = {
     "ma_cross": ("ma_cross", False),
     "ma_cross_sent": ("ma_cross", True),
@@ -1620,7 +1962,16 @@ TECH_KEYS = {
 
 
 def _latest_technical_signal(strategy, variety, closes, highs, lows, dates, today, i, n, **P):
-    """12 个技术策略的今日信号(纯价格或情绪自适应版)。"""
+    """12 个技术策略的今日信号(纯价格或情绪自适应版)。
+
+    【功能】计算某一技术策略在"最新交易日"的今日操作信号(被 latest_trading_signal 调用)。
+    【参数】strategy:TECH_KEYS 里的策略键;variety:品种;closes/highs/lows/dates:
+    行情序列;today/i/n:最新日期、最新下标、K 线总数;P:指标参数。
+    【返回】数据不足时返回 None;否则 {"today_signal": 信号dict, "today_signals": {}}。
+    【关键逻辑】与回测共用同一套 _build_tech_series/_tech_signal 与 TECH_KEYS,保证
+    "今日信号"和"回测信号"口径一致。sent_mode 时情绪前向填充到 today 并走
+    _adapt_sentiment_signal;纯价格版直接把 el/es 映射成 buy/sell/hold。
+    """
     indicator, sent_mode = TECH_KEYS[strategy]
     T = _build_tech_series(indicator, closes, highs, lows, P)
     if n <= T["warmup"]:
@@ -1650,7 +2001,12 @@ def _latest_technical_signal(strategy, variety, closes, highs, lows, dates, toda
 
 
 def run_ma_cross_strategy(variety="", fast=10, slow=30, start_date="2025-01-01", end_date=""):
-    """双均线交叉(纯价格):快线上穿慢线做多,下穿做空。"""
+    """双均线交叉(纯价格):快线上穿慢线做多,下穿做空。
+
+    【功能】纯价格双均线交叉策略的薄包装,只负责把参数透传给统一引擎。
+    【参数】variety:品种;fast/slow:快/慢 SMA 周期,默认 10/30;start_date/end_date:回测日期窗。
+    【返回】统一引擎 _run_technical_backtest 返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety, "ma_cross", False, start_date, end_date, fast=fast, slow=slow
     )
@@ -1659,7 +2015,13 @@ def run_ma_cross_strategy(variety="", fast=10, slow=30, start_date="2025-01-01",
 def run_ma_cross_sent_strategy(
     variety="", fast=10, slow=30, trend_window=5, start_date="2025-01-01", end_date=""
 ):
-    """双均线交叉(情绪确认):入场经情绪自适应调整。"""
+    """双均线交叉(情绪确认):入场经情绪自适应调整。
+
+    【功能】双均线交叉的情绪自适应版薄包装:sent_mode=True,入场信号再经
+    _adapt_sentiment_signal 用情绪修正,离场保持纯技术。
+    【参数】比纯价格版多一个 trend_window(趋势窗口,默认 5),供情绪自适应判定用。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "ma_cross",
@@ -1675,7 +2037,13 @@ def run_ma_cross_sent_strategy(
 def run_macd_strategy(
     variety="", macd_fast=12, macd_slow=26, macd_signal=9, start_date="2025-01-01", end_date=""
 ):
-    """MACD(纯价格):hist 上穿 0 做多,下穿做空。"""
+    """MACD(纯价格):hist 上穿 0 做多,下穿做空。
+
+    【功能】纯价格 MACD 策略薄包装。
+    【参数】variety:品种;macd_fast/macd_slow/macd_signal:快慢 EMA 与信号线周期,
+    默认 12/26/9;start_date/end_date:回测日期窗。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "macd",
@@ -1697,7 +2065,12 @@ def run_macd_sent_strategy(
     start_date="2025-01-01",
     end_date="",
 ):
-    """MACD(情绪确认):入场经情绪自适应调整。"""
+    """MACD(情绪确认):入场经情绪自适应调整。
+
+    【功能】MACD 的情绪自适应版薄包装。
+    【参数】比纯价格版多 trend_window(默认 5)。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "macd",
@@ -1719,7 +2092,13 @@ def run_rsi_strategy(
     start_date="2025-01-01",
     end_date="",
 ):
-    """RSI 均值回归(纯价格):超卖做多、超买卖出,回归 50 离场。"""
+    """RSI 均值回归(纯价格):超卖做多、超买卖出,回归 50 离场。
+
+    【功能】纯价格 RSI 均值回归策略薄包装。
+    【参数】variety:品种;rsi_period:RSI 周期(默认 14);rsi_overbought/rsi_oversold:
+    超买/超卖阈值(默认 70/30);start_date/end_date:回测日期窗。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "rsi",
@@ -1741,7 +2120,12 @@ def run_rsi_sent_strategy(
     start_date="2025-01-01",
     end_date="",
 ):
-    """RSI 均值回归(情绪确认):入场经情绪自适应调整。"""
+    """RSI 均值回归(情绪确认):入场经情绪自适应调整。
+
+    【功能】RSI 均值回归的情绪自适应版薄包装。
+    【参数】比纯价格版多 trend_window(默认 5)。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "rsi",
@@ -1758,7 +2142,13 @@ def run_rsi_sent_strategy(
 def run_bollinger_strategy(
     variety="", bb_period=20, num_std=2.0, start_date="2025-01-01", end_date=""
 ):
-    """布林带突破(纯价格):突破上轨做多、下轨做空,回归中轨离场。"""
+    """布林带突破(纯价格):突破上轨做多、下轨做空,回归中轨离场。
+
+    【功能】纯价格布林带突破策略薄包装。
+    【参数】variety:品种;bb_period:中轨 SMA 周期(默认 20);num_std:带宽倍数
+    (默认 2.0);start_date/end_date:回测日期窗。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety, "bollinger", False, start_date, end_date, bb_period=bb_period, num_std=num_std
     )
@@ -1767,7 +2157,12 @@ def run_bollinger_strategy(
 def run_bollinger_sent_strategy(
     variety="", bb_period=20, num_std=2.0, trend_window=5, start_date="2025-01-01", end_date=""
 ):
-    """布林带突破(情绪确认):入场经情绪自适应调整。"""
+    """布林带突破(情绪确认):入场经情绪自适应调整。
+
+    【功能】布林带突破的情绪自适应版薄包装。
+    【参数】比纯价格版多 trend_window(默认 5)。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "bollinger",
@@ -1789,7 +2184,14 @@ def run_turtle_strategy(
     start_date="2025-01-01",
     end_date="",
 ):
-    """海龟交易法(纯价格):entry 日通道突破入场,exit 日通道或 ATR 止损离场。"""
+    """海龟交易法(纯价格):entry 日通道突破入场,exit 日通道或 ATR 止损离场。
+
+    【功能】纯价格海龟(唐奇安突破)策略薄包装。
+    【参数】variety:品种;turtle_entry:入场通道天数(默认 20);turtle_exit:离场
+    通道天数(默认 10);atr_period:ATR 周期(默认 14);atr_mult:ATR 止损倍数
+    (默认 2.0);start_date/end_date:回测日期窗。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "turtle",
@@ -1813,7 +2215,12 @@ def run_turtle_sent_strategy(
     start_date="2025-01-01",
     end_date="",
 ):
-    """海龟交易法(情绪确认):入场经情绪自适应调整。"""
+    """海龟交易法(情绪确认):入场经情绪自适应调整。
+
+    【功能】海龟突破的情绪自适应版薄包装。
+    【参数】比纯价格版多 trend_window(默认 5)。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "turtle",
@@ -1831,7 +2238,13 @@ def run_turtle_sent_strategy(
 def run_atr_strategy(
     variety="", keltner_period=20, keltner_mult=2.0, start_date="2025-01-01", end_date=""
 ):
-    """ATR 通道突破(纯价格):收盘突破 mid±k·ATR 做多/做空,回归 mid 离场。"""
+    """ATR 通道突破(纯价格):收盘突破 mid±k·ATR 做多/做空,回归 mid 离场。
+
+    【功能】纯价格 ATR(肯特纳)通道突破策略薄包装。
+    【参数】variety:品种;keltner_period:通道 SMA 周期(默认 20);keltner_mult:
+    通道宽度倍数 k(默认 2.0);start_date/end_date:回测日期窗。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "atr",
@@ -1851,7 +2264,12 @@ def run_atr_sent_strategy(
     start_date="2025-01-01",
     end_date="",
 ):
-    """ATR 通道突破(情绪确认):入场经情绪自适应调整。"""
+    """ATR 通道突破(情绪确认):入场经情绪自适应调整。
+
+    【功能】ATR 通道突破的情绪自适应版薄包装。
+    【参数】比纯价格版多 trend_window(默认 5)。
+    【返回】统一引擎返回的单策略 dict。
+    """
     return _run_technical_backtest(
         variety,
         "atr",
@@ -1872,6 +2290,15 @@ def run_atr_sent_strategy(
 def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01", end_date=""):
     """Time-series momentum: go long if N-day return > 0, short if < 0, hold M days.
     Re-evaluates every day — much higher frequency than crossover strategies.
+
+    【功能】时间序列动量策略:前 lookback 日收益为正做多、为负做空,持仓 hold 天。
+    【参数】variety:品种(空串取前 10 个有数据品种);lookback:回看天数(默认 5);
+    hold:持仓天数(默认 3);start_date/end_date:回测日期窗。
+    【返回】单策略 dict(strategy="momentum"),含 total_trades/win_rate/total_pnl/
+    sharpe_like/max_drawdown_pct/lookback/hold/advanced_metrics/recent_trades 等;
+    无交易返回 {"total_trades": 0}。
+    【关键逻辑】每天重估信号(频率远高于均线交叉类):收益 > 0.5% 开多、<-0.5% 开空、
+    中间视为无信号。持仓按固定 hold 天离场;窗口末仍有持仓按最后一根 bar 强平。
     """
     all_trades = []
     vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
@@ -1899,6 +2326,7 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
                 if closes[i - lookback]
                 else 0
             )
+            # 0.5% 阈值:超过才视为有动量,避免把微小噪音当信号
             sig = 1 if ret > 0.005 else (-1 if ret < -0.005 else 0)
 
             # Exit after holding `hold` days
@@ -1932,6 +2360,7 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
                 entry_i = i
 
         if pos != 0 and entry_px and last_i is not None:
+            # 末尾强平:窗口内最后一根 bar 仍持仓则按它收盘结算(与 donchian 同款逻辑)。
             final = closes[last_i]
             pnl = (
                 (final - entry_px) / entry_px * 100
@@ -1955,6 +2384,7 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
     wins = [t for t in all_trades if t["outcome"] == "win"]
     pnls = [t["pnl"] for t in all_trades]
     avg = sum(pnls) / len(pnls)
+    # 这行是遗留代码:计算了标准差但结果被丢弃(未赋值给任何变量),可视为冗余。
     (sum((x - avg) ** 2 for x in pnls) / len(pnls)) ** 0.5 if len(pnls) > 1 else 1
     cum = 0
     peak = 0
@@ -2027,6 +2457,22 @@ def run_momentum_adaptive(
         adaptive: momentum + adaptive overlay trades
         momentum_baseline: pure momentum only (same as run_momentum_strategy)
         curves, stats, decisions count
+
+    【功能】纯动量 + 情绪自适应的融合策略,并带"基线质量门控"。
+    【参数】variety:品种(空串取前 10 个有数据品种);lookback:动量回看天数(默认 5);
+    hold:持仓天数(默认 3);trend_window:趋势窗口(默认 5);start_date/end_date:回测日期窗。
+    【返回】dict,含 strategy / adaptive / momentum_baseline / decisions / dates /
+    curves / variety / lookback / hold / trend_window;无信号时返回 {"total_trades": 0,...}。
+    【关键逻辑】
+      1. 两条路径并行:adaptive(动量+自适应覆盖)与 momentum_baseline(纯动量基线,
+         等价于 run_momentum_strategy),输出天然可比。
+      2. 决策树(逐日):
+         - 涨+看空(Type A):恒逆向做空(经验 60% 准确);
+         - 跌+看多(Type B):若基线盈利则跟随动量(quality_skip),若强跌>3% 跳过(接飞刀),
+           否则逆向做多;
+         - 强趋势(>2%):纯动量;弱/中趋势:基线健康就动量,否则逆向(逆情绪)。
+      3. 质量门控:维护最近 10 笔已平仓基线交易(recent_total>0 且胜率≥45%)才算
+         "基线健康",只有健康时才允许在分歧/弱趋势时信任动量。
     """
     all_adaptive = []  # Momentum + adaptive overlay
     all_baseline = []  # Pure momentum baseline
@@ -2102,6 +2548,8 @@ def run_momentum_adaptive(
             diverge_bullish = trend < -0.01 and ss > 0.1  # price down + bullish = bottom signal
 
             # ── Baseline quality check ──
+            # 基线质量门控:只有最近 5 笔以上基线交易的"累计盈亏>0 且胜率≥45%"才视为
+            # 健康。健康时更愿意跟随动量(因为动量最近在赚钱);不健康时更容易逆情绪。
             baseline_is_good = False
             if len(baseline_recent_pnls) >= 5:
                 recent_wr = sum(1 for p in baseline_recent_pnls if p > 0.15) / len(
@@ -2166,8 +2614,12 @@ def run_momentum_adaptive(
                 direction,
                 trades_list,
                 label,
-                variety=var,
+                variety=var,  # 用默认参把 var 固化,避免闭包在循环结束时拿到最后的品种(B023 修复)
             ):
+                """按当前价格 px_now 平掉一笔持仓,并把交易记录追加到 trades_list。
+
+                多单盈亏 = (平仓-入场)/入场,空单反向;outcome 按 ±0.15% 分档。
+                """
                 if pos == 1:
                     pnl = (px_now - entry_px) / entry_px * 100
                 else:
@@ -2308,6 +2760,7 @@ def run_momentum_adaptive(
         b_curve.append(round(cum_b, 2))
 
     def wr(ts):
+        """胜率:win 笔数 / 总笔数;空列表返回 0。"""
         return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
 
     # Compute advanced metrics per sub-strategy
@@ -2379,6 +2832,20 @@ def apply_risk_management(
 
     Returns:
         Modified trades with stop-loss exits applied
+
+    【功能】对任意策略产出的交易列表施加风控:固定止损、移动止损、最长持仓限制。
+    【参数】trades:交易 dict 列表(需含 entry/exit/direction 键);prices:OHLCV 行情
+    (用于逐日检查是否触发止损);stop_loss_pct:固定止损%(0=关闭);trailing_stop_pct:
+    移动止损%(0=关闭);max_holding:最长持仓天数(20)。
+    【返回】新的交易列表。被止损的交易会生成 dict 副本,改写 pnl/exit/outcome,并加
+    stopped_out=True;未触发的原样保留。
+    【关键逻辑】
+      - 先按日期把 close 建成查表,再对每笔交易在 [entry, exit] 区间逐日检查。
+      - 多单:价格跌破 entry*(1-止损%)→ 止损;否则更新峰值,跌破 peak*(1-移动%)
+        → 止损;移动止损下沿不低于 entry(保护不亏本)。
+      - 空单逻辑完全镜像(上下颠倒)。
+      - ⚠️ 被止损的订单用"触发止损那天的价格"(stop_px)重算 pnl,而不是沿用原始
+        离场价格——这是风控路径与原始路径口径统一的关键,避免盈亏失真。
     """
     if not stop_loss_pct and not trailing_stop_pct:
         return trades
@@ -2399,7 +2866,8 @@ def apply_risk_management(
 
         # Check if price hit stop-loss before original exit
         exit_d = t.get("exit", "")
-        price_map.get(exit_d, entry_px)
+        price_map.get(exit_d, entry_px)  # 遗留无效果行:取值后未使用,可忽略
+        # 只看 [入场日, 原离场日] 之间的交易日,确认止损是否在原始离场前触发
         dates = sorted([d for d in price_map if entry_d <= d <= exit_d])
         peak_px = entry_px
         stopped_out = False
@@ -2443,6 +2911,8 @@ def apply_risk_management(
                     break
 
         if stopped_out:
+            # ⚠️ 用触发止损的价格(stop_px)重算盈亏,而非原离场价;这样风控后的
+            # 每笔交易 PnL 口径与原始路径一致,都是"实际平仓价 - 入场价"。
             if direction == "long":
                 pnl = (stop_px - entry_px) / entry_px * 100
             else:
@@ -2465,6 +2935,15 @@ def apply_risk_management(
 
 @dataclass
 class TradeRecord:
+    """一条模拟交易记录的定长数据类(dataclass 自动生成 __init__/__repr__ 等)。
+
+    【功能】用结构化字段描述一笔"已完成的模拟交易",供 run_simulated_trading 与
+    run_trailing_strategy 收集结果。
+    【字段】variety:品种;entry_date/exit_date:入场/离场日期;direction:long/short;
+    signal_value:触发信号的情绪得分;entry_price/exit_price:入场/离场价格;
+    pnl_pct:盈亏百分比;outcome:win/loss/breakeven;horizon:实际持仓天数。
+    【边界】纯数据容器,无方法;调用方直接构造实例后放入列表。
+    """
     variety: str
     entry_date: str
     exit_date: str
@@ -2500,6 +2979,25 @@ def compute_advanced_metrics(
         max_drawdown_pct, max_drawdown_duration,
         profit_factor, avg_win_pct, avg_loss_pct, win_loss_ratio,
         sharpe_like (backward compat)
+
+    【功能】从交易盈亏序列计算全套回测指标,是所有策略统计指标的统一出口。
+    【参数】trade_pnls:每笔交易的盈亏百分比列表;total_trading_days:回测期估算
+    交易日(252≈1 年);daily_returns:可选,精确的日收益序列(用于精确年化波动率)。
+    【返回】dict,含 sharpe_ratio/sortino_ratio/calmar_ratio/annualized_return/
+    annualized_volatility/volatility_pct/max_drawdown_pct/max_drawdown_duration/
+    profit_factor/avg_win_pct/avg_loss_pct/win_loss_ratio/sharpe_like。
+    【关键逻辑】
+      - 无风险利率 RISK_FREE_RATE=2.5,即中国 10 年期国债年化约 2.5%(2025 年上下
+        的经验常数),夏普/索提诺都从年化收益里扣它。
+      - 赢/亏分档阈值是 ±0.1%(与交易记录的 ±0.15% 不同!):>0.1 记赢、<-0.1 记亏、
+        中间记打平。注意这里的分档比 _trade 的 ±0.15% 更窄,两者口径不一致,是历史
+        遗留,【待确认】可能影响 win_loss_ratio 等统计口径。
+      - 年化:把总收益按 (1+总收益)^(252/交易日)-1 年化;无日收益时用
+        std_pnl * sqrt(每年交易次数) 估算年化波动。
+      - 夏普 = (年化收益-无风险)/年化波动;波动为 0 时给 9.99(收益>无风险)或 0。
+      - 最大回撤/持续期:沿累计盈亏序列扫描,peak 记历史最高,回撤长度计入
+        max_drawdown_duration。
+      - sharpe_like 是旧版兼容字段 = 平均盈亏/盈亏标准差,各策略对外展示用。
     """
     n = len(trade_pnls)
     RISK_FREE_RATE = 2.5  # China 10Y government bond ≈ 2.5% annual
@@ -2524,10 +3022,11 @@ def compute_advanced_metrics(
     # ── Basic stats ──
     wins = [p for p in trade_pnls if p > 0.1]
     losses = [p for p in trade_pnls if p < -0.1]
-    [p for p in trade_pnls if -0.1 <= p <= 0.1]
+    [p for p in trade_pnls if -0.1 <= p <= 0.1]  # 遗留:计算了打平组但结果被丢弃
 
     avg_win = sum(wins) / len(wins) if wins else 0.0
     avg_loss = sum(losses) / len(losses) if losses else 0.0
+    # 盈亏比:平均赢/平均亏;无亏(avg_loss==0)时按是否盈利给 99 或 0(避免除零)
     win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else (99.0 if avg_win > 0 else 0.0)
 
     gross_profit = sum(wins) if wins else 0.0
@@ -2546,6 +3045,8 @@ def compute_advanced_metrics(
     total_trading_days = max(total_trading_days, 1)
     total_return_decimal = total_return_pct / 100.0
 
+    # 把回测期总收益年化到 252 个交易日;总收益若已亏到 -100% 以下(不可能但防御),
+    # 直接记 -100%(全损)。
     if total_return_decimal > -1.0:
         annualized_return = ((1 + total_return_decimal) ** (252.0 / total_trading_days) - 1) * 100
     else:
@@ -2642,6 +3143,18 @@ def run_simulated_trading(
     - If avg_score > +threshold at day T → go LONG at T+1 open, exit at T+horizon close
     - If avg_score < -threshold at day T → go SHORT at T+1 open, exit at T+horizon close
     - Track all trades and compute win rate, avg return, Sharpe, max drawdown.
+
+    【功能】基于纯情绪得分的模拟交易回测(固定周期持仓)。
+    【参数】variety:品种(空串遍历全部有数据品种);horizon:持仓天数(默认 3);
+    signal_threshold:情绪触发阈值(默认 0.2);start_date/end_date:回测日期窗。
+    【返回】dict,含 total_trades/win_count/loss_count/win_rate/avg_pnl_pct/
+    total_pnl/sharpe_like/max_drawdown_pct/long_trades/short_trades/
+    long_win_rate/short_win_rate/horizon/signal_threshold/by_variety/
+    advanced_metrics/recent_trades;无交易返回 {"total_trades": 0, ...}。
+    【关键逻辑】在"情绪与价格都有的交易日"上:avg_score > +阈值 当日信号做多、
+    < -阈值 做空,horizon 天后按那天的收盘价平仓(PnL 按入场/离场收盘价算)。
+    注意这里"入场日=信号日",与 docstring 说的 T+1 略有出入,实际按当日价格成交
+    【待确认】;每条交易存成 TradeRecord 收集,最后按品种统计 win_rate。
     """
     all_trades = []
     varieties_to_test = [variety] if variety else _get_all_varieties_with_data()
@@ -2720,6 +3233,8 @@ def run_simulated_trading(
     pnls = [t.pnl_pct for t in all_trades]
 
     # Estimate trading days from trade date range
+    # 用首末入场日的自然日天数 × 252/365 折算成交易日;样本过少时给至少
+    # len(pnls)*horizon 天(或 20 天),避免年化指标被极端放大。
     all_entry_dates = sorted({t.entry_date for t in all_trades})
     if len(all_entry_dates) >= 2:
         d0 = datetime.strptime(all_entry_dates[0], "%Y-%m-%d")
@@ -2801,6 +3316,16 @@ def _compute_fundamental_factors(prices: list[dict]) -> dict[str, list]:
       - vol_ratio: volume / 20-day avg volume (>1 = high activity)
       - vol_signal: 1 if vol_ratio > 1.2 (active), -1 if < 0.8 (quiet)
       - fund_score: combined fundamental score in [-1, +1]
+
+    【功能】从 OHLCV 行情计算"基本面/技术"因子序列(实际是纯价格+量能因子)。
+    【参数】prices:OHLCV dict 列表(需含 close,可含 volume)。
+    【返回】dict,各键为与 prices 等长的列表:ma_5/ma_20/ma_signal/momentum_5/
+    vol_ratio/vol_signal/fund_score。
+    【关键逻辑】
+      - 数据不足窗口时用当日 close 顶上(ma_5/ma_20),保证数组等长、不出现 None。
+      - vol_ratio 无成交量为 1(中性);vol_signal 按 1.2/0.8 分活跃/冷清。
+      - fund_score = 0.6*ma_signal + 0.25*momentum(归一化到 [-1,1],5% 收益记 1)
+        + 0.15*vol_signal,合成在 [-1,1],供 run_strategy_comparison 用阈值开仓。
     """
     n = len(prices)
     closes = [p["close"] for p in prices]
@@ -2890,6 +3415,21 @@ def run_strategy_comparison(
       3. Buy & Hold (price curve): benchmark
 
     All strategies use fixed horizon for exit.
+
+    【功能】多策略对比:同时跑"纯基本面"与"基本面+情绪"两个策略并叠加基准(价格曲线)。
+    【参数】variety:品种(默认 "RB");horizon:持仓天数(默认 5);signal_threshold:
+    情绪阈值(默认 0.2);fund_threshold:基本面得分阈值(默认 0.3);start_date/end_date:
+    回测日期窗。
+    【返回】dict,含 variety/horizon/fund_threshold/sent_threshold/dates/curves/
+    stats/recent_trades_fund/recent_trades_combo;数据不足返回 {"error": ...}。
+    【关键逻辑】
+      - 因子来自 _compute_fundamental_factors;情绪用 _load_trends 的 avg_score。
+      - 日期只取"价格与情绪都有的重叠日",避免缺数据导致信号失真。
+      - 策略1(纯基本面):|fund_score|>阈值 就开仓;策略2(基本面+情绪):两者方向
+        必须一致才开仓;两者都用固定 horizon 天离场。
+      - 曲线部分:build_pnl_curve 里有一段 while...pass 的死代码(基本无效),实际
+        用的是下面"date-indexed cumulative PnL"的 map 累加方式构建 fund/combo 曲线,
+        price 曲线是买入持有基准。
     """
     all_trades_fund = []
     all_trades_combo = []
@@ -3000,6 +3540,10 @@ def run_strategy_comparison(
     # --- Build PnL curves (cumulative) ---
     def build_pnl_curve(trades: list, n_days: int, start_idx: int) -> list[float]:
         """Map trades to daily cumulative PnL curve."""
+        # 注意:这个函数实际并未被调用(下方用 date-indexed map 构建曲线)。
+        # 开头 while...pass 循环是死代码(不产生任何副作用),真正生效的是
+        # 后面"simpler approach"按 trade 序列累加的 cur_curve。保留原因【待确认】,
+        # 可能是历史遗留,阅读时可直接跳过 while 部分。
         [0.0] * n_days
         cum = 0.0
         trade_idx = 0
@@ -3042,6 +3586,7 @@ def run_strategy_comparison(
 
     # Statistics
     def win_rate(trades):
+        """计算某策略交易列表的胜率;空列表返回 0。"""
         if not trades:
             return 0
         return round(sum(1 for t in trades if t["outcome"] == "win") / len(trades), 3)
@@ -3111,6 +3656,19 @@ def run_trailing_strategy(
 
     This simulates "riding the sentiment wave" — stay in as long as the crowd agrees,
     exit when they change their mind.
+
+    【功能】情绪追踪离场策略:入场规则与固定周期版相同,但离场改为"情绪反转就离场,
+    否则最长持有 max_holding 天"——模拟"顺着情绪波浪走,大众转向才离场"。
+    【参数】variety:品种(空串遍历全部有数据品种);signal_threshold:情绪触发阈值
+    (默认 0.2);max_holding:最长持仓天数(默认 10);start_date/end_date:回测日期窗。
+    【返回】dict,含 strategy/total_trades/win_count/loss_count/win_rate/avg_pnl_pct/
+    total_pnl/sharpe_like/max_drawdown_pct/long_trades/short_trades/long_win_rate/
+    short_win_rate/signal_threshold/max_holding/avg_holding_days/flip_exits/
+    max_holding_exits/by_variety/advanced_metrics/recent_trades。
+    【关键逻辑】逐日推进,情绪超阈值则开仓,然后在之后最多 max_holding 天里找
+    "情绪反向翻转"的日期作为离场点(多单看情绪转负、空单看转正);没翻转就持有到
+    max_holding 天。离场后跳到最后离场日的下一天,保证交易不重叠。flip_exits 统计
+    因情绪翻转而离场的笔数(horizon<max_holding 近似)。
     """
     all_trades = []
     varieties_to_test = [variety] if variety else _get_all_varieties_with_data()
@@ -3160,6 +3718,7 @@ def run_trailing_strategy(
             exit_date = None
             exit_px = None
 
+            # 在之后最多 max_holding 天里找"情绪反转"日:多单等情绪转负、空单等转正。
             for j in range(i + 1, min(i + max_holding + 1, len(dates))):
                 later_score = scores[j]
                 later_date = dates[j]
@@ -3223,6 +3782,8 @@ def run_trailing_strategy(
     pnls = [t.pnl_pct for t in all_trades]
 
     # Estimate trading days
+    # 与 run_simulated_trading 同款估算:自然日天数折算成交易日;样本过少时用
+    # len(pnls)*max_holding 兜底,保证年化指标分母不会太小。
     all_entry_dates = sorted({t.entry_date for t in all_trades})
     if len(all_entry_dates) >= 2:
         d0 = datetime.strptime(all_entry_dates[0], "%Y-%m-%d")
@@ -3305,8 +3866,10 @@ def _build_forward_filled_sent_map(
 ) -> dict[str, float]:
     """按价格日期向前填充情绪评分(forward-fill)。
 
-    镜像各回测函数(run_contrarian_sentiment :573-580 / run_adaptive_sentiment :792-799 /
-    run_momentum_adaptive :1335-1342)的填充逻辑:取 <= 当日的最新情绪评分作为该日情绪。
+    镜像各回测函数(run_contrarian_sentiment / run_adaptive_sentiment /
+    run_momentum_adaptive 中 "Build forward-filled sentiment" 段)的填充逻辑:
+    取 <= 当日的最新情绪评分作为该日情绪。该工具函数把这段重复逻辑收敛到一处,
+    供最新信号与回测共用,保证口径一致。
     """
     if not sent_data:
         return {}
@@ -3314,6 +3877,8 @@ def _build_forward_filled_sent_map(
     raw = {str(s.get("date", ""))[:10]: float(s.get("avg_score", 0)) for s in series}
     sd_sorted = sorted(raw)
     out: dict[str, float] = {}
+    # 双指针:sd_sorted 已升序,对每个价格日期 d 把 <=d 的最新情绪逐步推进给 last_s,
+    # 得到"当日能看到的最近一次情绪",即前向填充(不偷看未来)。
     last_s = 0.0
     si = 0
     for d in price_dates:
@@ -3339,6 +3904,8 @@ def _make_signal(
         "variety": variety,
         "action": action,
         "strength": round(strength, 3),
+        # strength_pct = min(|strength|/scale, 1.0):把各策略不同量纲的强度归一化到 [0,1],
+        # 跨策略可比,前端据此画强度条。
         "strength_pct": round(min(abs(strength) / scale, 1.0), 3),
         "reason": reason,
     }
@@ -3403,6 +3970,8 @@ def latest_trading_signal(
     n = len(closes)
     if n == 0:
         return None
+    # "今天" = 该品种价格数据最后一条的日期。注意这里不看用户传入的 end_date,
+    # 因为"今日操作"要回答的是当前最新交易日,而不是某个历史回测窗口的最后一天。
     today = dates[-1]
     i = n - 1
 
@@ -3635,7 +4204,7 @@ def latest_trading_signal(
     if strategy == "momentum_ad":
         if n < max(lookback, trend_window) + 1:
             return None
-        # O(n) 纯动量基线重放,复刻 run_momentum_adaptive :1387-1394 的 baseline_is_good
+        # O(n) 纯动量基线重放:复刻 run_momentum_adaptive 里 baseline_is_good 的
         # 运行态(依赖最近 10 笔已平仓基线动量交易的盈亏)。重放窗口按默认回测
         # start_date="2025-01-01"(本函数不接收回测日期,聚焦"今天"视角)。
         baseline_recent_pnls: list[float] = []
@@ -3680,7 +4249,7 @@ def latest_trading_signal(
             recent_total = sum(baseline_recent_pnls)
             baseline_is_good = recent_total > 0 and recent_wr >= 0.45
 
-        # 今日决策(镜像 run_momentum_adaptive :1396-1432)
+        # 今日决策(镜像 run_momentum_adaptive 主循环里的自适应决策树)
         mom_ret = (
             (closes[i] - closes[i - lookback]) / closes[i - lookback] if closes[i - lookback] else 0
         )
@@ -3777,7 +4346,14 @@ def latest_trading_signal(
 
 
 def _get_all_varieties_with_data() -> list[str]:
-    """Get all varieties that have both sentiment and price data."""
+    """Get all varieties that have both sentiment and price data.
+
+    【功能】枚举"至少有一份情绪文件"的全部品种代码(策略循环遍历用)。
+    【返回】升序排列的品种代码列表。
+    【关键逻辑】只扫 SENTIMENT_DIR 下 *_sentiment.json,用文件名反推代码
+    (去掉 _sentiment 后缀)。docstring 说"both sentiment and price",但实现只检查
+    情绪文件,是否真有价格文件由各策略后续 _load_price 自行兜底,【待确认】。
+    """
     varieties = set()
     for f in SENTIMENT_DIR.glob("*_sentiment.json"):
         varieties.add(f.stem.replace("_sentiment", ""))
@@ -3790,7 +4366,17 @@ def _get_all_varieties_with_data() -> list[str]:
 
 
 def compare_varieties(varieties: list[str]) -> list[dict]:
-    """Compare sentiment metrics across multiple varieties."""
+    """Compare sentiment metrics across multiple varieties.
+
+    【功能】多品种情绪对比:为每个品种汇总情绪得分/多空占比/7 日趋势等指标。
+    【参数】varieties:待对比的品种代码列表。
+    【返回】每品种一个 dict 的列表(含 variety/name/sector/score/label/bullish_ratio/
+    bearish_ratio/total_posts/trend_7d/trend_label),按 |score| 降序;无情绪数据的
+    品种被跳过。
+    【关键逻辑】score 优先取 social_sentiment.overall_score;若为 0 且有 bull/bear
+    占比则退回 bull-bear(看多占比-看空占比)。label 为空或 neutral 时按 score 的
+    ±0.1 阈值给"偏多/偏空"。
+    """
     result = []
     for var in varieties:
         sent = _load_sentiment(var)
@@ -3798,7 +4384,7 @@ def compare_varieties(varieties: list[str]) -> list[dict]:
             continue
         ss = sent.get("data", {}).get("social_sentiment", {})
         series = sent.get("data", {}).get("daily_series", [])
-        series[-1] if series else {}
+        series[-1] if series else {}  # 遗留:取了最新一天但结果未使用
 
         # 7-day trend
         if len(series) >= 7:
@@ -3840,7 +4426,15 @@ def compare_varieties(varieties: list[str]) -> list[dict]:
 
 
 def get_all_variety_scores() -> list[dict]:
-    """Get sentiment scores for ALL varieties (for ranking dashboard)."""
+    """Get sentiment scores for ALL varieties (for ranking dashboard).
+
+    【功能】全部品种情绪得分(排行榜/仪表盘用),无需传品种列表,自动扫文件。
+    【返回】每品种一个 dict(含 code/name/sector/score/label/bullish/bearish/posts/
+    date),按 |score| 降序。
+    【关键逻辑】与 compare_varieties 的 score/label 口径一致(overall_score 为 0 时
+    退回 bull-bear),区别只是这里 label 阈值用 ±0.15(更宽),且 bull/bear 转成
+    百分比整数(bull*100)供前端画占比条。
+    """
     varieties = []
     for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
         var = f.stem.replace("_sentiment", "")

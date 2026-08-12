@@ -3,13 +3,49 @@ Commodity Futures tool wrappers for LangChain agents.
 Wraps the commodity_futures data vendor functions as @tool-decorated callables.
 """
 
+# ===========================================================================
+# 【本文件在数据流中的角色】
+#   这是"工具封装层":把 tradingagents/dataflows/commodity_futures.py 里那些普通
+#   Python 函数,用 LangChain 的 @tool 装饰器包装成"Agent 可调用的工具(Tool)"。
+#   Agent(大模型)本身不能直接执行 Python 代码,只能通过工具与外部世界交互;
+#   本文件就是 Agent 操作期货数据的"遥控器按钮面板"。
+#
+# 【@tool 装饰器的作用】
+#   @tool 来自 langchain_core.tools,它会把被装饰的函数变成一个 Tool 对象,并读取:
+#     - 函数名 get_futures_* : 工具的唯一标识;
+#     - 文档字符串(docstring): 工具的说明文字;
+#     - 参数注解 Annotated[str, "描述"]: 每个参数的作用说明。
+#   大模型(如期货分析师)会"看名字 + 看说明 + 看参数描述"来决定在什么场景下
+#   调用哪个工具。因此这里每个工具的 name/description 写得好不好,
+#   直接决定 Agent 会不会在正确时机调用它。
+#
+# 【与底层数据层的关系】
+#   所有工具函数本身几乎不写逻辑,只是把参数原样转发给
+#   tradingagents/dataflows/interface.py 的 route_to_vendor(),
+#   由路由层按配置找到 commodity_futures 供应商并调用真正的实现,
+#   再把结果字符串返回给大模型。
+#
+# 【与 signal_analyzer 回测引擎数据源的区别】
+#   本文件提供的工具给 Agent 做"实时分析"(联网取数,数据来自 AKShare/外部 JSON);
+#   signal_analyzer 回测引擎则是离线读本地 JSON 做回测,两者数据用途不同。
+# ===========================================================================
+
 from typing import Annotated
 
 from langchain_core.tools import tool
 
+# route_to_vendor: 路由函数,按"方法名 -> 配置的供应商"找到实现并调用。
+# 这里只传方法名和参数,真正的取数逻辑在 dataflows 层(commodity_futures.py)。
 from tradingagents.dataflows.interface import route_to_vendor
 
 
+# 【功能】获取商品期货日线行情(OHLCV + 持仓量)。Agent 需要历史价格时调用。
+# 【参数】symbol: 品种代码;start_date/end_date: 起止日期 yyyy-mm-dd。
+# 【返回】CSV 字符串(列: date, open, high, low, close, volume, open_interest)。
+# 【关键逻辑】纯转发:把三个参数交给 route_to_vendor("get_futures_price", ...),
+#           由底层 commodity_futures.get_futures_price 用 AKShare futures_main_sina
+#           取数(主力连续合约)。工具的 name/description 让 Agent 判断
+#           "问价格、问历史走势"时调用本工具。
 @tool
 def get_futures_price(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar), I (iron ore)"],
@@ -29,6 +65,11 @@ def get_futures_price(
     return route_to_vendor("get_futures_price", symbol, start_date, end_date)
 
 
+# 【功能】计算商品期货技术指标(SMA/EMA/MACD/RSI/布林带/ATR 等)。
+# 【参数】symbol: 品种代码;start_date/end_date: 起止日期 yyyy-mm-dd。
+# 【返回】CSV:原行情列 + 指标列。
+# 【关键逻辑】转发给 route_to_vendor("get_futures_indicators", ...),
+#           底层用全量历史计算指标再按区间截取。
 @tool
 def get_futures_indicators(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
@@ -49,6 +90,11 @@ def get_futures_indicators(
     return route_to_vendor("get_futures_indicators", symbol, start_date, end_date)
 
 
+# 【功能】获取现货-期货基差(基差 = 现货价 - 期货价)。
+# 【参数】symbol: 品种代码;start_date/end_date: 起止日期 yyyy-mm-dd。
+# 【返回】CSV:现货价、主力/近月合约价、基差、基差率 + 最新基差解读。
+# 【关键逻辑】转发给 route_to_vendor("get_futures_basis", ...);
+#           底层走 Hybrid Mode:有外部现货价会合并进来。
 @tool
 def get_futures_basis(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
@@ -69,6 +115,11 @@ def get_futures_basis(
     return route_to_vendor("get_futures_basis", symbol, start_date, end_date)
 
 
+# 【功能】获取期货品种的仓单库存数据。
+# 【参数】symbol: 品种代码。
+# 【返回】CSV:日期、库存、变化 + 趋势解读(累库/去库/平稳)。
+# 【关键逻辑】转发给 route_to_vendor("get_futures_inventory", symbol, "", "");
+#           底层只取最近 60 条,并走 Hybrid Mode 合并外部社会库存。
 @tool
 def get_futures_inventory(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
@@ -85,6 +136,11 @@ def get_futures_inventory(
     return route_to_vendor("get_futures_inventory", symbol, "", "")
 
 
+# 【功能】获取最新商品/宏观新闻(多来源,关键词过滤)。
+# 【参数】symbol: 品种代码,仅用于追加品种关键词,新闻本身是全局的。
+# 【返回】带时间与来源的新闻文本(最多 20 条)。
+# 【关键逻辑】转发给 route_to_vendor("get_futures_news", symbol, "", "");
+#           底层抓 Eastmoney 7x24 + SHMET 两个来源。
 @tool
 def get_futures_news(
     symbol: Annotated[str, "Commodity variety code (used for context, feed is global)"],
@@ -101,6 +157,11 @@ def get_futures_news(
     return route_to_vendor("get_futures_news", symbol, "", "")
 
 
+# 【功能】获取品种元信息(交易所、合约规格、交易时间、关键因素、产业链品种)。
+# 【参数】symbol: 品种代码。
+# 【返回】JSON 字符串。
+# 【关键逻辑】底层直接读 VARIETY_METADATA。工具说明里明确建议 Agent
+#           "先用本工具了解品种基本面,再调用其他行情工具"。
 @tool
 def get_variety_info(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
@@ -117,6 +178,10 @@ def get_variety_info(
     return route_to_vendor("get_variety_info", symbol)
 
 
+# 【功能】获取中国宏观指标(GDP/PMI/固投/地产/工业增加值/建筑业指数)。
+# 【参数】无。
+# 【返回】格式化宏观报告文本。
+# 【关键逻辑】转发给 route_to_vendor("get_futures_macro");底层用 akshare macro_* 系列。
 @tool
 def get_futures_macro() -> str:
     """
@@ -130,6 +195,11 @@ def get_futures_macro() -> str:
     return route_to_vendor("get_futures_macro")
 
 
+# 【功能】获取品种供需两侧指标(产量/成交/开工率/利润/库存/事件)。
+# 【参数】symbol: 品种代码。
+# 【返回】格式化供需报告文本。
+# 【关键逻辑】转发给 route_to_vendor("get_futures_supply_demand", symbol, "", "");
+#           底层先读外部 JSON(有则优先生效),再用免费 API 补充。
 @tool
 def get_futures_supply_demand(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
@@ -148,6 +218,11 @@ def get_futures_supply_demand(
     return route_to_vendor("get_futures_supply_demand", symbol, "", "")
 
 
+# 【功能】获取品种的社交媒体情绪数据(微博/知乎/小红书)。
+# 【参数】symbol: 品种代码。
+# 【返回】格式化情绪报告文本。
+# 【关键逻辑】转发给 route_to_vendor("get_futures_sentiment", symbol, "", "");
+#           底层读外部情绪 JSON(sentiment_data 模块)。
 @tool
 def get_futures_sentiment(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
@@ -176,6 +251,11 @@ def get_futures_sentiment(
     return route_to_vendor("get_futures_sentiment", symbol, "", "")
 
 
+# 【功能】获取指定日期的"确定性核验行情快照",是数值主张的唯一真相来源。
+# 【参数】symbol: 品种代码;date: 目标日期 yyyy-mm-dd。
+# 【返回】VERIFIED_SNAPSHOT 文本(精确 OHLCV + 日涨跌% + SMA5/SMA20 + 位置判断)。
+# 【关键逻辑】转发给 route_to_vendor("get_verified_quote", symbol, date, "", "");
+#           工具说明强烈要求 Agent:数字冲突时"上报分歧"而不是自己编一个。
 @tool
 def get_verified_quote(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
@@ -198,6 +278,14 @@ def get_verified_quote(
     return route_to_vendor("get_verified_quote", symbol, date, "", "")
 
 
+# 【功能】获取品种的实时(盘面)最新价。辩论/讨论中核对当前行情用。
+# 【参数】symbol: 品种代码(如 RB, SA, FG)。
+# 【返回】JSON:code/name/price/change_pct/volume/timestamp。
+# 【关键逻辑】★ 不走 route_to_vendor,是唯一提供"实时/流式"数据的工具:
+#           直接 import price_fetcher(web_app 上下文里的行情抓取模块),
+#           用 NAME_TO_CODE 把品种代码映射成中文名,再取缓存的实时价格
+#           (get_cached_prices, 60 秒缓存)。非交易时段返回最近一次价。
+#           注意:仅当运行环境有 price_fetcher 模块时可用,否则返回错误说明。
 @tool
 def get_realtime_price(
     symbol: Annotated[str, "Commodity variety code, e.g. RB, SA, FG"],

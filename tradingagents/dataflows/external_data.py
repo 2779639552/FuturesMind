@@ -61,6 +61,33 @@ Staleness check: data older than `max_age_hours` is treated as stale
 and the function falls through to the free API with a warning annotation.
 """
 
+# ===========================================================================
+# 【本文件在数据流中的角色】
+#   这是"外部数据注入层"(External Data Injection Layer),是 Hybrid Mode 的规范
+#   与实现所在地。commodity_futures.py 里的基差/库存/供需函数会调用本文件的
+#   load_external_data / merge_basis_data / merge_inventory_data,
+#   从而实现"外部 JSON 优先,免费 API 兜底"。
+#
+# 【为什么需要它】
+#   免费接口(AKShare)拿不到 Mysteel/Wind 级别的行业数据(社会库存、钢厂利润、
+#   周度产量、关键事件等)。用户可把从付费渠道或手工收集的数据按约定格式存成
+#   JSON 文件,注入到自动分析管线里,让大模型看到更高质量的数据。
+#
+# 【核心规则(Hybrid Mode 回退逻辑)】
+#   1. 到 ~/.tradingagents/external_data/ 目录找 {品种大写}.json(也支持 .yaml);
+#   2. 找到且 "updated" 时间不超过 MAX_AGE_HOURS(默认168小时=7天) -> 采用外部数据;
+#   3. 找不到文件 / 已过期 / JSON 损坏 / 声明的品种不匹配 -> 返回 None,
+#      由调用方自然"落回"免费 AKShare;
+#   4. 每次返回的数据都会带来源标注(get_external_source_label / annotate_with_source),
+#      让大模型知道"这段数据来自外部还是免费接口",从而自行决定权重。
+#
+# 【与 signal_analyzer 回测引擎数据源的区别】
+#   signal_analyzer 回测引擎也读 ~/.tradingagents/external_data/ 目录,但它读的是
+#   *_sentiment.json 做离线情绪回测;本文件是给"实时分析"时注入比免费接口更好的
+#   外部数据。二者数据目录重叠,但用途不同:一个是回测数据源,一个是实时分析的
+#   数据增强层。
+# ===========================================================================
+
 import json
 import logging
 import os
@@ -73,11 +100,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+# 【配置项】
+# DEFAULT_DATA_DIR: 外部数据默认目录 = ~/.tradingagents/external_data/
+#                   (即用户主目录下的 .tradingagents/external_data)。
+# MAX_AGE_HOURS:    数据有效期上限(小时)。默认 168 = 7 天,
+#                   对应 Mysteel 周度报告节奏。超过即视为"过期"。
+# _get_data_dir():  可通过环境变量 TRADINGAGENTS_EXTERNAL_DATA_DIR 覆盖目录。
 
 DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".tradingagents", "external_data")
 MAX_AGE_HOURS = 168  # 7 days — one week, matches Mysteel's weekly cadence
 
 
+# 【功能】返回外部数据目录,优先读取环境变量,未设置则用默认目录。
+# 【参数】无。
+# 【返回】目录路径字符串。
+# 【关键逻辑】os.environ.get("TRADINGAGENTS_EXTERNAL_DATA_DIR", DEFAULT_DATA_DIR):
+#           若设置了该环境变量就返回它的值,否则返回 DEFAULT_DATA_DIR。
 def _get_data_dir() -> str:
     """Get external data directory, respecting env override."""
     return os.environ.get("TRADINGAGENTS_EXTERNAL_DATA_DIR", DEFAULT_DATA_DIR)
@@ -88,6 +126,15 @@ def _get_data_dir() -> str:
 # ---------------------------------------------------------------------------
 
 
+# 【功能】加载某个品种的外部数据文件(外部数据注入的核心入口)。
+# 【参数】variety: 品种代码,如 "RB"。
+# 【返回】完整的外部数据 dict;找不到文件/过期/格式损坏/品种不匹配时返回 None。
+# 【关键逻辑】1) 依次尝试 .json / .yaml / .yml 三种扩展名;
+#           2) YAML 需要 PyYAML,未安装则跳过该文件;
+#           3) 校验文件里声明的 variety 与请求一致,否则忽略;
+#           4) 校验 "updated" 时间戳是否在 MAX_AGE_HOURS(7天)内,
+#              过期则记 warning 并返回 None(调用方落回免费 API);
+#           5) 所有失败都记日志后继续尝试下一个文件,不会抛异常。
 def load_external_data(variety: str) -> dict[str, Any] | None:
     """Load external data for a commodity variety.
 
@@ -169,6 +216,12 @@ def load_external_data(variety: str) -> dict[str, Any] | None:
     return None
 
 
+# 【功能】按"点号分隔的路径"从外部数据里取某一个字段值。
+# 【参数】variety: 品种代码;field_path: 形如 "data.social_inventory.value";
+#        default: 字段不存在时返回的默认值。
+# 【返回】字段值,或 default。
+# 【关键逻辑】先 load_external_data(variety)(可能返回 None),再逐级拆分路径
+#           data.social_inventory.value 依次向下取 dict 键,任一级不存在就返回 default。
 def get_external_field(variety: str, field_path: str, default: Any = None) -> Any | None:
     """Get a specific field from external data by dot-separated path.
 
@@ -194,6 +247,12 @@ def get_external_field(variety: str, field_path: str, default: Any = None) -> An
     return current
 
 
+# 【功能】生成外部数据的"人类可读来源标签",用于给大模型标注数据出处。
+# 【参数】variety: 品种代码。
+# 【返回】形如 "[source: Mysteel Weekly 2026-W28, updated: 2026-07-15T16:00:00]";
+#        无外部数据时返回空字符串。
+# 【关键逻辑】读取外部 JSON 的 source 与 updated 字段拼成标签;load_external_data
+#           内部已做过过期校验,所以这里拿到的必是"有效"的外部数据。
 def get_external_source_label(variety: str) -> str:
     """Get human-readable source label from external data metadata.
 
@@ -208,6 +267,14 @@ def get_external_source_label(variety: str) -> str:
     return f"[source: {source}, updated: {updated}]"
 
 
+# 【功能】在返回给大模型的内容前,加上"数据来源"标注头。
+# 【参数】variety: 品种代码;content: 数据内容(CSV/文本);is_external: 是否外部数据。
+# 【返回】加了来源标注头的内容字符串。
+# 【关键逻辑】这是数据透明机制的关键:
+#           is_external=True  -> 标注 EXTERNAL + 来源标签,并提示"可能优于免费接口";
+#           is_external=False -> 标注 FREE_API (AKShare),并提示"关键决策需对
+#                                 照付费源核验"。
+#           若 is_external=True 但拿不到来源标签,则原样返回 content 不加头。
 def annotate_with_source(variety: str, content: str, is_external: bool = False) -> str:
     """Prepend data-source annotation to content returned to the LLM.
 
@@ -250,6 +317,17 @@ def annotate_with_source(variety: str, content: str, is_external: bool = False) 
 # ---------------------------------------------------------------------------
 
 
+# 【功能】把免费 API 的"仓单库存"与外部 JSON 的"社会库存/钢厂库存"合并成一份报告。
+# 【参数】variety: 品种代码;api_csv: 免费接口返回的仓单 CSV 字符串。
+# 【返回】元组 (merged_content, used_external):
+#        merged_content 为合并后的文本;used_external 标记是否真的用到了外部数据。
+# 【关键逻辑】1) 先 load_external_data;没有外部数据(或没有社会/钢厂库存字段)
+#              就直接给 API 数据打 FREE_API 标注返回,used_external=False;
+#           2) 有外部库存时,输出分两部分:
+#              Part 1 = 免费 API 仓单库存(交易所注册仓单,仅代表可交割供给);
+#              Part 2 = 外部社会库存(35城)+ 钢厂库存;
+#           3) 额外附上铁矿港口库存、开工率、吨钢利润等补充数据;
+#           4) 末尾给大模型一段"解读指引":仓单与社会库存同向/反向的含义。
 def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
     """Merge warehouse receipt data (API) with social inventory data (external).
 
@@ -358,6 +436,14 @@ def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
     return merged, True
 
 
+# 【功能】把免费 API 的基差数据与外部 JSON 的现货价合并。
+# 【参数】variety: 品种代码;api_csv: 免费接口返回的基差 CSV 字符串。
+# 【返回】元组 (merged_content, used_external)。
+# 【关键逻辑】1) 没有外部数据或外部 JSON 里没有 spot_price -> 原样返回 API 数据
+#              并打 FREE_API 标注,used_external=False;
+#           2) 有外部现货价 -> 在 API 结果前追加一行外部现货价说明
+#              (值/单位/日期/来源标签),提示大模型:若与接口现货价分歧较大,
+#              优先采信外部源;used_external=True。
 def merge_basis_data(variety: str, api_csv: str) -> tuple[str, bool]:
     """Merge basis data from API with external spot price if available.
 

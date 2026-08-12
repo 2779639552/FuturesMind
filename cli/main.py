@@ -1,3 +1,21 @@
+# =====================================================================
+# cli/main.py —— TradingAgents 的「交互式命令行入口」(CLI / TUI)
+#
+# 本项目有三大并列入口,作用各不相同:
+#   1. cli/main.py      —— 本文件,交互式命令行(Typer 交互 + Rich Live 实时仪表板)
+#   2. commodity_demo.py —— 商品期货演示脚本(简化的并行分析图)
+#   3. web_app.py       —— Web 界面入口
+#
+# 本文件的职责:只负责「与用户交互 + 实时展示进度」,
+# 真正的分析计算在 tradingagents.graph.* 等底层模块中完成。
+#
+# 整体交互流程(用户从终端一步步选择):
+#   ① 选资产(ticker,自动识别股票 / 加密 / 商品期货)
+#   ② 选分析日期 → ③ 选输出语言 → ④ 选分析师
+#   → ⑤ 选研究深度 → ⑥ 选 LLM 提供商 → ⑦ 选思考 Agent → ⑧ 提供商专属参数
+#   → 运行分析(期间用 Rich Live 仪表板实时显示 Agent 状态 / 消息 / 报告进度)
+#   → 分析完成后进入「反馈循环」,用户可输入 /feedback /exit /help
+# =====================================================================
 import contextlib
 import datetime
 import os
@@ -65,6 +83,17 @@ app = typer.Typer(
 )
 
 
+# ---------------------------------------------------------------------
+# MessageBuffer —— 仪表板的「UI 状态缓冲池」
+# 作用:把分析过程中需要展示给用户的数据暂存在内存里,包括:
+#   - messages        :普通消息(时间, 类型, 内容)
+#   - tool_calls      :工具调用记录(时间, 工具名, 参数)
+#   - agent_status    :每个 Agent 的实时状态(pending / in_progress / completed / error)
+#   - report_sections :各报告段落的最新内容
+#   - current_report / final_report :拼装好的报告
+# Rich Live 仪表板每次刷新时都从 message_buffer 里取数据来渲染。
+# 理解要点:它本身不执行任何分析,只是一个供 UI 读取的"记事本"。
+# ---------------------------------------------------------------------
 # Create a deque to store recent messages with a maximum length
 class MessageBuffer:
     # Fixed teams that always run (not user-selectable)
@@ -114,6 +143,11 @@ class MessageBuffer:
         "user_feedback_summary": (None, "User Feedback"),
     }
 
+    # 【功能】初始化消息缓冲池:创建存放各类数据的容器。
+    # 【参数】max_length:deque(双端队列)的最大长度,超过后自动丢弃最旧元素。
+    # 【返回】无
+    # 【关键逻辑】deque(maxlen=...) 满员时从头部自动弹出旧元素,
+    #            确保长时间分析不会让内存无限增长。
     def __init__(self, max_length=100):
         self.messages = deque(maxlen=max_length)
         self.tool_calls = deque(maxlen=max_length)
@@ -125,6 +159,18 @@ class MessageBuffer:
         self.selected_analysts = []
         self._processed_message_ids = set()
 
+    # 【功能】开始一次新分析前,重置缓冲池,并按所选分析师构建 Agent 状态与报告段落。
+    # 【参数】selected_analysts:分析师类型字符串列表(如 ["market", "news"]);
+    #         asset_type:"stock" / "crypto" / "commodity_futures"。
+    # 【返回】无
+    # 【关键逻辑】
+    #   - 分析师 key 统一转小写后存入 selected_analysts;
+    #   - 为选中的分析师建立 "pending"(待处理)状态(依据 ANALYST_MAPPING);
+    #   - 股票/加密资产还会加入固定团队(研究/交易/风控/组合管理)的 Agent;
+    #     商品期货有自己更简单的图,不加入这些固定团队;
+    #   - 按 REPORT_SECTIONS 建立本次会生成的报告段落映射;商品期货路径会
+    #     跳过股票专属、永远不会被填充的段落(如 market_report 等);
+    #   - 最后清空历史消息 / 工具调用 / 已处理消息 ID,确保每次分析互不干扰。
     def init_for_analysis(self, selected_analysts, asset_type="stock"):
         """Initialize agent status and report sections based on selected analysts.
 
@@ -171,6 +217,12 @@ class MessageBuffer:
         self.tool_calls.clear()
         self._processed_message_ids.clear()
 
+    # 【功能】统计「已经完成」的报告数量(用于仪表板底部的 Reports 计数)。
+    # 【参数】无
+    # 【返回】int:已完成的报告数。
+    # 【关键逻辑】一份报告算"完成"需同时满足:
+    #   ① 报告段落有内容(不是 None);② 负责定稿该报告的 Agent 状态为 "completed"。
+    #   这样可避免把中间过程(如辩论轮次的临时更新)误算成完成。
     def get_completed_reports_count(self):
         """Count reports that are finalized (their finalizing agent is completed).
 
@@ -192,24 +244,53 @@ class MessageBuffer:
                 count += 1
         return count
 
+    # 【功能】向消息队列追加一条普通消息(带时间戳)。
+    # 【参数】message_type:消息类型(如 "System" / "Agent" / "User");
+    #         content:消息正文。
+    # 【返回】无
+    # 【关键逻辑】时间戳取当前本地时间 %H:%M:%S;消息会显示在仪表板的
+    #            "Messages & Tools" 面板中。
     def add_message(self, message_type, content):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.messages.append((timestamp, message_type, content))
 
+    # 【功能】向工具调用队列追加一条工具调用记录(带时间戳)。
+    # 【参数】tool_name:被调用的工具名称;args:传给工具的参数字典。
+    # 【返回】无
+    # 【关键逻辑】与 add_message 类似,专门记录 Agent 调用过哪些工具,
+    #            便于在仪表板上展示工具使用轨迹。
     def add_tool_call(self, tool_name, args):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.tool_calls.append((timestamp, tool_name, args))
 
+    # 【功能】更新某个 Agent 的状态,并把它记为"当前正在运行的 Agent"。
+    # 【参数】agent:Agent 名称;status:新状态("pending"/"in_progress"/"completed"/"error")。
+    # 【返回】无
+    # 【关键逻辑】只有 agent 已存在于 agent_status 中才更新;同时把 current_agent
+    #            指向它,供仪表板高亮当前活跃的 Agent。
     def update_agent_status(self, agent, status):
         if agent in self.agent_status:
             self.agent_status[agent] = status
             self.current_agent = agent
 
+    # 【功能】更新某个报告段落的内容。
+    # 【参数】section_name:段落名(如 "market_report" / "technical_report");
+    #         content:新的报告内容。
+    # 【返回】无
+    # 【关键逻辑】写回报告段落后,调用 _update_current_report() 刷新"当前报告"面板。
     def update_report_section(self, section_name, content):
         if section_name in self.report_sections:
             self.report_sections[section_name] = content
             self._update_current_report()
 
+    # 【功能】根据最新更新的报告段落,重新组装"当前报告"(面板只展示最近更新的那一段)。
+    # 【参数】无
+    # 【返回】无
+    # 【关键逻辑】
+    #   - 遍历 report_sections,取最后一个有内容的段落作为 current_report;
+    #   - 通过 section_titles 把内部段落名翻译成人类可读标题;
+    #   - 商品期货模式下,把股票专属标题覆盖为商品专属标题;
+    #   - 最后调用 _update_final_report() 维护完整最终报告。
     def _update_current_report(self):
         # For the panel display, only show the most recently updated section
         latest_section = None
@@ -247,6 +328,11 @@ class MessageBuffer:
         # Update the final complete report
         self._update_final_report()
 
+    # 【功能】把所有已有报告段落拼接成一份完整的 Markdown 最终报告(final_report)。
+    # 【参数】无
+    # 【返回】无
+    # 【关键逻辑】按"分析师团队 → 研究团队 → 交易团队 → 组合管理"的顺序拼接;
+    #            用 .get() 跳过缺失的段落;没有任何段落时 final_report 为 None。
     def _update_final_report(self):
         report_parts = []
 
@@ -290,9 +376,17 @@ class MessageBuffer:
         self.final_report = "\n\n".join(report_parts) if report_parts else None
 
 
+# message_buffer:全局唯一的 UI 状态缓冲池实例,整个 CLI 运行期间各函数都读写它。
 message_buffer = MessageBuffer()
 
 
+# 【功能】创建 Rich Live 仪表板的整体布局(header / main / footer 三行)。
+# 【参数】commodity_mode:True 表示商品期货模式,会在布局对象上打一个标记。
+# 【返回】Rich Layout 对象。
+# 【关键逻辑】用 split_column / split_row 把终端屏幕切分:
+#   header(3 行) → main(upper + analysis) → footer(3 行);
+#   upper 再分成 progress(进度) 与 messages(消息) 两栏;
+#   并把 _commodity_mode 标记挂在 Layout 对象上,供 update_display 读取。
 def create_layout(commodity_mode=False):
     layout = Layout()
     layout.split_column(
@@ -307,6 +401,9 @@ def create_layout(commodity_mode=False):
     return layout
 
 
+# 【功能】把 token 数量格式化为易读的字符串(≥1000 时显示为 x.xk)。
+# 【参数】n:token 数(整数)。
+# 【返回】str:格式化后的字符串(如 "1500" → "1.5k")。
 def format_tokens(n):
     """Format token count for display."""
     if n >= 1000:
@@ -314,6 +411,17 @@ def format_tokens(n):
     return str(n)
 
 
+# 【功能】根据 message_buffer 里的最新状态,重新渲染 Rich Live 仪表板的各个面板。
+# 【参数】layout:Rich Layout 对象;spinner_text:保留参数(签名中有但函数体未使用)【待确认】;
+#         stats_handler:统计回调(提供 LLM 调用次数 / 工具次数 / token 数);
+#         start_time:开始时间(用于计算已运行时长)。
+# 【返回】无
+# 【关键逻辑】这是仪表板的核心刷新函数,分析流每产出一个新 chunk 都会被调用一次:
+#   - header  :固定欢迎横幅;
+#   - progress:按 agent_status 渲染"团队 / Agent / 状态"表格,运行中的 Agent 显示转圈动画;
+#   - messages:把工具调用与普通消息合并、按时间倒序、截断超长文本,显示最近 12 条;
+#   - analysis:展示当前报告(Markdown 渲染)或等待占位文本;
+#   - footer  :汇总 Agent 完成数、LLM / 工具统计、报告完成数、已运行时间。
 def update_display(layout, spinner_text=None, stats_handler=None, start_time=None):
     # Header with welcome message
     layout["header"].update(
@@ -535,6 +643,24 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     layout["footer"].update(Panel(stats_table, border_style="grey50"))
 
 
+# 【功能】在分析启动前,通过一轮交互式问答收集用户的全部选择。
+# 【参数】无
+# 【返回】dict:选择结果字典。股票 / 加密路径包含 ticker、asset_type、analysis_date、
+#             analysts、research_depth、llm_provider、backend_url、shallow_thinker、
+#             deep_thinker、各提供商专属推理配置、output_language;
+#             商品期货路径返回更精简的字段(ticker / analysis_date / asset_type /
+#             analysts / output_language)。
+# 【关键逻辑】
+#   股票 / 加密主流程(Step1~Step8):
+#     Step1 输入 ticker → 自动识别资产类型 → Step2 分析日期 → Step3 输出语言
+#     Step4 选分析师 → Step5 研究深度 → Step6 选 LLM 提供商
+#       (qwen / minimax / glm 还会追问区域;ollama 会确认端点;
+#        openai_compatible 无默认地址时会询问地址)
+#     Step7 选思考 Agent(快 / 慢)→ Step8 提供商专属推理配置(如 Gemini thinking / OpenAI reasoning)
+#   商品期货分支:检测到 AssetType.COMMODITY_FUTURES 时走精简流程(见下方),
+#     跳过股票专属的 Step5~Step8。
+#   每个步骤都支持用对应的 TRADINGAGENTS_* 环境变量"免交互"跳过,遵循
+#   "环境变量优先于交互选择"的规则。
 def get_user_selections():
     """Get all user selections before starting the analysis display."""
     # Display ASCII art welcome message
@@ -565,6 +691,9 @@ def get_user_selections():
     display_announcements(console, announcements)
 
     # Create a boxed questionnaire for each step
+    # 【功能】生成一个带标题和提示语的小方框(Panel),用于逐步提问。
+    # 【参数】title:步骤标题;prompt:提示语;default:可选默认值(展示在底部)。
+    # 【返回】Rich Panel 对象,可直接 console.print 输出。
     def create_question_box(title, prompt, default=None):
         box_content = f"[bold]{title}[/bold]\n"
         box_content += f"[dim]{prompt}[/dim]"
@@ -572,6 +701,12 @@ def get_user_selections():
             box_content += f"\n[dim]Default: {default}[/dim]"
         return Panel(box_content, border_style="blue", padding=(1, 2))
 
+    # 【功能】若设置了环境变量则直接用配置值并跳过提问;否则展示问题框并交互询问。
+    # 【参数】env_var:环境变量名;config_key:DEFAULT_CONFIG 中对应的键;
+    #         label:展示给用户的标签;box_title / box_body:问题框的标题与正文;
+    #         prompt_fn:具体的交互提问函数(如 ask_gemini_thinking_config)。
+    # 【返回】用户最终使用的值(来自环境变量或交互提问)。
+    # 【关键逻辑】体现"环境变量优先于交互"规则:只要设置了 env_var,就不打扰用户。
     def thinking_value_or_prompt(env_var, config_key, label, box_title, box_body, prompt_fn):
         """Return the env-configured reasoning/thinking value, or prompt for it.
 
@@ -603,6 +738,9 @@ def get_user_selections():
         console.print(f"[green]Detected asset type:[/green] {asset_type.value}")
 
     # --- Commodity futures branch ---
+    # 【商品期货路径】检测到 ticker 是商品期货代码(AssetType.COMMODITY_FUTURES)时,
+    # 走更精简的交互流程:重新校验商品代码 → 分析日期 → 输出语言 → 选商品分析师,
+    # 然后直接返回,跳过股票 / 加密路径的 Step5~Step8。
     if asset_type == AssetType.COMMODITY_FUTURES:
         # Re-prompt with commodity-specific validation
         selected_ticker = get_commodity_ticker()
@@ -826,6 +964,10 @@ def get_user_selections():
     }
 
 
+# 【功能】交互式获取分析日期(YYYY-MM-DD),并校验格式正确且不能在未来。
+# 【参数】无
+# 【返回】str:合法的日期字符串(如 "2026-08-12")。
+# 【关键逻辑】用 while 循环反复提问,直到输入合法;失败时打印红色错误并重新询问。
 def get_analysis_date():
     """Get the analysis date from user input."""
     while True:
@@ -841,11 +983,23 @@ def get_analysis_date():
             console.print("[red]Error: Invalid date format. Please use YYYY-MM-DD[/red]")
 
 
+# 【功能】把完整分析报告写入磁盘。
+# 【参数】final_state:最终状态字典;ticker:资产代码;save_path:保存目录。
+# 【返回】write_report_tree 的返回值(通常是写出的报告文件信息)。
+# 【关键逻辑】这是 CLI 与 API 共用的报告写入函数,具体实现见 write_report_tree。
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
     """Save the complete analysis report to disk (shared CLI/API writer)."""
     return write_report_tree(final_state, ticker, save_path)
 
 
+# 【功能】在终端按顺序完整展示最终分析报告(避免长报告被终端截断)。
+# 【参数】final_state:最终状态字典。
+# 【返回】无
+# 【关键逻辑】
+#   - 商品期货路径:展示技术 / 基本面 / 宏观 / 讨论 / 综合建议 / 用户反馈等商品专属段落;
+#   - 股票 / 加密路径:按 Ⅰ分析师团队 → Ⅱ研究团队 → Ⅲ交易团队
+#     → Ⅳ风控团队 → Ⅴ组合管理决策 的顺序逐段输出;
+#   - 只展示 final_state 中"存在且有内容"的段落。
 def display_complete_report(final_state):
     """Display the complete analysis report sequentially (avoids truncation)."""
     console.print()
@@ -947,6 +1101,10 @@ def display_complete_report(final_state):
             )
 
 
+# 【功能】批量更新研究团队成员(Bull Researcher / Bear Researcher / Research Manager)的状态。
+# 【参数】status:要设置的状态字符串(如 "in_progress" / "completed")。
+# 【返回】无
+# 【关键逻辑】注意不含 Trader,Trader 由交易团队逻辑单独控制。
 def update_research_team_status(status):
     """Update status for research team members (not Trader)."""
     research_team = ["Bull Researcher", "Bear Researcher", "Research Manager"]
@@ -954,14 +1112,17 @@ def update_research_team_status(status):
         message_buffer.update_agent_status(agent, status)
 
 
+# 分析师执行顺序(股票 / 加密路径):决定状态流转时谁先运行、谁是下一个。
 # Ordered list of analysts for status transitions
 ANALYST_ORDER = ["market", "social", "news", "fundamentals"]
+# 分析师 key → 展示用的 Agent 名称 的映射。
 ANALYST_AGENT_NAMES = {
     "market": "Market Analyst",
     "social": "Sentiment Analyst",
     "news": "News Analyst",
     "fundamentals": "Fundamentals Analyst",
 }
+# 分析师 key → 报告段落 key 的映射。
 ANALYST_REPORT_MAP = {
     "market": "market_report",
     "social": "sentiment_report",
@@ -970,6 +1131,15 @@ ANALYST_REPORT_MAP = {
 }
 
 
+# 【功能】根据「累积」的报告段落状态,更新各分析师在仪表板上的运行状态。
+# 【参数】message_buffer:UI 状态缓冲池;chunk:当前流式返回的数据块;
+#         wall_time_tracker:可选,用于同步分析师真实耗时统计。
+# 【返回】无
+# 【关键逻辑】
+#   - 判断状态时优先看累积的 report_sections,而不只看当前 chunk;
+#   - 有报告的 = "completed";第一个没报告的 = "in_progress";其余没报告的 = "pending";
+#   - 当所有选中的分析师都完成后,把 Bull Researcher 置为 "in_progress",
+#     从而把进度推进到下一阶段(研究辩论)。
 def update_analyst_statuses(message_buffer, chunk, wall_time_tracker=None):
     """Update analyst statuses based on accumulated report state.
 
@@ -1018,12 +1188,21 @@ def update_analyst_statuses(message_buffer, chunk, wall_time_tracker=None):
         message_buffer.update_agent_status("Bull Researcher", "in_progress")
 
 
+# 【功能】从各种消息格式(str / dict / list)中提取出文本内容;没有有效文本则返回 None。
+# 【参数】content:消息内容,可能是字符串、字典(含 "text" 键)、或列表(openai 风格的 content 块)。
+# 【返回】str 或 None。
+# 【关键逻辑】用 is_empty() 判断"看似有值实为空"的输入;列表则把所有 text 片段拼接起来。
 def extract_content_string(content):
     """Extract string content from various message formats.
     Returns None if no meaningful text content is found.
     """
     import ast
 
+    # 【功能】判断一个值是否"为空"(None、空串、全空白、可解析为空结构等)。
+    # 【参数】val:任意值。
+    # 【返回】bool:True 表示空。
+    # 【关键逻辑】字符串先去空白(strip)再尝试 ast.literal_eval,
+    #            能解析出空结构(如 "{}" / "[]")也算空;解析失败说明是真实文本。
     def is_empty(val):
         """Check if value is empty using Python's truthiness."""
         if val is None or val == "":
@@ -1061,6 +1240,15 @@ def extract_content_string(content):
     return str(content).strip() if not is_empty(content) else None
 
 
+# 【功能】把 LangChain 消息分类为展示类型,并抽取文本内容。
+# 【参数】message:LangChain 消息对象(HumanMessage / ToolMessage / AIMessage 等)。
+# 【返回】(type, content):type 为 "User" / "Agent" / "Data" / "Control" / "System";
+#             content 为抽取出的字符串或 None。
+# 【关键逻辑】
+#   - HumanMessage → "User"(内容恰为 "Continue" 时归为 "Control",用于触发继续);
+#   - ToolMessage  → "Data"(工具返回的数据);
+#   - AIMessage    → "Agent"(模型产出);
+#   - 未知类型     → "System"。
 def classify_message_type(message) -> tuple[str, str | None]:
     """Classify LangChain message into display type and extract content.
 
@@ -1087,6 +1275,9 @@ def classify_message_type(message) -> tuple[str, str | None]:
     return ("System", content)
 
 
+# 【功能】把工具参数格式化为适合终端显示的字符串,超长则截断加省略号。
+# 【参数】args:工具参数;max_length:最大显示长度(默认 80)。
+# 【返回】str:格式化后的字符串。
 def format_tool_args(args, max_length=80) -> str:
     """Format tool arguments for terminal display."""
     result = str(args)
@@ -1095,6 +1286,19 @@ def format_tool_args(args, max_length=80) -> str:
     return result
 
 
+# 【功能】分析完成后的交互式命令循环,持续等待用户输入命令,直到显式退出。
+# 【参数】llm:语言模型对象;final_state:最终状态字典;ticker:资产代码;
+#         report_dir:报告保存目录;feedback_node:用户反馈节点(可为 None);
+#         feedback_enabled:是否启用反馈功能。
+# 【返回】无
+# 【关键逻辑】
+#   - 因为系统已支持用户反馈与辩论,分析结束后不再自动退出,而是进入循环;
+#   - /feedback 或 /fb:调用 feedback_node 启动一轮"用户反馈辩论"会话,
+#     结果(若有)写入 report_dir/user_feedback_summary.md;
+#   - /exit /quit /q 或 exit / quit / q:退出程序;
+#   - /help /h 或 help:打印可用命令;
+#   - Ctrl+C 或文件结束(EOFError)也能安全退出;
+#   - 未知命令给出黄色提示,并继续循环。
 def _run_interactive_loop(
     llm,
     final_state: dict,
@@ -1183,6 +1387,25 @@ def _run_interactive_loop(
             )
 
 
+# 【功能】运行商品期货分析:用 LangGraph 构建「并行分析师 → 综合研判」的简化图,
+#         并用 Rich Live 仪表板实时展示进度。
+# 【参数】selections:get_user_selections() 返回的商品选择字典;
+#         config:运行配置(已由 _build_run_config 组装);
+#         stats_handler:LLM / 工具调用统计回调(用于仪表板 footer 统计)。
+# 【返回】无
+# 【关键逻辑】
+#   - 依据用户选中的分析师,动态向 StateGraph 添加节点:技术 / 基本面 / 宏观 /
+#     情绪分析师各自独立运行,最终都汇入 "synthesis" 综合节点;
+#   - synthesis_node 把四份报告拼进一个中文 prompt,让 LLM 给出带
+#     RATING / CONFIDENCE / SCORE 结构化头部的综合研判,写入 investment_plan 与
+#     final_trade_decision;
+#   - cli_progress_callback 把工具调用事件喂进 message_buffer,供仪表板展示;
+#   - 使用 Live(layout, refresh_per_second=4) 实时刷新;Windows GBK 终端若启动失败
+#     则回退到简单的文本输出(use_live=False);
+#   - 流式执行:app.stream(..., stream_mode="values") 每个 chunk 都是完整状态,
+#     用 final_state.update(chunk) 逐步累积;
+#   - 结束后把各报告段落写入 .md 文件并生成 complete_report.md,
+#     调用 display_complete_report() 展示,最后进入 _run_interactive_loop 反馈循环。
 def _run_commodity_analysis(selections: dict, config: dict, stats_handler):
     """Run commodity futures analysis with the simplified parallel graph."""
     from tradingagents.dataflows.commodity_futures import get_variety_info
@@ -1217,6 +1440,11 @@ def _run_commodity_analysis(selections: dict, config: dict, stats_handler):
     llm = llm_client.get_llm()
 
     # CLI progress callback: feeds tool-call events into the Rich Live dashboard
+    # 【功能】工具调用回调:把"工具调用 / 工具结果"事件写入 message_buffer,
+    #         供 Rich Live 仪表板实时展示。
+    # 【参数】event_type:"tool_call"(工具被调用)或 "tool_result"(工具返回结果);
+    #         data:事件数据(含 tool_name / args / label / preview 等)。
+    # 【返回】无
     def cli_progress_callback(event_type, data):
         if event_type == "tool_call":
             message_buffer.add_tool_call(data["tool_name"], data.get("args", {}))
@@ -1281,6 +1509,12 @@ def _run_commodity_analysis(selections: dict, config: dict, stats_handler):
         return
 
     # Synthesis node
+    # 【功能】商品期货「综合研判」节点:把四份独立分析合成一份最终建议。
+    # 【参数】state:当前 AgentState,含 technical / fundamental / macro / sentiment 报告。
+    # 【返回】dict:{"investment_plan": 综合结论, "final_trade_decision": 同一结论}。
+    # 【关键逻辑】用一段中文 prompt 让 LLM 做四维度加权判断,要求第一行必须是
+    #            "RATING: [...] | CONFIDENCE: [...] | SCORE: [...]" 结构化头部;
+    #            情绪数据过少(<10 条)时权重≤5%,情绪极端时按反向信号处理。
     def synthesis_node(state):
         technical = state.get("technical_report", "")
         fundamental = state.get("fundamental_report", "")
@@ -1395,6 +1629,8 @@ RATING: [...] | CONFIDENCE: [...] | SCORE: [...]
     message_buffer.add_message("System", f"Date: {trade_date}")
     message_buffer.add_message("System", f"Analysts: {len(selections['analysts'])} selected")
 
+    # 启动 Rich Live 实时仪表板:refresh_per_second=4 表示每秒重绘约 4 次。
+    # 部分 Windows GBK 终端不支持 Rich Live,启动失败则回退到简单文本输出。
     try:
         layout = create_layout(commodity_mode=True)
         live_ctx = Live(layout, refresh_per_second=4)
@@ -1414,6 +1650,8 @@ RATING: [...] | CONFIDENCE: [...] | SCORE: [...]
     # Accumulate final state from stream chunks (avoids re-running analysis)
     final_state = {}
     try:
+        # 流式执行:app.stream(..., stream_mode="values") 逐块产出最新完整状态。
+        # 每收到一个 chunk 就更新 message_buffer 并刷新仪表板,形成"实时进度"效果。
         # Stream execution — each chunk IS the full state (stream_mode="values" default)
         for chunk in app.stream(initial_state, stream_mode="values"):
             # chunk IS the full AgentState dict (stream_mode="values")
@@ -1503,6 +1741,15 @@ RATING: [...] | CONFIDENCE: [...] | SCORE: [...]
     _run_interactive_loop(llm, final_state, ticker, report_dir, feedback_node, feedback_enabled)
 
 
+# 【功能】根据用户交互选择(并结合环境变量优先规则)组装最终运行配置 dict。
+# 【参数】selections:get_user_selections() 返回的选择字典;
+#         checkpoint:bool | None,是否启用断点续跑(由 --checkpoint/--no-checkpoint 传入)。
+# 【返回】dict:最终运行配置(基于 DEFAULT_CONFIG 复制并覆盖)。
+# 【关键逻辑】
+#   - 商品期货路径:只覆盖 output_language,跳过辩论 / 风控 / LLM 等股票专属配置;
+#   - 轮次与 checkpoint 遵循"显式设置优先"规则:环境变量若已设置则不覆盖交互值;
+#   - 把思考 Agent、后端 URL、LLM 提供商、提供商专属推理配置写入 config;
+#   - checkpoint 只有在显式传入(非 None)时才覆盖 config["checkpoint_enabled"]。
 def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     """Assemble the run config from interactive selections, honoring env precedence.
 
@@ -1540,6 +1787,20 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     return config
 
 
+# 【功能】主分析流程:收集用户选择 → 组装配置 → 建图 → 流式运行 → 保存与展示。
+# 【参数】checkpoint:bool | None,是否启用断点续跑(默认 None,遵从环境变量)。
+# 【返回】无
+# 【关键逻辑】
+#   - 商品期货分支:直接交给 _run_commodity_analysis() 处理并返回;
+#   - 股票 / 加密分支:
+#     ① 规范化分析师顺序,构建执行计划与分析耗时跟踪器;
+#     ② 用 TradingAgentsGraph 创建分析图,绑定 stats_handler 回调;
+#     ③ 用装饰器给 message_buffer 的写入方法附加"写日志 / 落盘"功能
+#        (message_tool.log 与各报告段落 .md);
+#     ④ 进入 with Live(...) 实时渲染上下文,逐 chunk 流式运行图;
+#     ⑤ 每个 chunk:去重消息、更新分析师 / 团队状态、刷新仪表板;
+#     ⑥ 结束后合并各 chunk 为 final_state,把全部 Agent 置为 completed;
+#     ⑦ 退出 Live 后询问:是否保存报告、是否在屏幕上完整展示报告。
 def run_analysis(checkpoint: bool | None = None):
     # First get all user selections
     selections = get_user_selections()
@@ -1552,6 +1813,7 @@ def run_analysis(checkpoint: bool | None = None):
     # ================================================================
     # Commodity Futures Path
     # ================================================================
+    # 商品期货路径:复用 commodity_demo.py 的简化并行分析图,在此单独分流。
     if selections.get("asset_type") == "commodity_futures":
         _run_commodity_analysis(selections, config, stats_handler)
         return
@@ -1584,10 +1846,18 @@ def run_analysis(checkpoint: bool | None = None):
     log_file = results_dir / "message_tool.log"
     log_file.touch(exist_ok=True)
 
+    # 【功能】包装 message_buffer.add_message:调用原方法后,把最新一条消息
+    #         追加写入 log 文件(message_tool.log)。
+    # 【参数】obj:被包装的对象(message_buffer);func_name:方法名。
+    # 【返回】wrapper 函数(替代原方法)。
+    # 【关键逻辑】把正文中的换行替换为空格,按 "时间 [类型] 内容" 格式逐行追加。
     def save_message_decorator(obj, func_name):
         func = getattr(obj, func_name)
 
         @wraps(func)
+        # 【功能】装饰后的替代函数:先执行原 add_message,再把最新一条消息写进日志。
+        # 【参数】*args, **kwargs:原 add_message 的参数。
+        # 【返回】原方法的返回值。
         def wrapper(*args, **kwargs):
             func(*args, **kwargs)
             timestamp, message_type, content = obj.messages[-1]
@@ -1597,10 +1867,17 @@ def run_analysis(checkpoint: bool | None = None):
 
         return wrapper
 
+    # 【功能】包装 message_buffer.add_tool_call:调用原方法后,把工具调用
+    #         以 "时间 [Tool Call] 工具名(参数)" 格式追加写入 log 文件。
+    # 【参数】obj:被包装的对象;func_name:方法名。
+    # 【返回】wrapper 函数(替代原方法)。
     def save_tool_call_decorator(obj, func_name):
         func = getattr(obj, func_name)
 
         @wraps(func)
+        # 【功能】装饰后的替代函数:先执行原 add_tool_call,再把最新工具调用写进日志。
+        # 【参数】*args, **kwargs:原 add_tool_call 的参数。
+        # 【返回】原方法的返回值。
         def wrapper(*args, **kwargs):
             func(*args, **kwargs)
             timestamp, tool_name, args = obj.tool_calls[-1]
@@ -1610,10 +1887,19 @@ def run_analysis(checkpoint: bool | None = None):
 
         return wrapper
 
+    # 【功能】包装 message_buffer.update_report_section:调用原方法后,
+    #         把对应报告段落单独保存为 <段落名>.md 文件。
+    # 【参数】obj:被包装的对象;func_name:方法名。
+    # 【返回】wrapper 函数(替代原方法)。
+    # 【关键逻辑】内容若是 list 则逐项拼成字符串;段落存在且有内容时才写文件。
     def save_report_section_decorator(obj, func_name):
         func = getattr(obj, func_name)
 
         @wraps(func)
+        # 【功能】装饰后的替代函数:先执行原 update_report_section,
+        #         再把该报告段落单独落盘为 <段落名>.md。
+        # 【参数】section_name:段落名;content:报告内容。
+        # 【返回】原方法的返回值。
         def wrapper(section_name, content):
             func(section_name, content)
             if (
@@ -1642,6 +1928,8 @@ def run_analysis(checkpoint: bool | None = None):
     # Now start the display layout
     layout = create_layout()
 
+    # Rich Live 仪表板入口:进入 Live 上下文后,每次调用 update_display() 更新面板,
+    # Rich 会以约 4 次/秒的节奏把新画面重绘到终端,形成"实时仪表板"效果。
     with Live(layout, refresh_per_second=4):
         # Initial display
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
@@ -1686,6 +1974,9 @@ def run_analysis(checkpoint: bool | None = None):
 
         # Stream the analysis
         trace = []
+        # 流式运行分析图:graph.graph.stream(...) 每个 chunk 是当前节点的增量更新。
+        # 每收到一块就处理消息、更新分析师/团队状态并调用 update_display() 重绘
+        # 仪表板,让用户实时看到分析进度。
         for chunk in graph.graph.stream(init_agent_state, **args):
             # Process all messages in chunk, deduplicating by message ID
             for message in chunk.get("messages", []):
@@ -1836,6 +2127,25 @@ def run_analysis(checkpoint: bool | None = None):
         display_complete_report(final_state)
 
 
+# =====================================================================
+# analyze —— 本 CLI 的「真正入口命令」(注册到 Typer)。
+# 命令行用法示例:
+#   python -m cli.main analyze                      # 默认交互式运行
+#   python -m cli.main analyze --no-checkpoint      # 禁用断点续跑
+#   python -m cli.main analyze --clear-checkpoints  # 先清空断点再运行
+#
+# 【功能】CLI 命令入口:可选清空已保存断点,然后启动完整分析流程。
+# 【参数】
+#   checkpoint:bool | None —— 三态布尔选项:
+#     --checkpoint        启用断点续跑(每个节点后保存状态,崩溃后可恢复);
+#     --no-checkpoint     禁用断点续跑;
+#     不传                遵从 TRADINGAGENTS_CHECKPOINT_ENABLED 环境变量或默认值。
+#   clear_checkpoints:bool —— 传 --clear-checkpoints 时先删除所有已保存断点
+#                            (强制从零开始的分析)。
+# 【返回】无
+# 【关键逻辑】若指定 --clear-checkpoints,先调用 clear_all_checkpoints 清空
+#            data_cache_dir 下的断点,再调用 run_analysis(checkpoint=checkpoint)。
+# =====================================================================
 @app.command()
 def analyze(
     checkpoint: bool | None = typer.Option(
@@ -1858,5 +2168,7 @@ def analyze(
     run_analysis(checkpoint=checkpoint)
 
 
+# 当本文件被直接运行(python cli/main.py)时,进入 Typer 应用入口。
+# 实际会解析命令行参数并调度到 analyze 命令。
 if __name__ == "__main__":
     app()
