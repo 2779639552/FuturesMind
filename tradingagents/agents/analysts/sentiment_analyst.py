@@ -44,18 +44,18 @@ Note: This file replaces the original stock-market sentiment_analyst.py
 #   的 import 链继续可用，实际商品期货分析请用 create_commodity_sentiment_analyst。
 # =============================================================================
 
-import logging
+import logging  # 【调用包】标准库日志;记录情绪分析工具调用信息与分析失败异常
 
-from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, ToolMessage  # 【调用包】LangChain 消息类型;HumanMessage 承载最终情绪报告、ToolMessage 回填工具结果给 LLM
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # 【调用包】构建带历史占位符的提示模板;让 LLM 依据对话历史决策
 
-from tradingagents.agents.utils.agent_utils import get_language_instruction
+from tradingagents.agents.utils.agent_utils import get_language_instruction  # 【调用包】语言指令;在系统提示末尾追加"用中文输出"约束
 from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_price,
     get_futures_sentiment,
     get_variety_info,
     get_verified_quote,
-)
+)  # 【调用包】商品期货情绪/行情/品种信息/核验报价工具;情绪数据由 get_futures_sentiment 读取(思路2 项目采集)
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def _run_tool_loop(
             progress_callback("iteration", {"current": iteration, "max": max_iterations})
 
         # 关键一步：把全部历史消息连同工具定义交给 LLM，返回可能含 tool_calls 的响应。
-        response = llm.bind_tools(tools).invoke(messages)
+        response = llm.bind_tools(tools).invoke(messages)  # 【调用函数】LLM 核心调用:绑定工具后让 LLM 决策(是否调用工具/调用哪些)
         # 把 LLM 本轮回答追加进对话历史，保持上下文连贯。
         messages.append(response)
 
@@ -153,7 +153,7 @@ def _run_tool_loop(
             if tool_name in tool_map:
                 try:
                     # 真正执行工具函数（@tool 函数可用 .invoke(args) 调用）。
-                    result = tool_map[tool_name].invoke(tool_args)
+                    result = tool_map[tool_name].invoke(tool_args)  # 【调用函数】调度执行 LLM 请求的工具(实际取数),结果将回填给 LLM
                     # 工具返回可能很长，截断到 8000 字符，避免撑爆 LLM 上下文。
                     if isinstance(result, str) and len(result) > 8000:
                         result = result[:8000] + "\n... (truncated for length)"
@@ -179,7 +179,7 @@ def _run_tool_loop(
 
             # 关键一步：把工具结果以 ToolMessage 形式回填给 LLM。
             # tool_call_id 必须与上文 LLM 请求里的 id 一致，LLM 才能关联到对应调用。
-            messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
+            messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))  # 【调用函数】把工具结果包装为 ToolMessage 回填,按 tool_call_id 与 LLM 请求配对
 
     # 循环终止条件之二：达到最大轮数仍未结束，强制返回最后一次 LLM 输出，避免无限循环。
     logger.warning(
@@ -233,7 +233,7 @@ def create_commodity_sentiment_analyst(llm, label="Sentiment", progress_callback
         current_date = state["trade_date"]
         symbol = state["company_of_interest"]
 
-        tools = [
+        tools = [  # 【变量】本节点向 LLM 注册的工具白名单(情绪/行情/品种/核验报价),将被 bind_tools 绑定
             get_variety_info,
             get_futures_price,
             get_futures_sentiment,
@@ -317,12 +317,12 @@ End with:
 """ + get_language_instruction()
 
         # --- Self-Evolution Injection ---
-        evolution_ctx = state.get("past_context", "")
+        evolution_ctx = state.get("past_context", "")  # 【变量】进化记忆上下文;非空时前置到系统提示,让分析师参考历史教训与用户偏好
         if evolution_ctx:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
-        prompt = ChatPromptTemplate.from_messages(
+        prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [
                 (
                     "system",
@@ -340,11 +340,11 @@ End with:
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(symbol=symbol)
 
-        initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]
+        initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]  # 【调用函数】用历史消息填充模板,生成对话初始消息
 
         try:
             report = _run_tool_loop(
-                llm, tools, initial_messages, progress_callback=progress_callback, label=label
+                llm, tools, initial_messages, progress_callback=progress_callback, label=label  # 【调用函数】进入工具循环:LLM 决策→取数→写报告,直至完成或达轮数上限
             )
         except Exception as e:
             logger.error("Sentiment analyst failed: %s", e)
@@ -387,7 +387,7 @@ def create_sentiment_analyst(llm):
     # 【返回】sentiment_analyst_node 函数，签名 node(state)。
     # 【关键逻辑】发出 FutureWarning 提示用户改走 create_commodity_sentiment_analyst，
     #            然后返回一个"只会报告数据不可用"的占位节点。
-    import warnings
+    import warnings  # 【调用包】标准库警告;发出弃用/兼容性警告
 
     warnings.warn(
         "create_sentiment_analyst: stock-path sentiment analyst is a shim. "
@@ -401,7 +401,7 @@ def create_sentiment_analyst(llm):
         # 【功能】股票路径占位节点本体：不真正分析，只返回"情绪数据不可用"的提示消息。
         # 【参数】state: 图状态字典，仅用到 company_of_interest（当作股票代码读取）。
         # 【返回】dict：{"messages": [AIMessage(提示文本)], "sentiment_report": 提示文本}。
-        from langchain_core.messages import AIMessage
+        from langchain_core.messages import AIMessage  # 【调用包】LangChain 消息类型;占位节点用 AIMessage 返回不可用提示
 
         ticker = state.get("company_of_interest", "unknown")
         msg = (
@@ -429,7 +429,7 @@ def create_social_media_analyst(llm):
     # 【参数】llm: 透传给 create_sentiment_analyst。
     # 【返回】与 create_sentiment_analyst 相同的占位节点。
     # 【关键逻辑】发出 DeprecationWarning，然后直接委托给 create_sentiment_analyst(llm)。
-    import warnings
+    import warnings  # 【调用包】标准库警告;发出弃用/兼容性警告
 
     warnings.warn(
         "create_social_media_analyst is deprecated. Use create_sentiment_analyst instead.",

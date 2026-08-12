@@ -12,12 +12,15 @@ documents ``supportsToolChoice``, ``requiresReasoningContentForToolCalls``
 as declarative per-model fields).
 """
 
-from __future__ import annotations
+from __future__ import annotations  # 【调用包】启用延迟求值的类型注解
 
-import re
-from dataclasses import dataclass
-from typing import Literal
+import re  # 【调用包】用正则做前向兼容的模型名模式匹配
+from dataclasses import dataclass  # 【调用包】定义 ModelCapabilities 数据类
+from typing import Literal  # 【调用包】定义结构化输出方式的字面量类型
 
+# 【变量】结构化输出方式枚举: function_calling(工具+尊重 supports_tool_choice) /
+#         json_mode(response_format=json_object) / json_schema(response_format=
+#         json_schema) / none(无可用方式, 调用方退化为自由文本)
 StructuredMethod = Literal[
     "function_calling",  # uses tools; respects supports_tool_choice
     "json_mode",  # uses response_format={"type":"json_object"}
@@ -26,6 +29,12 @@ StructuredMethod = Literal[
 ]
 
 
+# 【功能】声明式描述一个 OpenAI 兼容模型在 API 层面的能力。
+# 【变量】supports_tool_choice / supports_json_mode / supports_json_schema:
+#         模型是否接受对应参数; preferred_structured_method: 首选结构化方式;
+#         requires_reasoning_content_roundtrip: DeepSeek 思维模型要求下一轮回传
+#         reasoning_content, 否则 400; requires_reasoning_split: MiniMax M2.x
+#         推理模型需 reasoning_split=True, 让 <think> 块落入 reasoning_details。
 @dataclass(frozen=True)
 class ModelCapabilities:
     """What an OpenAI-compatible model accepts at the API level."""
@@ -51,6 +60,8 @@ class ModelCapabilities:
 # (api-docs.deepseek.com/guides/tool_calls) pass ``tools=[...]`` without
 # ``tool_choice`` — we mirror that pattern by setting supports_tool_choice
 # to False and letting the client suppress the kwarg.
+# 【变量】DeepSeek 思维模型能力: 接受 tools 数组但拒绝 tool_choice 参数,
+#         并需 reasoning_content 回传(见官方 Oh My Pi 集成指南与 #678/#400)。
 _DEEPSEEK_THINKING = ModelCapabilities(
     supports_tool_choice=False,
     supports_json_mode=True,
@@ -59,6 +70,7 @@ _DEEPSEEK_THINKING = ModelCapabilities(
     requires_reasoning_content_roundtrip=True,
 )
 
+# 【变量】DeepSeek 非思维(chat)模型能力: 支持 tool_choice。
 _DEEPSEEK_CHAT = ModelCapabilities(
     supports_tool_choice=True,
     supports_json_mode=True,
@@ -74,6 +86,8 @@ _DEEPSEEK_CHAT = ModelCapabilities(
 # makes the dispatch in NormalizedChatOpenAI suppress the kwarg; the schema
 # still ships as a tool. json_mode response_format is only for
 # MiniMax-Text-01, not M2.x.
+# 【变量】MiniMax M2.x 推理模型能力: tool_choice 仅接受 {"none","auto"} 枚举,
+#         拒绝 langchain 发送的函数 spec dict; 需 reasoning_split=True。
 _MINIMAX_THINKING = ModelCapabilities(
     supports_tool_choice=False,
     supports_json_mode=False,
@@ -82,6 +96,7 @@ _MINIMAX_THINKING = ModelCapabilities(
     requires_reasoning_split=True,
 )
 
+# 【变量】默认能力(最宽松): 支持 tool_choice 与两种 json 结构化方式。
 _DEFAULT = ModelCapabilities(
     supports_tool_choice=True,
     supports_json_mode=True,
@@ -91,6 +106,7 @@ _DEFAULT = ModelCapabilities(
 
 
 # Exact-ID matches take precedence over pattern matches.
+# 【变量】按精确模型 ID 查询的能力表(优先于下面的模式匹配)
 _BY_ID: dict[str, ModelCapabilities] = {
     "deepseek-chat": _DEEPSEEK_CHAT,
     "deepseek-reasoner": _DEEPSEEK_THINKING,
@@ -109,6 +125,8 @@ _BY_ID: dict[str, ModelCapabilities] = {
 
 # Forward-compat patterns. New ``deepseek-v5-*`` / ``deepseek-reasoner-*``
 # or ``MiniMax-M3*`` variants inherit the thinking-mode quirks automatically.
+# 【变量】前向兼容模式列表: 未来的 deepseek-v5-* / deepseek-reasoner-* /
+#         MiniMax-M3* 自动继承思维模型特性, 无需逐个登记。
 _BY_PATTERN: list[tuple[re.Pattern[str], ModelCapabilities]] = [
     (re.compile(r"^deepseek-v\d"), _DEEPSEEK_THINKING),
     (re.compile(r"^deepseek-reasoner"), _DEEPSEEK_THINKING),
@@ -116,6 +134,8 @@ _BY_PATTERN: list[tuple[re.Pattern[str], ModelCapabilities]] = [
 ]
 
 
+# 【功能】解析某模型名的能力: 先精确 ID, 再模式匹配, 最后回退默认。
+# 【返回】ModelCapabilities 实例。
 def get_capabilities(model_name: str) -> ModelCapabilities:
     """Resolve capabilities by exact ID, then pattern, then default."""
     if model_name in _BY_ID:

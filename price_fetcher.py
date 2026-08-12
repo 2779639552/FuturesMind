@@ -20,16 +20,16 @@
 #        单品种拉取失败不会导致整体崩溃。
 # =============================================================================
 
-import json
-import logging
-from datetime import datetime
+import json  # 【调用包】JSON 读写(价格文件存取)
+import logging  # 【调用包】日志记录(拉取失败/刷新状态)
+from datetime import datetime  # 【调用包】时间戳生成(行情/更新时间)
 
-from path_utils import resolve_think2_dir
+from path_utils import resolve_think2_dir  # 【调用包】路径集中管理(定位趋势数据目录)
 
-logger = logging.getLogger("price_fetcher")
+logger = logging.getLogger("price_fetcher")  # 【变量】模块日志器(带模块名前缀)
 
 # Cache directory for price data
-PRICE_DIR = resolve_think2_dir() / "output" / "trends"
+PRICE_DIR = resolve_think2_dir() / "output" / "trends"  # 【变量】价格数据文件目录(output/trends)
 
 # AKShare 中文品种名 → TradingAgents 内部品种代码 的映射表(约 50 个品种)。
 # 覆盖黑色系(螺纹钢/铁矿/焦炭...)、有色贵金属(铜/铝/金/银...)、
@@ -37,7 +37,7 @@ PRICE_DIR = resolve_think2_dir() / "output" / "trends"
 # 以及股指国债(上证50/沪深300/中证500/五年国债...)。
 # 用途:实时行情按中文名调用 AKShare,返回结果用代码表示;历史数据保存时也要靠它翻译。
 # AKShare variety name → TradingAgents code mapping
-NAME_TO_CODE = {
+NAME_TO_CODE = {  # 【变量】中文品种名→内部代码映射表(实时行情/存盘翻译用)
     "螺纹钢": "RB",
     "热轧卷板": "HC",
     "铁矿石": "I",
@@ -99,7 +99,7 @@ NAME_TO_CODE = {
 # 分组说明:黑色系(含合金)、有色/贵金属、能化、农产品四大板块各取代表性品种。
 # 首次进入页面只拉前 8 个以加快首屏,随后补全其余品种(见 get_cached_prices)。
 # Default major varieties for live ticker (keep < 24 for speed)
-DEFAULT_LIVE_VARIETIES = [
+DEFAULT_LIVE_VARIETIES = [  # 【变量】默认实时展示的 24 个主力品种清单(首屏只取前 8 个提速)
     "RB",
     "J",
     "JM",
@@ -160,14 +160,14 @@ def fetch_realtime_prices(varieties: list[str] | None = None) -> dict:
 
     # 反向映射:代码 → 中文名(与 NAME_TO_CODE 方向相反,用于把代码翻译成接口参数)
     # Build reverse mapping: code → name
-    code_to_name = {v: k for k, v in NAME_TO_CODE.items()}
-    target_codes = set(varieties) if varieties else set(DEFAULT_LIVE_VARIETIES)
+    code_to_name = {v: k for k, v in NAME_TO_CODE.items()}  # 【变量】code_to_name:代码→中文名反向映射(把代码翻译成接口参数)
+    target_codes = set(varieties) if varieties else set(DEFAULT_LIVE_VARIETIES)  # 【变量】target_codes:本次要抓取的品种集合
 
     result = {}
 
     # Fetch all real-time futures data at once
     try:
-        df = ak.futures_zh_realtime(symbol="螺纹钢")  # any symbol triggers full fetch
+        df = ak.futures_zh_realtime(symbol="螺纹钢")  # any symbol triggers full fetch  # 【调用函数】AKShare 实时行情接口(尝试一次性抓全)
         # Actually, this returns only 螺纹钢. Let's try a broader approach.
     except Exception:
         df = None
@@ -178,11 +178,11 @@ def fetch_realtime_prices(varieties: list[str] | None = None) -> dict:
         if not name:
             continue
         try:
-            df = ak.futures_zh_realtime(symbol=name)
+            df = ak.futures_zh_realtime(symbol=name)  # 【调用函数】AKShare 实时行情接口(按中文名拉单品种 DataFrame)
             if df is None or df.empty:
                 continue
             # Get the main contract row (index 0)
-            row = df.iloc[0]
+            row = df.iloc[0]  # 【变量】row:主连合约第一行(视为该品种主力行情)
             result[code] = {
                 "price": float(row["trade"]) if row.get("trade") else 0,
                 "change_pct": float(row["changepercent"]) if row.get("changepercent") else 0,
@@ -210,8 +210,8 @@ def update_price_files(varieties: list[str] | None = None) -> dict:
 
     Adds new days to existing price files. Does NOT overwrite existing data.
     """
-    code_to_name = {v: k for k, v in NAME_TO_CODE.items()}
-    target = varieties if varieties else list(code_to_name.keys())
+    code_to_name = {v: k for k, v in NAME_TO_CODE.items()}  # 【变量】code_to_name:代码→中文名反向映射(把代码翻译成接口参数)
+    target = varieties if varieties else list(code_to_name.keys())  # 【变量】target:本次要更新价格的品种列表
 
     updated = {}
     for code in target:
@@ -243,20 +243,20 @@ def _update_single_price(code: str, name: str) -> dict:
     import akshare as ak
 
     # Load existing data
-    price_path = PRICE_DIR / f"{name}_price.json"
+    price_path = PRICE_DIR / f"{name}_price.json"  # 【变量】price_path:该品种的价格 JSON 文件路径
     existing = {}
     if price_path.exists():
         with open(price_path, encoding="utf-8") as f:
-            existing = json.load(f)
+            existing = json.load(f)  # 【调用函数】json.load:反序列化已有价格文件(无文件时为空)
 
-    existing_prices = existing.get("prices", [])
-    existing_dates = {p["date"] for p in existing_prices}
+    existing_prices = existing.get("prices", [])  # 【变量】existing_prices:已有日线列表(增量追加的基础)
+    existing_dates = {p["date"] for p in existing_prices}  # 【变量】existing_dates:已有日期集合(用于去重)
 
     # Fetch latest daily data
-    new_count = 0
+    new_count = 0  # 【变量】new_count:本次新增的日期数
     try:
         # Use Sina daily data
-        df = ak.futures_zh_daily_sina(symbol=f"{code}0")
+        df = ak.futures_zh_daily_sina(symbol=f"{code}0")  # 【调用函数】AKShare 新浪期货日线接口(主连, code0)
         if df is None or df.empty:
             return {"code": code, "error": "no data", "new": 0}
 
@@ -287,9 +287,9 @@ def _update_single_price(code: str, name: str) -> dict:
         existing["variety_code"] = code
         existing["variety_name"] = name
 
-        PRICE_DIR.mkdir(parents=True, exist_ok=True)
+        PRICE_DIR.mkdir(parents=True, exist_ok=True)  # 【调用函数】确保价格目录存在(不存在则递归创建)
         with open(price_path, "w", encoding="utf-8") as f:
-            json.dump(existing, f, ensure_ascii=False, indent=2)
+            json.dump(existing, f, ensure_ascii=False, indent=2)  # 【调用函数】json.dump:写回价格文件(ensure_ascii=False 保留中文)
 
         logger.info(f"  {code} ({name}): {new_count} new days, {len(existing_prices)} total")
         return {"code": code, "name": name, "new": new_count, "total": len(existing_prices)}
@@ -304,9 +304,9 @@ def _update_single_price(code: str, name: str) -> dict:
 # _last_fetch : 上一次刷新缓存的 Unix 时间戳(秒)。
 # CACHE_TTL   : 缓存有效期,60 秒。60 秒内重复请求直接读缓存,不触发网络调用。
 # ── Live price cache ──
-_live_cache: dict = {}
-_last_fetch: float = 0
-CACHE_TTL = 60  # seconds
+_live_cache: dict = {}  # 【变量】内存缓存:品种代码→行情字典(避免频繁请求 AKShare)
+_last_fetch: float = 0  # 【变量】上一次刷新缓存的 Unix 时间戳(秒)
+CACHE_TTL = 60  # seconds  # 【变量】缓存有效期(秒),60 秒内重复请求直接读缓存
 
 
 def get_cached_prices(varieties: list[str] | None = None) -> dict:
@@ -327,12 +327,12 @@ def get_cached_prices(varieties: list[str] | None = None) -> dict:
     import time
 
     global _last_fetch
-    now = time.time()
+    now = time.time()  # 【变量】now:当前 Unix 时间戳(判断缓存是否过期)
     if not _live_cache or (now - _last_fetch) > CACHE_TTL:
         try:
             # Fetch only top 8 for first load speed
-            to_fetch = DEFAULT_LIVE_VARIETIES[:8] if not _live_cache else DEFAULT_LIVE_VARIETIES
-            result = fetch_realtime_prices(to_fetch)
+            to_fetch = DEFAULT_LIVE_VARIETIES[:8] if not _live_cache else DEFAULT_LIVE_VARIETIES  # 【变量】to_fetch:本次抓取的品种(首屏只抓前 8 个提速)
+            result = fetch_realtime_prices(to_fetch)  # 【调用函数】拉取实时行情并合并进缓存(首次只取 8 个,刷新补全 24 个)
             _live_cache.update(result)
             _last_fetch = now
             logger.info(f"Fetched {len(result)} live prices, cache={len(_live_cache)}")

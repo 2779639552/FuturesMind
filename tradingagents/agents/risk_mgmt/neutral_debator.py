@@ -1,25 +1,39 @@
+"""Neutral risk debator: weighs both benefits and risks in the risk debate.
+
+【文件角色】中立风险分析师节点生成器:在"风险辩论"中代表平衡中性立场。
+【位置】交易员提案 → 激进/保守/中性三方风险辩论(本文件为中立方) → 组合经理综合。
+"""
+
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
-)
+)  # 【调用包】标的上下文提取与语言指令工具
 
 
+# 【功能】创建"中立风险分析师"节点(工厂函数):让 LLM 权衡交易员提案的利弊并作平衡辩护。
+# 【参数】llm: LLM 客户端。
+# 【返回】node 函数,签名 node(state) -> dict,兼容 LangGraph StateGraph 节点。
 def create_neutral_debator(llm):
     def neutral_node(state) -> dict:
-        risk_debate_state = state["risk_debate_state"]
-        history = risk_debate_state.get("history", "")
-        neutral_history = risk_debate_state.get("neutral_history", "")
+        # 【功能】中立方发言节点本体:读取风险辩论状态与各分析师报告,生成并追加本轮论据。
+        # 【参数】state: 图状态字典,含 risk_debate_state、trader_investment_plan、market_report 等。
+        # 【返回】dict: {"risk_debate_state": 更新后的风险辩论状态}。
+        # 【关键逻辑】把激进/保守方最新论据拼进提示,让 LLM 同时挑战双方;论据加 "Neutral Analyst:"
+        #            前缀后写回 risk_debate_state,并置 latest_speaker="Neutral"。
+        risk_debate_state = state["risk_debate_state"]  # 【变量】风险辩论状态引用,用于读写历史
+        history = risk_debate_state.get("history", "")  # 【变量】风险辩论完整历史,追加本轮论据
+        neutral_history = risk_debate_state.get("neutral_history", "")  # 【变量】中立方发言历史,追加本轮论据
 
-        current_aggressive_response = risk_debate_state.get("current_aggressive_response", "")
-        current_conservative_response = risk_debate_state.get("current_conservative_response", "")
+        current_aggressive_response = risk_debate_state.get("current_aggressive_response", "")  # 【变量】激进方最新论据,供逐条回应
+        current_conservative_response = risk_debate_state.get("current_conservative_response", "")  # 【变量】保守方最新论据,供逐条回应
 
-        market_research_report = state["market_report"]
-        sentiment_report = state["sentiment_report"]
-        news_report = state["news_report"]
-        fundamentals_report = state["fundamentals_report"]
-        instrument_context = get_instrument_context_from_state(state)
+        market_research_report = state["market_report"]  # 【变量】市场分析报告,作为论据来源
+        sentiment_report = state["sentiment_report"]  # 【变量】情绪分析报告,作为论据来源
+        news_report = state["news_report"]  # 【变量】新闻/宏观报告,作为论据来源
+        fundamentals_report = state["fundamentals_report"]  # 【变量】基本面报告,作为论据来源
+        instrument_context = get_instrument_context_from_state(state)  # 【调用函数】从图状态提取标的上下文,注入提示
 
-        trader_decision = state["trader_investment_plan"]
+        trader_decision = state["trader_investment_plan"]  # 【变量】交易员提案,作为风险辩论的对象
 
         prompt = f"""As the Neutral Risk Analyst, your role is to provide a balanced perspective, weighing both the potential benefits and risks of the trader's decision or plan. You prioritize a well-rounded approach, evaluating the upsides and downsides while factoring in broader market trends, potential economic shifts, and diversification strategies.Here is the trader's decision:
 
@@ -36,11 +50,11 @@ Here is the current conversation history: {history} Here is the last response fr
 
 Engage actively by analyzing both sides critically, addressing weaknesses in the aggressive and conservative arguments to advocate for a more balanced approach. Challenge each of their points to illustrate why a moderate risk strategy might offer the best of both worlds, providing growth potential while safeguarding against extreme volatility. Focus on debating rather than simply presenting data, aiming to show that a balanced view can lead to the most reliable outcomes. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
 
-        response = llm.invoke(prompt)
+        response = llm.invoke(prompt)  # 【调用函数】LLM 调用:让中立方生成风险辩论论据
 
-        argument = f"Neutral Analyst: {response.content}"
+        argument = f"Neutral Analyst: {response.content}"  # 【变量】把 LLM 输出加前缀标签,作为本轮论据写入辩论历史
 
-        new_risk_debate_state = {
+        new_risk_debate_state = {  # 【变量】更新后的风险辩论状态:追加历史/发言计数,并写 current_neutral_response 供他方引用
             "history": history + "\n" + argument,
             "aggressive_history": risk_debate_state.get("aggressive_history", ""),
             "conservative_history": risk_debate_state.get("conservative_history", ""),

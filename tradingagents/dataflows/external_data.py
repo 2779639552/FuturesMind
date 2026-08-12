@@ -88,12 +88,12 @@ and the function falls through to the free API with a warning annotation.
 #   数据增强层。
 # ===========================================================================
 
-import json
-import logging
-import os
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any
+import json  # 【调用包】JSON 读写(外部数据文件解析/样本落盘)
+import logging  # 【调用包】日志输出(读取失败/过期告警)
+import os  # 【调用包】路径拼接与环境变量读取(数据目录覆盖)
+from datetime import datetime, timedelta, timezone  # 【调用包】时间戳解析与过期判断
+from pathlib import Path  # 【调用包】路径对象与文件操作
+from typing import Any  # 【调用包】任意类型注解(外部数据字典)
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ logger = logging.getLogger(__name__)
 #                   对应 Mysteel 周度报告节奏。超过即视为"过期"。
 # _get_data_dir():  可通过环境变量 TRADINGAGENTS_EXTERNAL_DATA_DIR 覆盖目录。
 
-DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".tradingagents", "external_data")
+DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".tradingagents", "external_data")  # 【变量】外部数据默认目录 = ~/.tradingagents/external_data
 MAX_AGE_HOURS = 168  # 7 days — one week, matches Mysteel's weekly cadence
 
 
@@ -160,14 +160,14 @@ def load_external_data(variety: str) -> dict[str, Any] | None:
             with open(filepath, encoding="utf-8") as f:
                 if ext in (".yaml", ".yml"):
                     try:
-                        import yaml
+                        import yaml  # 【调用包】YAML 解析(外部数据支持 .yaml/.yml 格式)
 
-                        raw = yaml.safe_load(f)
+                        raw = yaml.safe_load(f)  # 【调用函数】解析 YAML 外部数据文件
                     except ImportError:
                         logger.warning("PyYAML not installed, skipping %s", filepath)
                         continue
                 else:
-                    raw = json.load(f)
+                    raw = json.load(f)  # 【调用函数】解析 JSON 外部数据文件
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to read %s: %s", filepath, e)
             continue
@@ -191,7 +191,7 @@ def load_external_data(variety: str) -> dict[str, Any] | None:
         updated_str = raw.get("updated", "")
         if updated_str:
             try:
-                updated = datetime.fromisoformat(updated_str)
+                updated = datetime.fromisoformat(updated_str)  # 【调用函数】解析 ISO 时间戳(用于计算数据年龄)
                 age = datetime.now(timezone.utc).replace(tzinfo=None) - updated.replace(tzinfo=None)
                 if age > timedelta(hours=MAX_AGE_HOURS):
                     logger.warning(
@@ -233,7 +233,7 @@ def get_external_field(variety: str, field_path: str, default: Any = None) -> An
     Returns:
         Field value or default.
     """
-    external = load_external_data(variety)
+    external = load_external_data(variety)  # 【调用函数】读外部数据(无/过期返回 None)
     if external is None:
         return default
 
@@ -258,7 +258,7 @@ def get_external_source_label(variety: str) -> str:
 
     Returns empty string if no external data available.
     """
-    external = load_external_data(variety)
+    external = load_external_data(variety)  # 【调用函数】读外部数据(无/过期返回 None)
     if external is None:
         return ""
 
@@ -290,7 +290,7 @@ def annotate_with_source(variety: str, content: str, is_external: bool = False) 
         Annotated content string.
     """
     if is_external:
-        source_label = get_external_source_label(variety)
+        source_label = get_external_source_label(variety)  # 【调用函数】生成外部来源标签(无外部数据时为空串)
         if source_label:
             header = (
                 f"# DATA_SOURCE: EXTERNAL {source_label}\n"
@@ -342,9 +342,9 @@ def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
     Returns:
         (merged_content, used_external) tuple.
     """
-    external = load_external_data(variety)
+    external = load_external_data(variety)  # 【调用函数】读外部数据(无/过期返回 None)
     if external is None:
-        return annotate_with_source(variety, api_csv, is_external=False), False
+        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】打 FREE_API 来源标注头并原样返回
 
     data = external.get("data", {})
     social_inv = data.get("social_inventory")
@@ -352,9 +352,9 @@ def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
 
     has_external = social_inv is not None or mill_inv is not None
     if not has_external:
-        return annotate_with_source(variety, api_csv, is_external=False), False
+        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】无外部库存字段→打 FREE_API 标注原样返回
 
-    source_label = get_external_source_label(variety)
+    source_label = get_external_source_label(variety)  # 【调用函数】生成外部来源标签(供标注头/标题使用)
 
     # Build the merged output
     parts = [
@@ -454,15 +454,15 @@ def merge_basis_data(variety: str, api_csv: str) -> tuple[str, bool]:
     Returns:
         (merged_content, used_external) tuple.
     """
-    external = load_external_data(variety)
+    external = load_external_data(variety)  # 【调用函数】读外部数据(无/过期返回 None)
     if external is None:
-        return annotate_with_source(variety, api_csv, is_external=False), False
+        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】打 FREE_API 来源标注头并原样返回
 
     spot = external.get("data", {}).get("spot_price")
     if spot is None:
-        return annotate_with_source(variety, api_csv, is_external=False), False
+        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】外部无现货价→打 FREE_API 标注原样返回
 
-    source_label = get_external_source_label(variety)
+    source_label = get_external_source_label(variety)  # 【调用函数】生成外部来源标签(追加到现货价说明)
     note = (
         f"# EXTERNAL SPOT PRICE: {spot.get('value')} {spot.get('unit', '元/吨')} "
         f"as of {spot.get('date', 'N/A')} ({source_label})\n"
@@ -470,7 +470,7 @@ def merge_basis_data(variety: str, api_csv: str) -> tuple[str, bool]:
         f"If they diverge significantly, prefer the external source.\n"
         f"# ---\n"
     )
-    return note + annotate_with_source(variety, api_csv, is_external=False), True
+    return note + annotate_with_source(variety, api_csv, is_external=False), True  # 【调用函数】外部现货价说明拼接在 API 数据前(标注 FREE_API)
 
 
 # ---------------------------------------------------------------------------

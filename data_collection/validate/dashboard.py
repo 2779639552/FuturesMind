@@ -3,43 +3,49 @@ Dashboard: futures sentiment vs price comparison
 Output: output/trends/dashboard.html (self-contained, no server needed)
 """
 
-import json
-import os
-from datetime import datetime
-from pathlib import Path
+import json  # 【调用包】序列化看板 JS 内嵌数据(data_json / gm_json)与读取回测权重
+import os  # 【调用包】输出文件大小统计(os.path.getsize)
+from datetime import datetime  # 【调用包】看板生成时间戳(ts)
+from pathlib import Path  # 【调用包】跨平台路径处理(TRENDS_DIR / plotly.min.js 路径)
 
-import plotly.graph_objects as go
+import plotly.graph_objects as go  # 【调用包】Plotly 图表对象(迷你概览柱状图)
 
-TRENDS_DIR = Path(__file__).parent / "output" / "trends"
+TRENDS_DIR = Path(__file__).parent / "output" / "trends"  # 【变量】时序数据与看板输出目录
 
 
+# 【功能】扫描 TRENDS_DIR 加载全部品种的情绪与价格 JSON 到同一 dict。
+# 【返回】{品种: {"sentiment": {...}, "price": {...}}}; 无数据品种缺省字段。
+# 【关键】按文件名 glob 匹配 *_sentiment.json 与 *_price.json; 品种名取文件名去后缀。
 def load_all_data():
     all_data = {}
     for f in sorted(TRENDS_DIR.glob("*_sentiment.json")):
         variety = f.stem.replace("_sentiment", "")
         with open(f, encoding="utf-8") as fh:
-            all_data.setdefault(variety, {})["sentiment"] = json.load(fh)
+            all_data.setdefault(variety, {})["sentiment"] = json.load(fh)  # 【调用函数】落盘读取: 品种情绪时序
     for f in sorted(TRENDS_DIR.glob("*_price.json")):
         variety = f.stem.replace("_price", "")
         with open(f, encoding="utf-8") as fh:
-            all_data.setdefault(variety, {})["price"] = json.load(fh)
+            all_data.setdefault(variety, {})["price"] = json.load(fh)  # 【调用函数】落盘读取: 品种价格时序
     return all_data
 
 
+# 【功能】组装看板 HTML: 排序品种 → 提取 JS 轻量数据 → 迷你概览图 → 内嵌 plotly.js → 写 dashboard.html。
+# 【返回】生成的 dashboard.html 路径字符串。
+# 【关键】把 JS 需要的最小字段嵌入 DATA/GM_DATA, 页面零外部依赖(plotly.min.js 内嵌)。
 def build_dashboard():
     TRENDS_DIR.mkdir(parents=True, exist_ok=True)
     all_data = load_all_data()
 
     # Rank by data richness
-    ranked = sorted(
+    ranked = sorted(  # 【变量】按情绪时序长度降序排品种(数据丰富度)
         all_data.keys(),
         key=lambda v: len(all_data[v].get("sentiment", {}).get("series", [])),
         reverse=True,
     )
-    default_variety = ranked[0] if ranked else "螺纹钢"
+    default_variety = ranked[0] if ranked else "螺纹钢"  # 【变量】默认展示品种(数据最丰富)
 
     # Extract lightweight data for JS embedding (strip heavy fields)
-    js_data = {}
+    js_data = {}  # 【变量】为 JS 渲染裁剪的轻量数据(去掉 author/raw 等重字段)
     for v, d in all_data.items():
         sent_series = d.get("sentiment", {}).get("series", [])
         price_series = d.get("price", {}).get("prices", [])
@@ -68,12 +74,12 @@ def build_dashboard():
         }
 
     # Pre-render mini overview charts for all varieties (keep these server-rendered)
-    mini_charts = ""
+    mini_charts = ""  # 【变量】所有品种迷你概览图拼接后的 HTML 片段
     for v in ranked:
         sent = all_data[v].get("sentiment", {}).get("series", [])
         if len(sent) < 2:
             continue
-        colors = ["#e74c3c" if s["avg_score"] >= 0 else "#27ae60" for s in sent]
+        colors = ["#e74c3c" if s["avg_score"] >= 0 else "#27ae60" for s in sent]  # 【变量】柱色(红=多/绿=空)
         fig = go.Figure(
             go.Bar(
                 x=[s["date"] for s in sent],
@@ -92,34 +98,34 @@ def build_dashboard():
             yaxis={"range": [-1, 1], "showgrid": False},
             showlegend=False,
         )
-        mini_charts += f'<div class="card" style="cursor:pointer" onclick="switchTo(\'{v}\')">{fig.to_html(full_html=False, include_plotlyjs=False)}</div>'
+        mini_charts += f'<div class="card" style="cursor:pointer" onclick="switchTo(\'{v}\')">{fig.to_html(full_html=False, include_plotlyjs=False)}</div>'  # 【调用函数】Plotly 图转 HTML 片段(不重复内嵌 plotly.js)
 
     # Variety selector
-    variety_options = "\n".join(f'<option value="{v}">{v}</option>' for v in ranked)
+    variety_options = "\n".join(f'<option value="{v}">{v}</option>' for v in ranked)  # 【变量】下拉框品种选项 HTML
 
     # Embed plotly.js
-    import plotly
+    import plotly  # 【调用包】定位安装包内的 plotly.min.js 静态资源
 
     js_path = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
     with open(js_path, encoding="utf-8") as f:
-        plotly_js = f.read()
+        plotly_js = f.read()  # 【变量】plotly.min.js 完整内容(内嵌进 HTML 实现离线运行)
 
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    data_json = json.dumps(js_data, ensure_ascii=False)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")  # 【变量】看板生成时间戳
+    data_json = json.dumps(js_data, ensure_ascii=False)  # 【调用函数】序列化轻量数据为 JS 对象(DATA)
 
     # 加载全局回测指标
     gw_path = TRENDS_DIR / "_global_weights.json"
-    global_metrics = {}
+    global_metrics = {}  # 【变量】回测平台权重/指标(渲染顶部回测指标面板)
     if gw_path.exists():
         with open(gw_path, encoding="utf-8") as f:
-            gw = json.load(f)
+            gw = json.load(f)  # 【调用函数】落盘读取: 全局回测权重与平台指标
         global_metrics = {
             "weights": gw.get("weights", {}),
             "metrics": gw.get("metrics", {}),
             "source": gw.get("weight_source", "N/A"),
             "total_points": gw.get("total_data_points", 0),
         }
-    gm_json = json.dumps(global_metrics, ensure_ascii=False)
+    gm_json = json.dumps(global_metrics, ensure_ascii=False)  # 【调用函数】序列化回测指标为 JS 对象(GM_DATA)
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -351,9 +357,9 @@ window.onload = function() {{
 }};
 </script></body></html>"""
 
-    out_path = TRENDS_DIR / "dashboard.html"
+    out_path = TRENDS_DIR / "dashboard.html"  # 【变量】看板输出路径
     with open(out_path, "w", encoding="utf-8") as f:
-        f.write(html)
+        f.write(html)  # 【调用函数】落盘: 写入自包含看板 HTML
 
     print(f"Dashboard: {out_path}")
     print(f"Size: {os.path.getsize(out_path) / 1024:.0f}KB")
@@ -362,4 +368,4 @@ window.onload = function() {{
 
 
 if __name__ == "__main__":
-    build_dashboard()
+    build_dashboard()  # 【调用函数】同文件: 直接生成看板

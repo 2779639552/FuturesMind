@@ -26,18 +26,18 @@ needs_detail_fetch=True：搜索只返回摘要(note_card 基础信息)，详情
 依赖: Spider_XHS/ 目录下的签名引擎 (Node.js + JS 核心文件)
 """
 
-import logging
-import os
-import sys
-from pathlib import Path
-from typing import Any
+import logging  # 【调用包】日志记录(API 初始化/搜索/详情)
+import os  # 【调用包】chdir 切到引擎目录/getcwd 记录原目录
+import sys  # 【调用包】把 Spider_XHS 引擎目录临时加入 sys.path
+from pathlib import Path  # 【调用包】引擎目录路径构建
+from typing import Any  # 【调用包】类型注解(API 实例等)
 
-from .base import CredentialError, PlatformAdapter
+from .base import CredentialError, PlatformAdapter  # 【调用包】基类接口契约 + 凭证异常
 
 logger = logging.getLogger("platforms.xhs")
 
 # Spider_XHS 路径
-SPIDER_XHS_PATH = str(Path(__file__).parent.parent.parent / "Spider_XHS")
+SPIDER_XHS_PATH = str(Path(__file__).parent.parent.parent / "Spider_XHS")  # 【变量】Spider_XHS 签名引擎目录(含 .env 与 static/)
 
 
 def _extract_image_urls(image_list: list) -> list[str]:
@@ -73,7 +73,7 @@ class XHSAdapter(PlatformAdapter):
     def __init__(self):
         """初始化内部状态，均在 init() 中真正创建。"""
         self._api: Any = None  # XHS_Apis 实例
-        self._cookies_str: str = ""
+        self._cookies_str: str = ""  # 【变量】登录 Cookie 字符串(来自 Spider_XHS/.env)
         self._original_cwd: str = ""  # 记录原始工作目录，close 时恢复
 
     # ============================================================
@@ -94,22 +94,22 @@ class XHSAdapter(PlatformAdapter):
         self._original_cwd = os.getcwd()  # 记住原目录，close 时恢复
 
         # Spider_XHS 签名 JS 文件用相对路径 ./static/，必须在目录下运行
-        os.chdir(SPIDER_XHS_PATH)
+        os.chdir(SPIDER_XHS_PATH)  # 【调用函数】切到引擎目录(签名 JS 用相对路径加载)
 
         # 临时注入 Spider_XHS 到 sys.path（持续到 close）
         if SPIDER_XHS_PATH not in sys.path:
-            sys.path.insert(0, SPIDER_XHS_PATH)
+            sys.path.insert(0, SPIDER_XHS_PATH)  # 【调用函数】临时注入引擎目录到 import 搜索路径
 
         try:
             # 延迟导入: 只有真正初始化时才加载签名引擎
-            from apis.xhs_pc_apis import XHS_Apis
-            from xhs_utils.common_util import init as xhs_init
+            from apis.xhs_pc_apis import XHS_Apis  # 【调用包】小红书 API 类(签名由引擎内部计算)
+            from xhs_utils.common_util import init as xhs_init  # 【调用包】读取 .env COOKIES 的初始化函数
 
-            cookies_str, _ = xhs_init()  # 读取 .env 里的登录 Cookie
+            cookies_str, _ = xhs_init()  # 【调用函数】读取 Spider_XHS/.env 的登录 Cookie
             if not cookies_str:
                 raise CredentialError("Spider_XHS .env has no COOKIES.\nRun: python xhs_scraper.py")
 
-            self._api = XHS_Apis()
+            self._api = XHS_Apis()  # 【调用函数】实例化小红书 API 引擎
             self._cookies_str = cookies_str
             logger.info(f"XHS API initialized. Cookies: {len(cookies_str)} chars")
 
@@ -131,7 +131,7 @@ class XHSAdapter(PlatformAdapter):
         """
         try:
             if self._original_cwd:
-                os.chdir(self._original_cwd)
+                os.chdir(self._original_cwd)  # 【调用函数】还原工作目录(防止调用方相对路径出错)
         except OSError:
             pass
 
@@ -149,7 +149,7 @@ class XHSAdapter(PlatformAdapter):
         【关键逻辑】委托给签名引擎 search_some_note；多取 count+5 条，
         因为部分条目可能没有详情(id/xsec_token 不全)，留出余量供后续过滤。
         """
-        success, msg, items = self._api.search_some_note(keyword, count + 5, self._cookies_str)
+        success, msg, items = self._api.search_some_note(keyword, count + 5, self._cookies_str)  # 【调用函数】委托签名引擎搜索(多取5条留过滤余量)
 
         if not success or not isinstance(items, list):
             logger.warning(f"XHS search '{keyword}' returned no results: {msg}")
@@ -187,10 +187,10 @@ class XHSAdapter(PlatformAdapter):
         if not nid:
             return None  # 没有 id 无法定位笔记
 
-        url = f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={xsec}"
+        url = f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={xsec}"  # 【变量】详情页 URL(带反爬令牌 xsec_token)
 
         try:
-            success, msg, detail_raw = self._api.get_note_info(url, self._cookies_str)
+            success, msg, detail_raw = self._api.get_note_info(url, self._cookies_str)  # 【调用函数】委托签名引擎拿完整详情
         except Exception:
             return None  # 网络/签名异常按"拿不到详情"处理，不中断整体
 
@@ -250,13 +250,13 @@ class XHSAdapter(PlatformAdapter):
         # 时间: ObjectId → datetime string
         # 小红书 note_id 是 Mongo ObjectId，前 4 字节即 Unix 时间戳
         try:
-            from production_hybrid import decode_objectid_timestamp
+            from production_hybrid import decode_objectid_timestamp  # 【调用包】从笔记 ObjectId 反解发布时间(引擎内模块)
 
-            publish_time = decode_objectid_timestamp(nid) or ""
+            publish_time = decode_objectid_timestamp(nid) or ""  # 【调用函数】ObjectId→发布时间字符串(前4字节=Unix时间戳)
         except ImportError:
             publish_time = ""  # 引擎模块不在路径时留空，不中断
 
-        note_dict = {
+        note_dict = {  # 【变量】统一 Schema 输出(键对齐 UNIFIED_SCHEMA_FIELDS)
             "platform": "xhs",
             "note_id": nid,
             "title": title,
@@ -314,6 +314,6 @@ class XHSAdapter(PlatformAdapter):
         【功能】供外部查看/文档渲染小红书字段映射关系。
         【参数】无 【返回】dict（来自 base.FIELD_MAPPING_TABLE["xhs"]）
         """
-        from .base import FIELD_MAPPING_TABLE
+        from .base import FIELD_MAPPING_TABLE  # 【调用包】取小红书字段映射表(文档用)
 
-        return FIELD_MAPPING_TABLE["xhs"]
+        return FIELD_MAPPING_TABLE["xhs"]  # 【调用函数】返回"统一字段←小红书原始字段"映射

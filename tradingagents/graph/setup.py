@@ -24,12 +24,12 @@
 # selected_analysts) 即可拿到编译好的 workflow, 再 .compile() 得到可运行 graph。
 # =============================================================================
 
-from typing import Any
+from typing import Any  # 【调用包】类型标注支持
 
-from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
+from langgraph.graph import END, START, StateGraph  # 【调用包】LangGraph 图构建核心 (StateGraph 画布 + START/END 哨兵)
+from langgraph.prebuilt import ToolNode  # 【调用包】LangGraph 预置工具调用节点
 
-from tradingagents.agents import (
+from tradingagents.agents import (  # 【调用包】各智能体节点的工厂函数 (分析师/研究员/交易员/风控等)
     create_aggressive_debator,
     create_bear_researcher,
     create_bull_researcher,
@@ -44,10 +44,10 @@ from tradingagents.agents import (
     create_sentiment_analyst,
     create_trader,
 )
-from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.agents.utils.agent_states import AgentState  # 【调用包】整张图共享的状态类型 (AgentState)
 
-from .analyst_execution import build_analyst_execution_plan
-from .conditional_logic import ConditionalLogic
+from .analyst_execution import build_analyst_execution_plan  # 【调用包】分析师执行计划构建 (决定注册哪些分析师节点)
+from .conditional_logic import ConditionalLogic  # 【调用包】条件路由判断 (辩论/风险环节走向)
 
 # Every target a shared conditional router can return. Each edge driven by the
 # router maps all of them, so a fall-through return (e.g. under prompt/i18n/
@@ -65,13 +65,13 @@ DEBATE_PATH_MAP = {
     "Bull Researcher": "Bull Researcher",
     "Bear Researcher": "Bear Researcher",
     "Research Manager": "Research Manager",
-}
+}  # 【变量】多空辩论路由的路径映射表 (路由返回值 → 目标节点名)
 RISK_ANALYSIS_PATH_MAP = {
     "Aggressive Analyst": "Aggressive Analyst",
     "Conservative Analyst": "Conservative Analyst",
     "Neutral Analyst": "Neutral Analyst",
     "Portfolio Manager": "Portfolio Manager",
-}
+}  # 【变量】风险辩论路由的路径映射表 (路由返回值 → 目标节点名)
 
 
 class GraphSetup:
@@ -138,7 +138,7 @@ class GraphSetup:
             3. add_conditional_edges 条件路由: 分析师之后、辩论环节、风险环节
                都通过 conditional_logic 的路由函数决定"下一步去哪个节点"。
         """
-        plan = build_analyst_execution_plan(selected_analysts)
+        plan = build_analyst_execution_plan(selected_analysts)  # 【调用函数】构建分析师执行计划 (跨模块调用)
         # 【关键逻辑】build_analyst_execution_plan 根据选中的分析师类型生成一份
         # "执行计划", 其中 plan.specs 是有序列表, 每个 spec 描述一位分析师的
         # 三个节点名: agent_node(分析师本体) / tool_node(工具节点) /
@@ -178,7 +178,7 @@ class GraphSetup:
         # Create workflow
         # 【关键逻辑】StateGraph 就是这张图的"画布", AgentState 是整张图共享的
         # 状态类型 (一个字典, 所有节点读/写同一个状态对象, 节点间通过它传递数据)。
-        workflow = StateGraph(AgentState)
+        workflow = StateGraph(AgentState)  # 【调用函数】创建 StateGraph 画布 (LangGraph 图对象)
 
         # Add analyst nodes to the graph
         # 【关键逻辑】add_node(name, node) = 把某个可调用对象注册成图中一个节点。
@@ -187,14 +187,14 @@ class GraphSetup:
         #   spec.clear_node —— 清空消息节点 (避免上下文无限累积, 用 create_msg_delete());
         #   spec.tool_node  —— 工具节点 (ToolNode, 让 LLM 能调用真实数据工具)。
         for spec in plan.specs:
-            workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
-            workflow.add_node(spec.clear_node, create_msg_delete())
-            workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
+            workflow.add_node(spec.agent_node, analyst_factories[spec.key]())  # 【调用函数】注册分析师智能体节点
+            workflow.add_node(spec.clear_node, create_msg_delete())  # 【调用函数】注册清空消息节点
+            workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])  # 【调用函数】注册工具节点
 
         # Add other nodes
         # 【中文说明】把前面实例化的"固定节点"也注册进图。名字 (字符串) 是节点
         # 在图中的唯一标识, 后续 add_edge 都用这个名字来引用节点。
-        workflow.add_node("Bull Researcher", bull_researcher_node)
+        workflow.add_node("Bull Researcher", bull_researcher_node)  # 【调用函数】注册多空辩论 + 交易/风控固定节点
         workflow.add_node("Bear Researcher", bear_researcher_node)
         workflow.add_node("Research Manager", research_manager_node)
         workflow.add_node("Trader", trader_node)
@@ -208,7 +208,7 @@ class GraphSetup:
         # 【关键逻辑】add_edge(起点, 终点) = 加一条"无条件"的有向边: 起点节点
         # 执行完必然走到终点。START 是 LangGraph 提供的图入口哨兵节点, 这里把
         # 图入口接到"第一位分析师"节点, 整张图从此处开始运行。
-        workflow.add_edge(START, plan.specs[0].agent_node)
+        workflow.add_edge(START, plan.specs[0].agent_node)  # 【调用函数】图入口 → 第一位分析师
 
         # Connect analysts in sequence
         # 【关键逻辑】这段循环是"分析师串行主流程"的核心。对每一位分析师 i:
@@ -225,7 +225,7 @@ class GraphSetup:
             current_clear = spec.clear_node
 
             # Add conditional edges for current analyst
-            workflow.add_conditional_edges(
+            workflow.add_conditional_edges(  # 【调用函数】分析师节点加条件路由 (调工具 or 清空)
                 current_analyst,
                 getattr(self.conditional_logic, f"should_continue_{spec.key}"),
                 [current_tools, current_clear],
@@ -235,13 +235,13 @@ class GraphSetup:
             # 的某一个名字 (这里返回 current_tools 或 current_clear), 图据此
             # 选择下一步; 后者是"无条件跳转"。getattr(...) 是按分析师类型名
             # 动态取对应的路由方法, 如 should_continue_market。
-            workflow.add_edge(current_tools, current_analyst)
+            workflow.add_edge(current_tools, current_analyst)  # 【调用函数】工具执行完无条件回到分析师本体
 
             # Connect to next analyst or to Bull Researcher if this is the last analyst
             if i < len(plan.specs) - 1:
-                workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)
+                workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)  # 【调用函数】串到下一位分析师
             else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                workflow.add_edge(current_clear, "Bull Researcher")  # 【调用函数】最后一位分析师 → 多空辩论入口
 
         # Both research-debate edges share the complete DEBATE_PATH_MAP (#1088).
         # 【关键逻辑】多空辩论环节: 无论 Bull 还是 Bear 研究员发言完毕, 都走同
@@ -249,21 +249,21 @@ class GraphSetup:
         # 由谁发言 (Bull/Bear) 还是由研究经理 Research Manager 裁定并结束辩论。
         # path_map 填完整的 DEBATE_PATH_MAP, 保证任何返回键都有对应去向 (#1088)。
         for debate_node in ("Bull Researcher", "Bear Researcher"):
-            workflow.add_conditional_edges(
+            workflow.add_conditional_edges(  # 【调用函数】辩论节点加条件路由 (决定下一位发言者/研究经理收尾)
                 debate_node,
                 self.conditional_logic.should_continue_debate,
                 DEBATE_PATH_MAP,
             )
         # 【中文说明】辩论结束 (Research Manager 被路由选中) 后无条件走到交易员,
         # 交易员再无条件走进风险辩论环节的起点 (Aggressive Analyst)。
-        workflow.add_edge("Research Manager", "Trader")
-        workflow.add_edge("Trader", "Aggressive Analyst")
+        workflow.add_edge("Research Manager", "Trader")  # 【调用函数】辩论收尾 → 交易员
+        workflow.add_edge("Trader", "Aggressive Analyst")  # 【调用函数】交易员 → 风险辩论入口
         # All three risk edges share the complete RISK_ANALYSIS_PATH_MAP (#1088).
         # 【关键逻辑】风险辩论环节: 激进/保守/中性三位分析师发言完毕都走同一个
         # 条件路由 should_continue_risk_analysis, 决定下一位发言者, 或轮到
         # Portfolio Manager 汇总并拍板。
         for risk_node in ("Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"):
-            workflow.add_conditional_edges(
+            workflow.add_conditional_edges(  # 【调用函数】风控节点加条件路由 (决定下一位发言者/组合经理拍板)
                 risk_node,
                 self.conditional_logic.should_continue_risk_analysis,
                 RISK_ANALYSIS_PATH_MAP,
@@ -271,7 +271,7 @@ class GraphSetup:
 
         # 【关键逻辑】END 是 LangGraph 的出口哨兵节点。组合经理 (Portfolio
         # Manager) 一旦被风险路由选中并执行完, 整张图就到这里终止。
-        workflow.add_edge("Portfolio Manager", END)
+        workflow.add_edge("Portfolio Manager", END)  # 【调用函数】组合经理 → 图出口 END
 
         # 【返回】返回的是"未编译"的 workflow。编译 (compile) 是 LangGraph 的
         # 一个独立步骤 (通常由 TradingAgentsGraph 完成), 编译后才能真正运行。

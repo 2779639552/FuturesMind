@@ -34,8 +34,8 @@
       - 交易所/机构: 直接查表 (EXCHANGES / INSTITUTIONS)。
 """
 
-import re
-from dataclasses import asdict, dataclass, field
+import re  # 【调用包】正则编译与匹配 (合约代码/价格模式)
+from dataclasses import asdict, dataclass, field  # 【调用包】NERResult数据类 + asdict转字典
 
 # ================================================================
 # 品种知识库 — 标准名 + 全部别名 + 合约代码模式
@@ -642,7 +642,7 @@ class FuturesNER:
                 self._contract_patterns[name] = re.compile(pat)
 
         # 价格正则
-        self._price_patterns = [
+        self._price_patterns = [  # 【变量】价格识别正则库 (元/吨、$/桶、涨跌幅等, 每项带注释示例)
             re.compile(r"(\d{2,5})\s*元\s*/\s*吨"),  # 3860元/吨
             re.compile(r"(\d{2,5})\s*元\s*/\s*桶"),  # 82.5元/桶
             re.compile(r"(\d{2,5})\s*元\s*/\s*克"),  # 450元/克
@@ -684,7 +684,7 @@ class FuturesNER:
             return asdict(result)
 
         # 1. 品种名识别（长别名优先，防重叠）
-        matched_positions = set()
+        matched_positions = set()  # 【变量】已匹配位置集合 (防止多个别名重叠占用同一段文本)
         for alias in self._sorted_aliases:
             if alias not in text:
                 continue
@@ -744,7 +744,7 @@ class FuturesNER:
                     result.exchanges.append(canonical)
 
         # 4. 价格识别
-        price_context_window = 15
+        price_context_window = 15  # 【变量】价格上下文窗口: 截取价格前后各15字符作为语境
         for pat in self._price_patterns:
             for m in pat.finditer(text):
                 start = max(0, m.start() - price_context_window)
@@ -762,12 +762,12 @@ class FuturesNER:
                 result.institutions.append(inst)
 
         # 去重 varieties 和 sectors
-        result.varieties = self._dedup_varieties(result.varieties)
+        result.varieties = self._dedup_varieties(result.varieties)  # 【调用函数】按标准品种合并重复匹配, 每个品种保留最长匹配文本
         result.sectors = list(set(result.sectors))
         result.variety_count = len(result.varieties)
         result.contract_count = len(result.contracts)
 
-        return asdict(result)
+        return asdict(result)  # 【调用函数】dataclass转dict (便于JSON序列化/下游写盘)
 
     def extract_per_variety_context(self, text: str, window: int = 80) -> list[dict]:
         """
@@ -785,7 +785,7 @@ class FuturesNER:
           - context 取窗口片段后在句号处截断, 让片段尽量是完整句子。
         """
         results = []
-        seen_names = set()
+        seen_names = set()  # 【变量】已记录品种名集合 (每个品种只取第一次出现, 避免重复)
 
         for alias in self._sorted_aliases:
             if alias not in text:
@@ -853,7 +853,7 @@ class FuturesNER:
         """
         for note in notes:
             text = (note.get(title_field, "") or "") + " " + (note.get(text_field, "") or "")
-            entities = self.extract(text)
+            entities = self.extract(text)  # 【调用函数】对拼接文本做NER, 得到品种/合约/交易所等实体
 
             note["varieties"] = entities["varieties"]
             note["contracts"] = entities["contracts"]

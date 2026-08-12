@@ -7,7 +7,7 @@
 # ============================================================
 # 每组包含：标准名、简称、别名、合约代码模式
 
-FUTURES_KEYWORDS = {
+FUTURES_KEYWORDS = {  # 【变量】品种关键词词典(标准名→别名/合约代码), 供 NER 品种识别
     # 黑色系
     "螺纹钢": ["螺纹钢", "螺纹", "RB", "钢筋"],
     "铁矿石": ["铁矿石", "铁矿", "矿石", "澳矿", "巴矿"],
@@ -62,7 +62,7 @@ FUTURES_KEYWORDS = {
 }
 
 # 高频搜索关键词（用于验证阶段快速测试）
-SEARCH_KEYWORDS = [
+SEARCH_KEYWORDS = [  # 【变量】高频搜索关键词(验证阶段快速测试用)
     "螺纹钢期货",
     "铁矿石期货",
     "原油期货",
@@ -80,7 +80,7 @@ SEARCH_KEYWORDS = [
 # HTTP 请求配置
 # ============================================================
 
-REQUEST_HEADERS = {
+REQUEST_HEADERS = {  # 【变量】统一请求头(移动端 UA + JSON 期望, 模拟 App 访问)
     "User-Agent": (
         "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -92,7 +92,7 @@ REQUEST_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
-USER_AGENTS = [
+USER_AGENTS = [  # 【变量】轮换用 UA 池(降低被平台风控概率)
     # iPhone
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
     # Android
@@ -101,18 +101,18 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
-REQUEST_TIMEOUT = 15  # 秒
-MIN_DELAY = 1.0  # 请求最小间隔（秒）
-MAX_DELAY = 3.0  # 请求最大间隔（秒）
-MAX_RETRIES = 3  # 失败重试次数
-BACKOFF_FACTOR = 2.0  # 退避因子
+REQUEST_TIMEOUT = 15  # 【变量】单次请求超时(秒)
+MIN_DELAY = 1.0  # 【变量】请求最小间隔(秒, 防频控)
+MAX_DELAY = 3.0  # 【变量】请求最大间隔(秒, 防频控)
+MAX_RETRIES = 3  # 【变量】失败重试次数
+BACKOFF_FACTOR = 2.0  # 【变量】重试间隔指数退避因子
 
 
 # ============================================================
 # 平台 API 端点
 # ============================================================
 
-ENDPOINTS = {
+ENDPOINTS = {  # 【变量】各平台搜索/热榜/详情 API 端点(供平台适配器调用)
     "weibo": {
         "search": "https://m.weibo.cn/api/container/getIndex",
         "hot": "https://weibo.com/ajax/side/hotSearch",
@@ -146,7 +146,7 @@ ENDPOINTS = {
 # 平台关键词（按平台调优）
 # ============================================================
 
-PLATFORM_KEYWORDS = {
+PLATFORM_KEYWORDS = {  # 【变量】平台名→按平台调优的搜索关键词(各平台搜索习惯不同)
     "xhs": [
         # 小红书搜索调优: 大部分带"期货"后缀
         "螺纹钢期货",
@@ -257,22 +257,23 @@ PLATFORM_KEYWORDS = {
 # ============================================================
 
 
+# 【功能】平台验证通过标准: 定义"单次搜索有效结果数/相关率/字段完整度"等门槛, 供验证脚本判定平台是否达标。
 class ValidationCriteria:
     """验证通过标准"""
 
-    MIN_VALID_RESULTS = 10  # 单次搜索至少返回的有效结果数
-    MIN_RELEVANCE_RATE = 0.6  # 最小相关率（相关结果/总结果）
-    MIN_FIELD_COMPLETENESS = 4  # 最少字段数（正文/时间/作者/互动）
-    SUSTAINED_REQUESTS = 20  # 连续请求能力测试次数
-    MIN_SUCCESS_RATE = 0.8  # 连续请求最低成功率
-    MAX_RESPONSE_TIME = 10.0  # 最大响应时间（秒）
-    MAX_DATA_FRESHNESS_MINUTES = 60  # 最新数据的时间延迟上限
+    MIN_VALID_RESULTS = 10  # 【变量】单次搜索至少返回的有效结果数
+    MIN_RELEVANCE_RATE = 0.6  # 【变量】最小相关率(相关结果/总结果)
+    MIN_FIELD_COMPLETENESS = 4  # 【变量】最少字段数(正文/时间/作者/互动)
+    SUSTAINED_REQUESTS = 20  # 【变量】连续请求能力测试次数
+    MIN_SUCCESS_RATE = 0.8  # 【变量】连续请求最低成功率
+    MAX_RESPONSE_TIME = 10.0  # 【变量】最大响应时间(秒)
+    MAX_DATA_FRESHNESS_MINUTES = 60  # 【变量】最新数据的时间延迟上限(分钟)
 
 
 # ============================================================
 # 输出配置
 # ============================================================
 
-OUTPUT_DIR = "./output"
-LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-LOG_LEVEL = "INFO"
+OUTPUT_DIR = "./output"  # 【变量】采集结果输出目录
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"  # 【变量】日志格式模板(时间/级别/模块)
+LOG_LEVEL = "INFO"  # 【变量】日志级别

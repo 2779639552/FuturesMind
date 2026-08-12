@@ -40,22 +40,22 @@
           当前代码仅做采集与简单过滤。
 """
 
-import argparse
-import json
-import logging
-import random
-import re
-import sys
-import time
-from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
+import argparse  # 【调用包】命令行参数解析 (--keywords/--max-depth等)
+import json  # 【调用包】JSON读写 (登录态/API响应/结果落盘)
+import logging  # 【调用包】日志记录 (采集过程状态)
+import random  # 【调用包】随机延时/滚动步长, 模拟真人操作
+import re  # 【调用包】正则从href/ID中提取note_id
+import sys  # 【调用包】sys.path注入工具目录 / 进程退出码
+import time  # 【调用包】延时/超时/等待API响应
+from dataclasses import dataclass, field  # 【调用包】定义DeepNote数据容器
+from datetime import datetime  # 【调用包】结果文件时间戳
+from pathlib import Path  # 【调用包】路径操作 (输出目录)
 
-from playwright.sync_api import TimeoutError as PwTimeout, sync_playwright
+from playwright.sync_api import TimeoutError as PwTimeout, sync_playwright  # 【调用包】Playwright浏览器自动化 (同步API + 页面超时异常)
 
 # --- 复用已有的工具函数 ---
 sys.path.insert(0, str(Path(__file__).parent))
-from xhs_scraper import (
+from xhs_scraper import (  # 【调用包】复用小红书采集工具 (反检测脚本/输出目录/笔记数据类/时间戳解码/期货过滤)
     ANTI_DETECTION_SCRIPT,
     OUTPUT_DIR,
     STORAGE_STATE_FILE,
@@ -153,7 +153,7 @@ class HybridPipeline:
           6. need_login 时调用 _login() 完成扫码登录。
         """
         logger.info("Starting browser...")
-        self.playwright = sync_playwright().start()
+        self.playwright = sync_playwright().start()  # 【调用函数】启动Playwright运行时 (同步模式)
 
         launch_args = [
             "--disable-blink-features=AutomationControlled",
@@ -163,7 +163,7 @@ class HybridPipeline:
         if not self.headless:
             launch_args.append("--window-size=1280,900")
 
-        self.browser = self.playwright.chromium.launch(
+        self.browser = self.playwright.chromium.launch(  # 【调用函数】启动Chromium浏览器 (反自动化检测参数 + 慢动作)
             headless=self.headless,
             args=launch_args,
             slow_mo=50,
@@ -184,14 +184,14 @@ class HybridPipeline:
         if STORAGE_STATE_FILE.exists():
             try:
                 with open(STORAGE_STATE_FILE) as f:
-                    context_options["storage_state"] = json.load(f)
+                    context_options["storage_state"] = json.load(f)  # 【调用函数】读取已保存的登录态 (免重复扫码)
                 logger.info("Loaded saved login state")
             except Exception:
                 pass
 
-        self.context = self.browser.new_context(**context_options)
-        self.context.add_init_script(ANTI_DETECTION_SCRIPT)
-        self.page = self.context.new_page()
+        self.context = self.browser.new_context(**context_options)  # 【调用函数】创建浏览器上下文 (视口/UA/时区模拟 + 登录态)
+        self.context.add_init_script(ANTI_DETECTION_SCRIPT)  # 【调用函数】注入反自动化检测JS脚本 (页面加载前执行)
+        self.page = self.context.new_page()  # 【调用函数】创建页面标签页 (当前活动页)
 
         # 登录
         if need_login:
@@ -208,7 +208,7 @@ class HybridPipeline:
           - 若超时仍未检测到, 只告警不报错 (保留浏览器供人工处理)。
         """
         logger.info("Opening homepage...")
-        self.page.goto(
+        self.page.goto(  # 【调用函数】跳转小红书首页 (等待DOM加载, 触发登录检测)
             "https://www.xiaohongshu.com/explore", timeout=30000, wait_until="domcontentloaded"
         )
         time.sleep(2)
@@ -256,10 +256,10 @@ class HybridPipeline:
         【关键逻辑】下次启动时 start() 会读取该文件自动恢复登录, 从而免扫码。
         """
         try:
-            state = self.context.storage_state()
+            state = self.context.storage_state()  # 【调用函数】获取浏览器登录态 (Cookie/LocalStorage)
             STORAGE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(STORAGE_STATE_FILE, "w") as f:
-                json.dump(state, f)
+                json.dump(state, f)  # 【调用函数】登录态序列化落盘 (下次启动免扫码)
             logger.info(f"State saved to {STORAGE_STATE_FILE}")
         except Exception as e:
             logger.warning(f"Failed to save state: {e}")
@@ -288,7 +288,7 @@ class HybridPipeline:
         search_url = (
             f"https://www.xiaohongshu.com/search_result?keyword={keyword}&type=51&sort=time"
         )
-        self.page.goto(search_url, timeout=20000, wait_until="domcontentloaded")
+        self.page.goto(search_url, timeout=20000, wait_until="domcontentloaded")  # 【调用函数】跳转小红书搜索页 (type=51笔记, sort=time按时间排序)
         time.sleep(random.uniform(2, 4))
 
         # 滚动加载: 每滚一屏等待 1~2.5 秒, 模拟人类浏览速度
@@ -297,7 +297,7 @@ class HybridPipeline:
             time.sleep(random.uniform(1, 2.5))
 
         # 提取笔记元素
-        note_elements = self.page.query_selector_all(
+        note_elements = self.page.query_selector_all(  # 【调用函数】批量定位搜索结果卡片DOM元素 (多组选择器兜底)
             '.note-item, [class*="noteItem"], section.note-item, '
             'a[href*="/explore/"][class*="note"], '
             'div[class*="feeds-page"] section, '
@@ -307,7 +307,7 @@ class HybridPipeline:
         logger.debug(f"  Found {len(note_elements)} potential note elements")
 
         seen_ids = set()
-        for elem in note_elements[:40]:
+        for elem in note_elements[:40]:  # 【变量】单关键词最多解析前40张卡片 (控制耗时与请求量)
             try:
                 note = self._parse_search_card(elem, keyword)
                 if note and note.note_id and note.note_id not in seen_ids:
@@ -338,7 +338,7 @@ class HybridPipeline:
         if not link:
             link = elem
         href = link.get_attribute("href") or ""
-        note_id_match = re.search(r"/(?:explore|discovery/item)/([a-f0-9]{24})", href)
+        note_id_match = re.search(r"/(?:explore|discovery/item)/([a-f0-9]{24})", href)  # 【调用函数】正则从href提取24位十六进制note_id
         if note_id_match:
             note.note_id = note_id_match.group(1)
             note.url = f"https://www.xiaohongshu.com/explore/{note.note_id}"
@@ -352,7 +352,7 @@ class HybridPipeline:
                 return None
 
         # 时间戳
-        note.publish_time = decode_objectid_timestamp(note.note_id) or ""
+        note.publish_time = decode_objectid_timestamp(note.note_id) or ""  # 【调用函数】解码note_id雪花时间戳 → 发布时间 (卡片DOM无直接时间字段)
 
         # 标题
         for sel in [".title", '[class*="title"]', 'span[class*="title"]', "h3"]:
@@ -382,7 +382,7 @@ class HybridPipeline:
         )
         if len(count_els) >= 1:
             note.like_count = (count_els[0].inner_text() or "").strip()
-            note.like_count_int = parse_like_count(note.like_count)
+            note.like_count_int = parse_like_count(note.like_count)  # 【调用函数】"1.2万"等中文点赞数 → 整数, 供排序使用
 
         # 封面
         img = elem.query_selector("img")
@@ -413,7 +413,7 @@ class HybridPipeline:
         dist = random.randint(400, 900)
         steps = random.randint(3, 6)
         for _ in range(steps):
-            self.page.evaluate(f"window.scrollBy(0, {dist // steps})")
+            self.page.evaluate(f"window.scrollBy(0, {dist // steps})")  # 【调用函数】在页面执行JS滚动指令 (小步滚动)
             time.sleep(random.uniform(0.1, 0.3))
 
     # ================================================================
@@ -447,27 +447,27 @@ class HybridPipeline:
 
                 # 匹配笔记详情API (打开详情页时浏览器会请求它)
                 if "/api/sns/web/v1/feed" in url or "/api/sns/web/v1/note/" in url:
-                    body = response.json()
+                    body = response.json()  # 【调用函数】解析拦截到的API响应为JSON
                     self.api_cache["note_detail"] = body
                     logger.debug("Intercepted note detail API")
 
                 # 匹配评论API
                 elif "/api/sns/web/v2/comment" in url:
-                    body = response.json()
+                    body = response.json()  # 【调用函数】解析拦截到的API响应为JSON
                     cache_key = f"comment_{url}"
                     self.api_cache[cache_key] = body
                     logger.debug("Intercepted comment API")
 
                 # 匹配搜索API (可以获取更丰富的搜索结果)
                 elif "/api/sns/web/v1/search/notes" in url:
-                    body = response.json()
+                    body = response.json()  # 【调用函数】解析拦截到的API响应为JSON
                     self.api_cache["search_results"] = body
                     logger.debug("Intercepted search API")
 
             except Exception:
                 pass  # 非JSON响应忽略
 
-        self.page.on("response", on_response)
+        self.page.on("response", on_response)  # 【调用函数】注册Playwright响应拦截回调 (每次网络响应到达时触发)
         self.intercept_enabled = True
         logger.info("API interceptor enabled")
 
@@ -488,7 +488,7 @@ class HybridPipeline:
         # 打开详情页
         detail_url = f"https://www.xiaohongshu.com/explore/{note_id}"
         try:
-            self.page.goto(detail_url, timeout=20000, wait_until="domcontentloaded")
+            self.page.goto(detail_url, timeout=20000, wait_until="domcontentloaded")  # 【调用函数】打开笔记详情页 (触发浏览器自动请求详情API)
         except PwTimeout:
             logger.warning(f"Detail page timeout: {note_id[:8]}...")
             return None
@@ -692,7 +692,7 @@ class HybridPipeline:
         self.setup_api_interceptor()
         results = []
 
-        ids_to_fetch = note_ids[:max_depth]
+        ids_to_fetch = note_ids[:max_depth]  # 【变量】只深挖前max_depth条 (控制详情API请求量)
         logger.info(f"Deep extracting {len(ids_to_fetch)} notes...")
 
         for i, nid in enumerate(ids_to_fetch):
@@ -772,7 +772,7 @@ class HybridPipeline:
             # filter_futures_notes 来自 xhs_scraper, 按标题/标签等判断是否和期货相关
             if filter_futures:
                 before = len(all_discovered)
-                all_discovered = filter_futures_notes(all_discovered)
+                all_discovered = filter_futures_notes(all_discovered)  # 【调用函数】跨模块(xhs_scraper): 按标题/标签初筛期货相关笔记
                 print(f"Futures filter (Phase 1): {before} -> {len(all_discovered)} notes")
 
             # 去重 + 按点赞数排序（优先深挖高互动的笔记）
@@ -784,7 +784,7 @@ class HybridPipeline:
                 if n.note_id not in seen:
                     seen.add(n.note_id)
                     unique_notes.append(n)
-            unique_notes.sort(key=lambda n: n.like_count_int, reverse=True)
+            unique_notes.sort(key=lambda n: n.like_count_int, reverse=True)  # 【变量】按点赞数降序, 让高互动笔记优先进入深挖
 
             # ---------------- Phase 2: 深挖 ----------------
             print("\n" + "=" * 60)
@@ -800,7 +800,7 @@ class HybridPipeline:
                 # 此时能拿到完整正文 desc + 标签 + 话题, 判断比 Phase 1 更可靠
                 deep_filtered = []
                 for deep in all_deep:
-                    is_rel, conf = is_futures_related_xhs(
+                    is_rel, conf = is_futures_related_xhs(  # 【调用函数】跨模块(xhs_scraper): 基于完整正文/标签/话题做精准期货相关性判断
                         deep.title or "",
                         deep.desc or "",
                         deep.tags + deep.topics,
@@ -834,12 +834,12 @@ class HybridPipeline:
         """
         try:
             if self.browser:
-                self.browser.close()
+                self.browser.close()  # 【调用函数】关闭Chromium浏览器
         except Exception:
             pass
         try:
             if self.playwright:
-                self.playwright.stop()
+                self.playwright.stop()  # 【调用函数】停止Playwright运行时, 释放资源
         except Exception:
             pass
 
@@ -858,7 +858,7 @@ class HybridPipeline:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
         if filename is None:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")  # 【变量】默认输出文件名时间戳
             filename = f"hybrid_results_{ts}.json"
 
         output = {
@@ -884,7 +884,7 @@ class HybridPipeline:
                 {
                     "note_id": d.note_id,
                     "title": d.title,
-                    "desc": d.desc[:1000] if d.desc else "",
+                    "desc": d.desc[:1000] if d.desc else "",  # 【变量】正文截断前1000字符控制文件体积
                     "author_name": d.author_name,
                     "author_id": d.author_id,
                     "author_followers": d.author_followers,
@@ -894,7 +894,7 @@ class HybridPipeline:
                     "share_count": d.share_count,
                     "tags": d.tags,
                     "topics": d.topics,
-                    "images": d.images[:5],
+                    "images": d.images[:5],  # 【变量】图片只保留前5张控制文件体积
                     "note_type": d.note_type,
                     "publish_time": d.publish_time,
                     "ip_location": d.ip_location,
@@ -906,7 +906,7 @@ class HybridPipeline:
 
         filepath = OUTPUT_DIR / filename
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(output, f, ensure_ascii=False, indent=2)
+            json.dump(output, f, ensure_ascii=False, indent=2)  # 【调用函数】结果JSON落盘 (ensure_ascii=False保留中文)
 
         logger.info(f"Results saved to: {filepath}")
         return filepath
@@ -975,7 +975,7 @@ def main():
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--verbose", "-v", action="store_true")
 
-    args = parser.parse_args()
+    args = parser.parse_args()  # 【调用函数】解析命令行参数
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

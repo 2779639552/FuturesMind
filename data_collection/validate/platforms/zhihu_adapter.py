@@ -26,20 +26,20 @@ needs_detail_fetch=True：知乎搜索只返回摘要，需逐条深挖全文与
 依赖: playwright (Chromium)
 """
 
-import json
-import logging
-import re
-import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any
+import json  # 【调用包】登录态(storage_state)JSON 读写
+import logging  # 【调用包】日志记录(浏览器启动/搜索/详情)
+import re  # 【调用包】正文/评论 HTML 清洗
+import time  # 【调用包】等待 API 响应轮询/延时
+from datetime import datetime  # 【调用包】Unix 时间戳→日期字符串
+from pathlib import Path  # 【调用包】登录态文件路径构建
+from typing import Any  # 【调用包】类型注解(浏览器对象等)
 
-from .base import CredentialError, PlatformAdapter
+from .base import CredentialError, PlatformAdapter  # 【调用包】基类接口契约 + 凭证异常
 
 logger = logging.getLogger("platforms.zhihu")
 
-CREDENTIALS_DIR = Path(__file__).parent.parent / "credentials"
-STATE_FILE = CREDENTIALS_DIR / "zhihu_login_state.json"
+CREDENTIALS_DIR = Path(__file__).parent.parent / "credentials"  # 【变量】凭证根目录(../credentials)
+STATE_FILE = CREDENTIALS_DIR / "zhihu_login_state.json"  # 【变量】知乎登录态文件(Playwright storage_state)
 
 # 搜索配置
 SEARCH_TIMEOUT = 30  # 等待 API 响应的秒数
@@ -81,7 +81,7 @@ class ZhihuAdapter(PlatformAdapter):
         - 依赖 playwright 包，未安装或登录态文件缺失时抛 CredentialError 并给出指引。
         """
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.sync_api import sync_playwright  # 【调用包】Playwright 同步 API(驱动 Chromium)
         except ImportError:
             raise CredentialError(
                 "Playwright not installed.\n"
@@ -92,14 +92,14 @@ class ZhihuAdapter(PlatformAdapter):
         if not STATE_FILE.exists():
             raise CredentialError("Zhihu login state not found.\nRun: python zhihu_login.py")
 
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=True)
+        self._playwright = sync_playwright().start()  # 【调用函数】启动 Playwright 控制器
+        self._browser = self._playwright.chromium.launch(headless=True)  # 【调用函数】启动无头 Chromium(浏览器自动算 x-zse-96 签名)
 
         # 加载已保存的登录态 (含 Cookie 等)
         with open(STATE_FILE, encoding="utf-8") as f:
-            storage_state = json.load(f)
+            storage_state = json.load(f)  # 【调用函数】读取登录态 JSON(含 Cookie/localStorage)
 
-        self._context = self._browser.new_context(
+        self._context = self._browser.new_context(  # 【调用函数】创建浏览器上下文(注入登录态+UA)
             viewport={"width": 1280, "height": 800},
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -108,7 +108,7 @@ class ZhihuAdapter(PlatformAdapter):
             ),
             storage_state=storage_state,  # 注入登录态
         )
-        self._page = self._context.new_page()
+        self._page = self._context.new_page()  # 【调用函数】创建新页面(搜索/详情都在此执行)
         logger.info("Zhihu browser started (headless)")
 
     def close(self) -> None:
@@ -121,11 +121,11 @@ class ZhihuAdapter(PlatformAdapter):
         """
         try:
             if self._context:
-                self._context.close()
+                self._context.close()  # 【调用函数】关闭浏览器上下文
             if self._browser:
-                self._browser.close()
+                self._browser.close()  # 【调用函数】关闭 Chromium 浏览器
             if self._playwright:
-                self._playwright.stop()
+                self._playwright.stop()  # 【调用函数】停止 Playwright 控制器(防进程残留)
         except Exception:
             pass
 
@@ -157,13 +157,13 @@ class ZhihuAdapter(PlatformAdapter):
                     pass  # 非 JSON 响应(如 HTML)直接忽略
 
         # 注册响应监听器(仅在导航期间生效，finally 里会移除)
-        self._page.on("response", _on_response)
+        self._page.on("response", _on_response)  # 【调用函数】注册响应监听器(拦截 search_v3 返回)
 
         try:
             # 导航到搜索页（PC 端）; 关键词里的空格要转成 "+" 拼接 URL
             encoded_q = keyword.replace(" ", "+")
-            search_url = f"https://www.zhihu.com/search?type=content&q={encoded_q}"
-            self._page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+            search_url = f"https://www.zhihu.com/search?type=content&q={encoded_q}"  # 【变量】PC 端搜索页 URL(type=content 搜全部内容)
+            self._page.goto(search_url, wait_until="domcontentloaded", timeout=30000)  # 【调用函数】导航到搜索页(触发页面发 API 请求)
 
             # 等待 API 响应到达: 轮询直到拦截到数据或超时(SEARCH_TIMEOUT 秒)
             waited = 0
@@ -173,13 +173,13 @@ class ZhihuAdapter(PlatformAdapter):
 
             # 如果首页没截到，尝试滚动到底部触发懒加载，从而发出更多请求
             if not self._intercepted:
-                self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")  # 【调用函数】滚动到底触发懒加载(补发请求)
                 time.sleep(2)
 
         except Exception as e:
             logger.warning(f"Zhihu search navigation failed: {e}")
         finally:
-            self._page.remove_listener("response", _on_response)
+            self._page.remove_listener("response", _on_response)  # 【调用函数】移除监听器(防后续请求误收集)
 
         # 解析拦截到的响应
         items = []
@@ -193,7 +193,7 @@ class ZhihuAdapter(PlatformAdapter):
                     oid = str(obj.get("id", ""))
                     if oid and oid not in seen_ids:
                         seen_ids.add(oid)
-                        items.append(self._parse_search_item(r, obj))
+                        items.append(self._parse_search_item(r, obj))  # 【调用函数】解析单条搜索结果→标准 item
 
             # 如果已有足够结果，可以尝试翻页
             if len(items) >= count:
@@ -202,14 +202,14 @@ class ZhihuAdapter(PlatformAdapter):
         # Fallback: 如果页面拦截没拿到数据，直接用浏览器内 fetch() 调搜索 API
         if not items:
             try:
-                items = self._search_via_fetch(keyword, count, seen_ids)
+                items = self._search_via_fetch(keyword, count, seen_ids)  # 【调用函数】兜底: 浏览器内 fetch() 直调搜索 API
             except Exception as e:
                 logger.warning(f"  Zhihu fetch fallback also failed: {e}")
 
         # 如果不够，翻页: 用已收集数量作 offset 取下一页
         if 0 < len(items) < count:
             try:
-                more = self._search_via_fetch(keyword, count, seen_ids, offset=len(items))
+                more = self._search_via_fetch(keyword, count, seen_ids, offset=len(items))  # 【调用函数】翻页补足(offset 取下一页)
                 items.extend(more)
             except Exception:
                 pass
@@ -233,9 +233,9 @@ class ZhihuAdapter(PlatformAdapter):
         浏览器自动算 x-zse-96 签名，比拦截页面请求更可靠。
         请求走浏览器同源页面，Cookie/签名都由浏览器自动带上。
         """
-        import urllib.parse
+        import urllib.parse  # 【调用包】URL 编码关键词(中文/空格安全拼接)
 
-        q = urllib.parse.quote(keyword)
+        q = urllib.parse.quote(keyword)  # 【调用函数】URL 编码搜索词(中文转 %XX)
         # 知乎搜索 API 的查询参数约定; limit=20 为每页条数
         api_url = (
             f"/api/v4/search_v3"
@@ -251,7 +251,7 @@ class ZhihuAdapter(PlatformAdapter):
             }}
         """
         try:
-            data = self._page.evaluate(js_code)
+            data = self._page.evaluate(js_code)  # 【调用函数】在浏览器内 fetch 调搜索 API(签名自动带上)
         except Exception as e:
             logger.warning(f"  Zhihu fetch search failed: {e}")
             return []
@@ -345,7 +345,7 @@ class ZhihuAdapter(PlatformAdapter):
         if not oid:
             return None
 
-        result = {"full_content": "", "content_length": 0, "comments": []}
+        result = {"full_content": "", "content_length": 0, "comments": []}  # 【变量】详情结果容器(聚合全文/长度/评论)
 
         # ---- 1. 获取回答全文 ----
         # 如果搜索已返回完整 content，跳过 API 调用
@@ -357,14 +357,14 @@ class ZhihuAdapter(PlatformAdapter):
                 # 【待确认】下一行仅为未使用的表达式(无实际作用)，疑似历史遗留代码，
                 # 保留未动；真正请求走下面的 api_path fetch。
                 (f"https://www.zhihu.com/question/{raw_item.get('question_id', '')}/answer/{oid}")
-                api_path = f"/api/v4/answers/{oid}?include=content,excerpt,voteup_count,comment_count,created_time,author"
+                api_path = f"/api/v4/answers/{oid}?include=content,excerpt,voteup_count,comment_count,created_time,author"  # 【变量】回答详情 API(include 指定返回字段)
                 resp = self._page.evaluate(f"""
                     async () => {{
                         const r = await fetch('{api_path}');
                         if (!r.ok) return null;
                         return await r.json();
                     }}
-                """)
+                """)  # 【调用函数】浏览器内 fetch 拿回答全文(签名由浏览器自动算)
                 if resp and isinstance(resp, dict):
                     result["full_content"] = resp.get("content", resp.get("excerpt", ""))
                     result["content_length"] = len(result["full_content"])
@@ -377,14 +377,14 @@ class ZhihuAdapter(PlatformAdapter):
         # ---- 2. 获取热门评论 ----
         try:
             # 按得分(order_by=score)取 20 条候选，再取前 10 条高赞评论
-            comments_path = f"/api/v4/answers/{oid}/comments?order_by=score&limit=20"
+            comments_path = f"/api/v4/answers/{oid}/comments?order_by=score&limit=20"  # 【变量】热门评论 API(按得分排序取20条候选)
             resp = self._page.evaluate(f"""
                 async () => {{
                     const r = await fetch('{comments_path}');
                     if (!r.ok) return null;
                     return await r.json();
                 }}
-            """)
+            """)  # 【调用函数】浏览器内 fetch 拿热门评论
             if resp and isinstance(resp, dict):
                 comment_list = resp.get("data", [])
                 for c in (comment_list or [])[:10]:  # 取前10条高赞评论
@@ -468,7 +468,7 @@ class ZhihuAdapter(PlatformAdapter):
         )
         if created_ts and created_ts > 0:
             try:
-                publish_time = datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S")
+                publish_time = datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S")  # 【调用函数】Unix 秒时间戳→日期字符串
             except Exception:
                 publish_time = ""
         else:
@@ -484,7 +484,7 @@ class ZhihuAdapter(PlatformAdapter):
             like_count = raw_item.get("voteup_count", 0) or 0
             comment_count = raw_item.get("comment_count", 0) or 0
 
-        note_dict = {
+        note_dict = {  # 【变量】统一 Schema 输出(键对齐 UNIFIED_SCHEMA_FIELDS)
             "platform": "zhihu",
             "note_id": f"{self.id_prefix}{obj_type}:{oid}",
             "title": title,
@@ -543,6 +543,6 @@ class ZhihuAdapter(PlatformAdapter):
         【功能】供外部查看/文档渲染知乎字段映射关系。
         【参数】无 【返回】dict（来自 base.FIELD_MAPPING_TABLE["zhihu"]）
         """
-        from .base import FIELD_MAPPING_TABLE
+        from .base import FIELD_MAPPING_TABLE  # 【调用包】取知乎字段映射表(文档用)
 
-        return FIELD_MAPPING_TABLE["zhihu"]
+        return FIELD_MAPPING_TABLE["zhihu"]  # 【调用函数】返回"统一字段←知乎原始字段"映射

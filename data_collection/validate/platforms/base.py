@@ -24,8 +24,8 @@ BatchCollector(批量采集器)只依赖本模块定义的 PlatformAdapter 接�
     5. 全部结束后调 adapter.close() 释放资源
 """
 
-from abc import ABC, abstractmethod
-from typing import Any
+from abc import ABC, abstractmethod  # 【调用包】抽象基类与抽象方法(定义适配器接口契约)
+from typing import Any  # 【调用包】类型注解(原生 item 作为不透明对象)
 
 # ============================================================
 # 统一输出 Schema 字段定义
@@ -34,7 +34,7 @@ from typing import Any
 # 字段注释中标注了该字段的数据类型与缺失时的默认值约定。
 # ============================================================
 
-UNIFIED_SCHEMA_FIELDS = [
+UNIFIED_SCHEMA_FIELDS = [  # 【变量】统一输出 Schema 字段清单(下游 NER/情感只认这些键)
     # 标识
     "platform",  # str  — "xhs" | "weibo" | "zhihu"
     "note_id",  # str  — 平台内唯一 ID（新平台加前缀: "wb:{mid}", "zh:{type}:{id}"）
@@ -71,7 +71,7 @@ UNIFIED_SCHEMA_FIELDS = [
 # 用途: 帮助零基础读者对照"统一字段 ← 平台原始字段"的映射关系，
 #       也是新增平台时编写 normalize() 的参照模板。
 # 注: 这只是文档，真正取值逻辑在各自 normalize() 里实现，勿在此表直接取数。
-FIELD_MAPPING_TABLE = {
+FIELD_MAPPING_TABLE = {  # 【变量】"平台 → 统一字段←平台原始字段"映射文档表
     "xhs": {
         "platform": '"xhs"',
         "note_id": "item.id (24hex ObjectId)",

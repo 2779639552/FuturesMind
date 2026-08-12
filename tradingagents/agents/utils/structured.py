@@ -16,19 +16,23 @@ Centralising the pattern here keeps the agent factories small and ensures
 all three agents log the same warnings when fallback fires.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # 【调用包】延迟求值注解
 
-import logging
-from collections.abc import Callable
-from typing import Any, TypeVar
+import logging  # 【调用包】日志:记录结构化输出回退警告
+from collections.abc import Callable  # 【调用包】回调类型:render 函数签名
+from typing import Any, TypeVar  # 【调用包】TypeVar 泛型:约束 schema 必须是 BaseModel 子类
 
-from pydantic import BaseModel
+from pydantic import BaseModel  # 【调用包】Pydantic 基类:结构化输出 schema 的父类
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # 【变量】模块级日志器
 
-T = TypeVar("T", bound=BaseModel)
+T = TypeVar("T", bound=BaseModel)  # 【变量】泛型变量:限定 schema 类型为 BaseModel 子类,保证 render 返回 str
 
 
+# 【功能】把 LLM 包装为"结构化输出模式"(返回 Pydantic 实例);provider 不支持时返回 None。
+# 【参数】llm: 底层 LLM 客户端;schema: 目标 Pydantic schema;agent_name: 用于日志的代理名。
+# 【返回】包装后的 LLM(可用 .invoke() 拿 Pydantic 实例),不支持时 None(走自由文本)。
+# 【关键】捕获 NotImplementedError/AttributeError——老 Ollama 等模型不支持 with_structured_output。
 def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
     """Return ``llm.with_structured_output(schema)`` or ``None`` if unsupported.
 
@@ -36,7 +40,7 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
     will use free-text generation for every call instead of one-shot fallback.
     """
     try:
-        return llm.with_structured_output(schema)
+        return llm.with_structured_output(schema)  # 【调用函数】绑定结构化输出模式;不支持的 provider 抛异常
     except (NotImplementedError, AttributeError) as exc:
         logger.warning(
             "%s: provider does not support with_structured_output (%s); "
@@ -47,6 +51,12 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
         return None
 
 
+# 【功能】执行结构化调用并把结果渲染为 markdown;任何失败都回退为普通自由文本。
+# 【参数】structured_llm: bind_structured 的包装器(可能为 None);plain_llm: 普通 LLM;
+#        prompt: 底层 LLM 接受的提示(字符串或消息列表);render: Pydantic 实例→markdown;
+#        agent_name: 日志用代理名。
+# 【返回】markdown 字符串(结构化或回退路径的产物)。
+# 【关键】思考型模型可能不调工具而直接答文本,导致解析结果 None,也按 miss 回退。
 def invoke_structured_or_freetext(
     structured_llm: Any | None,
     plain_llm: Any,
@@ -63,7 +73,7 @@ def invoke_structured_or_freetext(
     """
     if structured_llm is not None:
         try:
-            result = structured_llm.invoke(prompt)
+            result = structured_llm.invoke(prompt)  # 【调用函数】结构化调用:LLM 返回 Pydantic 实例
             if result is None:
                 # A thinking model can answer in plain text instead of calling
                 # the tool, leaving the parser with nothing to return. Treat it
@@ -77,5 +87,5 @@ def invoke_structured_or_freetext(
                 exc,
             )
 
-    response = plain_llm.invoke(prompt)
+    response = plain_llm.invoke(prompt)  # 【调用函数】回退路径:普通自由文本调用,拿到原始内容
     return response.content

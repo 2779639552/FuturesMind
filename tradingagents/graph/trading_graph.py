@@ -27,18 +27,18 @@
 #   商品期货路径由根目录 commodity_demo.py 驱动, 不使用本类。
 # =============================================================================
 
-import json
-import logging
-import os
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any
+import json  # 【调用包】JSON 序列化 (最终状态落盘)
+import logging  # 【调用包】日志记录 (运行信息/异常告警)
+import os  # 【调用包】环境变量与目录创建
+from datetime import datetime, timedelta  # 【调用包】日期解析与持仓期时间运算
+from pathlib import Path  # 【调用包】路径对象操作 (结果目录/日志路径)
+from typing import Any  # 【调用包】类型标注支持
 
-import yfinance as yf
-from langgraph.prebuilt import ToolNode
+import yfinance as yf  # 【调用包】拉取个股/基准指数历史行情 (收益结算)
+from langgraph.prebuilt import ToolNode  # 【调用包】LangGraph 预置工具调用节点
 
 # Import the abstract tool methods from agent_utils
-from tradingagents.agents.utils.agent_utils import (
+from tradingagents.agents.utils.agent_utils import (  # 【调用包】分析师可调用的真实数据工具 (行情/指标/新闻/财报/公司身份)
     build_instrument_context,
     get_balance_sheet,
     get_cashflow,
@@ -54,19 +54,19 @@ from tradingagents.agents.utils.agent_utils import (
     get_verified_market_snapshot,
     resolve_instrument_identity,
 )
-from tradingagents.agents.utils.memory import TradingMemoryLog
-from tradingagents.dataflows.config import set_config
-from tradingagents.dataflows.utils import safe_ticker_component
-from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.llm_clients import create_llm_client
-from tradingagents.reporting import write_report_tree
+from tradingagents.agents.utils.memory import TradingMemoryLog  # 【调用包】记忆日志 (同 ticker 历史决策与延迟反思)
+from tradingagents.dataflows.config import set_config  # 【调用包】把主配置同步到数据采集层
+from tradingagents.dataflows.utils import safe_ticker_component  # 【调用包】ticker 路径安全清洗
+from tradingagents.default_config import DEFAULT_CONFIG  # 【调用包】默认配置字典
+from tradingagents.llm_clients import create_llm_client  # 【调用包】LLM 多厂商工厂 (创建快/慢两套客户端)
+from tradingagents.reporting import write_report_tree  # 【调用包】Markdown 报告树落盘
 
-from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
-from .conditional_logic import ConditionalLogic
-from .propagation import Propagator
-from .reflection import Reflector
-from .setup import GraphSetup
-from .signal_processing import SignalProcessor
+from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id  # 【调用包】SQLite 断点续跑支撑
+from .conditional_logic import ConditionalLogic  # 【调用包】条件路由判断 (辩论/风险环节走向)
+from .propagation import Propagator  # 【调用包】图初始状态与运行参数
+from .reflection import Reflector  # 【调用包】决策事后反思 (延迟到下次运行)
+from .setup import GraphSetup  # 【调用包】LangGraph 图搭建
+from .signal_processing import SignalProcessor  # 【调用包】从最终决策提取结构化信号
 
 logger = logging.getLogger(__name__)
 
@@ -156,12 +156,12 @@ class TradingAgentsGraph:
         # Update the interface's config
         # 【中文说明】把配置写入 dataflows 模块的全局单例, 确保数据采集层
         # (行情、财报等工具) 与主流程使用同一份配置 (如 ticker 后缀、缓存目录)。
-        set_config(self.config)
+        set_config(self.config)  # 【调用函数】同步配置到 dataflows 模块
 
         # Create necessary directories
         # 【中文说明】确保数据缓存目录和结果目录存在, 避免后续写盘时 FileNotFoundError。
-        os.makedirs(self.config["data_cache_dir"], exist_ok=True)
-        os.makedirs(self.config["results_dir"], exist_ok=True)
+        os.makedirs(self.config["data_cache_dir"], exist_ok=True)  # 【调用函数】创建数据缓存目录
+        os.makedirs(self.config["results_dir"], exist_ok=True)  # 【调用函数】创建结果目录
 
         # Initialize LLMs with provider-specific thinking configuration
         # 【中文说明】_get_provider_kwargs() 按当前提供商 (google/openai/anthropic)
@@ -175,13 +175,13 @@ class TradingAgentsGraph:
         # 【关键逻辑】通过 LLM 工厂创建两个客户端。注意两个调用都只传
         # provider/model/base_url, 具体是哪家 SDK 由 factory.py 根据 provider
         # 分发——这就是"换厂商不改业务代码"的实现点。
-        deep_client = create_llm_client(
+        deep_client = create_llm_client(  # 【调用函数】LLM 工厂创建"深度思考"客户端 (跨模块调用)
             provider=self.config["llm_provider"],
             model=self.config["deep_think_llm"],
             base_url=self.config.get("backend_url"),
             **llm_kwargs,
         )
-        quick_client = create_llm_client(
+        quick_client = create_llm_client(  # 【调用函数】LLM 工厂创建"快速响应"客户端 (跨模块调用)
             provider=self.config["llm_provider"],
             model=self.config["quick_think_llm"],
             base_url=self.config.get("backend_url"),
@@ -191,10 +191,10 @@ class TradingAgentsGraph:
         # 【中文说明】get_llm() 返回真正可调用的底层 LLM 对象 (LangChain 兼容)。
         # deep_thinking_llm 给研究经理/组合经理等"要深思熟虑"的节点,
         # quick_thinking_llm 给分析师/研究员/交易员等"要快速响应"的节点。
-        self.deep_thinking_llm = deep_client.get_llm()
-        self.quick_thinking_llm = quick_client.get_llm()
+        self.deep_thinking_llm = deep_client.get_llm()  # 【调用函数】取底层可调用 LLM 对象
+        self.quick_thinking_llm = quick_client.get_llm()  # 【调用函数】取底层可调用 LLM 对象
 
-        self.memory_log = TradingMemoryLog(self.config)
+        self.memory_log = TradingMemoryLog(self.config)  # 【调用函数】初始化记忆日志 (供延迟反思闭环)
 
         # Create tool nodes
         # 【中文说明】_create_tool_nodes() 返回 {分析师类型: ToolNode} 的字典,
@@ -204,13 +204,13 @@ class TradingAgentsGraph:
         # Initialize components
         # 【中文说明】ConditionalLogic 提供"条件路由"所需的全部判断函数
         # (should_continue_*), 参数指定多空辩论与风险辩论的最大轮数。
-        self.conditional_logic = ConditionalLogic(
-            max_debate_rounds=self.config["max_debate_rounds"],
-            max_risk_discuss_rounds=self.config["max_risk_discuss_rounds"],
+        self.conditional_logic = ConditionalLogic(  # 【调用函数】实例化条件路由 (供图的条件边注册)
+            max_debate_rounds=self.config["max_debate_rounds"],  # 【变量】多空辩论轮数上限
+            max_risk_discuss_rounds=self.config["max_risk_discuss_rounds"],  # 【变量】风险辩论轮数上限
         )
         # 【中文说明】GraphSetup 负责"建图" (来自 setup.py)。这里把快/慢两套
         # LLM、工具节点、条件路由都交给它, 稍后调用它的 setup_graph() 建图。
-        self.graph_setup = GraphSetup(
+        self.graph_setup = GraphSetup(  # 【调用函数】实例化图搭建器 (setup.py)
             self.quick_thinking_llm,
             self.deep_thinking_llm,
             self.tool_nodes,
@@ -220,11 +220,11 @@ class TradingAgentsGraph:
         # 【中文说明】Propagator: 负责"初始化状态 + 提供图运行参数"。
         # Reflector: 负责对一次交易决策的"事后反思" (延迟到下次运行该 ticker 时做)。
         # SignalProcessor: 负责把最终决策字符串加工成结构化信号。
-        self.propagator = Propagator(
-            max_recur_limit=self.config.get("max_recur_limit", 100),
+        self.propagator = Propagator(  # 【调用函数】实例化传播器 (状态初始化/图参数)
+            max_recur_limit=self.config.get("max_recur_limit", 100),  # 【变量】recursion_limit 上限 (默认 100, 防死循环)
         )
-        self.reflector = Reflector(self.quick_thinking_llm)
-        self.signal_processor = SignalProcessor(self.quick_thinking_llm)
+        self.reflector = Reflector(self.quick_thinking_llm)  # 【调用函数】实例化反思器 (延迟反思)
+        self.signal_processor = SignalProcessor(self.quick_thinking_llm)  # 【调用函数】实例化信号处理器
 
         # State tracking
         # 【中文说明】记录最近一次运行的状态/股票名; log_states_dict 用"日期"作
@@ -242,9 +242,9 @@ class TradingAgentsGraph:
         # 【关键逻辑】self.workflow = 未编译的图 (可反复 compile); self.graph =
         # 已编译可运行对象。保留 workflow 是为了在开启断点续跑时用 checkpointer
         # 重新编译 (见 propagate()), 而不需要重新搭建整张图。
-        self.workflow = self.graph_setup.setup_graph(selected_analysts)
-        self.graph = self.workflow.compile()
-        self._checkpointer_ctx = None
+        self.workflow = self.graph_setup.setup_graph(selected_analysts)  # 【调用函数】建图 (返回未编译的 workflow)
+        self.graph = self.workflow.compile()  # 【调用函数】StateGraph.compile() 编译 LangGraph 得到可运行对象
+        self._checkpointer_ctx = None  # 【变量】当前断点上下文 (None = 未开启断点续跑)
 
     def _get_provider_kwargs(self) -> dict[str, Any]:
         """Get provider-specific kwargs for LLM client creation.
@@ -266,7 +266,7 @@ class TradingAgentsGraph:
             4) llm_max_retries 先经 _coerce_max_retries 规范化, 防止脏配置。
         """
         kwargs = {}
-        provider = self.config.get("llm_provider", "").lower()
+        provider = self.config.get("llm_provider", "").lower()  # 【变量】当前 LLM 提供商 (小写, 用于分支判断)
 
         if provider == "google":
             thinking_level = self.config.get("google_thinking_level")
@@ -424,8 +424,8 @@ class TradingAgentsGraph:
             # Normalize so the realized-return lookup hits the same instrument
             # the analysis priced (e.g. XAUUSD -> GC=F) (#984). The benchmark is
             # already a canonical Yahoo symbol from ``_resolve_benchmark``.
-            stock = yf.Ticker(normalize_symbol(ticker)).history(start=trade_date, end=end_str)
-            bench = yf.Ticker(benchmark).history(start=trade_date, end=end_str)
+            stock = yf.Ticker(normalize_symbol(ticker)).history(start=trade_date, end=end_str)  # 【调用函数】yfinance 拉取个股日线 (normalize_symbol 归一化标的)
+            bench = yf.Ticker(benchmark).history(start=trade_date, end=end_str)  # 【调用函数】yfinance 拉取基准指数日线
 
             if len(stock) < 2 or len(bench) < 2:
                 return None, None, None
@@ -599,13 +599,13 @@ class TradingAgentsGraph:
         # 【中文说明】只有配置里显式开启断点续跑时才做这一步; 否则直接用 __init__
         # 里编译好的 self.graph 跑 (见 try 块)。
         if self.config.get("checkpoint_enabled"):
-            self._checkpointer_ctx = get_checkpointer(self.config["data_cache_dir"], company_name)
+            self._checkpointer_ctx = get_checkpointer(self.config["data_cache_dir"], company_name)  # 【调用函数】按 ticker 建 SQLite 断点上下文
             saver = self._checkpointer_ctx.__enter__()
-            self.graph = self.workflow.compile(checkpointer=saver)
+            self.graph = self.workflow.compile(checkpointer=saver)  # 【调用函数】带 checkpointer 重编译图 (可续跑)
 
             # 【关键逻辑】checkpoint_step() 查询上次中断在哪个节点: 返回非 None
             # 表示可续跑 (日志提示), None 表示没有历史或签名变了, 从零开始。
-            step = checkpoint_step(
+            step = checkpoint_step(  # 【调用函数】查询上次中断到的步骤号
                 self.config["data_cache_dir"],
                 company_name,
                 str(trade_date),
@@ -651,7 +651,7 @@ class TradingAgentsGraph:
                 / "reports"
                 / f"{safe_ticker_component(ticker)}_{stamp}"
             )
-        return write_report_tree(final_state, ticker, save_path)
+        return write_report_tree(final_state, ticker, save_path)  # 【调用函数】渲染并落盘 Markdown 报告树
 
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock"):
         """Execute the graph and write the resulting state to disk and memory log.
@@ -680,9 +680,9 @@ class TradingAgentsGraph:
         #      resolve_instrument_context), 防止 agent 凭价格图瞎猜公司;
         #   3) create_initial_state(): 由 Propagator 组装出包含上述信息以及
         #      空的多空/风险辩论状态、各报告字段初始值等的完整初始状态字典。
-        past_context = self.memory_log.get_past_context(company_name)
-        instrument_context = self.resolve_instrument_context(company_name, asset_type)
-        init_agent_state = self.propagator.create_initial_state(
+        past_context = self.memory_log.get_past_context(company_name)  # 【调用函数】取记忆日志的同 ticker 历史上下文
+        instrument_context = self.resolve_instrument_context(company_name, asset_type)  # 【调用函数】确定性解析公司身份上下文
+        init_agent_state = self.propagator.create_initial_state(  # 【调用函数】组装图运行的初始状态
             company_name,
             trade_date,
             asset_type=asset_type,
@@ -691,7 +691,7 @@ class TradingAgentsGraph:
         )
         # 【中文说明】get_graph_args() 返回图运行所需参数: 主要是
         # recursion_limit (递归上限, 防止图死循环) 与 stream_mode 等。
-        args = self.propagator.get_graph_args()
+        args = self.propagator.get_graph_args()  # 【调用函数】取图运行参数 (recursion_limit/stream_mode)
 
         # Inject thread_id so same ticker+date+graph-shape resumes; a different
         # date or graph shape starts fresh (#1089).
@@ -699,15 +699,15 @@ class TradingAgentsGraph:
         # thread_id 归档节点快照: 相同的 ticker+date+图形状 → 相同 thread_id → 可
         # 续跑; 日期或图形状变了 → thread_id 变 → 当作全新运行 (issue #1089)。
         if self.config.get("checkpoint_enabled"):
-            tid = thread_id(company_name, str(trade_date), self._run_signature(asset_type))
-            args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
+            tid = thread_id(company_name, str(trade_date), self._run_signature(asset_type))  # 【调用函数】生成断点线程 ID
+            args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid  # 【变量】把 thread_id 注入运行配置
 
         if self.debug:
             # 【中文说明】debug 模式: 用 graph.stream() 让图"一步一个节点"地吐出
             # 状态增量 (chunk), 便于观察中间过程。
             trace = []
             last_printed = None
-            for chunk in self.graph.stream(init_agent_state, **args):
+            for chunk in self.graph.stream(init_agent_state, **args):  # 【调用函数】graph.stream() 逐节点流式运行
                 if chunk["messages"]:
                     msg = chunk["messages"][-1]
                     # Nodes after the trader don't append to messages, so the
@@ -731,7 +731,7 @@ class TradingAgentsGraph:
         else:
             # 【关键逻辑】非 debug 模式: graph.invoke() 一次调用就把整张图跑完,
             # 返回合并后的最终状态 (中途不输出)。
-            final_state = self.graph.invoke(init_agent_state, **args)
+            final_state = self.graph.invoke(init_agent_state, **args)  # 【调用函数】graph.invoke() 一次跑完整张图
 
         # Store current state for reflection.
         self.curr_state = final_state
@@ -743,7 +743,7 @@ class TradingAgentsGraph:
         # Store decision for deferred reflection on the next same-ticker run.
         # 【中文说明】把最终交易决策存入记忆日志——下回再运行同一 ticker 时,
         # _resolve_pending_entries() 会用它 + 实际收益做延迟反思。
-        self.memory_log.store_decision(
+        self.memory_log.store_decision(  # 【调用函数】存最终决策到记忆日志 (供下次延迟反思)
             ticker=company_name,
             trade_date=trade_date,
             final_trade_decision=final_state["final_trade_decision"],
@@ -753,7 +753,7 @@ class TradingAgentsGraph:
         # 【中文说明】本次运行已成功完成, 主动清掉断点缓存, 避免下次运行
         # 从过期的旧快照续跑。
         if self.config.get("checkpoint_enabled"):
-            clear_checkpoint(
+            clear_checkpoint(  # 【调用函数】清掉该 ticker+date 的断点缓存
                 self.config["data_cache_dir"],
                 company_name,
                 str(trade_date),
@@ -810,13 +810,13 @@ class TradingAgentsGraph:
         # results directory when joined as a path component.
         # 【中文说明】safe_ticker_component() 会剔除 ticker 中不安全的路径字符,
         # 防止把 "../" 之类的值拼进路径造成目录逃逸。
-        safe_ticker = safe_ticker_component(self.ticker)
+        safe_ticker = safe_ticker_component(self.ticker)  # 【调用函数】清洗 ticker 为安全路径组件
         directory = Path(self.config["results_dir"]) / safe_ticker / "TradingAgentsStrategy_logs"
-        directory.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(parents=True, exist_ok=True)  # 【调用函数】创建日志父目录
 
         log_path = directory / f"full_states_log_{trade_date}.json"
         with open(log_path, "w", encoding="utf-8") as f:
-            json.dump(self.log_states_dict[str(trade_date)], f, indent=4)
+            json.dump(self.log_states_dict[str(trade_date)], f, indent=4)  # 【调用函数】完整状态 JSON 落盘
 
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision.
@@ -828,4 +828,4 @@ class TradingAgentsGraph:
         【关键逻辑】这只是对 self.signal_processor.process_signal() 的一层薄封装,
             让外部调用方 (CLI/前端) 不需要直接持有 SignalProcessor 实例。
         """
-        return self.signal_processor.process_signal(full_signal)
+        return self.signal_processor.process_signal(full_signal)  # 【调用函数】委托 SignalProcessor 提取核心信号

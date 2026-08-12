@@ -30,13 +30,13 @@ Wraps the commodity_futures data vendor functions as @tool-decorated callables.
 #   signal_analyzer 回测引擎则是离线读本地 JSON 做回测,两者数据用途不同。
 # ===========================================================================
 
-from typing import Annotated
+from typing import Annotated  # 【调用包】类型注解:给工具参数附加描述,供 LangChain 生成工具说明
 
-from langchain_core.tools import tool
+from langchain_core.tools import tool  # 【调用包】LangChain 工具装饰器:把普通函数注册为 Agent 可调用的 Tool
 
 # route_to_vendor: 路由函数,按"方法名 -> 配置的供应商"找到实现并调用。
 # 这里只传方法名和参数,真正的取数逻辑在 dataflows 层(commodity_futures.py)。
-from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.dataflows.interface import route_to_vendor  # 【调用包】路由函数:按方法名把取数请求分派到配置的数据供应商
 
 
 # 【功能】获取商品期货日线行情(OHLCV + 持仓量)。Agent 需要历史价格时调用。
@@ -62,7 +62,7 @@ def get_futures_price(
     Returns:
         CSV with columns: date, open, high, low, close, volume, open_interest
     """
-    return route_to_vendor("get_futures_price", symbol, start_date, end_date)
+    return route_to_vendor("get_futures_price", symbol, start_date, end_date)  # 【调用函数】跨模块路由:取主力连续合约日线行情(OHLCV+持仓量)
 
 
 # 【功能】计算商品期货技术指标(SMA/EMA/MACD/RSI/布林带/ATR 等)。
@@ -87,7 +87,7 @@ def get_futures_indicators(
     Returns:
         CSV with price data plus computed technical indicators.
     """
-    return route_to_vendor("get_futures_indicators", symbol, start_date, end_date)
+    return route_to_vendor("get_futures_indicators", symbol, start_date, end_date)  # 【调用函数】跨模块路由:计算技术指标(SMA/MACD/RSI/布林带/ATR)
 
 
 # 【功能】获取现货-期货基差(基差 = 现货价 - 期货价)。
@@ -112,7 +112,7 @@ def get_futures_basis(
     Returns:
         CSV with spot price, dominant contract price, basis, basis rate, and interpretation.
     """
-    return route_to_vendor("get_futures_basis", symbol, start_date, end_date)
+    return route_to_vendor("get_futures_basis", symbol, start_date, end_date)  # 【调用函数】跨模块路由:取现货-期货基差(现货价-期货价)
 
 
 # 【功能】获取期货品种的仓单库存数据。
@@ -133,7 +133,7 @@ def get_futures_inventory(
     Returns:
         CSV with date, inventory level, daily change, and trend analysis.
     """
-    return route_to_vendor("get_futures_inventory", symbol, "", "")
+    return route_to_vendor("get_futures_inventory", symbol, "", "")  # 【调用函数】跨模块路由:取仓单库存(日期留空,底层只取最近 60 条)
 
 
 # 【功能】获取最新商品/宏观新闻(多来源,关键词过滤)。
@@ -154,7 +154,7 @@ def get_futures_news(
     Returns:
         Text with latest news headlines and timestamps.
     """
-    return route_to_vendor("get_futures_news", symbol, "", "")
+    return route_to_vendor("get_futures_news", symbol, "", "")  # 【调用函数】跨模块路由:取全局商品新闻(Eastmoney 7x24 + SHMET)
 
 
 # 【功能】获取品种元信息(交易所、合约规格、交易时间、关键因素、产业链品种)。
@@ -175,7 +175,7 @@ def get_variety_info(
     Returns:
         JSON with variety name, exchange, unit, price limits, key factors, related varieties.
     """
-    return route_to_vendor("get_variety_info", symbol)
+    return route_to_vendor("get_variety_info", symbol)  # 【调用函数】跨模块路由:取品种元信息(交易所/合约规格/关键因素/产业链品种)
 
 
 # 【功能】获取中国宏观指标(GDP/PMI/固投/地产/工业增加值/建筑业指数)。
@@ -192,7 +192,7 @@ def get_futures_macro() -> str:
     Returns:
         Formatted text report with latest values, recent trends, and brief interpretations.
     """
-    return route_to_vendor("get_futures_macro")
+    return route_to_vendor("get_futures_macro")  # 【调用函数】跨模块路由:取中国宏观指标(GDP/PMI/固投/地产/工业增加值)
 
 
 # 【功能】获取品种供需两侧指标(产量/成交/开工率/利润/库存/事件)。
@@ -215,7 +215,7 @@ def get_futures_supply_demand(
     Returns:
         Formatted text report with production, transaction, inventory, and industry data.
     """
-    return route_to_vendor("get_futures_supply_demand", symbol, "", "")
+    return route_to_vendor("get_futures_supply_demand", symbol, "", "")  # 【调用函数】跨模块路由:取供需两侧指标(产量/开工率/利润/库存)
 
 
 # 【功能】获取品种的社交媒体情绪数据(微博/知乎/小红书)。
@@ -248,7 +248,7 @@ def get_futures_sentiment(
     Returns:
         Formatted text report with sentiment data and analysis guidance.
     """
-    return route_to_vendor("get_futures_sentiment", symbol, "", "")
+    return route_to_vendor("get_futures_sentiment", symbol, "", "")  # 【调用函数】跨模块路由:取社交媒体情绪(微博/知乎/小红书)
 
 
 # 【功能】获取指定日期的"确定性核验行情快照",是数值主张的唯一真相来源。
@@ -275,7 +275,7 @@ def get_verified_quote(
         symbol: Variety code like RB, I, JM
         date: Target date in yyyy-mm-dd format (e.g. "2026-07-14")
     """
-    return route_to_vendor("get_verified_quote", symbol, date, "", "")
+    return route_to_vendor("get_verified_quote", symbol, date, "", "")  # 【调用函数】跨模块路由:取确定性核验行情快照(数值主张的唯一真相源)
 
 
 # 【功能】获取品种的实时(盘面)最新价。辩论/讨论中核对当前行情用。
@@ -306,23 +306,23 @@ def get_realtime_price(
     Returns:
         JSON with keys: price, change_pct, volume, name, timestamp
     """
-    import json
+    import json  # 【调用包】JSON 序列化:构造返回给 Agent 的实时行情 JSON
 
     try:
-        from price_fetcher import NAME_TO_CODE, get_cached_prices
+        from price_fetcher import NAME_TO_CODE, get_cached_prices  # 【调用包】实时行情模块(web_app 上下文):品种名映射 + 60 秒缓存行情
     except ImportError:
         return "ERROR: price_fetcher module not available (web_app context only)"
 
-    code_to_name = {v: k for k, v in NAME_TO_CODE.items()}
-    upper = symbol.upper().strip()
+    code_to_name = {v: k for k, v in NAME_TO_CODE.items()}  # 【变量】反转映射:品种代码→中文名,用于校验输入代码
+    upper = symbol.upper().strip()  # 【变量】归一化大写品种代码(如 rb→RB)
     if upper not in code_to_name:
         return f"ERROR: Unknown variety code '{symbol}'. Use uppercase codes like RB, SA, FG."
 
-    prices = get_cached_prices([upper])
+    prices = get_cached_prices([upper])  # 【调用函数】读取 60 秒缓存的实时价格
     if upper not in prices:
         return f"NO_DATA: No live price available for {upper}. Market may be closed."
 
-    data = prices[upper]
+    data = prices[upper]  # 【变量】该品种实时行情字典(price/change_pct/volume/timestamp)
     return json.dumps(
         {
             "code": upper,
@@ -334,4 +334,4 @@ def get_realtime_price(
         },
         ensure_ascii=False,
         indent=2,
-    )
+    )  # 【调用函数】把实时行情序列化为 JSON 返回给 Agent(ensure_ascii=False 保留中文名)

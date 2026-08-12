@@ -16,14 +16,14 @@ Follows the same pattern as ``external_data.py``: JSON files under
 ``~/.tradingagents/`` with staleness-agnostic reads (debates never expire).
 """
 
-import contextlib
-import json
-import logging
-import os
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+import contextlib  # 【调用包】上下文管理(抑制写回预测文件时的 OSError)
+import json  # 【调用包】JSON 读写(进化记忆/用户画像/预测记录持久化)
+import logging  # 【调用包】日志输出(存取/更新告警)
+import os  # 【调用包】路径拼接与环境变量读取(数据目录覆盖)
+import uuid  # 【调用包】生成辩论记录唯一 ID
+from datetime import datetime, timezone  # 【调用包】UTC 时间戳生成(记录 updated 字段)
+from pathlib import Path  # 【调用包】路径对象与文件操作(数据目录/临时文件)
+from typing import Any  # 【调用包】任意类型注解(辩论/画像字典)
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +31,25 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".tradingagents", "evolution_memory")
+DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".tradingagents", "evolution_memory")  # 【变量】进化记忆默认目录 = ~/.tradingagents/evolution_memory
 
-MAX_DEBATES_PER_VARIETY = 50
-MAX_CRITICISMS_IN_PROFILE = 10
+MAX_DEBATES_PER_VARIETY = 50  # 【变量】每品种最多保留的辩论条数(超出裁剪最旧)
+MAX_CRITICISMS_IN_PROFILE = 10  # 【变量】用户画像中最多保留的批评/争议条数
 
 
+# 【功能】返回进化记忆目录,优先读取环境变量覆盖值。
+# 【参数】无。
+# 【返回】目录路径字符串。
+# 【关键】环境变量 TRADINGAGENTS_EVOLUTION_MEMORY_DIR 未设置时回退默认目录。
 def _get_data_dir() -> str:
     """Get evolution memory directory, respecting env override."""
     return os.environ.get("TRADINGAGENTS_EVOLUTION_MEMORY_DIR", DEFAULT_DATA_DIR)
 
 
+# 【功能】确保进化记忆数据目录存在,并返回其 Path 对象。
+# 【参数】无。
+# 【返回】Path:数据目录。
+# 【关键】目录不存在时自动递归创建(parents=True, exist_ok=True)。
 def _ensure_dir() -> Path:
     """Create and return the data directory."""
     p = Path(_get_data_dir())
@@ -54,6 +62,10 @@ def _ensure_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
+# 【功能】读取某品种的全部历史辩论会话列表。
+# 【参数】variety: 品种代码(如 "RB")。
+# 【返回】list[dict];文件不存在/JSON损坏/声明品种不匹配时返回空列表。
+# 【关键】调用方永远拿到安全默认值,损坏的进化数据不会阻塞分析。
 def load_debates(variety: str) -> list[dict[str, Any]]:
     """Load all debate sessions for a commodity variety.
 
@@ -87,6 +99,12 @@ def load_debates(variety: str) -> list[dict[str, Any]]:
     return raw.get("debate_sessions", [])
 
 
+# 【功能】把一条辩论记录追加写入该品种的进化记忆文件,并原子替换写盘。
+# 【参数】variety: 品种代码;debate_record: 结构化辩论记录 dict。
+# 【返回】无。
+# 【关键】1) 先读旧容器(损坏则重置为空)再追加新记录;
+#        2) 超过 MAX_DEBATES_PER_VARIETY 时只保留最近 N 条;
+#        3) 经临时文件 .tmp 写入后 rename 替换正式文件,实现原子写。
 def save_debate(variety: str, debate_record: dict[str, Any]) -> None:
     """Append a debate session record for *variety*.
 
@@ -120,11 +138,15 @@ def save_debate(variety: str, debate_record: dict[str, Any]) -> None:
 
     # Atomic write via temp file
     tmp = filepath.with_suffix(".tmp")
-    tmp.write_text(json.dumps(container, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(filepath)
+    tmp.write_text(json.dumps(container, ensure_ascii=False, indent=2), encoding="utf-8")  # 【调用函数】序列化容器为 JSON 写入临时文件
+    tmp.replace(filepath)  # 【调用函数】临时文件原子替换正式文件(避免半写状态)
     logger.info("Saved debate session for %s (total: %d)", variety, len(sessions))
 
 
+# 【功能】加载跨品种的用户画像,首次运行返回默认骨架。
+# 【参数】无。
+# 【返回】dict:用户画像(缺失键用默认骨架补齐)。
+# 【关键】调用方无需判 None;文件损坏同样回退默认骨架。
 def load_user_profile() -> dict[str, Any]:
     """Load the cross-variety user profile.
 
@@ -150,6 +172,10 @@ def load_user_profile() -> dict[str, Any]:
     return raw
 
 
+# 【功能】把用户画像原子写盘。
+# 【参数】profile: 要持久化的用户画像 dict(会被就地补 updated/version 字段)。
+# 【返回】无。
+# 【关键】先补时间戳与版本字段,再经临时文件替换写入,保证原子性。
 def save_user_profile(profile: dict[str, Any]) -> None:
     """Persist the user profile atomically."""
     profile["updated"] = datetime.now(timezone.utc).isoformat()
@@ -157,10 +183,14 @@ def save_user_profile(profile: dict[str, Any]) -> None:
 
     filepath = _ensure_dir() / "user_profile.json"
     tmp = filepath.with_suffix(".tmp")
-    tmp.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(filepath)
+    tmp.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")  # 【调用函数】序列化画像为 JSON 写入临时文件
+    tmp.replace(filepath)  # 【调用函数】临时文件原子替换正式文件
 
 
+# 【功能】返回用户画像的默认骨架(首次运行/文件损坏时使用)。
+# 【参数】无。
+# 【返回】dict:含版本、创建/更新时间、关注因子、分析风格、风险偏好、
+#        历史批评、争议观点、方向校准、品种专属信息等键。
 def _default_profile() -> dict[str, Any]:
     """Return the skeleton used on first ever run."""
     return {
@@ -186,6 +216,12 @@ def _default_profile() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# 【功能】把进化记忆格式化为可注入分析师/讨论/综述提示的 Markdown 文本。
+# 【参数】variety: 品种代码(如 "RB")。
+# 【返回】str;没有任何历史时返回空字符串(不改变提示结构)。
+# 【关键】1) 依次拼接:延迟结果反思 → 品种历史经验(最近5次去重) → 用户因子权重
+#           → 方向校准 → 历史批评 → 分析风格 → 争议观点;
+#        2) 返回文本自带标题与说明,可直接 prepend 到 system_message。
 def get_evolution_context(variety: str) -> str:
     """Format evolution memory for injection into analyst / discussion /
     synthesis prompts.
@@ -197,14 +233,14 @@ def get_evolution_context(variety: str) -> str:
     prepended to any ``system_message`` or appended to any f-string
     prompt without further formatting.
     """
-    debates = load_debates(variety)
-    profile = load_user_profile()
+    debates = load_debates(variety)  # 【调用函数】读该品种历史辩论会话
+    profile = load_user_profile()  # 【调用函数】读跨品种用户画像
 
     # Nothing to inject at all
     has_debates = bool(debates)
     has_criticisms = bool(profile.get("common_criticisms"))
     has_factors = bool(profile.get("preferred_factors"))
-    outcome = get_outcome_reflection(variety)
+    outcome = get_outcome_reflection(variety)  # 【调用函数】结算历史预测并生成反思文本(可为空)
     has_outcome = bool(outcome)
     if not (has_debates or has_criticisms or has_factors or has_outcome):
         return ""
@@ -282,6 +318,15 @@ def get_evolution_context(variety: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# 【功能】根据一次已完成的辩论更新用户画像并持久化。
+# 【参数】variety: 品种代码;debate_record: 辩论记录 dict。
+# 【返回】dict:更新后的用户画像(已写盘)。
+# 【关键】客观性规则:
+#        1) 仅当辩论确认用户观点有效(user_persuaded_agent / mutual_understanding)
+#           时才把 lessons 并入 common_criticisms,否则记入 disputed_claims;
+#        2) 因子权重增量仅在用户说服 agent 时提交,并夹在 [1,5] 区间;
+#        3) 方向偏差不自动认定——需分歧次数>=3 且用户方向被验证才标记 bullish_bias;
+#        4) 分析风格按"基本面/技术面"关键词出现频次做启发式推断。
 def update_profile_from_debate(
     variety: str,
     debate_record: dict[str, Any],
@@ -396,7 +441,7 @@ def update_profile_from_debate(
         profile["analysis_style"] = "基本面+技术面综合"
 
     # ---- Persist ----
-    save_user_profile(profile)
+    save_user_profile(profile)  # 【调用函数】把更新后的画像原子写盘
     logger.info(
         "Updated user profile: %d criticisms, %d factors, style=%s",
         len(profile.get("common_criticisms", [])),
@@ -411,6 +456,13 @@ def update_profile_from_debate(
 # ---------------------------------------------------------------------------
 
 
+# 【功能】把交互过程中收集的原始反馈组装成规范的辩论记录 dict。
+# 【参数】variety: 品种代码;trade_date: 交易日期;agent_conclusion: agent 结论 dict;
+#        user_direction: 用户方向选择文本;user_factors_text: 用户认同/不认同点;
+#        user_missing_text: 用户补充的缺失因素;debate_rounds: 辩论轮次列表;
+#        resolution: 结局标记;lessons: 经验教训列表。
+# 【返回】dict:符合 save_debate/update_profile_from_debate 期望的规范结构。
+# 【关键】按关键词解析一致度(full/disagree/partial);按行拆分认同点/不认同点/缺失因素。
 def build_debate_record(
     variety: str,
     trade_date: str,
@@ -535,7 +587,7 @@ if __name__ == "__main__":
     print(f"   Preview: {ctx[:120]}...")
 
     # 6. Cleanup test data
-    import sys
+    import sys  # 【调用包】读取命令行参数(--keep 保留测试数据)
 
     if "--keep" not in sys.argv:
         test_file = _ensure_dir() / f"{test_variety}.json"
@@ -556,6 +608,13 @@ if __name__ == "__main__":
 # ==============================================================================
 
 
+# 【功能】存储一次结构化的方向预测,供延迟回测使用。
+# 【参数】variety: 品种代码;trade_date: 分析日期(YYYY-MM-DD);
+#        rating: 方向评级(强烈看多/偏多/中性/偏空/强烈看空);
+#        confidence: 置信度(高/中/低);score: 0-10 数值评分;
+#        key_levels: 关键支撑/阻力位文本(可选)。
+# 【返回】无。
+# 【关键】仅保留最近 20 条预测;任何异常被捕获并记日志,不影响主流程。
 def store_prediction(
     variety: str,
     trade_date: str,
@@ -614,6 +673,12 @@ def store_prediction(
         logger.warning("Failed to store prediction for %s: %s", variety, e)
 
 
+# 【功能】结算该品种所有未解析的历史预测,对照实际价格生成 AI 反思文本。
+# 【参数】variety: 品种代码;symbol: 同品种代码(传给行情接口)。
+# 【返回】str:反思文本(供注入进化上下文);无未解析预测或取不到行情时返回空串。
+# 【关键】1) 自 trade_date 向后看 14 天,取 10 个交易日内最新收盘价比较方向;
+#        2) 涨跌 >0.2% 判定 CORRECT/WRONG,否则 FLAT(方向不明);
+#        3) 已结算的预测标记 resolved/resolved_at 并写回文件。
 def resolve_past_predictions(variety: str, symbol: str) -> str:
     """Resolve any unresolved past predictions for this variety.
 
@@ -642,7 +707,7 @@ def resolve_past_predictions(variety: str, symbol: str) -> str:
 
     # Try to fetch price data for resolution
     try:
-        from tradingagents.dataflows.commodity_futures import get_futures_price
+        from tradingagents.dataflows.commodity_futures import get_futures_price  # 【调用包】行情接口(拉取实际价格用于结算;导入失败则放弃结算)
     except ImportError:
         return ""
 
@@ -656,11 +721,11 @@ def resolve_past_predictions(variety: str, symbol: str) -> str:
 
         # Fetch price data from trade_date to now
         try:
-            from datetime import datetime as dt, timedelta
+            from datetime import datetime as dt, timedelta  # 【调用包】日期解析与推算(预测结算的 14 天窗口)
 
             target_dt = dt.strptime(trade_date, "%Y-%m-%d")
             end_dt = target_dt + timedelta(days=14)  # Look ahead 2 weeks
-            price_result = get_futures_price(symbol, trade_date, end_dt.strftime("%Y-%m-%d"))
+            price_result = get_futures_price(symbol, trade_date, end_dt.strftime("%Y-%m-%d"))  # 【调用函数】跨模块拉取 trade_date 起14天实际行情(用于结算)
         except Exception:
             continue
 
@@ -737,6 +802,10 @@ def resolve_past_predictions(variety: str, symbol: str) -> str:
     return "\n".join(parts)
 
 
+# 【功能】获取结果反思文本(供 get_evolution_context 调用)。
+# 【参数】variety: 品种代码。
+# 【返回】str:反思文本或空串。
+# 【关键】直接转发 resolve_past_predictions(variety, variety),品种与行情代码相同。
 def get_outcome_reflection(variety: str) -> str:
     """Get the outcome reflection for injection into evolution context.
 

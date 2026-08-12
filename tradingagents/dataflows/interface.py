@@ -1,6 +1,6 @@
-import logging
+import logging  # 【调用包】日志输出(供应商路由失败/降级告警)
 
-from .alpha_vantage import (
+from .alpha_vantage import (  # 【调用包】Alpha Vantage 供应商实现(股票/基本面/新闻)
     get_balance_sheet as get_alpha_vantage_balance_sheet,
     get_cashflow as get_alpha_vantage_cashflow,
     get_fundamentals as get_alpha_vantage_fundamentals,
@@ -11,7 +11,7 @@ from .alpha_vantage import (
     get_news as get_alpha_vantage_news,
     get_stock as get_alpha_vantage_stock,
 )
-from .commodity_futures import (
+from .commodity_futures import (  # 【调用包】商品期货供应商(行情/基差/库存/新闻/宏观/情绪/核验快照)
     get_futures_basis,
     get_futures_indicators,
     get_futures_inventory,
@@ -23,15 +23,15 @@ from .commodity_futures import (
     get_variety_info,
     get_verified_quote,
 )
-from .config import get_config
-from .errors import (
+from .config import get_config  # 【调用包】读取运行时配置(供应商选择/工具级覆盖)
+from .errors import (  # 【调用包】供应商错误类型体系(路由层按类型分流处理)
     NoMarketDataError,
     VendorNotConfiguredError,
     VendorRateLimitError,
 )
-from .fred import get_macro_data as get_fred_macro_data
-from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
-from .y_finance import (
+from .fred import get_macro_data as get_fred_macro_data  # 【调用包】FRED 宏观数据供应商(Fed 经济数据库)
+from .polymarket import get_prediction_markets as get_polymarket_prediction_markets  # 【调用包】Polymarket 预测市场供应商(事件概率)
+from .y_finance import (  # 【调用包】yfinance 供应商实现(股票数据/基本面/技术指标窗口)
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
     get_fundamentals as get_yfinance_fundamentals,
@@ -40,12 +40,12 @@ from .y_finance import (
     get_stock_stats_indicators_window,
     get_YFin_data_online,
 )
-from .yfinance_news import get_global_news_yfinance, get_news_yfinance
+from .yfinance_news import get_global_news_yfinance, get_news_yfinance  # 【调用包】yfinance 新闻接口(全球/个股新闻)
 
 logger = logging.getLogger(__name__)
 
 # Tools organized by category
-TOOLS_CATEGORIES = {
+TOOLS_CATEGORIES = {  # 【变量】工具分类注册表:分类→(描述, 工具方法列表),供 Agent 工具清单与路由查分类用
     "core_stock_apis": {"description": "OHLCV stock price data", "tools": ["get_stock_data"]},
     "technical_indicators": {
         "description": "Technical analysis indicators",
@@ -134,17 +134,17 @@ VENDOR_LIST = [
     "polymarket",
     "alpha_vantage",
     "commodity_futures",
-]
+]  # 【变量】支持的供应商名单(配置校验与展示用)
 
 # Optional enrichment categories. These add macro/event context to the news
 # analyst but are not core to a decision, so a vendor failure here degrades to a
 # sentinel instead of aborting the run (a bad LLM-supplied indicator, a missing
 # key, or a network blip should not crash an analysis over flavour data). Core
 # categories (prices, fundamentals, news) still raise so a broken primary is loud.
-OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}
+OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}  # 【变量】可选增强分类:供应商失败时降级为哨兵文本,不中断整次运行
 
 # Mapping of methods to their vendor-specific implementations
-VENDOR_METHODS = {
+VENDOR_METHODS = {  # 【变量】方法→各供应商实现函数映射表(路由分发依据)
     # core_stock_apis
     "get_stock_data": {
         "alpha_vantage": get_alpha_vantage_stock,
@@ -227,6 +227,10 @@ VENDOR_METHODS = {
 }
 
 
+# 【功能】根据方法名返回其所属的工具分类。
+# 【参数】method: 数据方法名(如 "get_futures_price")。
+# 【返回】分类名(TOOLS_CATEGORIES 的键)。
+# 【关键】遍历 TOOLS_CATEGORIES 查找包含该方法的 tools 列表;找不到则抛 ValueError。
 def get_category_for_method(method: str) -> str:
     """Get the category that contains the specified method."""
     for category, info in TOOLS_CATEGORIES.items():
@@ -235,11 +239,15 @@ def get_category_for_method(method: str) -> str:
     raise ValueError(f"Method '{method}' not found in any category")
 
 
+# 【功能】获取某分类或某具体方法当前配置的供应商名。
+# 【参数】category: 数据分类名;method: 具体方法名(可选)。
+# 【返回】供应商名字符串(如 "yfinance")或 "default" 哨兵(表示未显式配置)。
+# 【关键】方法级配置 tool_vendors 优先于分类级 data_vendors;两者都未配置时回 "default"。
 def get_vendor(category: str, method: str = None) -> str:
     """Get the configured vendor for a data category or specific tool method.
     Tool-level configuration takes precedence over category-level.
     """
-    config = get_config()
+    config = get_config()  # 【调用函数】取当前配置快照(含 tool_vendors/data_vendors)
 
     # Check tool-level configuration first (if method provided)
     if method:
@@ -251,10 +259,18 @@ def get_vendor(category: str, method: str = None) -> str:
     return config.get("data_vendors", {}).get(category, "default")
 
 
+# 【功能】把数据方法调用按配置路由到指定供应商实现,支持多供应商降级链。
+# 【参数】method: 方法名(如 "get_futures_price");*args/**kwargs: 透传给具体供应商实现。
+# 【返回】供应商返回的数据;全部供应商失败时按规则抛错或返回哨兵文本。
+# 【关键】1) 供应商链只含用户显式配置且实际可用的供应商,不静默回退到未配置者;
+#        2) 按错误类型分流:限流/未配置→跳过尝试下一个;无数据→记 last_no_data;
+#           其它异常→记 first_error;
+#        3) 无数据时返回明确的 NO_DATA_AVAILABLE 哨兵(含具体原因),不让 Agent 编造数值;
+#        4) 可选分类(OPTIONAL_CATEGORIES)失败降级为 DATA_UNAVAILABLE,不抛异常。
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
-    category = get_category_for_method(method)
-    vendor_config = get_vendor(category, method)
+    category = get_category_for_method(method)  # 【调用函数】查方法所属分类(决定后续可选降级)
+    vendor_config = get_vendor(category, method)  # 【调用函数】取该方法的供应商配置(方法级优先于分类级)
     primary_vendors = [v.strip() for v in vendor_config.split(",")]
 
     if method not in VENDOR_METHODS:
@@ -285,7 +301,7 @@ def route_to_vendor(method: str, *args, **kwargs):
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
         try:
-            return impl_func(*args, **kwargs)
+            return impl_func(*args, **kwargs)  # 【调用函数】调用具体供应商实现(参数透传;可能抛供应商错误)
         except VendorRateLimitError:
             logger.warning("Vendor %r rate-limited for %s; trying next vendor.", vendor, method)
             continue

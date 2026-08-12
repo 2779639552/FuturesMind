@@ -19,23 +19,23 @@
 #   start_scheduler() 返回的调度器对象由调用方(通常是 web_app/main)持有。
 # =============================================================================
 
-import os
-import subprocess
-import sys
-from contextlib import suppress
-from datetime import datetime
+import os  # 【调用包】路径/环境变量操作(定位虚拟环境解释器)
+import subprocess  # 【调用包】启动子进程(采集/管道脚本)
+import sys  # 【调用包】当前解释器路径定位(复用同一虚拟环境)
+from contextlib import suppress  # 【调用包】忽略指定异常的上下文管理器(解析条数容错)
+from datetime import datetime  # 【调用包】当前时间/日期生成
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.schedulers.background import BackgroundScheduler  # 【调用包】APScheduler 后台调度器(守护线程运行)
+from apscheduler.triggers.cron import CronTrigger  # 【调用包】cron 表达式触发器(定时/周期任务)
 
-from database import get_db
-from path_utils import resolve_think2_dir
+from database import get_db  # 【调用包】数据库访问(记录采集状态与告警)
+from path_utils import resolve_think2_dir  # 【调用包】路径集中管理(定位思路2 数据目录)
 
-THINK2_DIR = resolve_think2_dir()
+THINK2_DIR = resolve_think2_dir()  # 【变量】数据工作目录(采集/管道子进程的 cwd)
 
 # ── Global scheduler ──────────────────────────────────────────────
 
-_scheduler: BackgroundScheduler | None = None
+_scheduler: BackgroundScheduler | None = None  # 【变量】全局调度器单例(启动后持有,供停止/重启)
 
 
 def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 7):
@@ -56,17 +56,17 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
               成功但条数 < 10 时告警"低数据量"。
             - 15 分钟超时(subprocess timeout=900)与异常均会记录并告警。
     """
-    db = get_db()
-    log_id = db.start_collection(platform, keywords_count=30)
+    db = get_db()  # 【调用函数】取当前线程数据库实例(写采集日志/告警)
+    log_id = db.start_collection(platform, keywords_count=30)  # 【调用函数】写一条 running 采集日志,返回 log_id 供后续更新
 
     try:
         since_date = (
             datetime.now().replace(hour=0, minute=0, second=0)
             - __import__("datetime").timedelta(days=since_days)
-        ).strftime("%Y-%m-%d")
+        ).strftime("%Y-%m-%d")  # 【变量】since_date:回溯起点日期(YYYY-MM-DD,只采近 N 天)
 
         # 复用当前 Python 解释器所在的虚拟环境,避免依赖系统 Python
-        venv_py = os.path.join(os.path.dirname(sys.executable), "python")
+        venv_py = os.path.join(os.path.dirname(sys.executable), "python")  # 【变量】venv_py:当前虚拟环境解释器路径(复用环境,避免依赖系统 Python)
         cmd = [
             venv_py,
             "batch_collect.py",
@@ -80,7 +80,7 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
             since_date,
         ]
 
-        result = subprocess.run(
+        result = subprocess.run(  # 【调用函数】启动 batch_collect.py 子进程采集指定平台帖子(15 分钟超时)
             cmd,
             cwd=str(THINK2_DIR) if THINK2_DIR.exists() else ".",
             capture_output=True,
@@ -90,44 +90,44 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
 
         # 解析子进程输出,从中提取采集到的帖子条数("Total notes: N")
         # Parse output for post count
-        output = (result.stdout or "") + (result.stderr or "")
-        posts_count = 0
+        output = (result.stdout or "") + (result.stderr or "")  # 【变量】output:子进程输出(合并 stdout+stderr,供解析条数)
+        posts_count = 0  # 【变量】posts_count:解析出的采集条数(默认 0)
         for line in output.split("\n"):
             if "Total notes:" in line:
                 with suppress(Exception):
                     posts_count = int(line.split("Total notes:")[1].strip().split()[0])
 
-        if result.returncode != 0 and "Interrupted" not in output:
-            db.finish_collection(log_id, posts_count, error=output[-500:])
+        if result.returncode != 0 and "Interrupted" not in output:  # 【变量】result.returncode:子进程退出码(0=成功);"Interrupted" 视为用户中断不算失败
+            db.finish_collection(log_id, posts_count, error=output[-500:])  # 【调用函数】更新采集日志为失败(error 取输出末尾 500 字符)
             db.create_alert(
-                "collection_failed",
+                "collection_failed",  # 【调用函数】写入"采集失败"告警
                 f"{platform} collection failed",
                 output[-300:] or "Unknown error",
                 severity="error",
             )
         else:
-            db.finish_collection(log_id, posts_count)
+            db.finish_collection(log_id, posts_count)  # 【调用函数】更新采集日志为成功
 
             # Check if posts count is too low
             if posts_count < 10:
                 db.create_alert(
-                    "low_data",
+                    "low_data",  # 【调用函数】写入"低数据量"告警(条数 < 10)
                     f"{platform} low posts",
                     f"Only {posts_count} posts collected",
                     severity="warning",
                 )
 
     except subprocess.TimeoutExpired:
-        db.finish_collection(log_id, 0, error="Timeout (15 min)")
+        db.finish_collection(log_id, 0, error="Timeout (15 min)")  # 【调用函数】超时:记 0 条并把日志标记为超时
         db.create_alert(
-            "collection_timeout",
+            "collection_timeout",  # 【调用函数】写入"采集超时"告警
             f"{platform} timeout",
             "Collection exceeded 15 minutes",
             severity="error",
         )
     except Exception as e:
-        db.finish_collection(log_id, 0, error=str(e)[:500])
-        db.create_alert("collection_error", f"{platform} error", str(e)[:300], severity="error")
+        db.finish_collection(log_id, 0, error=str(e)[:500])  # 【调用函数】异常:记 0 条并写错误日志
+        db.create_alert("collection_error", f"{platform} error", str(e)[:300], severity="error")  # 【调用函数】写入"采集异常"告警
 
 
 def _run_daily_pipeline():
@@ -145,9 +145,9 @@ def _run_daily_pipeline():
               generate_tradingagents_sentiment 生成各品种情感 JSON。
             - 整体 5 分钟超时(300 秒);异常只记告警,不影响调度器继续运行。
     """
-    db = get_db()
+    db = get_db()  # 【调用函数】取数据库实例(写管道事件告警)
     db.create_alert(
-        "pipeline_started",
+        "pipeline_started",  # 【调用函数】写入"管道启动"信息告警
         "Daily pipeline started",
         f"Automated pipeline at {datetime.now():%H:%M}",
         severity="info",
@@ -159,7 +159,7 @@ def _run_daily_pipeline():
 
     # Aggregate + backtest + regenerate
     try:
-        venv_py = os.path.join(os.path.dirname(sys.executable), "python")
+        venv_py = os.path.join(os.path.dirname(sys.executable), "python")  # 【变量】venv_py:虚拟环境解释器路径(用于执行内嵌脚本)
         script = """
 import json, sys, glob
 from pathlib import Path
@@ -183,7 +183,7 @@ for vname in sorted(varieties.keys()):
     gen_count += 1
 print(f'Pipeline OK: {gen_count} JSONs')
         """
-        subprocess.run(
+        subprocess.run(  # 【调用函数】在数据目录子进程执行聚合+回测+情感 JSON 生成脚本(5 分钟超时)
             [venv_py, "-c", script],
             cwd=str(THINK2_DIR) if THINK2_DIR.exists() else ".",
             capture_output=True,
@@ -191,13 +191,13 @@ print(f'Pipeline OK: {gen_count} JSONs')
             timeout=300,
         )
         db.create_alert(
-            "pipeline_complete",
+            "pipeline_complete",  # 【调用函数】写入"管道完成"信息告警
             "Daily pipeline complete",
             f"Generated results at {datetime.now():%H:%M}",
             severity="info",
         )
     except Exception as e:
-        db.create_alert("pipeline_error", "Pipeline failed", str(e)[:300], severity="error")
+        db.create_alert("pipeline_error", "Pipeline failed", str(e)[:300], severity="error")  # 【调用函数】写入"管道失败"告警
 
 
 def start_scheduler(schedule_times: list[str] = None):
@@ -223,23 +223,23 @@ def start_scheduler(schedule_times: list[str] = None):
     global _scheduler
 
     if schedule_times is None:
-        schedule_times = ["08:00", "18:00"]
+        schedule_times = ["08:00", "18:00"]  # 【变量】默认执行时间点(早 8 点/晚 6 点各跑一次管道)
 
-    _scheduler = BackgroundScheduler(daemon=True)
+    _scheduler = BackgroundScheduler(daemon=True)  # 【调用函数】创建后台调度器(守护线程,不阻塞主进程退出)
 
     for time_str in schedule_times:
         hour, minute = time_str.split(":")
-        _scheduler.add_job(
+        _scheduler.add_job(  # 【调用函数】注册每日管道任务(CronTrigger 按时间点触发)
             _run_daily_pipeline,
             CronTrigger(hour=int(hour), minute=int(minute)),
             id=f"daily_{time_str}",
             name=f"Daily pipeline {time_str}",
         )
 
-    _scheduler.start()
+    _scheduler.start()  # 【调用函数】启动调度器(任务开始按时触发)
 
     # Also run a health check every 30 minutes
-    _scheduler.add_job(
+    _scheduler.add_job(  # 【调用函数】注册健康检查任务(每 30 分钟)
         _health_check,
         CronTrigger(minute="*/30"),
         id="health_check",
@@ -247,7 +247,7 @@ def start_scheduler(schedule_times: list[str] = None):
     )
 
     # Initialize default user
-    get_db().ensure_default_user()
+    get_db().ensure_default_user()  # 【调用函数】确保默认管理员账号存在(首次启动自动创建)
 
     return _scheduler
 
@@ -261,14 +261,14 @@ def _health_check():
     【关键逻辑】取最近 5 条 collection_log,筛选 status=='error' 的条数,
                 只要有一处失败就告警,提示用户关注。
     """
-    db = get_db()
+    db = get_db()  # 【调用函数】取数据库实例(查最近采集历史)
 
     # Check if any recent collection failed
-    recent = db.get_collection_history(limit=5)
-    failures = [r for r in recent if r.get("status") == "error"]
+    recent = db.get_collection_history(limit=5)  # 【调用函数】取最近 5 次采集日志
+    failures = [r for r in recent if r.get("status") == "error"]  # 【变量】failures:最近采集中的失败记录列表
     if failures:
         db.create_alert(
-            "health_warning",
+            "health_warning",  # 【调用函数】写入"健康检查"告警
             "Recent collection failures detected",
             f"{len(failures)} failures in last 5 runs",
             severity="warning",
@@ -285,5 +285,5 @@ def stop_scheduler():
     """
     global _scheduler
     if _scheduler:
-        _scheduler.shutdown(wait=False)
+        _scheduler.shutdown(wait=False)  # 【调用函数】关闭调度器(不等待进行中任务,立即返回)
         _scheduler = None

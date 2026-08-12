@@ -1,6 +1,15 @@
-from .alpha_vantage_common import AlphaVantageNotConfiguredError, _make_api_request
+from .alpha_vantage_common import AlphaVantageNotConfiguredError, _make_api_request  # 【调用包】共用请求入口/未配置异常
 
 
+# 【功能】经 Alpha Vantage 拉取某技术指标在一段日期窗口内的取值, 返回文本报告。
+# 【参数】symbol: 标的; indicator: 指标名(见 supported_indicators); curr_date: 当前交易日
+#         (YYYY-mm-dd); look_back_days: 回看天数; interval: 周期(daily/weekly/monthly);
+#         time_period: 计算窗口(默认 14); series_type: 价类型(close/open/high/low)。
+# 【返回】格式化的指标值报告字符串(含指标中文说明); 数据缺失/出错时返回错误说明。
+# 【异常】AlphaVantageNotConfiguredError: 未配置 API Key 时原样上抛, 供路由层降级。
+# 【关键】按指标映射到对应 AV 函数(SMA/EMA/MACD/RSI/BBANDS/ATR), 取 CSV 后用
+#         "time" 列过滤到 [curr_date-look_back_days, curr_date] 窗口; VWMA 无直接
+#         AV 接口, 仅返回说明文本。
 def get_indicator(
     symbol: str,
     indicator: str,
@@ -25,10 +34,11 @@ def get_indicator(
     Returns:
         String containing indicator values and description
     """
-    from datetime import datetime
+    from datetime import datetime  # 【调用包】解析日期
 
-    from dateutil.relativedelta import relativedelta
+    from dateutil.relativedelta import relativedelta  # 【调用包】日期回推
 
+    # 【变量】内部指标名 -> (展示名, 必需 series_type; None 表示可用任意价类型)
     supported_indicators = {
         "close_50_sma": ("50 SMA", "close"),
         "close_200_sma": ("200 SMA", "close"),
@@ -44,6 +54,7 @@ def get_indicator(
         "vwma": ("VWMA", "close"),
     }
 
+    # 【变量】内部指标名 -> 供报告使用的英文说明文本
     indicator_descriptions = {
         "close_50_sma": "50 SMA: A medium-term trend indicator. Usage: Identify trend direction and serve as dynamic support/resistance. Tips: It lags price; combine with faster indicators for timely signals.",
         "close_200_sma": "200 SMA: A long-term trend benchmark. Usage: Confirm overall market trend and identify golden/death cross setups. Tips: It reacts slowly; best for strategic trend confirmation rather than frequent trading entries.",
@@ -64,11 +75,11 @@ def get_indicator(
             f"Indicator {indicator} is not supported. Please choose from: {list(supported_indicators.keys())}"
         )
 
-    curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
-    before = curr_date_dt - relativedelta(days=look_back_days)
+    curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")  # 【变量】窗口终点(当日)
+    before = curr_date_dt - relativedelta(days=look_back_days)  # 【变量】窗口起点
 
     # Get the full data for the period instead of making individual calls
-    _, required_series_type = supported_indicators[indicator]
+    _, required_series_type = supported_indicators[indicator]  # 【变量】该指标要求的 series_type
 
     # Use the provided series_type or fall back to the required one
     if required_series_type:
@@ -77,7 +88,7 @@ def get_indicator(
     try:
         # Get indicator data for the period
         if indicator == "close_50_sma":
-            data = _make_api_request(
+            data = _make_api_request(  # 【调用函数】SMA 50 日
                 "SMA",
                 {
                     "symbol": symbol,
@@ -88,7 +99,7 @@ def get_indicator(
                 },
             )
         elif indicator == "close_200_sma":
-            data = _make_api_request(
+            data = _make_api_request(  # 【调用函数】SMA 200 日
                 "SMA",
                 {
                     "symbol": symbol,
@@ -99,7 +110,7 @@ def get_indicator(
                 },
             )
         elif indicator == "close_10_ema":
-            data = _make_api_request(
+            data = _make_api_request(  # 【调用函数】EMA 10 日
                 "EMA",
                 {
                     "symbol": symbol,
@@ -110,7 +121,7 @@ def get_indicator(
                 },
             )
         elif indicator == "macd" or indicator == "macds" or indicator == "macdh":
-            data = _make_api_request(
+            data = _make_api_request(  # 【调用函数】MACD 系列(线/信号/柱共用)
                 "MACD",
                 {
                     "symbol": symbol,
@@ -120,7 +131,7 @@ def get_indicator(
                 },
             )
         elif indicator == "rsi":
-            data = _make_api_request(
+            data = _make_api_request(  # 【调用函数】RSI
                 "RSI",
                 {
                     "symbol": symbol,
@@ -131,7 +142,7 @@ def get_indicator(
                 },
             )
         elif indicator in ["boll", "boll_ub", "boll_lb"]:
-            data = _make_api_request(
+            data = _make_api_request(  # 【调用函数】布林带(中/上/下轨共用一次请求)
                 "BBANDS",
                 {
                     "symbol": symbol,
@@ -142,7 +153,7 @@ def get_indicator(
                 },
             )
         elif indicator == "atr":
-            data = _make_api_request(
+            data = _make_api_request(  # 【调用函数】ATR
                 "ATR",
                 {
                     "symbol": symbol,
@@ -159,18 +170,19 @@ def get_indicator(
             return f"Error: Indicator {indicator} not implemented yet."
 
         # Parse CSV data and extract values for the date range
-        lines = data.strip().split("\n")
+        lines = data.strip().split("\n")  # 【变量】CSV 行列表
         if len(lines) < 2:
             return f"Error: No data returned for {indicator}"
 
         # Parse header and data
-        header = [col.strip() for col in lines[0].split(",")]
+        header = [col.strip() for col in lines[0].split(",")]  # 【变量】表头列名
         try:
-            date_col_idx = header.index("time")
+            date_col_idx = header.index("time")  # 【变量】日期列下标
         except ValueError:
             return f"Error: 'time' column not found in data for {indicator}. Available columns: {header}"
 
         # Map internal indicator names to expected CSV column names from Alpha Vantage
+        # 【变量】内部指标名 -> AV CSV 列名(不同函数列名不同)
         col_name_map = {
             "macd": "MACD",
             "macds": "MACD_Signal",
@@ -185,18 +197,18 @@ def get_indicator(
             "close_200_sma": "SMA",
         }
 
-        target_col_name = col_name_map.get(indicator)
+        target_col_name = col_name_map.get(indicator)  # 【变量】目标指标列名
 
         if not target_col_name:
             # Default to the second column if no specific mapping exists
-            value_col_idx = 1
+            value_col_idx = 1  # 【变量】无映射时默认取第二列
         else:
             try:
-                value_col_idx = header.index(target_col_name)
+                value_col_idx = header.index(target_col_name)  # 【变量】指标值列下标
             except ValueError:
                 return f"Error: Column '{target_col_name}' not found for indicator '{indicator}'. Available columns: {header}"
 
-        result_data = []
+        result_data = []  # 【变量】(日期, 指标值) 元组列表
         for line in lines[1:]:
             if not line.strip():
                 continue
@@ -205,19 +217,19 @@ def get_indicator(
                 try:
                     date_str = values[date_col_idx].strip()
                     # Parse the date
-                    date_dt = datetime.strptime(date_str, "%Y-%m-%d")
+                    date_dt = datetime.strptime(date_str, "%Y-%m-%d")  # 【调用函数】解析行日期
 
                     # Check if date is in our range
                     if before <= date_dt <= curr_date_dt:
                         value = values[value_col_idx].strip()
-                        result_data.append((date_dt, value))
+                        result_data.append((date_dt, value))  # 【变量】落在窗口内才收集
                 except (ValueError, IndexError):
                     continue
 
         # Sort by date and format output
-        result_data.sort(key=lambda x: x[0])
+        result_data.sort(key=lambda x: x[0])  # 【调用函数】按日期升序
 
-        ind_string = ""
+        ind_string = ""  # 【变量】累计的指标行文本
         for date_dt, value in result_data:
             ind_string += f"{date_dt.strftime('%Y-%m-%d')}: {value}\n"
 
@@ -237,7 +249,7 @@ def get_indicator(
         # Vendor unavailable (no API key). Let it propagate so the router can
         # fall back / emit the no-data sentinel instead of returning this as a
         # successful-looking error string.
-        raise
+        raise  # 【调用函数】未配置 Key 原样上抛, 由路由层降级
     except Exception as e:
         print(f"Error getting Alpha Vantage indicator data for {indicator}: {e}")
         return f"Error retrieving {indicator} data: {str(e)}"

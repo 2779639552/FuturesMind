@@ -42,47 +42,45 @@ Enhanced v2.5: ProgressTracker (thread-safe), pause/resume/stop,
 PDF+MD export, LLM config panel, real-time token stats, dynamic paths.
 """
 
-import glob
-import io
-import json
-import os
-import re
-import secrets
-import sys
-import threading
-import time
-from datetime import datetime, timedelta
-from functools import wraps
-from pathlib import Path
+import glob  # 【调用包】批量路径匹配(如 batch_*.jsonl 文件列举)
+import io  # 【调用包】内存字节流(BytesIO,PDF 下载响应)
+import json  # 【调用包】JSON 序列化/反序列化(配置、行情缓存、批次文件)
+import os  # 【调用包】路径/环境变量操作
+import re  # 【调用包】正则提取报告章节与评级字段
+import secrets  # 【调用包】生成安全 token 与 secret_key
+import sys  # 【调用包】模块搜索路径调整、解释器路径获取
+import threading  # 【调用包】后台线程与进度锁
+import time  # 【调用包】耗时统计与轮询间隔
+from datetime import datetime, timedelta  # 【调用包】日期解析与时间窗计算
+from functools import wraps  # 【调用包】保留被装饰函数元数据(鉴权装饰器)
+from pathlib import Path  # 【调用包】路径对象操作(目录扫描/文件拼接)
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # 【调用包】加载 .env 环境变量
 from flask import (
-    Flask,
-    Response,
-    jsonify,
-    make_response,
-    render_template_string,
-    request,
-    send_file,
-    stream_with_context,
+    Flask,  # 【调用包】Web 框架:应用实例与路由
+    Response,  # 【调用包】SSE 流式响应
+    jsonify,  # 【调用包】JSON 响应封装
+    make_response,  # 【调用包】构造带 Cookie/响应头的对象
+    render_template_string,  # 【调用包】Jinja2 渲染模板字符串
+    request,  # 【调用包】读取请求参数/JSON 体/请求头
+    send_file,  # 【调用包】文件下载响应(PDF/MD)
+    stream_with_context,  # 【调用包】让生成器在请求上下文里产出 SSE
 )
 
-load_dotenv()
+load_dotenv()  # 【调用函数】读取 .env 中的环境变量(API key、LLM 配置等)
 
 # 把本文件所在目录加入模块搜索路径,使同目录下的 commodity_demo / database /
 # signal_analyzer / tradingagents 等模块无需安装即可被 import。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import contextlib  # noqa: E402
-
-from langchain_core.messages import HumanMessage  # noqa: E402
-
-from commodity_demo import build_commodity_graph  # noqa: E402
+import contextlib  # noqa: E402  # 【调用包】上下文管理(异常抑制 suppress)
+from langchain_core.messages import HumanMessage  # noqa: E402  # 【调用包】LangChain 消息类型,构造 Agent 图初始对话
+from commodity_demo import build_commodity_graph  # noqa: E402  # 【调用包】构建 LangGraph 多分析师图
 
 # New imports for v2.6
-from database import get_db  # noqa: E402
-from path_utils import resolve_think2_dir  # noqa: E402
-from signal_analyzer import (  # noqa: E402
+from database import get_db  # noqa: E402  # 【调用包】SQLite 存取(自选/交易信号/告警/用户)
+from path_utils import resolve_think2_dir  # noqa: E402  # 【调用包】思路2项目目录自动探测
+from signal_analyzer import (  # noqa: E402  # 【调用包】情绪/价格信号与全部模拟交易策略回测函数
     analyze_cross_platform,
     analyze_lead_lag,
     compare_varieties,
@@ -113,15 +111,15 @@ from signal_analyzer import (  # noqa: E402
     run_turtle_sent_strategy,
     run_turtle_strategy,
 )
-from tradingagents.dataflows.commodity_futures import (  # noqa: E402
+from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】品种元数据与 AKShare 行情获取
     VARIETY_METADATA,
     get_futures_price,
 )
-from tradingagents.dataflows.config import set_config  # noqa: E402
-from tradingagents.dataflows.evolution_memory import get_evolution_context  # noqa: E402
-from tradingagents.dataflows.sentiment_data import load_sentiment_data  # noqa: E402
-from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
-from tradingagents.llm_clients import create_llm_client  # noqa: E402
+from tradingagents.dataflows.config import set_config  # noqa: E402  # 【调用包】把配置同步到全局(供 Agent 图/LLM 读取)
+from tradingagents.dataflows.evolution_memory import get_evolution_context  # noqa: E402  # 【调用包】读取进化记忆(历史学习上下文)
+from tradingagents.dataflows.sentiment_data import load_sentiment_data  # noqa: E402  # 【调用包】加载品种情绪数据(判断是否启用情绪分析师)
+from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402  # 【调用包】默认配置(LLM provider/模型名)
+from tradingagents.llm_clients import create_llm_client  # noqa: E402  # 【调用包】创建 LLM 客户端(辩论接口用)
 
 # ------------------------------------------------------------------
 # Flask 应用初始化
@@ -129,10 +127,10 @@ from tradingagents.llm_clients import create_llm_client  # noqa: E402
 # · config 从 DEFAULT_CONFIG 复制一份,并同步给 tradingagents.dataflows.config,
 #   供后续构建 Agent 图 / 调用 LLM 时读取统一配置。
 # ------------------------------------------------------------------
-app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
-config = DEFAULT_CONFIG.copy()
-set_config(config)
+app = Flask(__name__)  # 【变量】Flask 应用实例(注册全部路由)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))  # 【变量】会话签名密钥:优先环境变量,否则随机生成(重启即失效)
+config = DEFAULT_CONFIG.copy()  # 【变量】运行时配置副本(前端 / Agent 图 / LLM 调用共用)
+set_config(config)  # 【调用函数】把配置同步到 tradingagents.dataflows,供构建图与 LLM 调用读取
 
 # ── Dynamic paths ────────────────────────────────────────────────────────────
 
@@ -157,14 +155,14 @@ SENTIMENT_DIR = (
 # clone without the local 思路2 project can still render.
 THINK2_DIR = resolve_think2_dir()
 
-THINK2_OUTPUT = THINK2_DIR / "output" if THINK2_DIR else None
-THINK2_TRENDS = THINK2_OUTPUT / "trends" if THINK2_OUTPUT else None
+THINK2_OUTPUT = THINK2_DIR / "output" if THINK2_DIR else None  # 【变量】思路2采集输出目录(batch_*.jsonl 所在)
+THINK2_TRENDS = THINK2_OUTPUT / "trends" if THINK2_OUTPUT else None  # 【变量】思路2回测趋势目录(_weights.json 所在)
 
-LOG_DIR = Path(os.path.expanduser("~/.tradingagents/logs"))
-REPORT_DIR = LOG_DIR
+LOG_DIR = Path(os.path.expanduser("~/.tradingagents/logs"))  # 【变量】日志目录(用户主目录下,跨项目共享)
+REPORT_DIR = LOG_DIR  # 【变量】分析报告保存目录(与日志同目录)
 
 # Template path (reload on every request for live editing)
-TEMPLATE_PATH = Path(__file__).parent / "web_template.html"
+TEMPLATE_PATH = Path(__file__).parent / "web_template.html"  # 【变量】前端模板路径(每次请求重读,支持热改)
 
 
 # 【功能】读取前端模板 web_template.html 的完整内容。
@@ -191,7 +189,7 @@ def _get_sector(code: str) -> str:
 # 分析流水线的 10 个阶段定义。id 供前后端对位, name 为中文显示名, icon 为图标。
 # 这些阶段与 commodity_demo 构建的 Agent 图节点一一对应:
 # 技术 → 基本面 → 宏观 → 情绪 → 多方立论 → 空方反驳 → 多方反驳 → 辩论裁决 → 综合研判 → 情景分析。
-PIPELINE_STAGES = [
+PIPELINE_STAGES = [  # 【变量】分析流水线的 10 个阶段(与 Agent 图节点一一对应)
     {"id": "technical", "name": "技术分析", "icon": "📊"},
     {"id": "fundamental", "name": "基本面", "icon": "📋"},
     {"id": "macro", "name": "宏观/新闻", "icon": "🌍"},
@@ -390,11 +388,11 @@ class ProgressTracker:
 # 全局唯一的分析进度跟踪器(同一时间只允许一次分析)。
 # 由 /api/run_analysis 创建,后台线程与 /api/progress 等接口共享读写。
 # Global tracker instance (one analysis at a time)
-_tracker: ProgressTracker | None = None
+_tracker: ProgressTracker | None = None  # 【变量】全局唯一的分析进度跟踪器(同一时间只允许一次分析)
 
 # ── Config persistence ──────────────────────────────────────────────────────
 
-CONFIG_PATH = Path(os.path.expanduser("~/.tradingagents/web_config.json"))
+CONFIG_PATH = Path(os.path.expanduser("~/.tradingagents/web_config.json"))  # 【变量】前端配置持久化文件路径
 
 
 # 【功能】读取前端界面配置(主题 / LLM 模型等)。文件不存在时返回空 dict。
@@ -402,7 +400,7 @@ CONFIG_PATH = Path(os.path.expanduser("~/.tradingagents/web_config.json"))
 def _load_web_config() -> dict:
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f)  # 【调用函数】读取已保存的配置 JSON
     return {}
 
 
@@ -410,14 +408,14 @@ def _load_web_config() -> dict:
 def _save_web_config(cfg: dict):
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        json.dump(cfg, f, ensure_ascii=False, indent=2)  # 【调用函数】配置落盘(UTF-8、缩进,可读性好)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 # ── Live Price ────────────────────────────────────────────────────────────────
 
-PRICE_CACHE_FILE = Path(__file__).parent / "live_prices_cache.json"
+PRICE_CACHE_FILE = Path(__file__).parent / "live_prices_cache.json"  # 【变量】实时行情缓存文件(warm_cache.py 写入)
 
 
 # 【功能】启动一个后台守护线程,周期性调用 warm_cache.py 刷新实时行情缓存文件。
@@ -427,11 +425,12 @@ PRICE_CACHE_FILE = Path(__file__).parent / "live_prices_cache.json"
 #   · 子进程执行超时 120 秒;任何异常都吞掉,避免后台线程崩溃。
 def _start_price_cache_updater():
     """Background thread: refresh price cache every 5 min during trading hours."""
-    import subprocess as _sp
-    import sys as _sys
-    import threading as _th
-    import time as _time
+    import subprocess as _sp  # 【调用包】子进程调用(刷新行情缓存)
+    import sys as _sys  # 【调用包】当前 Python 解释器路径
+    import threading as _th  # 【调用包】后台线程(刷新循环)
+    import time as _time  # 【调用包】时间判断与间隔休眠
 
+    # 【功能】循环刷新行情缓存:按交易时段计算间隔,周期性调用 warm_cache.py 子进程。
     def _refresh():
         while True:
             try:
@@ -440,12 +439,12 @@ def _start_price_cache_updater():
                 is_weekday = now.tm_wday < 5
                 hour = now.tm_hour
                 is_trading = is_weekday and ((8 <= hour <= 15) or (21 <= hour <= 23))
-                interval = 300 if is_trading else 1800  # 5min during trading, 30min otherwise
+                interval = 300 if is_trading else 1800  # 5min during trading, 30min otherwise  # 【变量】刷新间隔:交易时段 300s,非交易 1800s
 
                 _sp.run(
-                    [_sys.executable, str(Path(__file__).parent / "warm_cache.py")],
+                    [_sys.executable, str(Path(__file__).parent / "warm_cache.py")],  # 【调用函数】子进程调用 warm_cache.py 刷新行情缓存
                     capture_output=True,
-                    timeout=120,
+                    timeout=120,  # 【变量】子进程超时上限 120 秒
                 )
             except Exception:
                 pass
@@ -491,9 +490,9 @@ def api_price_update():
     data = request.json or {}
     varieties = data.get("varieties")
     try:
-        from price_fetcher import update_price_files
+        from price_fetcher import update_price_files  # 【调用包】AKShare 行情更新接口
 
-        result = update_price_files(varieties)
+        result = update_price_files(varieties)  # 【调用函数】跨模块调用:从 AKShare 拉取最新行情并写入价格文件
         return jsonify({"updated": len(result), "details": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -504,7 +503,7 @@ def api_price_update():
 # 【关键】显式禁用浏览器缓存(no-cache),保证每次刷新都拿到最新模板与数据。
 @app.route("/")
 def index():
-    resp = make_response(render_template_string(get_page_template()))
+    resp = make_response(render_template_string(get_page_template()))  # 【调用函数】读模板并用 Jinja2 渲染(注入动态变量)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
@@ -672,10 +671,10 @@ def api_sentiment_posts():
 def api_price(variety):
     """Get price data for charts. Query param: days (default 180)."""
     days = request.args.get("days", 180, type=int)
-    days = max(30, min(days, 730))  # Clamp 30-730
+    days = max(30, min(days, 730))  # Clamp 30-730  # 【变量】回看天数强制钳制在 30~730 天
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    result = get_futures_price(variety, start_date, end_date)
+    result = get_futures_price(variety, start_date, end_date)  # 【调用函数】跨模块获取行情 CSV 文本
     data = []
     for line in result.strip().split("\n"):
         if not line or line.startswith("#") or not line[0].isdigit():
@@ -710,7 +709,7 @@ def api_overlay(variety):
     # Price data
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    price_result = get_futures_price(variety, start_date, end_date)
+    price_result = get_futures_price(variety, start_date, end_date)  # 【调用函数】跨模块获取行情 CSV 文本
     price_map = {}
     for line in price_result.strip().split("\n"):
         if not line or line.startswith("#") or not line[0].isdigit():
@@ -837,7 +836,7 @@ def api_compare(variety, date):
     except ValueError:
         return jsonify({"error": "Invalid date"}), 400
     end_dt = target + timedelta(days=30)
-    price_result = get_futures_price(variety, date, end_dt.strftime("%Y-%m-%d"))
+    price_result = get_futures_price(variety, date, end_dt.strftime("%Y-%m-%d"))  # 【调用函数】跨模块获取行情 CSV 文本
     prices = []
     for line in price_result.strip().split("\n"):
         if not line or line.startswith("#") or not line[0].isdigit():
@@ -982,7 +981,7 @@ def api_run_analysis():
     _tracker.is_running = True
 
     # Agent 节点名 → 前端阶段 id 的映射,用于把图节点执行进度映射为进度条阶段。
-    stage_map = {
+    stage_map = {  # 【变量】Agent 节点名 → 前端阶段 id 的映射,用于把图执行进度映射为进度条阶段
         "technical_analyst": "technical",
         "fundamental_analyst": "fundamental",
         "macro_analyst": "macro",
@@ -999,15 +998,16 @@ def api_run_analysis():
     _tracker._final_rating = None
 
     # 后台线程实际执行的分析主体:构建图 → 流式驱动 → 汇总报告 → 事后校验。
+    # 【功能】后台线程主体:构建图、流式驱动、汇总报告、事后校验(预测背离时写进化记忆)。
     def run_analysis():
         global _tracker
         try:
             # 构建 LangGraph 多分析师图;enable_feedback=False 表示本轮不要求用户反馈。
             app_graph, _ = build_commodity_graph(
-                config, enable_feedback=False, include_sentiment=include_sentiment
+                config, enable_feedback=False, include_sentiment=include_sentiment  # 【调用函数】构建 LangGraph 多分析师图
             )
-            evo_ctx = get_evolution_context(symbol)
-            initial_state = {
+            evo_ctx = get_evolution_context(symbol)  # 【调用函数】读取该品种历史进化记忆
+            initial_state = {  # 【变量】LangGraph 初始状态(分析流水线的输入骨架,含会话与各报告槽位)
                 "messages": [HumanMessage(content=f"Analyze {symbol} as of {trade_date}.")],
                 "company_of_interest": symbol,
                 "asset_type": "commodity_futures",
@@ -1033,7 +1033,7 @@ def api_run_analysis():
             final_state = {}
             # 以 "updates" 模式逐步驱动图,每步产出 {节点名: 该节点输出}。
             # 每步之前检查停止标记与暂停事件,使前端"停止/暂停"能即时生效。
-            for chunk in app_graph.stream(initial_state, stream_mode="updates"):
+            for chunk in app_graph.stream(initial_state, stream_mode="updates"):  # 【调用函数】以 updates 模式逐步驱动 Agent 图
                 if _tracker.stop_requested:
                     break
                 _tracker.wait_if_paused()
@@ -1102,11 +1102,11 @@ def api_run_analysis():
                     )
                     if diverged:
                         # Store divergence for learning
-                        from tradingagents.dataflows.evolution_memory import (
+                        from tradingagents.dataflows.evolution_memory import (  # 【调用包】进化记忆存储(背离学习)
                             store_prediction,
                         )
 
-                        store_prediction(
+                        store_prediction(  # 【调用函数】把背离案例写入进化记忆,供后续轮次学习
                             symbol,
                             trade_date,
                             _tracker._final_rating.get("rating", "?"),
@@ -1208,7 +1208,7 @@ def api_feedback():
         return jsonify({"error": "Empty message"}), 400
 
     # Build debate prompt with current analysis + evolution context
-    evo_ctx = get_evolution_context(symbol)
+    evo_ctx = get_evolution_context(symbol)  # 【调用函数】读取进化记忆作为辩论背景
     # Include current analysis results if available
     current_analysis = ""
     if _tracker and _tracker.is_complete:
@@ -1241,10 +1241,10 @@ def api_feedback():
     try:
         client = create_llm_client(
             config["llm_provider"],
-            config.get("quick_think_llm", config["deep_think_llm"]),
+            config.get("quick_think_llm", config["deep_think_llm"]),  # 【调用函数】按配置创建 LLM 客户端
         )
         llm = client.get_llm()
-        result = llm.invoke(debate_prompt)
+        result = llm.invoke(debate_prompt)  # 【调用函数】调用 LLM 生成辩论回复
         reply = result.content if hasattr(result, "content") else str(result)
         return jsonify({"reply": reply[:2000]})
     except Exception as e:
@@ -1297,7 +1297,7 @@ def api_analysis_results():
 #   找不到则退回 Helvetica(只能渲染 ASCII,中文会乱码)。正文只取前 500 行、每行截 200 字符。
 def _generate_pdf(content, filename, rating=None):
     """Generate a PDF from markdown report using fpdf2."""
-    from fpdf import FPDF
+    from fpdf import FPDF  # 【调用包】PDF 生成库(fpdf2)
 
     pdf = FPDF()
     pdf.add_page()
@@ -1464,6 +1464,7 @@ def api_update_data():
     platforms = data.get("platforms", ["weibo"])
     since_date = data.get("since_date", "")  # YYYY-MM-DD or empty
 
+    # 【功能】SSE 生成器:依次产出 7 个阶段的 step 事件与 log 事件,前端据此渲染流水线进度。
     def generate():
         steps = [
             ("collect", "采集数据"),
@@ -1474,7 +1475,7 @@ def api_update_data():
             ("update_price", "更新价格数据"),
             ("platform_summary", "平台统计"),
         ]
-        total = len(steps)
+        total = len(steps)  # 【变量】流水线阶段总数(用于进度显示)
 
         # 依次执行每个阶段;每阶段先推一条 "step" 消息,再推若干 "log" 消息。
         for i, (key, label) in enumerate(steps):
@@ -1491,7 +1492,7 @@ def api_update_data():
                         yield f"data: {json.dumps({'type': 'log', 'msg': 'ERROR: THINK2 directory not found'}, ensure_ascii=False)}\n\n"
                         continue
 
-                    import subprocess
+                    import subprocess  # 【调用包】子进程调用(运行采集脚本)
 
                     venv_py = os.path.join(os.path.dirname(sys.executable), "python")
                     cmd = [
@@ -1513,17 +1514,18 @@ def api_update_data():
                     # 有新批次文件就实时推一条 log(完成几个关键词/最新文件多少条);
                     # 若超过 15 秒无新文件, 推一条心跳消息保持"活着"的观感。子进程结束(含
                     # 600 秒超时转异常)后再把最终 stdout/stderr 里关键行推出去。
-                    pre_batches = set(glob.glob(str(THINK2_OUTPUT / "batch_*.jsonl")))
-                    holder = {}
+                    pre_batches = set(glob.glob(str(THINK2_OUTPUT / "batch_*.jsonl")))  # 【变量】采集前已有批次文件集合(用于发现新文件)
+                    holder = {}  # 【变量】跨线程容器:子进程结果写 holder["res"],异常写 holder["err"]
 
+                    # 【功能】在后台线程里跑采集子进程,结果/异常写入 holder 容器,避免阻塞 SSE 生成器。
                     def _run_collect():
                         try:
                             holder["res"] = subprocess.run(
-                                cmd,
+                                cmd,  # 【调用函数】后台线程里运行思路2采集脚本 batch_collect.py
                                 cwd=str(THINK2_DIR),
                                 capture_output=True,
                                 text=True,
-                                timeout=600,
+                                timeout=600,  # 【变量】采集子进程超时上限 600 秒
                             )
                         except Exception as e:  # noqa: BLE001
                             holder["err"] = str(e)
@@ -1531,9 +1533,9 @@ def api_update_data():
                     th = threading.Thread(target=_run_collect, daemon=True)
                     th.start()
 
-                    start_ts = time.time()
-                    last_count = 0
-                    last_report_ts = start_ts
+                    start_ts = time.time()  # 【变量】采集启动时间戳(用于心跳等待时长)
+                    last_count = 0  # 【变量】已上报的批次文件数(避免同一文件重复上报)
+                    last_report_ts = start_ts  # 【变量】上次上报日志的时间戳(超 15s 无进展则发心跳)
                     while th.is_alive():
                         time.sleep(4)
                         new_batches = sorted(
@@ -1581,7 +1583,7 @@ def api_update_data():
                     if not THINK2_DIR or not THINK2_DIR.exists():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
-                    from platforms.weibo_adapter import _parse_fans_count
+                    from platforms.weibo_adapter import _parse_fans_count  # 【调用包】微博适配器:粉丝数字符串解析
 
                     fixed_total = 0
                     for bf in sorted(THINK2_OUTPUT.glob("batch_*.jsonl")):
@@ -1594,7 +1596,7 @@ def api_update_data():
                                 d = json.loads(line)
                                 raw = d.get("author_fans", 0)
                                 if isinstance(raw, str):
-                                    d["author_fans"] = _parse_fans_count(raw)
+                                    d["author_fans"] = _parse_fans_count(raw)  # 【调用函数】把粉丝数字符串(如"1.2万")解析为整数
                                     file_fixed += 1
                                 lines_out.append(json.dumps(d, ensure_ascii=False))
                         if file_fixed:
@@ -1608,10 +1610,10 @@ def api_update_data():
                     if not THINK2_DIR or not THINK2_DIR.exists():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
-                    from trend_aggregator import aggregate
+                    from trend_aggregator import aggregate  # 【调用包】跨平台情绪聚合(作者加权)
 
                     paths = sorted(glob.glob(str(THINK2_OUTPUT / "batch_*.jsonl")))
-                    result = aggregate(paths)
+                    result = aggregate(paths)  # 【调用函数】跨平台情绪聚合(作者加权)
                     yield f"data: {json.dumps({'type': 'log', 'msg': f'Aggregated {len(result)} varieties'}, ensure_ascii=False)}\n\n"
                     top = sorted(
                         result.items(),
@@ -1631,9 +1633,9 @@ def api_update_data():
                     if not THINK2_DIR or not THINK2_DIR.exists():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
-                    from backtest_weights import run_all
+                    from backtest_weights import run_all  # 【调用包】多周期回测权重优化
 
-                    result_b = run_all(min_points=10, horizons=[1, 3, 5])
+                    result_b = run_all(min_points=10, horizons=[1, 3, 5])  # 【调用函数】多周期回测,优化平台权重
                     gb = result_b.get("global_backtest", {})
                     h1 = gb.get("results_by_horizon", {}).get("h1", {})
                     sc = h1.get("signal_comparison", {})
@@ -1647,18 +1649,18 @@ def api_update_data():
                     if not THINK2_DIR or not THINK2_DIR.exists():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
-                    from generate_tradingagents_sentiment import (
+                    from generate_tradingagents_sentiment import (  # 【调用包】生成 TradingAgents 情绪 JSON
                         OUTPUT_DIR as GEN_OUTPUT,
                         generate_sentiment_json,
                         load_trends_data,
                     )
 
-                    varieties, index, global_weights = load_trends_data(THINK2_TRENDS)
+                    varieties, index, global_weights = load_trends_data(THINK2_TRENDS)  # 【调用函数】读取趋势数据与全局权重
                     GEN_OUTPUT.mkdir(parents=True, exist_ok=True)
                     gen_count = 0
                     for vname in sorted(varieties.keys()):
                         output = generate_sentiment_json(
-                            vname, varieties[vname], index, global_weights
+                            vname, varieties[vname], index, global_weights  # 【调用函数】生成单品种 TradingAgents 情绪 JSON
                         )
                         if output is None:
                             continue
@@ -1666,22 +1668,22 @@ def api_update_data():
                             continue
                         sym = output["variety"]
                         with open(GEN_OUTPUT / f"{sym}_sentiment.json", "w", encoding="utf-8") as f:
-                            json.dump(output, f, ensure_ascii=False, indent=2)
+                            json.dump(output, f, ensure_ascii=False, indent=2)  # 【调用函数】情绪 JSON 落盘到输出目录
                         gen_count += 1
                     yield f"data: {json.dumps({'type': 'log', 'msg': f'Generated {gen_count} varieties (min_notes={min_notes})'}, ensure_ascii=False)}\n\n"
 
                 elif key == "update_price":
                     yield f"data: {json.dumps({'type': 'log', 'msg': 'Fetching latest prices via AKShare...'}, ensure_ascii=False)}\n\n"
                     if THINK2_DIR and THINK2_DIR.exists():
-                        import subprocess
+                        import subprocess  # 【调用包】子进程调用(运行行情更新脚本)
 
                         venv_py = os.path.join(os.path.dirname(sys.executable), "python")
                         result = subprocess.run(
-                            [venv_py, "price_fetcher.py"],
+                            [venv_py, "price_fetcher.py"],  # 【调用函数】调用思路2的行情更新脚本
                             cwd=str(THINK2_DIR),
                             capture_output=True,
                             text=True,
-                            timeout=120,
+                            timeout=120,  # 【变量】价格更新子进程超时上限 120 秒
                         )
                         for line in (result.stdout + result.stderr).split("\n"):
                             if any(
@@ -1770,13 +1772,13 @@ def api_update_data():
 @app.route("/api/db/stats")
 def api_db_stats():
     """Get database stats: posts by platform, total counts."""
-    db = get_db()
+    db = get_db()  # 【调用函数】获取 SQLite 数据库会话
     return jsonify(
         {
-            "platforms": db.get_platform_stats(),
-            "total_posts": db.get_total_posts(),
-            "collection_history": db.get_collection_history(10),
-            "unacknowledged_alerts": db.get_unacknowledged_count(),
+            "platforms": db.get_platform_stats(),  # 【调用函数】各平台帖子数统计
+            "total_posts": db.get_total_posts(),  # 【调用函数】帖子总量
+            "collection_history": db.get_collection_history(10),  # 【调用函数】最近 10 次采集历史
+            "unacknowledged_alerts": db.get_unacknowledged_count(),  # 【调用函数】未确认告警数
         }
     )
 
@@ -1805,7 +1807,7 @@ def api_ack_alert(alert_id):
 def api_scheduler_status():
     """Get scheduler status."""
     try:
-        from scheduler import _scheduler
+        from scheduler import _scheduler  # 【调用包】调度器实例(读取运行状态)
 
         if _scheduler and _scheduler.running:
             jobs = [
@@ -1828,7 +1830,7 @@ def api_scheduler_status():
 @app.route("/api/scheduler/start", methods=["POST"])
 def api_scheduler_start():
     try:
-        from scheduler import start_scheduler
+        from scheduler import start_scheduler  # 【调用包】调度器启动
 
         data = request.json or {}
         times = data.get("schedule_times", ["08:00", "18:00"])
@@ -1843,7 +1845,7 @@ def api_scheduler_start():
 @app.route("/api/scheduler/stop", methods=["POST"])
 def api_scheduler_stop():
     try:
-        from scheduler import stop_scheduler
+        from scheduler import stop_scheduler  # 【调用包】调度器停止
 
         stop_scheduler()
         return jsonify({"status": "stopped"})
@@ -1869,7 +1871,7 @@ def _auth_required(f):
 
 
 # 内存中有效登录 token 集合(登录时加入,登出时移除;重启后清空)。
-_auth_tokens: set[str] = set()
+_auth_tokens: set[str] = set()  # 【变量】内存中有效登录 token 集合(登录时加入,登出时移除;重启后清空)
 
 
 # 【功能】登录:校验数据库中的用户名 / 密码,通过则发放 16 字节十六进制 token,
@@ -2057,7 +2059,7 @@ def api_trading_run():
     variety = data.get("variety", "")
     horizon = data.get("horizon", 3)
     threshold = data.get("threshold", 0.2)
-    result = run_simulated_trading(
+    result = run_simulated_trading(  # 【调用函数】跨模块回测:情绪固定阈值策略
         variety=variety,
         horizon=horizon,
         signal_threshold=threshold,
@@ -2065,9 +2067,9 @@ def api_trading_run():
         end_date=data.get("end_date", ""),
     )
     # Save trades to DB
-    db = get_db()
+    db = get_db()  # 【调用函数】获取数据库会话
     for t in result.get("recent_trades", []):
-        db.save_trade_signal(t["variety"], t["entry"], 0, t["dir"], 0, horizon)
+        db.save_trade_signal(t["variety"], t["entry"], 0, t["dir"], 0, horizon)  # 【调用函数】把历史交易逐条写入数据库
     sig = latest_trading_signal(
         "fixed", variety=variety, horizon=horizon, signal_threshold=threshold
     )
@@ -2083,7 +2085,7 @@ def api_trading_run():
 @app.route("/api/trading/contrarian", methods=["POST"])
 def api_trading_contrarian():
     data = request.json or {}
-    result = run_contrarian_sentiment(
+    result = run_contrarian_sentiment(  # 【调用函数】跨模块回测:逆情绪策略
         variety=data.get("variety", ""),
         horizon=data.get("horizon", 3),
         trend_window=data.get("trend_window", 5),
@@ -2109,7 +2111,7 @@ def api_trading_contrarian():
 @app.route("/api/trading/adaptive_sentiment", methods=["POST"])
 def api_trading_adaptive_sentiment():
     data = request.json or {}
-    result = run_adaptive_sentiment(
+    result = run_adaptive_sentiment(  # 【调用函数】跨模块回测:自适应情绪策略
         variety=data.get("variety", ""),
         horizon=data.get("horizon", 3),
         trend_window=data.get("trend_window", 5),
@@ -2146,11 +2148,11 @@ def api_apply_risk():
     if not trades_raw or (not stop_loss and not trail_stop):
         return jsonify({"trades": trades_raw})
 
-    from signal_analyzer import _load_price as _lpr, apply_risk_management as _arm
+    from signal_analyzer import _load_price as _lpr, apply_risk_management as _arm  # 【调用包】价格加载与风控计算(信号分析器内部接口)
 
-    px_data = _lpr(variety)
+    px_data = _lpr(variety)  # 【调用函数】加载真实价格数据(信号分析器内部接口)
     prices = px_data.get("prices", []) if px_data else []
-    result = _arm(trades_raw, prices, stop_loss, trail_stop)
+    result = _arm(trades_raw, prices, stop_loss, trail_stop)  # 【调用函数】计算止损/移动止损后的出场点
     return jsonify({"trades": result})
 
 
@@ -2178,12 +2180,12 @@ def api_trading_multi():
 
     result = {"curves": {}, "stats": {}, "dates": [], "price_curve": []}
     # Per-strategy PnL deltas: {strategy: {entry_date: pnl}}
-    strategy_pnls = {}
+    strategy_pnls = {}  # 【变量】各策略"入场日 → 当日 PnL"映射,用于对齐累计收益曲线
 
     for s in strategies:
         try:
             if s == "fixed":
-                r = run_simulated_trading(
+                r = run_simulated_trading(  # 【调用函数】跨模块回测:情绪固定阈值(用于对比曲线)
                     variety=variety, horizon=horizon, signal_threshold=0.2, start_date=start_date
                 )
                 trades = r.get("recent_trades", [])
@@ -2202,7 +2204,7 @@ def api_trading_multi():
                 }
 
             elif s == "trailing":
-                r = run_trailing_strategy(
+                r = run_trailing_strategy(  # 【调用函数】跨模块回测:情绪跟踪止盈(用于对比曲线)
                     variety=variety,
                     signal_threshold=0.2,
                     max_holding=10,
@@ -2225,7 +2227,7 @@ def api_trading_multi():
                 }
 
             elif s == "adaptive_sent":
-                r = run_adaptive_sentiment(
+                r = run_adaptive_sentiment(  # 【调用函数】跨模块回测:自适应情绪(用于对比曲线)
                     variety=variety, start_date=start_date, end_date=end_date
                 )
                 c = r.get("curves", {}).get("adaptive", [])
@@ -2248,7 +2250,7 @@ def api_trading_multi():
                 }
 
             elif s == "contrarian":
-                r = run_contrarian_sentiment(
+                r = run_contrarian_sentiment(  # 【调用函数】跨模块回测:逆情绪(用于对比曲线)
                     variety=variety, start_date=start_date, end_date=end_date
                 )
                 c = r.get("curves", {}).get("contrarian", [])
@@ -2270,7 +2272,7 @@ def api_trading_multi():
                     "advanced_metrics": r.get("contrarian", {}).get("advanced_metrics", {}),
                 }
             elif s == "momentum_ad":
-                r = run_momentum_adaptive(variety=variety, start_date=start_date, end_date=end_date)
+                r = run_momentum_adaptive(variety=variety, start_date=start_date, end_date=end_date)  # 【调用函数】跨模块回测:动量+自适应(用于对比曲线)
                 c = r.get("curves", {}).get("adaptive", [])
                 dates = r.get("dates", [])
                 pnl_map = {}
@@ -2295,9 +2297,9 @@ def api_trading_multi():
     # Build price curve and common date grid
     common_dates = []
     if variety:
-        from signal_analyzer import _load_price as _lp2
+        from signal_analyzer import _load_price as _lp2  # 【调用包】价格数据加载(内部接口)
 
-        pdata = _lp2(variety)
+        pdata = _lp2(variety)  # 【调用函数】加载真实价格数据(用于价格归一化曲线)
         if pdata:
             prices = pdata.get("prices", [])
             if prices:
@@ -2336,7 +2338,7 @@ def api_trading_multi():
 @app.route("/api/trading/momentum_strat", methods=["POST"])
 def api_trading_momentum():
     data = request.json or {}
-    result = run_momentum_strategy(
+    result = run_momentum_strategy(  # 【调用函数】跨模块回测:动量策略(纯价格)
         variety=data.get("variety", ""),
         start_date=data.get("start_date", "2025-01-01"),
         end_date=data.get("end_date", ""),
@@ -2352,7 +2354,7 @@ def api_trading_momentum():
 @app.route("/api/trading/momentum_adaptive", methods=["POST"])
 def api_trading_momentum_adaptive():
     data = request.json or {}
-    result = run_momentum_adaptive(
+    result = run_momentum_adaptive(  # 【调用函数】跨模块回测:动量 + 自适应
         variety=data.get("variety", ""),
         lookback=data.get("lookback", 5),
         hold=data.get("hold", 3),
@@ -2377,7 +2379,7 @@ def api_trading_momentum_adaptive():
 @app.route("/api/trading/donchian", methods=["POST"])
 def api_trading_donchian():
     data = request.json or {}
-    result = run_donchian_strategy(
+    result = run_donchian_strategy(  # 【调用函数】跨模块回测:唐奇安通道突破(纯价格)
         variety=data.get("variety", ""),
         start_date=data.get("start_date", "2025-01-01"),
         end_date=data.get("end_date", ""),
@@ -2396,7 +2398,7 @@ def api_trading_donchian():
 def api_trading_ma_cross():
     """双均线交叉(纯价格)。"""
     data = request.json or {}
-    result = run_ma_cross_strategy(
+    result = run_ma_cross_strategy(  # 【调用函数】跨模块回测:双均线交叉(纯价格)
         variety=data.get("variety", ""),
         fast=data.get("fast", 10),
         slow=data.get("slow", 30),
@@ -2419,7 +2421,7 @@ def api_trading_ma_cross():
 def api_trading_ma_cross_sent():
     """双均线交叉(情绪确认)。"""
     data = request.json or {}
-    result = run_ma_cross_sent_strategy(
+    result = run_ma_cross_sent_strategy(  # 【调用函数】跨模块回测:双均线交叉 + 情绪确认
         variety=data.get("variety", ""),
         fast=data.get("fast", 10),
         slow=data.get("slow", 30),
@@ -2443,7 +2445,7 @@ def api_trading_ma_cross_sent():
 def api_trading_macd():
     """MACD(纯价格)。"""
     data = request.json or {}
-    result = run_macd_strategy(
+    result = run_macd_strategy(  # 【调用函数】跨模块回测:MACD(纯价格)
         variety=data.get("variety", ""),
         macd_fast=data.get("macd_fast", 12),
         macd_slow=data.get("macd_slow", 26),
@@ -2467,7 +2469,7 @@ def api_trading_macd():
 def api_trading_macd_sent():
     """MACD(情绪确认)。"""
     data = request.json or {}
-    result = run_macd_sent_strategy(
+    result = run_macd_sent_strategy(  # 【调用函数】跨模块回测:MACD + 情绪确认
         variety=data.get("variety", ""),
         macd_fast=data.get("macd_fast", 12),
         macd_slow=data.get("macd_slow", 26),
@@ -2494,7 +2496,7 @@ def api_trading_macd_sent():
 def api_trading_rsi():
     """RSI 均值回归(纯价格)。"""
     data = request.json or {}
-    result = run_rsi_strategy(
+    result = run_rsi_strategy(  # 【调用函数】跨模块回测:RSI 均值回归(纯价格)
         variety=data.get("variety", ""),
         rsi_period=data.get("rsi_period", 14),
         rsi_overbought=data.get("rsi_overbought", 70),
@@ -2518,7 +2520,7 @@ def api_trading_rsi():
 def api_trading_rsi_sent():
     """RSI 均值回归(情绪确认)。"""
     data = request.json or {}
-    result = run_rsi_sent_strategy(
+    result = run_rsi_sent_strategy(  # 【调用函数】跨模块回测:RSI + 情绪确认
         variety=data.get("variety", ""),
         rsi_period=data.get("rsi_period", 14),
         rsi_overbought=data.get("rsi_overbought", 70),
@@ -2545,7 +2547,7 @@ def api_trading_rsi_sent():
 def api_trading_bollinger():
     """布林带突破(纯价格)。"""
     data = request.json or {}
-    result = run_bollinger_strategy(
+    result = run_bollinger_strategy(  # 【调用函数】跨模块回测:布林带突破(纯价格)
         variety=data.get("variety", ""),
         bb_period=data.get("bb_period", 20),
         num_std=data.get("num_std", 2.0),
@@ -2567,7 +2569,7 @@ def api_trading_bollinger():
 def api_trading_bollinger_sent():
     """布林带突破(情绪确认)。"""
     data = request.json or {}
-    result = run_bollinger_sent_strategy(
+    result = run_bollinger_sent_strategy(  # 【调用函数】跨模块回测:布林带突破 + 情绪确认
         variety=data.get("variety", ""),
         bb_period=data.get("bb_period", 20),
         num_std=data.get("num_std", 2.0),
@@ -2592,7 +2594,7 @@ def api_trading_bollinger_sent():
 def api_trading_turtle():
     """海龟交易法(纯价格)。"""
     data = request.json or {}
-    result = run_turtle_strategy(
+    result = run_turtle_strategy(  # 【调用函数】跨模块回测:海龟交易法(纯价格)
         variety=data.get("variety", ""),
         turtle_entry=data.get("turtle_entry", 20),
         turtle_exit=data.get("turtle_exit", 10),
@@ -2618,7 +2620,7 @@ def api_trading_turtle():
 def api_trading_turtle_sent():
     """海龟交易法(情绪确认)。"""
     data = request.json or {}
-    result = run_turtle_sent_strategy(
+    result = run_turtle_sent_strategy(  # 【调用函数】跨模块回测:海龟交易法 + 情绪确认
         variety=data.get("variety", ""),
         turtle_entry=data.get("turtle_entry", 20),
         turtle_exit=data.get("turtle_exit", 10),
@@ -2647,7 +2649,7 @@ def api_trading_turtle_sent():
 def api_trading_atr():
     """ATR 通道突破(纯价格)。"""
     data = request.json or {}
-    result = run_atr_strategy(
+    result = run_atr_strategy(  # 【调用函数】跨模块回测:ATR 通道突破(纯价格)
         variety=data.get("variety", ""),
         keltner_period=data.get("keltner_period", 20),
         keltner_mult=data.get("keltner_mult", 2.0),
@@ -2669,7 +2671,7 @@ def api_trading_atr():
 def api_trading_atr_sent():
     """ATR 通道突破(情绪确认)。"""
     data = request.json or {}
-    result = run_atr_sent_strategy(
+    result = run_atr_sent_strategy(  # 【调用函数】跨模块回测:ATR 通道突破 + 情绪确认
         variety=data.get("variety", ""),
         keltner_period=data.get("keltner_period", 20),
         keltner_mult=data.get("keltner_mult", 2.0),
@@ -2698,7 +2700,7 @@ def api_trading_trailing():
     variety = data.get("variety", "")
     threshold = data.get("threshold", 0.2)
     max_holding = data.get("max_holding", 10)
-    result = run_trailing_strategy(
+    result = run_trailing_strategy(  # 【调用函数】跨模块回测:情绪跟踪止盈策略
         variety=variety,
         signal_threshold=threshold,
         max_holding=max_holding,
@@ -2725,7 +2727,7 @@ def api_trading_compare():
     horizon = data.get("horizon", 5)
     fund_threshold = data.get("fund_threshold", 0.3)
     sent_threshold = data.get("sent_threshold", 0.2)
-    result = run_strategy_comparison(
+    result = run_strategy_comparison(  # 【调用函数】跨模块回测:基本面 vs 基本面+情绪 vs 纯价格信号对比
         variety=variety,
         horizon=horizon,
         signal_threshold=sent_threshold,
@@ -2769,7 +2771,7 @@ def api_trading_signals():
 # ═══════════════════════════════════════════════════════════════════
 
 # 批量回测的全局状态容器:是否运行中、逐品种结果列表、总品种数、已完成数。
-_batch_state = {"running": False, "results": [], "total": 0, "done": 0}
+_batch_state = {"running": False, "results": [], "total": 0, "done": 0}  # 【变量】批量回测全局状态容器(是否运行中、逐品种结果、总数、已完成数)
 
 
 # 【功能】仅用情绪数据做即时方向预测(不跑 Agent 图,速度很快,用于批量对比)。
@@ -2777,9 +2779,9 @@ _batch_state = {"running": False, "results": [], "total": 0, "done": 0}
 # 【关键】取 trade_date 当天或之前最后一期 avg_score: >0.05 判看多,<-0.05 判看空,否则中性。
 def _predict_sentiment_only(variety: str, trade_date: str) -> dict:
     """Get instant sentiment-based direction prediction."""
-    from signal_analyzer import _load_sentiment
+    from signal_analyzer import _load_sentiment  # 【调用包】情绪数据加载(内部接口)
 
-    sent = _load_sentiment(variety)
+    sent = _load_sentiment(variety)  # 【调用函数】读取情绪序列做即时方向预测
     if not sent:
         return None
     series = sent.get("data", {}).get("daily_series", [])
@@ -2802,9 +2804,9 @@ def _predict_sentiment_only(variety: str, trade_date: str) -> dict:
 #   · 涨跌幅 >0.15% 判 BULL,<-0.15% 判 BEAR,否则 HOLD。
 def _get_actual_outcome(variety: str, trade_date: str, horizon_days: int = 5) -> dict:
     """Get actual price movement after trade_date. Auto-adjusts if date is beyond data range."""
-    from signal_analyzer import _load_price as _lp
+    from signal_analyzer import _load_price as _lp  # 【调用包】价格数据加载(内部接口)
 
-    price_data = _lp(variety)
+    price_data = _lp(variety)  # 【调用函数】加载真实价格数据
     if not price_data:
         return None
     prices = price_data.get("prices", [])
@@ -2858,9 +2860,9 @@ def _run_agent_for_variety(symbol: str, trade_date: str, config: dict) -> dict:
     try:
         include_sentiment = load_sentiment_data(symbol) is not None
         app_graph, _ = build_commodity_graph(
-            config, enable_feedback=False, include_sentiment=include_sentiment
+            config, enable_feedback=False, include_sentiment=include_sentiment  # 【调用函数】构建 LangGraph 多分析师图
         )
-        evo_ctx = get_evolution_context(symbol)
+        evo_ctx = get_evolution_context(symbol)  # 【调用函数】读取该品种历史进化记忆
         state = {
             "messages": [HumanMessage(content=f"Analyze {symbol} as of {trade_date}.")],
             "company_of_interest": symbol,
@@ -2885,7 +2887,7 @@ def _run_agent_for_variety(symbol: str, trade_date: str, config: dict) -> dict:
             },
         }
         final = {}
-        for chunk in app_graph.stream(state, stream_mode="updates"):
+        for chunk in app_graph.stream(state, stream_mode="updates"):  # 【调用函数】以 updates 模式逐步驱动 Agent 图
             for _, nd in chunk.items():
                 if isinstance(nd, dict):
                     final.update(nd)
@@ -2922,7 +2924,7 @@ def api_batch_start():
 
     if not varieties:
         # Default: varieties with BOTH sentiment and price data
-        from signal_analyzer import _load_price as _lp
+        from signal_analyzer import _load_price as _lp  # 【调用包】价格数据加载(内部接口)
 
         vars_with_data = []
         for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
@@ -3015,7 +3017,7 @@ def api_batch_status():
 # ═══════════════════════════════════════════════════════════════════
 
 # Agent 验证的全局状态容器:是否运行中、逐品种结果、总品种数、已完成数、目标日期。
-_val_state = {"running": False, "results": [], "total": 0, "done": 0, "date": ""}
+_val_state = {"running": False, "results": [], "total": 0, "done": 0, "date": ""}  # 【变量】Agent 验证全局状态容器(运行中、逐品种结果、总数、已完成数、目标日期)
 
 
 # 【功能】对单个品种跑完整 Agent 流水线,同时更新 _val_state["current_stage"] 供前端看进度。
@@ -3029,9 +3031,9 @@ def _validate_one_variety(variety: str, trade_date: str, config: dict) -> dict:
     try:
         include_sentiment = load_sentiment_data(variety) is not None
         app_graph, _ = build_commodity_graph(
-            config, enable_feedback=False, include_sentiment=include_sentiment
+            config, enable_feedback=False, include_sentiment=include_sentiment  # 【调用函数】构建 LangGraph 多分析师图
         )
-        evo_ctx = get_evolution_context(variety)
+        evo_ctx = get_evolution_context(variety)  # 【调用函数】读取该品种历史进化记忆
         state = {
             "messages": [HumanMessage(content=f"Analyze {variety} as of {trade_date}.")],
             "company_of_interest": variety,
@@ -3069,7 +3071,7 @@ def _validate_one_variety(variety: str, trade_date: str, config: dict) -> dict:
             "synthesis": "研判",
             "scenario_analysis": "情景",
         }
-        for chunk in app_graph.stream(state, stream_mode="updates"):
+        for chunk in app_graph.stream(state, stream_mode="updates"):  # 【调用函数】以 updates 模式逐步驱动 Agent 图
             for node_name, nd in chunk.items():
                 if isinstance(nd, dict):
                     final.update(nd)
@@ -3147,7 +3149,7 @@ def api_validation_start():
     varieties_raw = data.get("varieties", [])
 
     if not varieties_raw:
-        from signal_analyzer import _load_price as _lpv
+        from signal_analyzer import _load_price as _lpv  # 【调用包】价格数据加载(内部接口)
 
         vars_with_data = []
         for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
@@ -3230,14 +3232,14 @@ def api_validation_status():
 # · waitress.serve 以 8 个线程监听 0.0.0.0:5000,channel_timeout=600 秒。
 if __name__ == "__main__":
     try:
-        from scheduler import start_scheduler
+        from scheduler import start_scheduler  # 【调用包】调度器启动
 
         start_scheduler(schedule_times=["08:00", "18:00"])
         print("Scheduler started: daily at 08:00, 18:00")
     except Exception as e:
         print(f"Scheduler not started: {e}")
 
-    from waitress import serve
+    from waitress import serve  # 【调用包】生产级 WSGI 服务器(多线程托管 Flask)
 
     print("FuturesMind Dashboard: http://localhost:5000")
     serve(app, host="0.0.0.0", port=5000, threads=8, channel_timeout=600)

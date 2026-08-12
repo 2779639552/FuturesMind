@@ -32,24 +32,24 @@
       下游: 采集出的 JSONL 交给 analyze.py / trend_aggregator.py 做分析聚合。
 """
 
-import argparse
-import contextlib
-import json
-import logging
-import random
-import sys
-import time
-from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
+import argparse  # 【调用包】命令行参数解析 (--platform/--per-kw等)
+import contextlib  # 【调用包】suppress异常 (关闭平台适配器时容错)
+import json  # 【调用包】JSON序列化, 逐行写入JSONL结果文件
+import logging  # 【调用包】日志记录 (采集过程状态)
+import random  # 【调用包】随机抖动延时/冷却时长, 降低反爬识别
+import sys  # 【调用包】sys.exit退出 (凭证缺失时)
+import time  # 【调用包】请求间隔计时/ETA预估
+from dataclasses import dataclass, field  # 【调用包】CollectStats统计容器
+from datetime import datetime  # 【调用包】输出文件时间戳/--since日期解析
+from pathlib import Path  # 【调用包】路径操作 (输出目录)
 
 # NER + 情感 (纯文本, 平台无关)
-from ner import FuturesNER
+from ner import FuturesNER  # 【调用包】期货品种NER识别 (品种/合约/交易所)
 
 # 平台适配器
-from platforms import get_adapter, list_platforms
-from platforms.base import CredentialError, PlatformAdapter
-from sentiment import SentimentAnalyzer
+from platforms import get_adapter, list_platforms  # 【调用包】平台适配器工厂: 按平台名获取采集适配器
+from platforms.base import CredentialError, PlatformAdapter  # 【调用包】平台适配器基类接口 + 凭证异常
+from sentiment import SentimentAnalyzer  # 【调用包】规则情感分析器 (7级分类)
 
 logger = logging.getLogger("batch.collect")
 
@@ -69,11 +69,11 @@ RATE_LIMIT_COOLDOWN = 30  # 触发限流后冷却秒数
 BATCH_COOLDOWN = 1  # 每批关键词间休息秒数
 MAX_DETAIL_PER_KW = 10  # 每关键词最多深挖条数
 
-OUTPUT_DIR = Path(__file__).parent / "output"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = Path(__file__).parent / "output"  # 【变量】结果输出目录 (validate/output/)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)  # 【调用函数】确保输出目录存在
 
 # 平台默认关键词 (xhs 保留旧列表, 微博/知乎待 config.py 扩展)
-DEFAULT_KEYWORDS_XHS = [
+DEFAULT_KEYWORDS_XHS = [  # 【变量】小红书平台默认关键词列表 (按板块分组, 覆盖全品种)
     # 黑色系
     "螺纹钢期货",
     "铁矿石期货",
@@ -125,7 +125,7 @@ DEFAULT_KEYWORDS_XHS = [
     "期货波段策略",
 ]
 
-DEFAULT_KEYWORDS_WEIBO = [
+DEFAULT_KEYWORDS_WEIBO = [  # 【变量】微博平台默认关键词列表 (品种级短词)
     "螺纹钢",
     "铁矿石",
     "焦炭",
@@ -160,7 +160,7 @@ DEFAULT_KEYWORDS_WEIBO = [
     "期货基本面",
 ]
 
-DEFAULT_KEYWORDS_ZHIHU = [
+DEFAULT_KEYWORDS_ZHIHU = [  # 【变量】知乎平台默认关键词列表 (偏问答/讨论向)
     "期货",
     "商品期货",
     "金融期货",
@@ -181,7 +181,7 @@ DEFAULT_KEYWORDS_ZHIHU = [
     "期货技术分析",
 ]
 
-DEFAULT_KEYWORDS_XUEQIU = [
+DEFAULT_KEYWORDS_XUEQIU = [  # 【变量】雪球平台默认关键词列表
     "螺纹钢",
     "铁矿石",
     "焦炭",
@@ -216,7 +216,7 @@ DEFAULT_KEYWORDS_XUEQIU = [
     "期货基本面",
 ]
 
-DEFAULT_KEYWORDS = {
+DEFAULT_KEYWORDS = {  # 【变量】平台名→默认关键词列表映射 (按--platform选择)
     "xhs": DEFAULT_KEYWORDS_XHS,
     "weibo": DEFAULT_KEYWORDS_WEIBO,
     "zhihu": DEFAULT_KEYWORDS_ZHIHU,
@@ -269,20 +269,20 @@ class RateLimiter:
         【参数】safe_mode: 是否安全模式; turbo_mode: 是否极速模式。
         【返回】无。"""
         if turbo_mode:
-            self.min_delay = TURBO_MIN_DELAY_MS / 1000
+            self.min_delay = TURBO_MIN_DELAY_MS / 1000  # 【变量】极速模式: 120~500ms间隔 (Cookie新鲜时使用)
             self.max_delay = TURBO_MAX_DELAY_MS / 1000
-            self.jitter_pct = 0.10
+            self.jitter_pct = 0.10  # 【变量】极速模式抖动幅度10%
         elif safe_mode:
-            self.min_delay = (MIN_DELAY_MS * SAFE_MODE_MULTIPLIER) / 1000
+            self.min_delay = (MIN_DELAY_MS * SAFE_MODE_MULTIPLIER) / 1000  # 【变量】安全模式: 延时×2.5倍 (300→750ms起步)
             self.max_delay = (MAX_DELAY_MS * SAFE_MODE_MULTIPLIER) / 1000
-            self.jitter_pct = 0.25
+            self.jitter_pct = 0.25  # 【变量】安全模式抖动幅度25%
         else:
-            self.min_delay = MIN_DELAY_MS / 1000
+            self.min_delay = MIN_DELAY_MS / 1000  # 【变量】默认FAST模式: 300~1000ms间隔
             self.max_delay = MAX_DELAY_MS / 1000
-            self.jitter_pct = 0.15
-        self.current_delay = self.min_delay
-        self.consecutive_failures = 0
-        self.last_request_time = 0
+            self.jitter_pct = 0.15  # 【变量】默认模式抖动幅度15%
+        self.current_delay = self.min_delay  # 【变量】当前目标延时 (成功递减/失败递增)
+        self.consecutive_failures = 0  # 【变量】连续失败次数 (用于指数退避)
+        self.last_request_time = 0  # 【变量】上次请求时间戳 (计算实际间隔)
         self.safe_mode = safe_mode
         self.turbo_mode = turbo_mode
 
@@ -346,13 +346,13 @@ class MultiPlatformCollector:
     ):
         # 平台名 + 通过工厂函数 get_adapter 拿到对应适配器实例
         self.platform_name = platform
-        self.adapter: PlatformAdapter = get_adapter(platform)
+        self.adapter: PlatformAdapter = get_adapter(platform)  # 【调用函数】工厂函数获取平台适配器实例 (xhs/weibo/zhihu/xueqiu)
         # 自适应延时控制器 (三档模式在构造时决定)
         self.limiter = RateLimiter(safe_mode=safe_mode, turbo_mode=turbo_mode)
         # NER 与情感分析器 (纯文本, 平台无关)
         self.ner = FuturesNER()
         self.sentiment = SentimentAnalyzer()
-        self.stats = CollectStats(started=datetime.now().isoformat())
+        self.stats = CollectStats(started=datetime.now().isoformat())  # 【变量】采集统计容器, 记录开始时间供汇总打印
         self.output_file: Path | None = None
         self.seen_ids: set = set()  # (platform, note_id) 跨关键词去重
 
@@ -362,7 +362,7 @@ class MultiPlatformCollector:
         【关键逻辑】adapter.init() 若抛出 CredentialError (凭证缺失/过期),
         打印友好提示后 sys.exit(1), 避免带着坏会话继续空跑。"""
         try:
-            self.adapter.init()
+            self.adapter.init()  # 【调用函数】平台适配器初始化 (登录/建立会话)
         except CredentialError as e:
             print(f"\n{'=' * 60}")
             print(f"  ⚠️  {self.adapter.display_name} 登录凭证缺失或已过期！")
@@ -390,7 +390,7 @@ class MultiPlatformCollector:
         # Step 1: 搜索 (发请求前先 wait 遵守延时)
         self.limiter.wait()
         try:
-            items = self.adapter.search(keyword, count)
+            items = self.adapter.search(keyword, count)  # 【调用函数】平台适配器搜索接口 (发请求前已wait遵守延时)
         except Exception as e:
             logger.error(f"Search failed for '{keyword}': {e}")
             # classify_error 把异常归类为 rate_limit 或其他, 决定退避策略
@@ -410,7 +410,7 @@ class MultiPlatformCollector:
         # Step 2: 逐条获取详情 + 归一化
         detail_count = 0  # 已成功采集的条数 (用作进度计数)
         # 需要详情深挖的平台按 max_detail 限制; 否则(如微博)全部 items 都算成功
-        detail_limit = max_detail if self.adapter.needs_detail_fetch else len(items)
+        detail_limit = max_detail if self.adapter.needs_detail_fetch else len(items)  # 【变量】详情深挖上限: 需深挖平台按max_detail, 否则全部items算成功
 
         for _item_idx, item in enumerate(items):
             if detail_count >= detail_limit:
@@ -427,7 +427,7 @@ class MultiPlatformCollector:
             if self.adapter.needs_detail_fetch:
                 self.limiter.wait()
                 try:
-                    detail = self.adapter.get_detail(item)
+                    detail = self.adapter.get_detail(item)  # 【调用函数】平台适配器详情接口 (获取完整正文/互动数据)
                 except Exception as e:
                     logger.warning(f"  Detail fetch failed for {str(nid)[:12]}...: {e}")
                     self.limiter.report_failure(
@@ -454,7 +454,7 @@ class MultiPlatformCollector:
             # 归一化为统一 Schema:
             # 各平台原始字段千差万别, normalize() 统一成 note_id/title/desc/... 标准字段
             try:
-                note_dict = self.adapter.normalize(item, detail, keyword)
+                note_dict = self.adapter.normalize(item, detail, keyword)  # 【调用函数】平台适配器归一化: 各平台字段统一为note_id/title/desc标准Schema
             except Exception as e:
                 logger.warning(f"  Normalize failed: {e}")
                 continue
@@ -521,19 +521,19 @@ class MultiPlatformCollector:
                 continue
 
             # NER: 从文本中提取品种/合约, 得到 varieties(品种列表) 等字段
-            entities = self.ner.extract(text)
+            entities = self.ner.extract(text)  # 【调用函数】跨模块(ner): 提取品种/合约/交易所等实体
             note["varieties"] = entities["varieties"]
             note["contracts"] = entities["contracts"]
             note["variety_count"] = entities["variety_count"]
 
             # 整篇情感: 规则引擎对全文打分, 得到 7 级情感 + 分数 + 置信度
-            r = self.sentiment.analyze(text)
+            r = self.sentiment.analyze(text)  # 【调用函数】跨模块(sentiment): 对全文做整篇情感打分
             note["sentiment"] = r["sentiment"]
             note["sentiment_score"] = r["score"]
             note["sentiment_confidence"] = r["confidence"]
 
             # 品种级情感: 对每个提到的品种, 截取其上下文分别打情感分
-            var_sent = self.sentiment.analyze_aspects(text, entities["varieties"])
+            var_sent = self.sentiment.analyze_aspects(text, entities["varieties"])  # 【调用函数】跨模块(sentiment): 逐品种截取上下文做细粒度情感
             note["variety_sentiments"] = var_sent
 
         return notes
@@ -566,13 +566,13 @@ class MultiPlatformCollector:
 
         # 输出文件: batch_{platform}_{ts}.jsonl
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_file = OUTPUT_DIR / f"batch_{self.platform_name}_{ts}.jsonl"
+        self.output_file = OUTPUT_DIR / f"batch_{self.platform_name}_{ts}.jsonl"  # 【变量】输出文件路径: batch_{平台}_{时间戳}.jsonl
 
         # Since date filter
         since_date = None
         if since:
             try:
-                since_date = datetime.strptime(since, "%Y-%m-%d")
+                since_date = datetime.strptime(since, "%Y-%m-%d")  # 【调用函数】解析--since日期字符串为datetime对象
                 print(f"  Time filter: only keeping posts since {since}")
             except ValueError:
                 print(f"  WARNING: Invalid --since date '{since}', ignoring filter")
@@ -600,7 +600,7 @@ class MultiPlatformCollector:
 
             # 采集单个关键词; 整体失败时记录错误并继续下一个关键词
             try:
-                notes = self.collect_one_keyword(kw, count=per_kw, max_detail=max_detail)
+                notes = self.collect_one_keyword(kw, count=per_kw, max_detail=max_detail)  # 【调用函数】采集单个关键词 (搜索→详情→归一化→去重)
             except Exception as e:
                 logger.error(f"Keyword '{kw}' failed: {e}")
                 self.stats.errors.append(f"{kw}: {e}")
@@ -608,7 +608,7 @@ class MultiPlatformCollector:
 
             # NER + 情感 enrich: 给每条笔记补充品种/合约/情感字段
             if notes and not no_enrich:
-                self._enrich_notes(notes)
+                self._enrich_notes(notes)  # 【调用函数】NER+情感enrich, 给每条笔记补充分析字段
 
             # Time filter (since_date):
             # 若指定了 --since, 只保留 publish_time >= since_date 的帖子
@@ -638,7 +638,7 @@ class MultiPlatformCollector:
             # 好处: 即使程序中途被 Ctrl+C / 报错打断, 已完成的关键词数据不丢失
             with open(self.output_file, "a", encoding="utf-8") as f:
                 for note in notes:
-                    f.write(json.dumps(note, ensure_ascii=False) + "\n")
+                    f.write(json.dumps(note, ensure_ascii=False) + "\n")  # 【调用函数】JSONL增量写盘 (每关键词立即落盘, 中断不丢)
 
             total_notes += len(notes)
             self.stats.keywords_done = kw_idx + 1
@@ -654,11 +654,11 @@ class MultiPlatformCollector:
 
             # 批次间冷却 (无结果的 kw 跳过, 省时间)
             if kw_idx < len(keywords) - 1 and notes:
-                self.limiter.cooldown(BATCH_COOLDOWN + random.uniform(0, 1))
+                self.limiter.cooldown(BATCH_COOLDOWN + random.uniform(0, 1))  # 【调用函数】批次间主动冷却 (随机1~2秒, 降低连续大批请求暴露)
 
         # 关闭平台资源
         with contextlib.suppress(Exception):
-            self.adapter.close()
+            self.adapter.close()  # 【调用函数】关闭平台适配器资源 (会话/连接)
 
         # 汇总
         elapsed = time.time() - start_time
@@ -728,7 +728,7 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="输出文件名 (默认自动生成)")
     parser.add_argument("-v", "--verbose", action="store_true")
 
-    args = parser.parse_args()
+    args = parser.parse_args()  # 【调用函数】解析命令行参数
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -741,10 +741,10 @@ def main():
         if args.keywords
         else DEFAULT_KEYWORDS.get(args.platform, DEFAULT_KEYWORDS_XHS)
     )
-    max_detail = 0 if args.no_detail else args.max_detail
+    max_detail = 0 if args.no_detail else args.max_detail  # 【变量】--no-detail时深挖数置0 (微博等平台无需详情)
     platform_name = args.platform
 
-    from platforms import ADAPTER_DISPLAY_NAMES
+    from platforms import ADAPTER_DISPLAY_NAMES  # 【调用包】平台显示名映射 (用于打印友好名称)
 
     display = ADAPTER_DISPLAY_NAMES.get(platform_name, platform_name)
 

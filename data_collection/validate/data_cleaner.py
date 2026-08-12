@@ -4,9 +4,14 @@
 在聚合之前调用: cleaned = clean_records(raw_records)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta  # 【调用包】时间边界判断(未来/远古日期过滤)
 
 
+# 【功能】清洗记录列表: 过滤无效数据并修复缺失值(日期/空内容/情感分/粉丝数/互动数)。
+# 【参数】records: 原始记录列表; verbose: 是否打印清洗统计。
+# 【返回】清洗后的记录列表(就地修改 rec 并追加到新列表)。
+# 【关键】日期缺失/未来/远古 → 跳过; 空内容 → 跳过; sentiment_score 截断到 [-1,1];
+#        author_fans 限制在 [0, 1亿]; like/comment/share 缺失填 0。
 def clean_records(records: list[dict], verbose: bool = True) -> list[dict]:
     """清洗记录列表，过滤无效数据，修复缺失值。
 
@@ -18,7 +23,7 @@ def clean_records(records: list[dict], verbose: bool = True) -> list[dict]:
       5. like_count/comment_count 缺失 → 填0
       6. 空标题+空内容 → 跳过
     """
-    stats = {
+    stats = {  # 【变量】清洗统计计数(各类跳过/修复/保留数量)
         "total": len(records),
         "skipped_no_date": 0,
         "skipped_future_date": 0,
@@ -32,8 +37,8 @@ def clean_records(records: list[dict], verbose: bool = True) -> list[dict]:
 
     cleaned = []
     now = datetime.now()
-    max_future = now + timedelta(days=1)  # Allow 1 day ahead for timezone
-    min_valid_date = "2015-01-01"  # No Chinese social media futures content before 2015
+    max_future = now + timedelta(days=1)  # 【变量】未来时间上界(允许 1 天时区偏移)
+    min_valid_date = "2015-01-01"  # 【变量】最早有效日期(2015 前无中国社交媒体期货内容)
 
     for _i, rec in enumerate(records):
         # --- 1. Date validation ---
@@ -43,7 +48,7 @@ def clean_records(records: list[dict], verbose: bool = True) -> list[dict]:
             continue
 
         try:
-            pub_date = pub_time[:10]
+            pub_date = pub_time[:10]  # 【变量】发布日期(yyyy-mm-dd 前 10 位)
             if pub_date > max_future.strftime("%Y-%m-%d"):
                 stats["skipped_future_date"] += 1
                 continue
@@ -62,7 +67,7 @@ def clean_records(records: list[dict], verbose: bool = True) -> list[dict]:
             continue
 
         # --- 3. Sentiment score range [-1, 1] ---
-        score = rec.get("sentiment_score")
+        score = rec.get("sentiment_score")  # 【变量】情感分(超界截断到 [-1, 1])
         if score is not None:
             try:
                 score = float(score)
@@ -79,7 +84,7 @@ def clean_records(records: list[dict], verbose: bool = True) -> list[dict]:
             rec["sentiment_score"] = 0.0
 
         # --- 4. Author fans (non-negative, reasonable max) ---
-        fans = rec.get("author_fans", 0)
+        fans = rec.get("author_fans", 0)  # 【变量】作者粉丝数(负数归零, 超 1 亿截断)
         try:
             fans = int(fans) if fans else 0
             if fans < 0:

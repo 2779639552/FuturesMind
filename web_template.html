@@ -1080,6 +1080,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     </div>
   </div>
   <div class="grid grid-2" style="margin-bottom:14px">
+    <!-- 交易配置卡: 品种/日期/策略/参数 + 交易成本与风控开关(可折叠输入) -->
     <div class="card">
       <h3>交易配置</h3>
       <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
@@ -1134,6 +1135,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
         <button class="btn btn-primary" onclick="App.runTradingBacktest()">运行回测</button>
         <button class="btn btn-outline btn-sm" onclick="App.runMultiCompare()" style="margin-left:4px">多策略对比</button>
       </div>
+      <!-- 多策略选择面板: 展开后按分组勾选要对比的策略(情绪/技术纯价格/技术+情绪) -->
       <div style="margin-top:6px;font-size:0.75rem;color:var(--text-muted);position:relative">
         <button type="button" class="btn btn-outline btn-sm" id="multi-strat-toggle" onclick="App.toggleMultiPanel()" style="display:inline-flex;align-items:center;gap:6px">
           <span>🗂 多策略选择</span>
@@ -1237,7 +1239,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 // 图表: ECharts; 报告正文: marked 渲染 Markdown。
 // ================================================================
 // Configure marked.js — 开启 Markdown 换行 (breaks) 与 GFM 语法 (表格/删除线等)
-marked.setOptions({ breaks: true, gfm: true });
+marked.setOptions({ breaks: true, gfm: true });  // 【调用函数】marked.js 全局配置: 开启换行(<br>)与 GFM(表格/删除线等)
 
 // ================================================================
 // App State
@@ -1252,12 +1254,12 @@ marked.setOptions({ breaks: true, gfm: true });
 // 关键方法: runAnalysis / runTradingBacktest / runMultiCompare / startAgentValidation
 const App = {
   // State
-  _currentTab: 'run',
-  _currentReportFile: null,
-  _chartInstances: {},
-  _allPosts: [],
-  _varieties: [],
-  _isAnalysisRunning: false,
+  _currentTab: 'run',  // 【变量】当前激活标签页标识
+  _currentReportFile: null,  // 【变量】当前打开的历史报告文件名(下载 MD/PDF 时使用)
+  _chartInstances: {},  // 【变量】ECharts 实例注册表 {容器id: 实例}, 供统一 resize/销毁
+  _allPosts: [],  // 【变量】情绪数据页缓存的全量帖子(供品种下拉过滤)
+  _varieties: [],  // 【变量】从 /api/varieties 拉取的品种列表
+  _isAnalysisRunning: false,  // 【变量】运行分析互斥锁: 防止重复点击启动多个任务
 
   // ── Init ──
   // 【功能】页面初始化入口, DOMContentLoaded 后由底部事件调用一次
@@ -1276,7 +1278,7 @@ const App = {
     document.addEventListener('keydown', (e) => {
       if (e.ctrlKey && e.key >= '1' && e.key <= '8') {
         e.preventDefault();
-        const tabs = ['run', 'sentiment', 'analysis', 'backtest', 'trading', 'update', 'history', 'system'];
+        const tabs = ['run', 'sentiment', 'analysis', 'backtest', 'trading', 'update', 'history', 'system'];  // 【变量】Ctrl+1~8 快捷键对应的标签页顺序
         this.switchTab(tabs[parseInt(e.key) - 1]);
       }
     });
@@ -1371,7 +1373,7 @@ const App = {
   // 【后端】GET /api/varieties
   async _loadVarieties() {
     try {
-      const r = await fetch('/api/varieties');
+      const r = await fetch('/api/varieties');  // 【调用函数】后端接口: 拉取品种列表(代码/名称/情绪帖数)
       this._varieties = await r.json();
       const sel = document.getElementById('sym');
       sel.innerHTML = '';
@@ -1393,7 +1395,7 @@ const App = {
   async updateSentimentStats() {
     const sym = document.getElementById('sym').value;
     try {
-      const r = await fetch(`/api/sentiment/${sym}`);
+      const r = await fetch(`/api/sentiment/${sym}`);  // 【调用函数】后端接口: 拉取该品种情绪概览(多空比/趋势/数据覆盖)
       if (r.ok) {
         const d = await r.json();
         const ss = d.data.social_sentiment;
@@ -1416,19 +1418,19 @@ const App = {
   // 【渲染】由调用方传的 handlers 决定 (如 runDataUpdate 用它渲染更新日志)
   // 【后端】配合返回 text/event-stream 的端点使用 (如 POST /api/update_data)
   async _readSSE(response, handlers) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+    const reader = response.body.getReader();  // 【调用函数】读取流式响应体(逐块消费 SSE 文本)
+    const decoder = new TextDecoder();  // 【变量】UTF-8 流解码器(处理中文等多字节字符跨块边界)
     let buf = '';
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
-      const lines = buf.split('\n');
+      const lines = buf.split('\n');  // 【数据转换】按行切分; 最后一行可能不完整, 留到下次循环补全
       buf = lines.pop() || '';
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         try {
-          const d = JSON.parse(line.slice(6));
+          const d = JSON.parse(line.slice(6));  // 【数据转换】去掉 SSE 行首 'data: '(前6字符)前缀后解析为 JSON
           if (handlers[d.type]) handlers[d.type](d);
           if (handlers['*']) handlers['*'](d);
         } catch (e) { /* skip malformed */ }
@@ -1461,18 +1463,18 @@ const App = {
     document.getElementById('comparison-charts').style.display = 'none';
     document.getElementById('stat-status').textContent = 'Starting...';
 
-    const allStages = [
+    const allStages = [  // 【变量】10 个流水线阶段定义(id/名称/图标, 与后端返回的 stage id 对应)
       {id:'technical',name:'Tech',icon:'📊'},{id:'fundamental',name:'Fund',icon:'📋'},
       {id:'macro',name:'Macro',icon:'🌍'},{id:'sentiment',name:'Sent',icon:'💬'},
       {id:'bull_opening',name:'Bull',icon:'🐂'},{id:'bear_refute',name:'Bear',icon:'🐻'},
       {id:'bull_rebuttal',name:'Rebuttal',icon:'🔄'},{id:'moderator',name:'Judge',icon:'⚖️'},
       {id:'synthesis',name:'Synth',icon:'🎯'},{id:'scenario',name:'Scenario',icon:'📈'}
     ];
-    const incChoice = (document.getElementById('include-sentiment')?.value || 'auto');
-    let stages = incChoice === 'exclude'
+    const incChoice = (document.getElementById('include-sentiment')?.value || 'auto');  // 【变量】情绪分析师开关: auto 自动/include 始终包含/exclude 排除
+    let stages = incChoice === 'exclude'  // 【变量】本次实际参与分析的阶段列表(排除模式时剔除情绪分析师阶段)
       ? allStages.filter(s => s.id !== 'sentiment')
       : allStages;
-    const analystN = stages.filter(s =>
+    const analystN = stages.filter(s =>  // 【变量】分析师阶段个数(前 N 个流水线阶段初始化为 active 点亮)
       ['technical','fundamental','macro','sentiment'].includes(s.id)).length;
     pipeline.innerHTML = stages.map((s,i) =>
       `<span class="pipeline-stage ${i<analystN?'active':'pending'}" id="stage-${s.id}"><span class="dot"></span>${s.icon} ${s.name}</span>`
@@ -1487,13 +1489,13 @@ const App = {
     }
     const date = document.getElementById('date').value;
     const start = Date.now();
-    const timer = setInterval(() => {
+    const timer = setInterval(() => {  // 【变量】耗时计时器: 每秒刷新顶部"上次耗时"统计卡
       document.getElementById('stat-time').textContent = Math.floor((Date.now()-start)/1000) + 's';
     }, 1000);
 
     // Step 1: Start analysis
     log.innerHTML += '<span class="node">Starting analysis...</span>\n';
-    const r1 = await fetch('/api/run_analysis', {
+    const r1 = await fetch('/api/run_analysis', {  // 【调用函数】后端接口: 启动分析, 返回权威阶段列表与是否含情绪分析师
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({symbol:sym, date, include_sentiment: incChoice})
     });
@@ -1512,7 +1514,7 @@ const App = {
     // Step 2: Poll for progress
     const poll = setInterval(async () => {
       try {
-        const r = await fetch('/api/progress');
+        const r = await fetch('/api/progress');  // 【调用函数】后端接口: 轮询分析进度(阶段状态/llm调用数/是否完成)
         const d = await r.json();
         document.getElementById('stat-status').textContent = d.is_running ? 'Analyzing...' : d.is_complete ? 'Complete' : d.error ? 'Error' : '?';
         if (d.stages) {
@@ -1548,7 +1550,7 @@ const App = {
     }, 2000);
   },
 
-  _feedbackVisible: false, _feedbackHistory: [], _feedbackSymbol: undefined,
+  _feedbackVisible: false, _feedbackHistory: [], _feedbackSymbol: undefined,  // 【变量】讨论进化状态: 面板可见性/对话历史/所属品种(换品种时清空历史)
 
   // 【功能】展开/收起「讨论进化」对话输入框(与 Agent 多轮辩论)
   // 【输入】无
@@ -1575,7 +1577,7 @@ const App = {
     this._renderFeedback();
 
     try {
-      const r = await fetch('/api/feedback', {
+      const r = await fetch('/api/feedback', {  // 【调用函数】后端接口: 把用户观点交给 Agent 辩论, 返回回复内容
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({symbol:sym, message:msg, history:this._feedbackHistory})
       });
@@ -1616,7 +1618,7 @@ const App = {
   // 注意: 本文件里该方法定义了两次, JS 对象字面量同名属性以最后一次定义为准(见后文新版)
   async loadComparisonChart(sym, date) {
     try {
-      const r = await fetch('/api/compare/' + sym + '/' + date);
+      const r = await fetch('/api/compare/' + sym + '/' + date);  // 【调用函数】后端接口: 预测 vs 实盘价格对比(含实际方向与涨跌幅)
       const d = await r.json();
       const prices = d.prices || [];
       if (!prices || prices.length < 2) return;
@@ -1646,7 +1648,7 @@ const App = {
   // 注意: 该方法同样定义了两次, 运行时以新版(下方)为准
   async loadPlatformWeightsChart() {
     try {
-      const r = await fetch('/api/backtest');
+      const r = await fetch('/api/backtest');  // 【调用函数】(旧版定义) 后端接口: 拉取回测平台权重(运行时被下方新版覆盖)
       const d = await r.json();
       const platforms = d.platforms || {};
       const chart = this._initChart('chart-platform-weights');
@@ -1669,7 +1671,7 @@ const App = {
   // 【后端】GET /api/analysis_results (报告正文用 marked 渲染 Markdown)
   async loadAnalysisResults(sym, date) {
     try {
-      const r = await fetch('/api/analysis_results');
+      const r = await fetch('/api/analysis_results');  // 【调用函数】后端接口: 分析完成后一次性拉取全部报告与 RATING
       const d = await r.json();
       if (!d.ready) return;
       const reports = d.reports || {};
@@ -1720,7 +1722,7 @@ const App = {
   // 【后端】POST /api/pause
   async pauseAnalysis() {
     try {
-      const r = await fetch('/api/pause', { method: 'POST' });
+      const r = await fetch('/api/pause', { method: 'POST' });  // 【调用函数】后端接口: 请求暂停分析(后端进入 paused 状态)
       const d = await r.json();
       if (d.status === 'paused') {
         this.toast('分析已暂停', 'info');
@@ -1737,7 +1739,7 @@ const App = {
   // 【后端】POST /api/resume
   async resumeAnalysis() {
     try {
-      const r = await fetch('/api/resume', { method: 'POST' });
+      const r = await fetch('/api/resume', { method: 'POST' });  // 【调用函数】后端接口: 请求恢复已暂停的分析
       const d = await r.json();
       if (d.status === 'resumed') {
         this.toast('分析已恢复', 'success');
@@ -1754,7 +1756,7 @@ const App = {
   // 【后端】POST /api/stop
   async stopAnalysis() {
     try {
-      const r = await fetch('/api/stop', { method: 'POST' });
+      const r = await fetch('/api/stop', { method: 'POST' });  // 【调用函数】后端接口: 请求停止当前分析
       const d = await r.json();
       if (d.status === 'stopping') {
         this.toast('正在停止...', 'info');
@@ -1779,7 +1781,7 @@ const App = {
       try { this._chartInstances[containerId].dispose(); } catch(e) {}
       delete this._chartInstances[containerId];
     }
-    const chart = echarts.init(el);
+    const chart = echarts.init(el);  // 【调用函数】ECharts: 创建实例并登记到 _chartInstances(供 resize/销毁)
     this._chartInstances[containerId] = chart;
     return chart;
   },
@@ -1822,9 +1824,9 @@ const App = {
   // 【后端】GET /api/price/{sym}?days={days}
   async loadPriceChart() {
     const sym = document.getElementById('sym').value;
-    const days = document.getElementById('lookback-days')?.value || 180;
+    const days = document.getElementById('lookback-days')?.value || 180;  // 【变量】回看天数(下拉未选时默认 180 天)
     try {
-      const r = await fetch(`/api/price/${sym}?days=${days}`);
+      const r = await fetch(`/api/price/${sym}?days=${days}`);  // 【调用函数】后端接口: 拉取品种价格序列(days 控制时间窗口)
       const d = await r.json();
       const prices = d.prices || d; // Support both new {_meta, prices} and old array format
       const chart = this._initChart('chart-price');
@@ -1835,7 +1837,7 @@ const App = {
           type: 'line', data: prices.map(p => [p.date, p.close]),
           smooth: true, showSymbol: false,
           lineStyle: { color: '#ff5a1f', width: 2 },
-          areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,
+          areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,  // 【调用函数】ECharts: 垂直渐变(品牌橙从上到下渐隐至透明)
             [{offset:0,color:'rgba(255,90,31,0.25)'},{offset:1,color:'rgba(255,90,31,0.02)'}]) }
         }]
       });
@@ -1850,9 +1852,9 @@ const App = {
   // 【后端】GET /api/overlay/{sym}?days={days}
   async loadOverlayChart() {
     const sym = document.getElementById('sym').value;
-    const days = document.getElementById('lookback-days')?.value || 180;
+    const days = document.getElementById('lookback-days')?.value || 180;  // 【变量】回看天数(下拉未选时默认 180 天)
     try {
-      const r = await fetch(`/api/overlay/${sym}?days=${days}`);
+      const r = await fetch(`/api/overlay/${sym}?days=${days}`);  // 【调用函数】后端接口: 拉取情绪得分 vs 价格叠加数据(双轴图)
       if (!r.ok) return;
       const d = await r.json();
       const data = d.overlay || [];
@@ -1957,9 +1959,9 @@ const App = {
   // 【后端】GET /api/sentiment_posts?days={days}
   async loadSentimentPosts() {
     // Load posts with lookback filter
-    const days = document.getElementById('lookback-days')?.value || 180;
+    const days = document.getElementById('lookback-days')?.value || 180;  // 【变量】回看天数(下拉未选时默认 180 天)
     try {
-      const r2 = await fetch(`/api/sentiment_posts?days=${days}`);
+      const r2 = await fetch(`/api/sentiment_posts?days=${days}`);  // 【调用函数】后端接口: 拉取指定时间范围的帖子列表(用于卡片与品种过滤)
       const d = await r2.json();
       const posts = d.posts || d; // Support both new {_meta, posts} and old array format
       const meta = d._meta || {};
@@ -2043,7 +2045,7 @@ const App = {
   // 【后端】GET /api/compare/{sym}/{date}
   async loadComparisonChart(sym, date) {
     try {
-      const r = await fetch(`/api/compare/${sym}/${date}`);
+      const r = await fetch(`/api/compare/${sym}/${date}`);  // 【调用函数】(新版) 后端接口: 拉取预测 vs 实盘价格对比
       const d = await r.json();
       const prices = d.prices || [];
       if (!prices || prices.length < 2) return;
@@ -2072,7 +2074,7 @@ const App = {
   // 【后端】GET /api/backtest
   async loadPlatformWeightsChart() {
     try {
-      const r = await fetch('/api/backtest');
+      const r = await fetch('/api/backtest');  // 【调用函数】(新版) 后端接口: 拉取回测平台权重(Softmax)
       const d = await r.json();
       const platforms = d.platforms || {};
       const chart = this._initChart('chart-platform-weights');
@@ -2100,7 +2102,7 @@ const App = {
   // 【后端】GET /api/backtest
   async loadBacktest() {
     try {
-      const r = await fetch('/api/backtest');
+      const r = await fetch('/api/backtest');  // 【调用函数】后端接口: 拉取回测数据(平台预测力/品种准确率/信号对比)
       const d = await r.json();
 
       // Platform chart
@@ -2150,7 +2152,7 @@ const App = {
   // 【后端】GET /api/history
   async loadHistory() {
     try {
-      const r = await fetch('/api/history');
+      const r = await fetch('/api/history');  // 【调用函数】后端接口: 拉取历史报告列表(品种/时间/大小)
       const reports = await r.json();
       document.getElementById('history-list').innerHTML = reports.map(rp => `
         <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;transition:background var(--transition)"
@@ -2169,7 +2171,7 @@ const App = {
   async viewReport(filename) {
     this._currentReportFile = filename;
     try {
-      const r = await fetch(`/api/report/${encodeURIComponent(filename)}`);
+      const r = await fetch(`/api/report/${encodeURIComponent(filename)}`);  // 【调用函数】后端接口: 拉取单份报告详情(encodeURIComponent 保证中文文件名安全)
       const d = await r.json();
       const v = document.getElementById('report-viewer');
       v.style.display = 'block';
@@ -2205,7 +2207,7 @@ const App = {
   // 【后端】GET /api/varieties (必要时)
   async loadUpdateStats() {
     try {
-      const vars = this._varieties.length ? this._varieties : await fetch('/api/varieties').then(r => r.json());
+      const vars = this._varieties.length ? this._varieties : await fetch('/api/varieties').then(r => r.json());  // 【调用函数】品种列表优先用内存缓存; 缓存为空才回源拉取
       const total = vars.reduce((s, v) => s + v.sentiment_posts, 0);
       document.getElementById('update-stats').textContent = `${vars.length}品种·${total}帖`;
       document.getElementById('update-summary').innerHTML = vars.filter(v => v.sentiment_posts > 0).slice(0, 8).map(v =>
@@ -2254,12 +2256,12 @@ const App = {
     }
 
     try {
-      const resp = await fetch('/api/update_data', {
+      const resp = await fetch('/api/update_data', {  // 【调用函数】后端接口: 启动多平台数据更新(SSE 流式返回日志)
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ per_kw: perKw, min_notes: minNotes, platforms, since_date: sinceDate })
       });
-      await this._readSSE(resp, {
+      await this._readSSE(resp, {  // 【调用函数】消费更新过程的流式日志(step/log/platform_summary/complete/error 五类事件)
         'step': (d) => { log.innerHTML += `\n<span class="node">[${d.progress}] ${d.label}</span>`; },
         'log': (d) => { log.innerHTML += `\n<span class="tool">${d.msg}</span>`; },
         'platform_summary': (d) => {
@@ -2301,7 +2303,7 @@ const App = {
   // ═══════════════════════════════════════════════════════
   // ANALYSIS TAB — 分析工具页(6 个子模块)
   // ═══════════════════════════════════════════════════════
-  _analysisSub: 'comprehensive',
+  _analysisSub: 'comprehensive',  // 【变量】分析工具页当前子模块(切换时记忆, 返回该页时恢复)
 
   // 【功能】进入「分析工具」页时初始化: 填充 3 个品种下拉框, 切到上次的子模块, 加载事件列表
   // 【输入】无 【渲染】各子模块面板 【后端】GET /api/analysis/events 等
@@ -2365,9 +2367,9 @@ const App = {
   // 【后端】GET /api/analysis/anomalies/{v}?threshold=2.0
   async loadAnomalies(forceV) {
     const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
-    const t = 2.0;
+    const t = 2.0;  // 【变量】Z-score 异动阈值: |Z|>2 视为情绪显著偏离 7 日均值
     try {
-      const r = await fetch(`/api/analysis/anomalies/${v}?threshold=${t}`);
+      const r = await fetch(`/api/analysis/anomalies/${v}?threshold=${t}`);  // 【调用函数】后端接口: Z-score 情绪异动检测(阈值经查询参数传入)
       const d = await r.json();
       document.getElementById('anomalies-result').innerHTML = d.anomalies.length === 0
         ? '<span style="color:var(--green)">未检测到显著异常</span>'
@@ -2386,7 +2388,7 @@ const App = {
   async loadDivergence(forceV) {
     const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
     try {
-      const r = await fetch(`/api/analysis/divergence/${v}`);
+      const r = await fetch(`/api/analysis/divergence/${v}`);  // 【调用函数】后端接口: 单品种多空分歧度(1-|看多%-看空%|)
       const d = await r.json();
       const color = d.divergence < 0.4 ? 'var(--red)' : d.divergence < 0.7 ? 'var(--amber)' : 'var(--green)';
       document.getElementById('divergence-detail').innerHTML = `
@@ -2404,7 +2406,7 @@ const App = {
   // 【后端】GET /api/analysis/divergence/all
   async loadDivergenceAll() {
     try {
-      const r = await fetch('/api/analysis/divergence/all');
+      const r = await fetch('/api/analysis/divergence/all');  // 【调用函数】后端接口: 全品种分歧度(驱动列表与柱状图)
       const data = await r.json();
       document.getElementById('divergence-all-list').innerHTML = data.map(d => {
         const color = d.divergence < 0.4 ? 'var(--red)' : d.divergence < 0.7 ? 'var(--amber)' : 'var(--green)';
@@ -2433,7 +2435,7 @@ const App = {
   async loadLeadLag(forceV) {
     const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
     try {
-      const r = await fetch(`/api/analysis/leadlag/${v}`);
+      const r = await fetch(`/api/analysis/leadlag/${v}`);  // 【调用函数】后端接口: 领先滞后分析(情绪→价格 vs 价格→情绪相关系数)
       const d = await r.json();
       const winner = d.conclusion === 'sentiment_leads' ? '情绪领先于价格' : '价格领先于情绪';
       document.getElementById('leadlag-conclusion').innerHTML = `
@@ -2458,7 +2460,7 @@ const App = {
   // 【后端】GET /api/analysis/compare
   async loadCompare() {
     try {
-      const r = await fetch('/api/analysis/compare');
+      const r = await fetch('/api/analysis/compare');  // 【调用函数】后端接口: 多品种横截面对比(得分/板块/多空占比/7日趋势)
       const data = await r.json();
       document.getElementById('compare-table').innerHTML = `<table><thead><tr>
         <th>品种</th><th>板块</th><th>情绪得分</th><th>标签</th><th>看多%</th><th>看空%</th><th>帖子</th><th>7日趋势</th>
@@ -2490,7 +2492,7 @@ const App = {
   // 【后端】GET /api/analysis/ranking
   async loadRanking() {
     try {
-      const r = await fetch('/api/analysis/ranking');
+      const r = await fetch('/api/analysis/ranking');  // 【调用函数】后端接口: 品种情绪得分排名
       const data = await r.json();
       document.getElementById('ranking-table').innerHTML = `<table><thead><tr>
         <th>#</th><th>品种</th><th>板块</th><th>得分</th><th>多空</th><th>帖子</th><th>日期</th>
@@ -2518,7 +2520,7 @@ const App = {
   async loadCrossPlatform() {
     const v = document.getElementById('cp-variety').value;
     try {
-      const r = await fetch(`/api/analysis/crossplatform/${v}`);
+      const r = await fetch(`/api/analysis/crossplatform/${v}`);  // 【调用函数】后端接口: 跨平台情绪对比(微博/知乎/小红书分歧)
       const d = await r.json();
       document.getElementById('crossplat-detail').innerHTML = `<table><thead><tr>
         <th>平台</th><th>得分</th><th>帖子</th><th>看多%</th><th>看空%</th></tr></thead><tbody>
@@ -2547,7 +2549,7 @@ const App = {
   // 【后端】GET /api/analysis/authors?limit=30
   async loadAuthors() {
     try {
-      const r = await fetch('/api/analysis/authors?limit=30');
+      const r = await fetch('/api/analysis/authors?limit=30');  // 【调用函数】后端接口: 作者影响力排行(前30, 影响力=发帖×0.3+log粉丝×0.3+log互动×0.4)
       const data = await r.json();
       document.getElementById('authors-table').innerHTML = `<table><thead><tr>
         <th>#</th><th>作者</th><th>影响力</th><th>帖子</th><th>粉丝</th><th>互动</th></tr></thead><tbody>
@@ -2567,7 +2569,7 @@ const App = {
     const v = document.getElementById('event-variety')?.value || '';
     const days = document.getElementById('event-days')?.value || 7;
     try {
-      const r = await fetch(`/api/analysis/events?variety=${v}&days=${days}`);
+      const r = await fetch(`/api/analysis/events?variety=${v}&days=${days}`);  // 【调用函数】后端接口: 舆情事件提取(按品种与回看天数过滤)
       const data = await r.json();
       document.getElementById('events-list').innerHTML = data.length === 0
         ? '<div style="color:var(--text-muted);padding:12px">未检测到关键词事件</div>'
@@ -2618,9 +2620,9 @@ const App = {
     const ticker = document.getElementById('price-ticker');
     if (!ticker) return;
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 40000);
-      const r = await fetch('/api/live-prices', {signal: controller.signal});
+      const controller = new AbortController();  // 【调用函数】AbortController: 为 fetch 提供取消句柄(配合超时中断请求)
+      const timeout = setTimeout(() => controller.abort(), 40000);  // 【变量】实时行情请求 40 秒超时(首次拉取可能较慢), 超时则中断 fetch
+      const r = await fetch('/api/live-prices', {signal: controller.signal});  // 【调用函数】后端接口: 拉取实时行情(携带 AbortController 信号以支持超时中断)
       clearTimeout(timeout);
       const d = await r.json();
       if (d.error) { ticker.innerHTML = '<span style=\"color:var(--amber)\">'+d.error+'</span>'; return; }
@@ -2727,12 +2729,12 @@ const App = {
     const detail = document.getElementById('trading-detail');
     const D = {start_date: startDate || "2025-01-01", end_date: endDate || ""};
     // 交易成本/风控开关(与多策略对比共用口径;此前单卡未应用 → 两视图不一致)
-    const riskOn = document.getElementById('risk-enabled').checked;
-    const stopLoss = riskOn ? parseFloat(document.getElementById('risk-stop').value) || 0 : 0;
-    const trailStop = riskOn ? parseFloat(document.getElementById('risk-trail').value) || 0 : 0;
+    const riskOn = document.getElementById('risk-enabled').checked;  // 【变量】风控开关(勾选时读取止损/移动止盈参数)
+    const stopLoss = riskOn ? parseFloat(document.getElementById('risk-stop').value) || 0 : 0;  // 【变量】止损百分比(风控开启时生效)
+    const trailStop = riskOn ? parseFloat(document.getElementById('risk-trail').value) || 0 : 0;  // 【变量】移动止盈百分比(风控开启时生效)
     const costOn = document.getElementById('cost-enabled').checked;
-    const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;
-    const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;
+    const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;  // 【变量】手续费率: UI 输入为"万分之", ÷10000 转小数(如 3→0.0003)
+    const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;  // 【变量】滑点(每笔交易额外支付的价格 tick 数)
     // cpt = 单笔往返交易成本(%)。为什么这么算:
     //   commRate 是"万分之"手续费(如 3 = 万分之3 = 0.0003), 一买一卖收两次 → ×2;
     //   slipTick 是滑点 tick 数, 1 tick 约等于价格的 0.02% (近似) → ×0.02。
@@ -2745,7 +2747,7 @@ const App = {
                    strat === 'contrarian' ? 'contrarian' :
                    strat === 'momentum_ad' ? 'adaptive' : null;
 
-    const eps = {
+    const eps = {  // 【变量】策略代码 → [后端端点, 默认请求参数] 的映射表(单卡回测用)
       fixed:         ['/api/trading/run',                  Object.assign({variety:v, horizon:3, threshold:0.2}, D)],
       trailing:      ['/api/trading/trailing',             Object.assign({variety:v, threshold:0.2, max_holding:10}, D)],
       contrarian:    ['/api/trading/contrarian',           Object.assign({variety:v||"", horizon:3, trend_window:5}, D)],
@@ -2801,7 +2803,7 @@ const App = {
       let totalAdj = (d.total_pnl != null ? d.total_pnl : d.avg_pnl_pct) || 0;
       if (stopLoss > 0 || trailStop > 0) {
         try {
-          const rk = await fetch('/api/trading/apply_risk', {
+          const rk = await fetch('/api/trading/apply_risk', {  // 【调用函数】后端接口: 对交易明细应用止损/移动止盈(用真实价格重算每笔 pnl)
             method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({variety: v||'RB', trades: tradesAdj, stop_loss: stopLoss, trail_stop: trailStop})
           });
@@ -2875,7 +2877,7 @@ const App = {
         // 品种价格线(百分比,覆盖回测窗口,最多 730 天)
         const priceByDate = {}, priceDates = [];
         try {
-          const pr = await fetch("/api/price/" + (v || "RB") + "?days=730");
+          const pr = await fetch("/api/price/" + (v || "RB") + "?days=730");  // 【调用函数】后端接口: 拉取品种价格(最多730天, 覆盖整个回测窗口)
           const pd = await pr.json();
           const prices = pd.prices || pd;
           if (prices && prices.length > 1) {
@@ -2906,7 +2908,7 @@ const App = {
           stratCurve = chartDates.map(function(dt) { if (pnlMap[dt]) cum += pnlMap[dt]; return parseFloat(cum.toFixed(2)); });
         }
         const priceLine = chartDates.map(function(dt) { return priceByDate[dt] != null ? parseFloat(priceByDate[dt]) : null; });
-        const chart = echarts.init(el);
+        const chart = echarts.init(el);  // 【调用函数】ECharts: 手动创建单策略回测曲线图(此路径绕开 _initChart, 自行登记实例)
         this._chartInstances["chart-trading-pnl"] = chart;
         const series = [{name: d.strategy || strat, type: "line", data: stratCurve, smooth: true, showSymbol: false, lineStyle: {color: "#34d399", width: 3}}];
         if (priceLine.some(function(v) { return v != null; })) {
@@ -2930,7 +2932,7 @@ const App = {
   renderComparisonResult(d) { this._renderUnifiedResult(d, 'compare'); },
 
   // // ── Agent Validation ──
-  _valPoll: null,
+  _valPoll: null,  // 【变量】Agent 验证进度轮询定时器句柄(启动时创建, 完成时清除)
 
   // 【功能】启动 Agent 方向预测验证: 对每个品种跑完整 10 节点分析, 与 5 日后实际价格方向对比。
   //         启动后每 3 秒轮询一次状态。可指定品种(逗号分隔), 空=后端默认全部。
@@ -2948,7 +2950,7 @@ const App = {
     document.getElementById('val-detail').innerHTML = '';
 
     try {
-      const r = await fetch('/api/agent_validation/start', {
+      const r = await fetch('/api/agent_validation/start', {  // 【调用函数】后端接口: 启动 Agent 方向预测验证(逐品种跑完整 10 节点管线)
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({date, varieties})
       });
@@ -2967,13 +2969,13 @@ const App = {
   // 【后端】GET /api/agent_validation/status (由 startAgentValidation 的定时器每 3 秒调用)
   async pollAgentValidation() {
     try {
-      const r = await fetch('/api/agent_validation/status');
+      const r = await fetch('/api/agent_validation/status');  // 【调用函数】后端接口: 轮询 Agent 验证进度(每3秒, 完成后渲染统计与图表)
       const d = await r.json();
-      const pct = d.total > 0 ? (d.done / d.total * 100).toFixed(0) : 0;
+      const pct = d.total > 0 ? (d.done / d.total * 100).toFixed(0) : 0;  // 【变量】品种完成度百分比(已完成/总数)
       const stage = d.current_stage || '';
       const stageMatch = stage.match(/反驳|裁决|研判|情景/);
-      const stagePct = stage.includes('反驳') ? 70 : stage.includes('裁决') ? 80 : stage.includes('研判') ? 90 : stage.includes('情景') ? 95 : stage.includes('情绪') ? 40 : stage.includes('多方') ? 50 : stage.includes('空方') ? 60 : 10;
-      const showPct = Math.max(pct, d.done > 0 ? pct : Math.max(0, Math.min(stagePct, pct || 10)));
+      const stagePct = stage.includes('反驳') ? 70 : stage.includes('裁决') ? 80 : stage.includes('研判') ? 90 : stage.includes('情景') ? 95 : stage.includes('情绪') ? 40 : stage.includes('多方') ? 50 : stage.includes('空方') ? 60 : 10;  // 【变量】阶段名→进度百分比映射(反驳70/裁决80/研判90/情景95/情绪40/多方50/空方60/兜底10)
+      const showPct = Math.max(pct, d.done > 0 ? pct : Math.max(0, Math.min(stagePct, pct || 10)));  // 【变量】显示用进度: 取品种完成度与阶段进度较大者, 避免进度条回退
       document.getElementById('val-progress').innerHTML = `
         <div style="margin:8px 0">
           <div style="display:flex;justify-content:space-between;margin-bottom:4px">
@@ -2991,7 +2993,7 @@ const App = {
 
       if (d.results && d.results.length > 0) {
         const results = d.results;
-        const valid = results.filter(r => r.correct !== undefined);
+        const valid = results.filter(r => r.correct !== undefined);  // 【变量】已有判定结果的有效样本(排除仍在运行中的品种)
         const correct = valid.filter(r => r.correct).length;
         const highC = valid.filter(r => r.confidence==='高');
         const midC = valid.filter(r => r.confidence==='中');
@@ -3049,7 +3051,7 @@ const App = {
   },
 
   // ── Batch Backtest ──
-  _btPollInterval: null,
+  _btPollInterval: null,  // 【变量】批量回测进度轮询定时器句柄(启动时创建, 完成时清除)
 
   // 【功能】启动批量回测: 对比"纯情绪信号" vs "完整 Agent 管线"的方向准确率。
   //         可选 run_agent 让后端逐个品种跑 Agent; 启动后每 2 秒轮询状态。
@@ -3069,7 +3071,7 @@ const App = {
     document.getElementById('bt-detail').innerHTML = '';
 
     try {
-      const r = await fetch('/api/batch_backtest/start', {
+      const r = await fetch('/api/batch_backtest/start', {  // 【调用函数】后端接口: 启动批量回测(纯情绪 vs Agent 方向准确率对比)
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({date, run_agent:runAgent, varieties})
       });
@@ -3086,7 +3088,7 @@ const App = {
   // 【输入】无 【渲染】#bt-summary / #bt-stats / #bt-detail 【后端】GET /api/batch_backtest/status
   async pollBatchBacktest() {
     try {
-      const r = await fetch('/api/batch_backtest/status');
+      const r = await fetch('/api/batch_backtest/status');  // 【调用函数】后端接口: 轮询批量回测进度与结果(每2秒)
       const d = await r.json();
       const done = d.done||0, total = d.total||0;
 
@@ -3178,15 +3180,15 @@ const App = {
     const endDate = document.getElementById('trade-end').value;
     const cbs = document.querySelectorAll('.multi-cb:checked');
     if (cbs.length === 0) { this.toast('Select at least one strategy','error'); return; }
-    const riskOn = document.getElementById('risk-enabled').checked;
-    const stopLoss = riskOn ? parseFloat(document.getElementById('risk-stop').value) || 0 : 0;
-    const trailStop = riskOn ? parseFloat(document.getElementById('risk-trail').value) || 0 : 0;
+    const riskOn = document.getElementById('risk-enabled').checked;  // 【变量】风控开关(勾选时读取止损/移动止盈参数)
+    const stopLoss = riskOn ? parseFloat(document.getElementById('risk-stop').value) || 0 : 0;  // 【变量】止损百分比(风控开启时生效)
+    const trailStop = riskOn ? parseFloat(document.getElementById('risk-trail').value) || 0 : 0;  // 【变量】移动止盈百分比(风控开启时生效)
     const costOn = document.getElementById('cost-enabled').checked;
-    const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;
-    const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;
-    const strategies = Array.from(cbs).map(cb => cb.value);
-    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'};
-    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#a78bfa','bollinger_sent':'#8b5cf6','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#e879f9','atr_sent':'#d946ef'};
+    const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;  // 【变量】手续费率: UI 输入为"万分之", ÷10000 转小数(如 3→0.0003)
+    const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;  // 【变量】滑点(每笔交易额外支付的价格 tick 数)
+    const strategies = Array.from(cbs).map(cb => cb.value);  // 【变量】从多策略面板勾选得到的策略代码数组
+    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'};  // 【变量】策略代码 → 中文显示名(多策略卡片标题与图例)
+    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#a78bfa','bollinger_sent':'#8b5cf6','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#e879f9','atr_sent':'#d946ef'};  // 【变量】策略代码 → 曲线颜色(与卡片左边框色一致)
     document.getElementById('trading-summary').innerHTML = '<span class="node">Fetching...</span>';
 
     // Build per-strategy per-date PnL maps for common x-axis
@@ -3233,7 +3235,7 @@ const App = {
         // 统一在下方 pnlMap 累计后一次扣减 → 与单卡回测口径一致,避免双重扣减。
         if (stopLoss > 0 || trailStop > 0) {
           try {
-            const riskR = await fetch('/api/trading/apply_risk', {
+            const riskR = await fetch('/api/trading/apply_risk', {  // 【调用函数】后端接口: 对交易明细应用风控(与单卡回测同口径, 先风控后成本)
               method:'POST', headers:{'Content-Type':'application/json'},
               body: JSON.stringify({variety: v||'RB', trades, stop_loss: stopLoss, trail_stop: trailStop})
             });
@@ -3280,7 +3282,7 @@ const App = {
         // 而不是逐笔减 —— 因为风控(apply_risk)改写 pnl 会抹掉预扣成本,
         // 所以先让风控跑完, 再一次性扣成本, 与单卡回测先风控后成本的顺序等价。
         if (costOn && commRate > 0) {
-          const costPerTrade = (commRate * 2) + (slipTick * 0.02);
+          const costPerTrade = (commRate * 2) + (slipTick * 0.02);  // 【变量】单笔往返交易成本(%) = 手续费×2 + 滑点×0.02, 与单卡回测 cpt 同口径
           for (const d of Object.keys(pnlMap)) {
             pnlMap[d] = (pnlMap[d] || 0) - costPerTrade;
           }
@@ -3334,12 +3336,12 @@ const App = {
       `<div style="color:var(--text-muted);padding:12px">${strategies.length} strategies loaded. Note: different strategies trade on different dates, curves may differ in length.</div>`;
 
     // Fetch price data for common date grid (only for specific variety)
-    let commonDates = [];
-    let priceCurve = [];
-    let marketReturn = 0;
+    let commonDates = [];  // 【变量】多策略曲线对齐的公共日期轴(有价格数据时用交易日, 否则回退到交易日期集合)
+    let priceCurve = [];  // 【变量】品种价格基准曲线(相对起始价涨跌%, 虚线绘制在次坐标轴)
+    let marketReturn = 0;  // 【变量】市场买入持有收益(价格曲线末点涨幅%), 用于与各策略收益对比
     const priceVariety = v && v.trim() ? v : 'RB';  // Default to RB for market benchmark
     try {
-      const pr = await fetch('/api/price/' + priceVariety + '?days=365');
+      const pr = await fetch('/api/price/' + priceVariety + '?days=365');  // 【调用函数】后端接口: 拉取市场基准品种价格(365天, 计算买入持有收益)
         const pd = await pr.json();
         const prices = pd.prices || pd;
         if (prices.length > 1) {
@@ -3380,7 +3382,7 @@ const App = {
       if (this._chartInstances['chart-trading-pnl']) {
         try { this._chartInstances['chart-trading-pnl'].dispose(); } catch(e) {}
       }
-      const chart = echarts.init(el);
+      const chart = echarts.init(el);  // 【调用函数】ECharts: 手动创建多策略对比曲线图(此路径绕开 _initChart, 自行登记实例)
       this._chartInstances['chart-trading-pnl'] = chart;
       const seriesData = strategies.map(s => ({
         name:names[s], type:'line', data:alignedCurves[s]||[], smooth:true, showSymbol:false,
@@ -3430,9 +3432,9 @@ const App = {
     const cbs = document.querySelectorAll('.multi-cb:checked');
     if (cbs.length === 0) { this.toast('Select at least one strategy','error'); return; }
 
-    const strategies = Array.from(cbs).map(cb => cb.value);
-    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'};
-    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#a78bfa','bollinger_sent':'#8b5cf6','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#e879f9','atr_sent':'#d946ef'};
+    const strategies = Array.from(cbs).map(cb => cb.value);  // 【变量】从多策略面板勾选得到的策略代码数组
+    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'};  // 【变量】策略代码 → 中文显示名(多策略卡片标题与图例)
+    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#a78bfa','bollinger_sent':'#8b5cf6','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#e879f9','atr_sent':'#d946ef'};  // 【变量】策略代码 → 曲线颜色(与卡片左边框色一致)
 
     document.getElementById('trading-summary').innerHTML = '<span class="node">Running all strategies...</span>';
 
@@ -3464,7 +3466,7 @@ const App = {
         if (this._chartInstances['chart-trading-pnl']) {
           try { this._chartInstances['chart-trading-pnl'].dispose(); } catch(e) {}
         }
-        const chart = echarts.init(el);
+        const chart = echarts.init(el);  // 【调用函数】ECharts: 创建旧版多策略对比图实例(已废弃方法内使用)
         this._chartInstances['chart-trading-pnl'] = chart;
         chart.setOption({
           title:{text:'Multi-Strategy Comparison',left:'center',textStyle:{color:'#888',fontSize:12}},
@@ -3508,14 +3510,14 @@ const App = {
   // 【输入】无 【渲染】#scheduler-status / #db-stats / #alerts-list 等
   // 【后端】GET /api/scheduler/status、GET /api/db/stats、GET /api/db/alerts
   async loadSystemTab() {
-    await Promise.all([this.loadSchedulerStatus(), this.loadDbStats(), this.loadAlerts()]);
+    await Promise.all([this.loadSchedulerStatus(), this.loadDbStats(), this.loadAlerts()]);  // 【调用函数】并发加载系统页三块数据(调度/数据库/告警)
   },
 
   // 【功能】加载定时采集调度状态: 显示运行中/未启动, 运行中则列出每个任务的下次执行时间
   // 【输入】无 【渲染】#scheduler-status 【后端】GET /api/scheduler/status
   async loadSchedulerStatus() {
     try {
-      const r = await fetch('/api/scheduler/status');
+      const r = await fetch('/api/scheduler/status');  // 【调用函数】后端接口: 查询定时采集调度状态(运行中/下次执行时间)
       const d = await r.json();
       document.getElementById('scheduler-status').innerHTML = d.running
         ? `<div style="color:var(--green);font-weight:600">● 运行中</div>
@@ -3529,7 +3531,7 @@ const App = {
   // 【渲染】toast 提示 + 刷新 #scheduler-status 【后端】POST /api/scheduler/{action}
   async schedulerControl(action) {
     try {
-      const r = await fetch(`/api/scheduler/${action}`, {method:'POST',headers:{'Content-Type':'application/json'},
+      const r = await fetch(`/api/scheduler/${action}`, {method:'POST',headers:{'Content-Type':'application/json'},  // 【调用函数】后端接口: 启动/停止定时调度(请求体携带每天两次采集时间)
         body: JSON.stringify({schedule_times:['08:00','18:00']})});
       this.toast(action==='start'?'调度已启动':'调度已停止', 'info');
       setTimeout(() => this.loadSchedulerStatus(), 1000);
@@ -3540,7 +3542,7 @@ const App = {
   // 【输入】无 【渲染】#db-stats、#collection-history 【后端】GET /api/db/stats
   async loadDbStats() {
     try {
-      const r = await fetch('/api/db/stats');
+      const r = await fetch('/api/db/stats');  // 【调用函数】后端接口: 数据库帖子总量/各平台概况/采集历史
       const d = await r.json();
       const platforms = d.platforms || {};
       document.getElementById('db-stats').innerHTML = `
@@ -3562,7 +3564,7 @@ const App = {
   // 【输入】id: 告警 id 【渲染】#alerts-list 刷新 【后端】POST /api/db/alerts/{id}/ack
   async ackAlert(id) {
     try {
-      await fetch('/api/db/alerts/' + id + '/ack', {method:'POST'});
+      await fetch('/api/db/alerts/' + id + '/ack', {method:'POST'});  // 【调用函数】后端接口: 确认告警(标记已读)后刷新列表
       this.loadAlerts();
     } catch(e) {}
   },
@@ -3572,7 +3574,7 @@ const App = {
   // 【输入】无 【渲染】#alerts-list、#alert-count 【后端】GET /api/db/alerts?limit=20
   async loadAlerts() {
     try {
-      const r = await fetch('/api/db/alerts?limit=20');
+      const r = await fetch('/api/db/alerts?limit=20');  // 【调用函数】后端接口: 拉取最近 20 条告警(按严重度配色渲染)
       const data = await r.json();
       const unack = data.filter(a => !a.acknowledged).length;
       document.getElementById('alert-count').textContent = unack || '';

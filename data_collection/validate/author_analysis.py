@@ -3,11 +3,11 @@
 — KOL排行、情感倾向、发文频率、互动集中度
 """
 
-from collections import Counter
+from collections import Counter  # 【调用包】作者主品种/情感倾向分布频次统计
 
-import pandas as pd
-import plotly.graph_objects as go
-from report_utils import (
+import pandas as pd  # 【调用包】DataFrame 作者聚合(groupby/agg)
+import plotly.graph_objects as go  # 【调用包】Plotly 图表对象(影响力柱状图/频率散点)
+from report_utils import (  # 【调用包】report_utils: HTML/终端表格/统计卡片渲染
     chart_to_html,
     dataframe_to_html,
     stat_cards_html,
@@ -15,10 +15,13 @@ from report_utils import (
 )
 
 
+# 【功能】作者影响力分析: KOL 排行、互动集中度(Gini 系数)、情感倾向分布, 返回终端文本 + HTML。
+# 【参数】df: 含 author_name/author_id/互动数/sentiment_score 的笔记 DataFrame。
+# 【返回】{"text": 终端报告文本, "html": 图表 HTML 片段}。
 def analyze(df: pd.DataFrame) -> dict:
     """作者影响力分析"""
     # === 1. 作者聚合统计 ===
-    author_stats = (
+    author_stats = (  # 【变量】按(作者名, id)聚合的互动/情感/主品种统计表
         df.groupby(["author_name", "author_id"])
         .agg(
             post_count=("note_id", "count"),
@@ -39,13 +42,16 @@ def analyze(df: pd.DataFrame) -> dict:
     )
 
     # 互动总分
-    author_stats["influence_score"] = (
+    author_stats["influence_score"] = (  # 【变量】影响力分 = 总互动 × (1 + |平均情感分|), 情感越极端权重越高
         author_stats["total_engagement"] * (1 + author_stats["avg_sentiment_score"].abs())
     ).round(1)
 
     author_stats = author_stats.sort_values("influence_score", ascending=False)
 
     # 情感标签
+    # 【功能】把平均情感分映射为中文倾向标签(多/略多/中性/略空/空头)。
+    # 【参数】score: 作者平均情感分数。
+    # 【返回】倾向字符串(±0.2 强倾向, ±0.05 弱倾向, 中间为中性)。
     def sentiment_label(score):
         if score > 0.2:
             return "多头"
@@ -58,10 +64,10 @@ def analyze(df: pd.DataFrame) -> dict:
         else:
             return "中性"
 
-    author_stats["bias"] = author_stats["avg_sentiment_score"].apply(sentiment_label)
+    author_stats["bias"] = author_stats["avg_sentiment_score"].apply(sentiment_label)  # 【变量】作者情感倾向标签列
 
     # === 终端输出 ===
-    top_authors = author_stats.head(15)
+    top_authors = author_stats.head(15)  # 【变量】影响力 Top15 作者(终端排行)
     table_rows = []
     for _, r in top_authors.iterrows():
         name = r["author_name"][:12]
@@ -79,7 +85,7 @@ def analyze(df: pd.DataFrame) -> dict:
             ]
         )
 
-    text = terminal_table(
+    text = terminal_table(  # 【调用函数】跨文件(report_utils): 生成终端等宽排行表格
         ["作者", "发文", "倾向", "总互动", "均互动", "情感", "确信", "主品种"],
         table_rows,
         title="作者影响力排行榜 (Top 15)",
@@ -87,11 +93,11 @@ def analyze(df: pd.DataFrame) -> dict:
     )
 
     # === 2. 互动集中度 ===
-    total_eng = author_stats["total_engagement"].sum()
-    top3_pct = (
+    total_eng = author_stats["total_engagement"].sum()  # 【变量】全作者总互动量
+    top3_pct = (  # 【变量】Top3 作者贡献互动占比(%)
         author_stats.head(3)["total_engagement"].sum() / total_eng * 100 if total_eng > 0 else 0
     )
-    top10_pct = (
+    top10_pct = (  # 【变量】Top10% 作者贡献互动占比(%)
         author_stats.head(max(1, len(author_stats) // 10))["total_engagement"].sum()
         / total_eng
         * 100
@@ -105,15 +111,15 @@ def analyze(df: pd.DataFrame) -> dict:
     text += f"\n  Top 10% 作者贡献: {top10_pct:.0f}% 互动"
 
     # Gini系数近似
-    sorted_eng = sorted(author_stats["total_engagement"])
+    sorted_eng = sorted(author_stats["total_engagement"])  # 【变量】按总互动升序排列(供 Gini 公式使用)
     n = len(sorted_eng)
     if n > 1 and sum(sorted_eng) > 0:
-        index = sum((2 * i - n - 1) * sorted_eng[i - 1] for i in range(1, n + 1))
-        gini = index / (n * sum(sorted_eng))
+        index = sum((2 * i - n - 1) * sorted_eng[i - 1] for i in range(1, n + 1))  # 【变量】Gini 公式分子(累计差加权)
+        gini = index / (n * sum(sorted_eng))  # 【变量】互动集中度 Gini 系数(0=均匀, 1=极度集中)
         text += f"\n  互动集中度 (Gini): {gini:.3f} (0=均匀, 1=极度集中)"
 
     # === 3. 作者情感分布 ===
-    bias_dist = Counter(author_stats["bias"])
+    bias_dist = Counter(author_stats["bias"])  # 【变量】作者情感倾向分布(多头/空头人数)
     text += "\n\n  作者情感倾向分布:"
     for bias, count in bias_dist.most_common():
         text += f"\n    {bias}: {count} 人 ({count / len(author_stats) * 100:.0f}%)"
@@ -124,7 +130,7 @@ def analyze(df: pd.DataFrame) -> dict:
 
     charts_html = ""
 
-    charts_html += stat_cards_html(
+    charts_html += stat_cards_html(  # 【调用函数】跨文件(report_utils): 生成 HTML 统计卡片
         {
             "作者总数": str(len(author_stats)),
             "Top 3 集中度": f"{top3_pct:.0f}%",
@@ -136,9 +142,9 @@ def analyze(df: pd.DataFrame) -> dict:
     )
 
     # Chart 1: 作者影响力柱状图
-    top10 = author_stats.head(10)
+    top10 = author_stats.head(10)  # 【变量】影响力 Top10 作者(柱状图数据)
     fig1 = go.Figure()
-    colors_author = []
+    colors_author = []  # 【变量】Top10 作者柱色(>0.1 红多 / <-0.1 绿空 / 其余灰)
     for _, r in top10.iterrows():
         if r["avg_sentiment_score"] > 0.1:
             colors_author.append("#e74c3c")
@@ -161,7 +167,7 @@ def analyze(df: pd.DataFrame) -> dict:
         xaxis_title="作者",
         yaxis_title="影响力分数",
     )
-    charts_html += chart_to_html(fig1, "author_influence", 400)
+    charts_html += chart_to_html(fig1, "author_influence", 400)  # 【调用函数】跨文件(report_utils): 作者影响力图转内嵌 HTML
 
     # Chart 2: 发文频率 vs 互动
     fig2 = go.Figure()
@@ -186,7 +192,7 @@ def analyze(df: pd.DataFrame) -> dict:
         xaxis_title="发文数",
         yaxis_title="平均互动",
     )
-    charts_html += chart_to_html(fig2, "author_freq_eng", 400)
+    charts_html += chart_to_html(fig2, "author_freq_eng", 400)  # 【调用函数】跨文件(report_utils): 发文频率vs互动散点转内嵌 HTML
 
     return {
         "text": text,

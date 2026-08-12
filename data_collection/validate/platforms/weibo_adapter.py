@@ -25,32 +25,32 @@ needs_detail_fetch=False：因为微博搜索接口直接返回全文+互动数�
   - parse_created_at (相对/绝对时间解析)
 """
 
-import logging
-import random
-import re
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any
+import logging  # 【调用包】日志记录(采集过程/错误信息输出)
+import random  # 【调用包】随机延时(翻页间隔 1~4 秒, 规避限流)
+import re  # 【调用包】正则清洗 HTML 标签/实体
+import time  # 【调用包】页间 sleep 延时
+from datetime import datetime, timedelta  # 【调用包】相对/绝对时间字符串解析
+from pathlib import Path  # 【调用包】凭证文件路径构建
+from typing import Any  # 【调用包】类型注解(原生 item 为不透明对象)
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import requests  # 【调用包】HTTP 请求(直连 m.weibo.cn 移动端 API)
+from requests.adapters import HTTPAdapter  # 【调用包】连接池适配器(挂到 Session 支持重试)
+from urllib3.util.retry import Retry  # 【调用包】重试策略(429/5xx 自动重试)
 
-from .base import CredentialError, PlatformAdapter
+from .base import CredentialError, PlatformAdapter  # 【调用包】基类接口契约 + 凭证异常
 
 logger = logging.getLogger("platforms.weibo")
 
 # 凭证路径
-CREDENTIALS_DIR = Path(__file__).parent.parent / "credentials"
-WEIBO_COOKIE_FILE = CREDENTIALS_DIR / "weibo_cookie.txt"
+CREDENTIALS_DIR = Path(__file__).parent.parent / "credentials"  # 【变量】凭证根目录(../credentials)
+WEIBO_COOKIE_FILE = CREDENTIALS_DIR / "weibo_cookie.txt"  # 【变量】微博 Cookie 文件路径
 
 # 请求配置
-REQUEST_TIMEOUT = 15
-MAX_RETRIES = 3
-BACKOFF_FACTOR = 0.5
-MIN_DELAY = 1.0
-MAX_DELAY = 4.0
+REQUEST_TIMEOUT = 15  # 【变量】单次请求超时秒数
+MAX_RETRIES = 3  # 【变量】最多自动重试次数
+BACKOFF_FACTOR = 0.5  # 【变量】重试间隔指数退避基数(秒)
+MIN_DELAY = 1.0  # 【变量】翻页最小随机延时秒数
+MAX_DELAY = 4.0  # 【变量】翻页最大随机延时秒数
 
 
 def _parse_fans_count(raw) -> int:
@@ -85,13 +85,13 @@ def _parse_fans_count(raw) -> int:
 
 
 # 微博 API 端点 (与 config.py ENDPOINTS["weibo"] 一致)
-WEIBO_SEARCH_URL = "https://m.weibo.cn/api/container/getIndex"
-WEIBO_DETAIL_URL = "https://m.weibo.cn/statuses/extend"
+WEIBO_SEARCH_URL = "https://m.weibo.cn/api/container/getIndex"  # 【变量】微博综合搜索接口(containerid 传搜索词)
+WEIBO_DETAIL_URL = "https://m.weibo.cn/statuses/extend"  # 【变量】微博长文全文接口(id=mid 取 longTextContent)
 
 # 默认请求头
 # 伪装成 Android 手机浏览器的请求头，降低被风控识别的概率。
 # Referer 与 X-Requested-With 让服务端以为是页面内 AJAX 请求而非爬虫。
-REQUEST_HEADERS = {
+REQUEST_HEADERS = {  # 【变量】伪装 Android 手机浏览器的请求头(降低风控识别概率)
     "User-Agent": (
         "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -190,8 +190,8 @@ class WeiboAdapter(PlatformAdapter):
 
     def __init__(self):
         """初始化内部状态: 会话与 Cookie 初始为空，由 init() 填充。"""
-        self._session: requests.Session | None = None
-        self._cookie: str = ""
+        self._session: requests.Session | None = None  # 【变量】HTTP 会话(init 时构建, 含重试+常驻 Cookie)
+        self._cookie: str = ""  # 【变量】微博登录 Cookie 字符串(须含 SUB 字段)
 
     # ============================================================
     # 生命周期
@@ -206,12 +206,12 @@ class WeiboAdapter(PlatformAdapter):
         凭证优先级: 环境变量 WEIBO_COOKIE > credentials/weibo_cookie.txt 文件。
         Cookie 必须含 SUB 字段（微博登录态核心），否则判定凭证无效。
         """
-        import os
+        import os  # 【调用包】读环境变量取 Cookie(凭证优先级最高)
 
         # 读取 Cookie: 优先环境变量 WEIBO_COOKIE，其次从 credentials/weibo_cookie.txt 读取
-        cookie = os.environ.get("WEIBO_COOKIE", "")
+        cookie = os.environ.get("WEIBO_COOKIE", "")  # 【调用函数】从环境变量取 Cookie(第一优先来源)
         if not cookie and WEIBO_COOKIE_FILE.exists():
-            cookie = WEIBO_COOKIE_FILE.read_text(encoding="utf-8").strip()
+            cookie = WEIBO_COOKIE_FILE.read_text(encoding="utf-8").strip()  # 【调用函数】无环境变量时回退读 Cookie 文件
 
         # 校验: 微博 Cookie 必须含 "SUB" 字段(登录态标志)，缺失即视为无效凭证
         if not cookie or "SUB" not in cookie:
@@ -227,7 +227,7 @@ class WeiboAdapter(PlatformAdapter):
             )
 
         self._cookie = cookie
-        self._session = self._build_session(cookie)
+        self._session = self._build_session(cookie)  # 【调用函数】构建带重试/常驻 Cookie 的 HTTP 会话
         logger.info(f"Weibo session created. Cookie length: {len(cookie)}")
 
     def close(self) -> None:
@@ -238,7 +238,7 @@ class WeiboAdapter(PlatformAdapter):
         【关键逻辑】不复用则清空引用，避免后续误用已关闭的会话。
         """
         if self._session:
-            self._session.close()
+            self._session.close()  # 【调用函数】关闭 requests 连接池
             self._session = None
 
     def _build_session(self, cookie: str) -> requests.Session:
@@ -254,21 +254,21 @@ class WeiboAdapter(PlatformAdapter):
         - 把默认请求头与 Cookie 常驻在 Session 上，之后每次请求自动携带。
         从 validator_weibo.py:194-220 平移。
         """
-        session = requests.Session()
-        retry_strategy = Retry(
+        session = requests.Session()  # 【调用函数】新建 requests 会话(连接池)
+        retry_strategy = Retry(  # 【变量】自动重试策略(指数退避, 仅 GET)
             total=MAX_RETRIES,
             backoff_factor=BACKOFF_FACTOR,
             status_forcelist=[429, 500, 502, 503, 504],  # 这些状态码会自动重试
             allowed_methods=["GET"],  # 只对 GET 重试
         )
-        adapter = HTTPAdapter(
+        adapter = HTTPAdapter(  # 【变量】HTTP 连接池适配器(最多 5 个并发连接)
             max_retries=retry_strategy,
             pool_connections=5,  # 连接池大小: 同时最多 5 个连接
             pool_maxsize=5,
         )
-        session.mount("https://", adapter)
+        session.mount("https://", adapter)  # 【调用函数】为 https 挂载重试适配器
         session.mount("http://", adapter)
-        session.headers.update(REQUEST_HEADERS)
+        session.headers.update(REQUEST_HEADERS)  # 【调用函数】默认请求头写入会话(每次请求自动带)
         session.headers["Cookie"] = cookie  # 常驻 Cookie，之后请求自动带上
         return session
 
@@ -304,17 +304,17 @@ class WeiboAdapter(PlatformAdapter):
 
             # 发起请求; 网络异常直接中断翻页(已拿到的结果仍返回)
             try:
-                response = self._session.get(
+                response = self._session.get(  # 【调用函数】GET 微博搜索接口(带 params/超时)
                     WEIBO_SEARCH_URL,
                     params=params,
                     timeout=REQUEST_TIMEOUT,
                 )
-                response.raise_for_status()
+                response.raise_for_status()  # 【调用函数】非 2xx 抛异常(配合重试)
             except requests.exceptions.RequestException:
                 break
 
             try:
-                data = response.json()
+                data = response.json()  # 【调用函数】解析响应 JSON(ok=1 表示业务成功)
             except ValueError:
                 break  # 返回非 JSON(如被重定向到验证页)时放弃本页
 
@@ -407,15 +407,15 @@ class WeiboAdapter(PlatformAdapter):
         if not raw_item.get("isLongText"):
             return None
 
-        params = {"id": mid}
+        params = {"id": mid}  # 【变量】详情接口查询参数(传帖子 mid)
         try:
-            response = self._session.get(
+            response = self._session.get(  # 【调用函数】GET 微博长文接口(id=mid 取全文)
                 WEIBO_DETAIL_URL,
                 params=params,
                 timeout=REQUEST_TIMEOUT,
             )
             response.raise_for_status()
-            data = response.json()
+            data = response.json()  # 【调用函数】解析 JSON(ok=1 时含 longTextContent)
         except Exception:
             return None
 
@@ -468,7 +468,7 @@ class WeiboAdapter(PlatformAdapter):
         # IP 属地: 去掉"发布于"前缀
         ip_location = (raw_item.get("region_name", "") or "").replace("发布于 ", "").strip()
 
-        note_dict = {
+        note_dict = {  # 【变量】统一 Schema 输出(键对齐 UNIFIED_SCHEMA_FIELDS)
             "platform": "weibo",
             "note_id": f"{self.id_prefix}{mid}",
             "title": title,
@@ -526,6 +526,6 @@ class WeiboAdapter(PlatformAdapter):
         【功能】供外部查看/文档渲染微博字段映射关系。
         【参数】无 【返回】dict（来自 base.FIELD_MAPPING_TABLE["weibo"]）
         """
-        from .base import FIELD_MAPPING_TABLE
+        from .base import FIELD_MAPPING_TABLE  # 【调用包】取微博字段映射表(文档用)
 
-        return FIELD_MAPPING_TABLE["weibo"]
+        return FIELD_MAPPING_TABLE["weibo"]  # 【调用函数】返回"统一字段←微博原始字段"映射

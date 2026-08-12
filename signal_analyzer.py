@@ -49,25 +49,25 @@ cross-platform divergence, author profiling, event extraction, simulated trading
     可脱离 Web 单独 import 与测试。
 """
 
-import json
-import math
-import os
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from pathlib import Path
+import json  # 【调用包】JSON 数据的读写与解析(情绪/趋势/价格文件均为 JSON)
+import math  # 【调用包】数值运算:标准差、开方、对数等指标计算
+import os  # 【调用包】环境变量/用户目录扩展(expanduser 定位外部数据目录)
+from collections import defaultdict  # 【调用包】按品种汇总统计时"键不存在则给默认值"
+from dataclasses import dataclass  # 【调用包】定义 TradeRecord 等定长数据类
+from datetime import datetime, timedelta  # 【调用包】日期解析与回测窗口天数计算
+from pathlib import Path  # 【调用包】路径对象化操作与 glob 文件扫描
 
-from path_utils import resolve_think2_dir
+from path_utils import resolve_think2_dir  # 【调用包】跨模块:解析思路2 数据输出目录
 
-SENTIMENT_DIR = Path(os.path.expanduser("~/.tradingagents/external_data"))
-THINK2_TRENDS = resolve_think2_dir() / "output" / "trends"
+SENTIMENT_DIR = Path(os.path.expanduser("~/.tradingagents/external_data"))  # 【变量】情绪数据根目录(用户主目录下的外部数据)
+THINK2_TRENDS = resolve_think2_dir() / "output" / "trends"  # 【变量】趋势/价格数据目录(思路2 输出);resolve_think2_dir() 为跨模块路径解析
 
 # 数据文件名的中文简称与 VARIETY_METADATA 全称不一致的品种(code -> 文件名用名)。
 # 目前仅 HC:meta name「热轧卷板」,数据文件「热卷_price.json」/「热卷_sentiment.json」。
 # 为什么需要它:不同数据流水线(思路2 采集 vs VARIETY_METADATA 元数据)命名口径
 # 不一致,别名表把"品种代码"硬映射到"磁盘文件名用名",保证按代码也能读到文件。
 # _load_trends / _load_price 在"直接代码名"和"meta 中文全称"都失败后,会回退到这里。
-_DATA_FILE_NAME_ALIASES = {"HC": "热卷"}
+_DATA_FILE_NAME_ALIASES = {"HC": "热卷"}  # 【变量】品种代码→磁盘文件名用名别名表(meta 全称与文件名简称不一致时回退)
 
 # ── Helpers ────────────────────────────────────────────────────────
 
@@ -83,11 +83,11 @@ def _load_sentiment(variety: str) -> dict | None:
     别名/通配符 fallback——与 _load_trends 不同,这里只认"代码_文件名"。
     情绪文件是各策略判断"市场看多/看空"的主要数据源。
     """
-    path = SENTIMENT_DIR / f"{variety}_sentiment.json"
+    path = SENTIMENT_DIR / f"{variety}_sentiment.json"  # 【变量】情绪文件路径:固定"代码_sentiment.json"
     if not path.exists():
         return None
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        return json.load(f)  # 【调用函数】反序列化磁盘 JSON(情绪数据的主要来源)
 
 
 def _load_trends(variety: str) -> dict | None:
@@ -105,39 +105,39 @@ def _load_trends(variety: str) -> dict | None:
     采集简称"三种名字存文件,多级回退保证按代码尽量找到数据。
     """
     # Try direct code match first
-    path = THINK2_TRENDS / f"{variety}_sentiment.json"
+    path = THINK2_TRENDS / f"{variety}_sentiment.json"  # 【变量】候选路径①:直接代码名
     if path.exists():
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f)  # 【调用函数】反序列化命中文件,第①级即返回
 
     # Try looking up Chinese name from VARIETY_METADATA
     try:
-        from tradingagents.dataflows.commodity_futures import VARIETY_METADATA
+        from tradingagents.dataflows.commodity_futures import VARIETY_METADATA  # 【调用包】延迟导入品种元数据(取 meta 中文全称)
 
-        meta = VARIETY_METADATA.get(variety, {})
+        meta = VARIETY_METADATA.get(variety, {})  # 【变量】该品种的元数据 dict(含 name 中文全称)
         chinese_name = meta.get("name", "")
         if chinese_name:
-            path = THINK2_TRENDS / f"{chinese_name}_sentiment.json"
+            path = THINK2_TRENDS / f"{chinese_name}_sentiment.json"  # 【变量】候选路径②:meta 中文全称
             if path.exists():
                 with open(path, encoding="utf-8") as f:
-                    return json.load(f)
+                    return json.load(f)  # 【调用函数】第②级命中返回
     except ImportError:
         # 元数据包不可用时静默跳过第②级,继续走别名/glob
         pass
 
     # Try explicit alias (meta 全称与文件名简称不一致,如 HC「热轧卷板」/「热卷」)
-    alias = _DATA_FILE_NAME_ALIASES.get(variety)
+    alias = _DATA_FILE_NAME_ALIASES.get(variety)  # 【变量】别名表查到的文件名用名
     if alias:
-        path = THINK2_TRENDS / f"{alias}_sentiment.json"
+        path = THINK2_TRENDS / f"{alias}_sentiment.json"  # 【变量】候选路径③:显式别名
         if path.exists():
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
+                return json.load(f)  # 【调用函数】第③级命中返回
 
     # Try glob search
     for f in THINK2_TRENDS.glob("*_sentiment.json"):
         if variety in f.stem or f.stem.startswith(variety):
             with open(f, encoding="utf-8") as fp:
-                return json.load(fp)
+                return json.load(fp)  # 【调用函数】第④级 glob 通配命中返回
 
     return None
 
@@ -152,39 +152,39 @@ def _load_price(variety: str) -> dict | None:
     "_sentiment" 换成 "_price",仍是 4 级:①代码名 → ②meta 中文全称 →
     ③显式别名 → ④glob 扫描。三级(实际四级)兜底保证按代码尽量拿到行情。
     """
-    path = THINK2_TRENDS / f"{variety}_price.json"
+    path = THINK2_TRENDS / f"{variety}_price.json"  # 【变量】候选路径①:直接代码名
     if path.exists():
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f)  # 【调用函数】反序列化命中文件,第①级即返回
 
     # Try Chinese name
     try:
-        from tradingagents.dataflows.commodity_futures import VARIETY_METADATA
+        from tradingagents.dataflows.commodity_futures import VARIETY_METADATA  # 【调用包】延迟导入品种元数据(取 meta 中文全称)
 
-        meta = VARIETY_METADATA.get(variety, {})
+        meta = VARIETY_METADATA.get(variety, {})  # 【变量】该品种的元数据 dict(含 name 中文全称)
         chinese_name = meta.get("name", "")
         if chinese_name:
-            path = THINK2_TRENDS / f"{chinese_name}_price.json"
+            path = THINK2_TRENDS / f"{chinese_name}_price.json"  # 【变量】候选路径②:meta 中文全称
             if path.exists():
                 with open(path, encoding="utf-8") as f:
-                    return json.load(f)
+                    return json.load(f)  # 【调用函数】第②级命中返回
     except ImportError:
         # 元数据包不可用时静默跳过,继续走别名/glob
         pass
 
     # Try explicit alias (meta 全称与文件名简称不一致,如 HC「热轧卷板」/「热卷」)
-    alias = _DATA_FILE_NAME_ALIASES.get(variety)
+    alias = _DATA_FILE_NAME_ALIASES.get(variety)  # 【变量】别名表查到的文件名用名
     if alias:
-        path = THINK2_TRENDS / f"{alias}_price.json"
+        path = THINK2_TRENDS / f"{alias}_price.json"  # 【变量】候选路径③:显式别名
         if path.exists():
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
+                return json.load(f)  # 【调用函数】第③级命中返回
 
     # Try glob
     for f in THINK2_TRENDS.glob("*_price.json"):
         if variety in f.stem or f.stem.startswith(variety):
             with open(f, encoding="utf-8") as fp:
-                return json.load(fp)
+                return json.load(fp)  # 【调用函数】第④级 glob 通配命中返回
 
     return None
 
@@ -201,11 +201,11 @@ def pearson_r(x, y):
     n = len(x)
     if n < 3:
         return 0.0
-    mx = sum(x) / n
-    my = sum(y) / n
-    cov = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y, strict=True))
-    sx = math.sqrt(sum((xi - mx) ** 2 for xi in x))
-    sy = math.sqrt(sum((yi - my) ** 2 for yi in y))
+    mx = sum(x) / n  # 【变量】x 的均值(中心化基准)
+    my = sum(y) / n  # 【变量】y 的均值(中心化基准)
+    cov = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y, strict=True))  # 【变量】协方差分子(两序列中心化后的乘积和)
+    sx = math.sqrt(sum((xi - mx) ** 2 for xi in x))  # 【变量】x 中心化平方和开方(= 未归一化标准差)
+    sy = math.sqrt(sum((yi - my) ** 2 for yi in y))  # 【变量】y 中心化平方和开方(= 未归一化标准差)
     if sx == 0 or sy == 0:
         return 0.0
     return cov / (sx * sy)
@@ -229,25 +229,25 @@ def detect_anomalies(variety: str, threshold_std: float = 2.0) -> list[dict]:
     z<0 记 bearish(spike_down)。注意窗口用"前 7 天"(不含当日),避免把当日混进
     自己的基准里。当 7 日波动为 0(异常平坦市)时跳过该日,避免除以 0。
     """
-    sent_data = _load_sentiment(variety)
+    sent_data = _load_sentiment(variety)  # 【调用函数】读取情绪 JSON(带 fallback 的文件读取)
     if not sent_data:
         return []
 
-    series = sent_data.get("data", {}).get("daily_series", [])
+    series = sent_data.get("data", {}).get("daily_series", [])  # 【变量】每日情绪序列(情绪数据主体)
     if len(series) < 14:
         return []
 
-    scores = [s.get("avg_score", 0) for s in series]
-    dates = [s["date"] for s in series]
-    anomalies = []
+    scores = [s.get("avg_score", 0) for s in series]  # 【变量】每日情绪评分序列(与 series 对齐)
+    dates = [s["date"] for s in series]  # 【变量】每日日期序列(与 scores 对齐)
+    anomalies = []  # 【变量】异常日结果列表(命中 |z|>threshold 的日子)
 
     for i in range(7, len(scores)):
-        window = scores[i - 7 : i]
-        ma = sum(window) / 7
-        std = math.sqrt(sum((x - ma) ** 2 for x in window) / 7)
+        window = scores[i - 7 : i]  # 【变量】前 7 日窗口(不含当日,作基准)
+        ma = sum(window) / 7  # 【变量】窗口均值
+        std = math.sqrt(sum((x - ma) ** 2 for x in window) / 7)  # 【变量】窗口总体标准差
         if std == 0:
             continue
-        z = (scores[i] - ma) / std
+        z = (scores[i] - ma) / std  # 【变量】z-score:当日相对窗口基准的偏离程度(以 std 为单位)
         if abs(z) > threshold_std:
             anomalies.append(
                 {
@@ -288,12 +288,12 @@ def compute_divergence(variety: str) -> dict | None:
         return None
 
     # Bull/bear ratios are at social_sentiment level, NOT in daily series entries
-    ss = sent_data.get("data", {}).get("social_sentiment", {})
-    bull = ss.get("bullish_ratio", 0) or 0
-    bear = ss.get("bearish_ratio", 0) or 0
-    neutral = 1 - bull - bear if (bull + bear) <= 1 else 0
+    ss = sent_data.get("data", {}).get("social_sentiment", {})  # 【变量】社交情绪聚合块(bullish/bearish_ratio 所在)
+    bull = ss.get("bullish_ratio", 0) or 0  # 【变量】看多占比 ∈ [0,1]
+    bear = ss.get("bearish_ratio", 0) or 0  # 【变量】看空占比 ∈ [0,1]
+    neutral = 1 - bull - bear if (bull + bear) <= 1 else 0  # 【变量】中性占比(占比和超 1 时取 0 防御)
 
-    divergence = round(1 - abs(bull - bear), 3)
+    divergence = round(1 - abs(bull - bear), 3)  # 【变量】分歧度 = 1-|看多-看空|;越接近 1 越一致、越接近 0 越分裂
     latest_date = sent_data.get("data", {}).get("daily_series", [{}])[-1].get("date", "")
 
     # Trend: compare current vs 7 days ago using daily series avg_score
@@ -301,8 +301,8 @@ def compute_divergence(variety: str) -> dict | None:
     if len(series) >= 7:
         recent = [s.get("avg_score", 0) for s in series[-7:]]
         prev_week = [s.get("avg_score", 0) for s in series[-14:-7]] if len(series) >= 14 else recent
-        recent_avg = sum(recent) / len(recent) if recent else 0
-        prev_avg = sum(prev_week) / len(prev_week) if prev_week else 0
+        recent_avg = sum(recent) / len(recent) if recent else 0  # 【变量】近 7 天均分
+        prev_avg = sum(prev_week) / len(prev_week) if prev_week else 0  # 【变量】前 7 天均分
         if abs(recent_avg - prev_avg) > 0.1:
             trend = "improving" if abs(recent_avg) < abs(prev_avg) else "diverging"
         else:
@@ -366,13 +366,13 @@ def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
       - 最后取"最大绝对相关"更大的一方为结论(sentiment_leads 或 price_leads)。
       注意这是简化 Granger:只是同步/滞后相关,不控制其他变量,【待确认】不保证因果。
     """
-    sent_data = _load_sentiment(variety)
-    price_data = _load_price(variety)
+    sent_data = _load_sentiment(variety)  # 【调用函数】读取情绪 JSON
+    price_data = _load_price(variety)  # 【调用函数】读取价格 JSON(带 fallback)
     if not sent_data or not price_data:
         return None
 
-    series = sent_data.get("data", {}).get("daily_series", [])
-    prices_raw = price_data.get("prices", [])
+    series = sent_data.get("data", {}).get("daily_series", [])  # 【变量】每日情绪序列
+    prices_raw = price_data.get("prices", [])  # 【变量】原始 OHLCV 列表(含 close/date)
 
     if len(series) < 20 or len(prices_raw) < 20:
         return None
@@ -380,10 +380,10 @@ def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
     # Build aligned arrays
     # 先把价格按日期建成查表,再遍历情绪序列,只保留"情绪与价格都有的交易日"——
     # 两列日期对齐后才能算相关,缺失日一律跳过。
-    price_map = {str(p["date"])[:10]: float(p["close"]) for p in prices_raw}
-    dates = []
-    scores = []
-    price_changes = []
+    price_map = {str(p["date"])[:10]: float(p["close"]) for p in prices_raw}  # 【变量】日期→收盘价查表(对齐与取价用)
+    dates = []  # 【变量】对齐后的交易日序列(情绪与价格交集)
+    scores = []  # 【变量】与 dates 对齐的情绪评分
+    price_changes = []  # 【变量】与 dates 对齐的日收益率序列(相邻收盘价变化率)
 
     for s in series:
         d = s["date"]
@@ -405,8 +405,8 @@ def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
     price_leads = {}  # price_change(t) → sentiment(t+lag)
 
     for lag in range(1, max_lag + 1):
-        s_lead = []
-        p_lead = []
+        s_lead = []  # 【变量】本 lag 下的样本对(情绪t, 价格变化t+lag)
+        p_lead = []  # 【变量】本 lag 下的样本对(价格变化t, 情绪t+lag)
         for i in range(len(dates) - lag):
             # Sentiment leading price
             s_lead.append((scores[i], price_changes[i + lag]))
@@ -422,8 +422,8 @@ def analyze_lead_lag(variety: str, max_lag: int = 5) -> dict | None:
             )
 
     # Determine which leads
-    max_sent = max(sent_leads.values(), key=abs) if sent_leads else 0
-    max_price = max(price_leads.values(), key=abs) if price_leads else 0
+    max_sent = max(sent_leads.values(), key=abs) if sent_leads else 0  # 【变量】情绪领先类各 lag 相关绝对值的最大值
+    max_price = max(price_leads.values(), key=abs) if price_leads else 0  # 【变量】价格领先类各 lag 相关绝对值的最大值
 
     conclusion = "sentiment_leads" if abs(max_sent) > abs(max_price) else "price_leads"
 
@@ -461,16 +461,16 @@ def analyze_cross_platform(variety: str) -> dict | None:
     if not trends:
         return None
 
-    series = trends.get("series", [])
+    series = trends.get("series", [])  # 【变量】趋势文件里的每日序列
     if not series:
         return None
 
-    latest = series[-1]
-    platform_scores = latest.get("platform_scores", {})
+    latest = series[-1]  # 【变量】最新一天记录(跨平台对比只看最新)
+    platform_scores = latest.get("platform_scores", {})  # 【变量】最新一天各平台的评分 dict
     if not platform_scores:
         return None
 
-    platforms = {}
+    platforms = {}  # 【变量】整理后的平台指标 dict(统一字段,供展示/比较)
     for plat, pdata in platform_scores.items():
         platforms[plat] = {
             "avg_score": round(pdata.get("avg_score", 0), 3),
@@ -481,12 +481,12 @@ def analyze_cross_platform(variety: str) -> dict | None:
         }
 
     # Check for cross-platform divergence
-    scores_list = [p["avg_score"] for p in platforms.values()]
+    scores_list = [p["avg_score"] for p in platforms.values()]  # 【变量】各平台 avg_score 列表(算极差用)
     if len(scores_list) >= 2:
         max_s = max(scores_list)
         min_s = min(scores_list)
-        spread = max_s - min_s
-        conflict = "high" if spread > 0.5 else "moderate" if spread > 0.3 else "low"
+        spread = max_s - min_s  # 【变量】平台间极差 = max-min,分歧的量化度量
+        conflict = "high" if spread > 0.5 else "moderate" if spread > 0.3 else "low"  # 【变量】冲突等级:high>0.5 / moderate>0.3 / low
     else:
         spread = 0
         conflict = "insufficient"
@@ -516,8 +516,8 @@ def _interpret_cross_platform(platforms: dict, conflict: str) -> str:
     if conflict == "low":
         return "各平台情绪一致，信号可信度较高"
 
-    weibo = platforms.get("weibo", {}).get("avg_score", 0)
-    zhihu = platforms.get("zhihu", {}).get("avg_score", 0)
+    weibo = platforms.get("weibo", {}).get("avg_score", 0)  # 【变量】微博(散户)情绪得分,默认 0
+    zhihu = platforms.get("zhihu", {}).get("avg_score", 0)  # 【变量】知乎(专业)情绪得分,默认 0
 
     if weibo > 0.1 and zhihu < -0.1:
         return "散户看多但专业社区看空——警惕情绪泡沫"
@@ -547,31 +547,31 @@ def get_top_authors(limit: int = 20) -> list[dict]:
       - 无粉丝但有发帖:退化为 sqrt(发帖数)*0.5。
       排序用 -influence(降序),最后截断到 limit 条。
     """
-    index_path = THINK2_TRENDS / "_author_index.json"
+    index_path = THINK2_TRENDS / "_author_index.json"  # 【变量】作者索引文件路径(THINK2_TRENDS 下固定名)
     if not index_path.exists():
         return []
 
     with open(index_path, encoding="utf-8") as f:
-        authors = json.load(f)
+        authors = json.load(f)  # 【调用函数】反序列化作者索引(uid→作者信息)
 
-    result = []
+    result = []  # 【变量】整理后的作者排行列表
     for uid, data in authors.items():
         if not isinstance(data, dict):
             continue
         # Actual fields: name, posts, fans, avg_engagement
         name = data.get("name", str(uid))
-        posts = data.get("posts", 0) or 0
-        fans = data.get("fans", 0) or 0
-        engagement = data.get("avg_engagement", 0) or 0
+        posts = data.get("posts", 0) or 0  # 【变量】发帖数(0 兜底)
+        fans = data.get("fans", 0) or 0  # 【变量】粉丝数(0 兜底)
+        engagement = data.get("avg_engagement", 0) or 0  # 【变量】平均互动量(0 兜底)
 
         # Influence: fans is primary (log10), posts sqrt-dampened, engagement as modifier
         if fans > 0:
-            fans_score = math.log10(fans + 1)  # log10: 1K→3, 1万→4, 10万→5, 100万→6
-            posts_score = math.sqrt(max(posts, 1))
-            eng_score = math.log(engagement + 1) if engagement > 0 else 0
-            influence = round(fans_score * 0.70 + posts_score * 0.10 + eng_score * 0.20, 1)
+            fans_score = math.log10(fans + 1)  # 【变量】粉丝量级得分:log10 使 1K→3、1万→4、10万→5、100万→6
+            posts_score = math.sqrt(max(posts, 1))  # 【变量】发帖数开方压平(抑制刷帖)
+            eng_score = math.log(engagement + 1) if engagement > 0 else 0  # 【变量】互动量对数得分
+            influence = round(fans_score * 0.70 + posts_score * 0.10 + eng_score * 0.20, 1)  # 【变量】综合影响力(粉丝为主/发帖/互动加权)
         elif posts > 0:
-            influence = round(math.sqrt(posts) * 0.5, 1)
+            influence = round(math.sqrt(posts) * 0.5, 1)  # 【变量】无粉丝时退化为发帖数开方×0.5
         else:
             influence = 0.0
 
@@ -621,15 +621,15 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
     或列表,统一解析成名字;④按标题前 50 字去重(近似去重),截断到 50 条。
     """
     # Read directly from JSONL batch files (database may not be populated)
-    import glob as _glob
+    import glob as _glob  # 【调用包】本地批量 JSONL 文件扫描(函数内局部导入,避免污染模块命名空间)
 
-    think2_output = resolve_think2_dir() / "output"
+    think2_output = resolve_think2_dir() / "output"  # 【调用函数】跨模块解析思路2 输出目录
     if not think2_output.exists():
         return []
 
-    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    posts = []
-    seen = set()
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")  # 【变量】时间下界:只保留最近 days 天的帖子
+    posts = []  # 【变量】按条件筛出的帖子原始 dict 列表(上限 500)
+    seen = set()  # 【变量】已见过的 note_id 集合(按帖子去重)
     for fpath in sorted(_glob.glob(str(think2_output / "batch_*.jsonl"))):
         try:
             with open(fpath, encoding="utf-8") as f:
@@ -654,10 +654,10 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
         if len(posts) >= 500:
             break
 
-    events = []
+    events = []  # 【变量】事件结果列表
     for post in posts:
-        title = (post.get("title", "") or "") + " " + (post.get("content", "") or "")
-        matched_categories = []
+        title = (post.get("title", "") or "") + " " + (post.get("content", "") or "")  # 【变量】标题+正文拼接(关键词匹配的文本)
+        matched_categories = []  # 【变量】命中的事件类别列表(可命中多个)
         for category, keywords in EVENT_KEYWORDS.items():
             for kw in keywords:
                 if kw in title:
@@ -695,15 +695,15 @@ def extract_events(variety: str = "", days: int = 7) -> list[dict]:
             )
 
     # Deduplicate similar events
-    seen_titles = set()
-    unique_events = []
+    seen_titles = set()  # 【变量】已见标题集合(按标题前 50 字近似去重)
+    unique_events = []  # 【变量】去重后的事件列表
     for e in events:
-        key = e["title"][:50]
+        key = e["title"][:50]  # 【变量】近似去重键 = 标题前 50 字
         if key not in seen_titles:
             seen_titles.add(key)
             unique_events.append(e)
 
-    return unique_events[:50]
+    return unique_events[:50]  # 最多返回 50 条
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -744,17 +744,17 @@ def run_contrarian_sentiment(
       两条路径共用同一份价格/情绪数据与同一套持仓状态机(pos: 0/1/-1),
       因此输出天然可比,用于验证"逆向"相对"顺向"是否真的更优。
     """
-    all_contrarian = []
-    all_momentum = []  # Comparison: follow-the-trend (same signals, reversed logic)
+    all_contrarian = []  # 【变量】逆向路径的全部交易记录(跌+看多做多 / 涨+看空做空)
+    all_momentum = []  # 【变量】顺向(共识)对照组交易记录;Comparison: follow-the-trend (same signals, reversed logic)
 
-    vlist = [variety] if variety else _get_all_varieties_with_data()
+    vlist = [variety] if variety else _get_all_varieties_with_data()  # 【变量】待遍历的品种列表(指定单个或全部有数据品种)
 
     for var in vlist:
-        price_data = _load_price(var)
-        sent_data = _load_trends(var) or _load_sentiment(var)
+        price_data = _load_price(var)  # 【调用函数】读取价格 JSON(带 fallback)
+        sent_data = _load_trends(var) or _load_sentiment(var)  # 【调用函数】读取情绪:优先趋势文件,缺失时退回情绪文件
         if not price_data or not sent_data:
             continue
-        px = price_data.get("prices", [])
+        px = price_data.get("prices", [])  # 【变量】该品种价格列表(OHLCV dict 序列)
         if len(px) < trend_window + horizon + 10:
             continue
 
@@ -762,42 +762,42 @@ def run_contrarian_sentiment(
         # 情绪日期与价格日期不一定每天对齐,这里把情绪"向前填充"(forward-fill):
         # 对每个价格日期 d,取"情绪日期 <= d 的最新一条"作为该日的情绪值。这模拟了
         # 当日开盘前能看到的"最新已知情绪",而不是未来数据——避免未来函数。
-        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))
-        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}
-        sd_sorted = sorted(raw_sent.keys())
-        sent_map = {}
-        last_s = 0
-        si = 0
+        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))  # 【变量】情绪每日序列(兼容两种数据结构)
+        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}  # 【变量】日期→情绪评分原始映射
+        sd_sorted = sorted(raw_sent.keys())  # 【变量】情绪日期升序列表(前向填充的扫描基准)
+        sent_map = {}  # 【变量】日期→前向填充情绪评分(当日能看到的最新情绪,防未来函数)
+        last_s = 0  # 【变量】最近一次有效情绪评分(双指针的"已推进值")
+        si = 0  # 【变量】情绪日期游标(单调递增,只前进不后退)
         for d in sorted(str(x["date"])[:10] for x in px):
             while si < len(sd_sorted) and sd_sorted[si] <= d:
                 last_s = raw_sent[sd_sorted[si]]
                 si += 1
             sent_map[d] = last_s
 
-        closes = [float(x["close"]) for x in px]
-        dates = [str(x["date"])[:10] for x in px]
-        n = len(closes)
+        closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列(浮点)
+        dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列(统一取 YYYY-MM-DD 前 10 位)
+        n = len(closes)  # 【变量】K 线根数
 
         # Positions: 0=flat, 1=long, -1=short. Tracks last entry for both strategies
         # 0=空仓, 1=持多, -1=持空。pos_c 是逆向路径,pos_m 是顺向(共识)路径。
-        pos_c = 0
-        entry_px_c = 0
-        entry_d_c = ""  # contrarian
-        pos_m = 0
-        entry_px_m = 0
-        entry_d_m = ""  # momentum
+        pos_c = 0  # 【变量】逆向路径仓位状态:0 空仓 / 1 持多 / -1 持空
+        entry_px_c = 0  # 【变量】逆向路径入场价(盈亏计算基准)
+        entry_d_c = ""  # 【变量】逆向路径入场日期;contrarian
+        pos_m = 0  # 【变量】顺向(共识)路径仓位状态:0 空仓 / 1 持多 / -1 持空
+        entry_px_m = 0  # 【变量】顺向路径入场价
+        entry_d_m = ""  # 【变量】顺向路径入场日期;momentum
 
         for i in range(trend_window, n - horizon):
             d = dates[i]
             if d < start_date or (end_date and d > end_date):
                 continue
-            ss = sent_map.get(d, 0)
-            px_now = closes[i]
+            ss = sent_map.get(d, 0)  # 【变量】当日前向填充情绪评分(默认 0)
+            px_now = closes[i]  # 【变量】当日收盘价(入场参考价)
             trend = (
                 (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
                 if closes[i - trend_window]
                 else 0
-            )
+            )  # 【变量】trend_window 日价格涨跌幅(趋势方向与强度,正=涨/负=跌)
 
             # --- Contrarian Entry ---
             # 趋势阈值 ±1%(0.01)、情绪阈值 ±0.1:数值太小当噪音、太大错过信号。
@@ -819,11 +819,11 @@ def run_contrarian_sentiment(
             # Process contrarian
             # 用 dates.index(entry_d_c) 反查入场下标来判断是否已持仓 horizon 天。
             if pos_c != 0 and entry_d_c and i >= dates.index(entry_d_c) + horizon:
-                exit_px = closes[exit_idx]
+                exit_px = closes[exit_idx]  # 【变量】离场价(固定周期到期后的收盘价)
                 if pos_c == 1:
-                    pnl = (exit_px - entry_px_c) / entry_px_c * 100
+                    pnl = (exit_px - entry_px_c) / entry_px_c * 100  # 【变量】单笔盈亏%(多单正算)
                 else:
-                    pnl = (entry_px_c - exit_px) / entry_px_c * 100
+                    pnl = (entry_px_c - exit_px) / entry_px_c * 100  # 【变量】单笔盈亏%(空单反算)
                 all_contrarian.append(
                     {
                         "variety": var,
@@ -885,18 +885,18 @@ def run_contrarian_sentiment(
         return {"total_trades": 0, "message": "No signals"}
 
     # Build curves
-    all_dates = sorted({t["entry"] for t in all_contrarian + all_momentum})
-    c_map = {}
-    m_map = {}
+    all_dates = sorted({t["entry"] for t in all_contrarian + all_momentum})  # 【变量】全部入场日(升序,曲线 x 轴)
+    c_map = {}  # 【变量】逆向路径:按入场日聚合的当日盈亏(同日多笔累加)
+    m_map = {}  # 【变量】顺向路径:按入场日聚合的当日盈亏
     for t in all_contrarian:
         c_map[t["entry"]] = c_map.get(t["entry"], 0) + t["pnl"]
     for t in all_momentum:
         m_map[t["entry"]] = m_map.get(t["entry"], 0) + t["pnl"]
 
-    c_curve = []
-    m_curve = []
-    cum_c = 0
-    cum_m = 0
+    c_curve = []  # 【变量】逆向路径逐日累计盈亏曲线
+    m_curve = []  # 【变量】顺向路径逐日累计盈亏曲线
+    cum_c = 0  # 【变量】逆向路径累计盈亏游标
+    cum_m = 0  # 【变量】顺向路径累计盈亏游标
     for d in all_dates:
         cum_c += c_map.get(d, 0)
         cum_m += m_map.get(d, 0)
@@ -910,11 +910,11 @@ def run_contrarian_sentiment(
     # Compute advanced metrics per sub-strategy
     c_pnls = [t["pnl"] for t in all_contrarian]
     m_pnls = [t["pnl"] for t in all_momentum]
-    all_entry_dates = sorted({t["entry"] for t in all_contrarian + all_momentum})
+    all_entry_dates = sorted({t["entry"] for t in all_contrarian + all_momentum})  # 【变量】全部入场日(去重升序)
     td = (
         max(
             (
-                datetime.strptime(all_entry_dates[-1], "%Y-%m-%d")
+                datetime.strptime(all_entry_dates[-1], "%Y-%m-%d")  # 【调用函数】解析入场日字符串→datetime
                 - datetime.strptime(all_entry_dates[0], "%Y-%m-%d")
             ).days
             * 252
@@ -923,9 +923,9 @@ def run_contrarian_sentiment(
         )
         if len(all_entry_dates) >= 2
         else 252
-    )
-    adv_c = compute_advanced_metrics(trade_pnls=c_pnls, total_trading_days=td) if c_pnls else {}
-    adv_m = compute_advanced_metrics(trade_pnls=m_pnls, total_trading_days=td) if m_pnls else {}
+    )  # 【变量】估算交易日数:自然日×252/365 折算,至少 20 天(年化指标分母)
+    adv_c = compute_advanced_metrics(trade_pnls=c_pnls, total_trading_days=td) if c_pnls else {}  # 【调用函数】逆向路径汇总指标(盈亏序列→夏普/回撤等)
+    adv_m = compute_advanced_metrics(trade_pnls=m_pnls, total_trading_days=td) if m_pnls else {}  # 【调用函数】顺向路径汇总指标
 
     return {
         "strategy": "contrarian_sentiment",
@@ -985,56 +985,56 @@ def run_adaptive_sentiment(
       5. 其余 → 默认顺势。
       与 contrarian 一样,同时维护 adaptive 与纯 momentum 基线两条路径作对比。
     """
-    all_adaptive = []
-    all_momentum = []  # baseline
-    decisions = {"contrarian": 0, "momentum": 0}
+    all_adaptive = []  # 【变量】自适应路径全部交易记录
+    all_momentum = []  # 【变量】纯动量基线交易记录;baseline
+    decisions = {"contrarian": 0, "momentum": 0}  # 【变量】各决策类别触发次数统计(回传展示用)
 
-    vlist = [variety] if variety else _get_all_varieties_with_data()
+    vlist = [variety] if variety else _get_all_varieties_with_data()  # 【变量】待遍历品种列表
 
     for var in vlist:
-        price_data = _load_price(var)
-        sent_data = _load_trends(var) or _load_sentiment(var)
+        price_data = _load_price(var)  # 【调用函数】读取价格 JSON(带 fallback)
+        sent_data = _load_trends(var) or _load_sentiment(var)  # 【调用函数】读取情绪:优先趋势文件,缺失退回情绪文件
         if not price_data or not sent_data:
             continue
-        px = price_data.get("prices", [])
+        px = price_data.get("prices", [])  # 【变量】该品种价格列表
         if len(px) < trend_window + horizon + 10:
             continue
 
-        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))
-        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}
-        sd_sorted = sorted(raw_sent.keys())
-        sent_map = {}
-        last_s = 0
-        si = 0
+        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))  # 【变量】情绪每日序列(兼容两种结构)
+        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}  # 【变量】日期→情绪评分原始映射
+        sd_sorted = sorted(raw_sent.keys())  # 【变量】情绪日期升序列表
+        sent_map = {}  # 【变量】日期→前向填充情绪评分
+        last_s = 0  # 【变量】最近一次有效情绪评分
+        si = 0  # 【变量】情绪日期游标
         for d in sorted(str(x["date"])[:10] for x in px):
             while si < len(sd_sorted) and sd_sorted[si] <= d:
                 last_s = raw_sent[sd_sorted[si]]
                 si += 1
             sent_map[d] = last_s
 
-        closes = [float(x["close"]) for x in px]
-        dates = [str(x["date"])[:10] for x in px]
-        n = len(closes)
+        closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列
+        dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列(YYYY-MM-DD)
+        n = len(closes)  # 【变量】K 线根数
 
-        pos_a = 0
-        entry_px_a = 0
-        entry_d_a = ""  # adaptive
-        pos_m = 0
-        entry_px_m = 0
-        entry_d_m = ""  # momentum baseline
+        pos_a = 0  # 【变量】自适应路径仓位:0 空仓 / 1 持多 / -1 持空
+        entry_px_a = 0  # 【变量】自适应路径入场价
+        entry_d_a = ""  # 【变量】自适应路径入场日期;adaptive
+        pos_m = 0  # 【变量】动量基线路径仓位
+        entry_px_m = 0  # 【变量】动量基线路径入场价
+        entry_d_m = ""  # 【变量】动量基线路径入场日期;momentum baseline
 
         for i in range(trend_window, n - horizon):
             d = dates[i]
             if d < start_date or (end_date and d > end_date):
                 continue
-            ss = sent_map.get(d, 0)
-            px_now = closes[i]
+            ss = sent_map.get(d, 0)  # 【变量】当日前向填充情绪评分
+            px_now = closes[i]  # 【变量】当日收盘价(入场参考价)
             trend = (
                 (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
                 if closes[i - trend_window]
                 else 0
-            )
-            trend_pct = abs(trend) * 100
+            )  # 【变量】trend_window 日涨跌幅
+            trend_pct = abs(trend) * 100  # 【变量】趋势强度(百分比,决策树分档用)
 
             # Adaptive: choose contrarian or momentum based on conditions
             # Distinguish two types of divergence (empirically validated):
@@ -1161,18 +1161,18 @@ def run_adaptive_sentiment(
     if not all_adaptive and not all_momentum:
         return {"total_trades": 0, "message": "No signals"}
 
-    all_dates = sorted({t["entry"] for t in all_adaptive + all_momentum})
-    a_map = {}
-    m_map = {}
+    all_dates = sorted({t["entry"] for t in all_adaptive + all_momentum})  # 【变量】全部入场日(升序,曲线 x 轴)
+    a_map = {}  # 【变量】自适应路径:按入场日聚合的当日盈亏
+    m_map = {}  # 【变量】动量基线路径:按入场日聚合的当日盈亏
     for t in all_adaptive:
         a_map[t["entry"]] = a_map.get(t["entry"], 0) + t["pnl"]
     for t in all_momentum:
         m_map[t["entry"]] = m_map.get(t["entry"], 0) + t["pnl"]
 
-    a_curve = []
-    m_curve = []
-    cum_a = 0
-    cum_m = 0
+    a_curve = []  # 【变量】自适应路径逐日累计盈亏曲线
+    m_curve = []  # 【变量】动量基线路径逐日累计盈亏曲线
+    cum_a = 0  # 【变量】自适应路径累计盈亏游标
+    cum_m = 0  # 【变量】动量基线路径累计盈亏游标
     for d in all_dates:
         cum_a += a_map.get(d, 0)
         cum_m += m_map.get(d, 0)
@@ -1184,13 +1184,13 @@ def run_adaptive_sentiment(
         return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
 
     # Compute advanced metrics per sub-strategy
-    a_pnls = [t["pnl"] for t in all_adaptive]
-    m_pnls = [t["pnl"] for t in all_momentum]
-    all_entry_dates2 = sorted({t["entry"] for t in all_adaptive + all_momentum})
+    a_pnls = [t["pnl"] for t in all_adaptive]  # 【变量】自适应路径每笔盈亏列表
+    m_pnls = [t["pnl"] for t in all_momentum]  # 【变量】动量基线路径每笔盈亏列表
+    all_entry_dates2 = sorted({t["entry"] for t in all_adaptive + all_momentum})  # 【变量】全部入场日(去重升序)
     td2 = (
         max(
             (
-                datetime.strptime(all_entry_dates2[-1], "%Y-%m-%d")
+                datetime.strptime(all_entry_dates2[-1], "%Y-%m-%d")  # 【调用函数】解析入场日字符串→datetime
                 - datetime.strptime(all_entry_dates2[0], "%Y-%m-%d")
             ).days
             * 252
@@ -1199,9 +1199,9 @@ def run_adaptive_sentiment(
         )
         if len(all_entry_dates2) >= 2
         else 252
-    )
-    adv_a = compute_advanced_metrics(trade_pnls=a_pnls, total_trading_days=td2) if a_pnls else {}
-    adv_m2 = compute_advanced_metrics(trade_pnls=m_pnls, total_trading_days=td2) if m_pnls else {}
+    )  # 【变量】估算交易日数(年化指标分母,至少 20 天)
+    adv_a = compute_advanced_metrics(trade_pnls=a_pnls, total_trading_days=td2) if a_pnls else {}  # 【调用函数】自适应路径汇总指标
+    adv_m2 = compute_advanced_metrics(trade_pnls=m_pnls, total_trading_days=td2) if m_pnls else {}  # 【调用函数】动量基线路径汇总指标
 
     return {
         "strategy": "adaptive_sentiment",
@@ -1252,32 +1252,32 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01", end_da
       - 末尾强平:日期窗内最后一根 bar(last_i)仍持仓时,按该 bar 收盘价强平,避免
         把回测窗口之外的数据算进结果。
     """
-    all_trades = []
-    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
+    all_trades = []  # 【变量】全部交易记录
+    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]  # 【变量】待遍历品种列表(默认前 10 个)
     for var in vlist:
-        p = _load_price(var)
+        p = _load_price(var)  # 【调用函数】读取价格 JSON(带 fallback)
         if not p or len(p.get("prices", [])) < period + 5:
             continue
-        px = p["prices"]
-        closes = [float(x["close"]) for x in px]
-        highs = [float(x["high"]) for x in px]
-        lows = [float(x["low"]) for x in px]
-        dates = [str(x["date"])[:10] for x in px]
-        n = len(closes)
+        px = p["prices"]  # 【变量】价格列表
+        closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列
+        highs = [float(x["high"]) for x in px]  # 【变量】最高价序列(通道上沿计算用)
+        lows = [float(x["low"]) for x in px]  # 【变量】最低价序列(通道下沿计算用)
+        dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列
+        n = len(closes)  # 【变量】K 线根数
 
-        pos = 0
-        entry_px = 0
-        entry_d = ""
-        last_i = None  # 窗口内最后一根 bar;窗口末仍有持仓时按它强平
+        pos = 0  # 【变量】仓位:0 空仓 / 1 持多 / -1 持空
+        entry_px = 0  # 【变量】入场价
+        entry_d = ""  # 【变量】入场日期
+        last_i = None  # 【变量】窗口内最后一根 bar;窗口末仍有持仓时按它强平
         for i in range(period, n):
             d = dates[i]
             if d < start_date or (end_date and d > end_date):
                 continue
             last_i = i
-            hh = max(highs[i - period : i])
-            ll = min(lows[i - period : i])
-            cu = closes[i] > hh  # Breakout up
-            cd = closes[i] < ll  # Breakout down
+            hh = max(highs[i - period : i])  # 【变量】前 period 日最高(通道上沿,不含当日)
+            ll = min(lows[i - period : i])  # 【变量】前 period 日最低(通道下沿,不含当日)
+            cu = closes[i] > hh  # 【变量】向上突破标志;Breakout up
+            cd = closes[i] < ll  # 【变量】向下突破标志;Breakout down
 
             if pos == 1 and cd and entry_px:
                 pnl = (closes[i] - entry_px) / entry_px * 100
@@ -1343,23 +1343,23 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01", end_da
 
     if not all_trades:
         return {"total_trades": 0}
-    wins = [t for t in all_trades if t["outcome"] == "win"]
-    pnls = [t["pnl"] for t in all_trades]
-    avg = sum(pnls) / len(pnls)
+    wins = [t for t in all_trades if t["outcome"] == "win"]  # 【变量】盈利交易列表
+    pnls = [t["pnl"] for t in all_trades]  # 【变量】每笔盈亏列表
+    avg = sum(pnls) / len(pnls)  # 【变量】平均单笔盈亏
     (sum((x - avg) ** 2 for x in pnls) / len(pnls)) ** 0.5 if len(pnls) > 1 else 1
-    cum = 0
-    peak = 0
-    dd = 0
+    cum = 0  # 【变量】累计盈亏游标(最大回撤扫描)
+    peak = 0  # 【变量】历史累计峰值(用于算回撤深度)
+    dd = 0  # 【变量】最大回撤跟踪值
     for p in pnls:
         cum += p
         peak = max(peak, cum)
         dd = max(dd, peak - cum)
     # Estimate trading days
-    entry_dates = sorted({t["entry"] for t in all_trades})
+    entry_dates = sorted({t["entry"] for t in all_trades})  # 【变量】全部入场日(去重升序)
     td = (
         max(
             (
-                datetime.strptime(entry_dates[-1], "%Y-%m-%d")
+                datetime.strptime(entry_dates[-1], "%Y-%m-%d")  # 【调用函数】解析入场日字符串→datetime
                 - datetime.strptime(entry_dates[0], "%Y-%m-%d")
             ).days
             * 252
@@ -1368,8 +1368,8 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01", end_da
         )
         if len(entry_dates) >= 2
         else len(pnls) * period
-    )
-    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)
+    )  # 【变量】估算交易日数(自然日折算,至少 len(pnls)*period 天)
+    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)  # 【调用函数】汇总指标计算(盈亏序列→夏普/回撤等)
     return {
         "strategy": "donchian",
         "total_trades": len(all_trades),
@@ -1404,8 +1404,8 @@ def _sma(vals: list[float], period: int) -> list[float | None]:
     【关键逻辑】用"滑动和"实现 O(n):每步加新值、减掉 period 步之前的值,
     除以 period 即窗口均值,不必每次重算整个窗口。
     """
-    out: list[float | None] = [None] * len(vals)
-    run = 0.0
+    out: list[float | None] = [None] * len(vals)  # 【变量】输出序列(与 vals 等长,数据不足处为 None)
+    run = 0.0  # 【变量】滑动和:滚动窗口累加,每步加新减旧,避免整窗重算
     for i, v in enumerate(vals):
         run += v
         if i >= period:
@@ -1424,14 +1424,14 @@ def _ema(vals: list[float], period: int) -> list[float | None]:
     【关键逻辑】平滑系数 k = 2/(period+1),EMA 递推:ema = v*k + 上一EMA*(1-k)。
     初始值用前 period 个的 SMA 作为 seed,避免从 0 起步的偏置。
     """
-    out: list[float | None] = [None] * len(vals)
+    out: list[float | None] = [None] * len(vals)  # 【变量】输出序列(数据不足处为 None)
     if len(vals) < period:
         return out
-    prev = sum(vals[:period]) / period
+    prev = sum(vals[:period]) / period  # 【变量】上一 EMA 值,seed 用前 period 个的 SMA(避免从 0 起步偏置)
     out[period - 1] = prev
-    k = 2.0 / (period + 1)
+    k = 2.0 / (period + 1)  # 【变量】平滑系数:对近期价格赋更高权重,period 越大越平缓
     for i in range(period, len(vals)):
-        prev = vals[i] * k + prev * (1 - k)
+        prev = vals[i] * k + prev * (1 - k)  # 【变量】EMA 递推:ema = 新值×k + 上一EMA×(1-k)
         out[i] = prev
     return out
 
@@ -1449,8 +1449,8 @@ def _rsi(closes: list[float], period: int = 14) -> list[float | None]:
     out: list[float | None] = [None] * len(closes)
     if len(closes) < period + 1:
         return out
-    avg_gain = 0.0
-    avg_loss = 0.0
+    avg_gain = 0.0  # 【变量】Wilder 平均涨幅(递推状态)
+    avg_loss = 0.0  # 【变量】Wilder 平均跌幅(递推状态)
     for i in range(1, period + 1):
         d = closes[i] - closes[i - 1]
         avg_gain += max(d, 0.0)
@@ -1478,18 +1478,18 @@ def _macd(closes, fast=12, slow=26, signal=9):
     【关键逻辑】dif 只在两条 EMA 都有效后才有值;为了保证 dea 从对应位置起就连续,
     先把有效的 dif 抽成"密集段"做 EMA,再在开头补回同样数量的 None,与 closes 对齐。
     """
-    ema_fast = _ema(closes, fast)
-    ema_slow = _ema(closes, slow)
-    dif = [None] * len(closes)
-    dense = []
+    ema_fast = _ema(closes, fast)  # 【调用函数】快线 EMA
+    ema_slow = _ema(closes, slow)  # 【调用函数】慢线 EMA
+    dif = [None] * len(closes)  # 【变量】快慢线差值序列(DIF)
+    dense = []  # 【变量】有效 DIF 的密集段(去掉头部 None,使后续 EMA 递推连续)
     for i in range(len(closes)):
         if ema_fast[i] is not None and ema_slow[i] is not None:
             v = ema_fast[i] - ema_slow[i]
             dif[i] = v
             dense.append(v)
-    start = len(closes) - len(dense)
-    dea_dense = _ema(dense, signal)
-    dea = [None] * start + dea_dense
+    start = len(closes) - len(dense)  # 【变量】头部 None 数量(补回后与 closes 对齐)
+    dea_dense = _ema(dense, signal)  # 【调用函数】在密集段上算信号线 EMA
+    dea = [None] * start + dea_dense  # 【变量】信号线序列(DEA,与 closes 等长)
     hist = [
         (dif[i] - dea[i]) if dif[i] is not None and dea[i] is not None else None
         for i in range(len(closes))
@@ -1506,13 +1506,13 @@ def _bollinger(closes, period=20, num_std=2.0):
     【关键逻辑】mid = 20 日 SMA;上/下轨 = mid ± num_std * 窗口标准差(总体标准差,
     分母 period)。价格触上轨视为超买、触下轨视为超卖,突破轨线则是趋势信号。
     """
-    mid = _sma(closes, period)
-    upper = [None] * len(closes)
-    lower = [None] * len(closes)
+    mid = _sma(closes, period)  # 【变量】中轨(SMA)
+    upper = [None] * len(closes)  # 【变量】上轨(中轨 + num_std×std)
+    lower = [None] * len(closes)  # 【变量】下轨(中轨 - num_std×std)
     for i in range(period - 1, len(closes)):
         m = mid[i]
-        window = closes[i - period + 1 : i + 1]
-        std = (sum((x - m) ** 2 for x in window) / period) ** 0.5
+        window = closes[i - period + 1 : i + 1]  # 【变量】当前窗口(period 根 K 线,含当日)
+        std = (sum((x - m) ** 2 for x in window) / period) ** 0.5  # 【变量】窗口总体标准差(分母 period)
         upper[i] = m + num_std * std
         lower[i] = m - num_std * std
     return mid, upper, lower
@@ -1528,17 +1528,17 @@ def _atr(highs, lows, closes, period=14):
     取三者最大,覆盖跳空缺口带来的波动。ATR 用 Wilder 平滑(递推加权平均),
     seed 为前 period 个 TR 的均值。海龟策略用它计算 ATR 止损距离。
     """
-    out = [None] * len(closes)
+    out = [None] * len(closes)  # 【变量】ATR 输出序列(seed 前为 None)
     if len(closes) < period + 1:
         return out
-    trs = []
+    trs = []  # 【变量】逐日真实波幅 TR 列表(三者取最大,覆盖跳空缺口)
     for i in range(1, len(closes)):
         tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
         trs.append(tr)
-    prev = sum(trs[:period]) / period
+    prev = sum(trs[:period]) / period  # 【变量】上一 ATR 值,seed 为前 period 个 TR 的均值
     out[period] = prev
     for i in range(period + 1, len(closes)):
-        prev = (prev * (period - 1) + trs[i - 1]) / period
+        prev = (prev * (period - 1) + trs[i - 1]) / period  # 【变量】Wilder 递推:前值加权 + 当日值
         out[i] = prev
     return out
 
@@ -1556,10 +1556,10 @@ def _build_tech_series(indicator, closes, highs, lows, P):
     turtle 特殊:入场用 e 日通道、离场用 x 日通道(海龟原版是 20 入 10 出),
     并额外算 ATR 供止损。
     """
-    T = {}
+    T = {}  # 【变量】指标序列容器:键为各序列名 + warmup(循环起始下标)
     if indicator == "ma_cross":
-        T["ma_fast"] = _sma(closes, P["fast"])
-        T["ma_slow"] = _sma(closes, P["slow"])
+        T["ma_fast"] = _sma(closes, P["fast"])  # 【调用函数】快线 SMA
+        T["ma_slow"] = _sma(closes, P["slow"])  # 【调用函数】慢线 SMA
         T["warmup"] = P["slow"]  # 慢线起算点 = 可用的最早位置
     elif indicator == "macd":
         _, _, T["macd_hist"] = _macd(closes, P["macd_fast"], P["macd_slow"], P["macd_signal"])
@@ -1587,8 +1587,8 @@ def _build_tech_series(indicator, closes, highs, lows, P):
                     T["bb_lower"][i] = m - P["keltner_mult"] * a
             T["warmup"] = P["keltner_period"]
     elif indicator == "turtle":
-        e = P["turtle_entry"]
-        x = P["turtle_exit"]
+        e = P["turtle_entry"]  # 【变量】入场通道天数(前 e 日最高/最低,不含当日)
+        x = P["turtle_exit"]  # 【变量】离场通道天数(通常比入场通道窄 → 更快反向离场)
         T["turtle_hh"] = [None] * len(closes)
         T["turtle_ll"] = [None] * len(closes)
         T["turtle_exit_hh"] = [None] * len(closes)
@@ -1760,66 +1760,66 @@ def _run_technical_backtest(
       - 末尾强平:日期窗内最后一根 bar(last_i)仍持仓则按该 bar 收盘强平,保证回测
         只用到窗口内数据。
     """
-    all_trades = []
-    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
+    all_trades = []  # 【变量】全部交易记录
+    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]  # 【变量】待遍历品种列表(默认前 10 个)
     for var in vlist:
-        p = _load_price(var)
+        p = _load_price(var)  # 【调用函数】读取价格 JSON(带 fallback)
         if not p or not p.get("prices"):
             continue
-        px = p["prices"]
-        closes = [float(x["close"]) for x in px]
-        highs = [float(x["high"]) for x in px]
-        lows = [float(x["low"]) for x in px]
-        dates = [str(x["date"])[:10] for x in px]
-        n = len(closes)
-        T = _build_tech_series(indicator, closes, highs, lows, P)
+        px = p["prices"]  # 【变量】价格列表
+        closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列
+        highs = [float(x["high"]) for x in px]  # 【变量】最高价序列
+        lows = [float(x["low"]) for x in px]  # 【变量】最低价序列
+        dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列
+        n = len(closes)  # 【变量】K 线根数
+        T = _build_tech_series(indicator, closes, highs, lows, P)  # 【调用函数】预计算指标序列(一次构建,回测循环里 O(1) 查表)
         if n <= T["warmup"]:
             continue
-        sent_map = {}
+        sent_map = {}  # 【变量】情绪前向填充映射(仅 sent_mode 启用)
         if sent_mode:
-            sent_data = _load_trends(var) or _load_sentiment(var)
-            sent_map = _build_forward_filled_sent_map(sent_data, dates) if sent_data else {}
+            sent_data = _load_trends(var) or _load_sentiment(var)  # 【调用函数】读取情绪数据
+            sent_map = _build_forward_filled_sent_map(sent_data, dates) if sent_data else {}  # 【调用函数】情绪前向填充到每个价格日期
 
-        pos = 0
-        entry_px = 0.0
-        entry_d = ""
-        last_i = None  # 窗口内最后一根 bar;窗口末仍有持仓时按它强平(而非全数据最后一根)
+        pos = 0  # 【变量】仓位:0 空仓 / 1 持多 / -1 持空
+        entry_px = 0.0  # 【变量】入场价
+        entry_d = ""  # 【变量】入场日期
+        last_i = None  # 【变量】窗口内最后一根 bar;窗口末仍有持仓时按它强平(而非全数据最后一根)
         for i in range(T["warmup"], n):
             d = dates[i]
             if d < start_date or (end_date and d > end_date):
                 continue
             last_i = i
-            el, es, xl, xs, tstr, tscale, _ = _tech_signal(indicator, i, closes, highs, lows, T, P)
+            el, es, xl, xs, tstr, tscale, _ = _tech_signal(indicator, i, closes, highs, lows, T, P)  # 【调用函数】统一信号判定(开多/开空/平多/平空/强度/标尺/原因)
             if indicator == "turtle" and pos != 0 and entry_px:
                 # 海龟 ATR 止损:距入场价超过 atr_mult*ATR 即离场,价格越烈越早止损
-                atr = T["atr"][i]
+                atr = T["atr"][i]  # 【变量】当日 ATR(波动度量,止损距离基准)
                 if atr and atr > 0:
-                    stop = P["atr_mult"] * atr
+                    stop = P["atr_mult"] * atr  # 【变量】止损距离 = atr_mult × ATR
                     if pos == 1 and closes[i] < entry_px - stop:
                         xl = True
                     if pos == -1 and closes[i] > entry_px + stop:
                         xs = True
             if sent_mode:
-                tw = P.get("trend_window", 5)
+                tw = P.get("trend_window", 5)  # 【变量】情绪自适应用的趋势窗口(默认 5)
                 trend = (
                     (closes[i] - closes[i - tw]) / closes[i - tw]
                     if i >= tw and closes[i - tw]
                     else 0.0
-                )
+                )  # 【变量】tw 日涨跌幅(供自适应决策分档)
                 # 用情绪自适应改写入场信号;action 返回 buy/sell/hold
-                action, _, _, _ = _adapt_sentiment_signal(
+                action, _, _, _ = _adapt_sentiment_signal(  # 【调用函数】情绪自适应调整入场(分歧/顺势/逆向判断)
                     1 if el else (-1 if es else 0), tstr, tscale, trend, sent_map.get(d, 0.0)
                 )
                 el, es = action == "buy", action == "sell"
 
             # ── 先离场:多单看 xl、空单看 xs,按对向信号平仓 ──
             if pos == 1 and xl and entry_px:
-                pnl = (closes[i] - entry_px) / entry_px * 100
-                all_trades.append(_trade(var, entry_d, d, "long", pnl, indicator, sent_mode))
+                pnl = (closes[i] - entry_px) / entry_px * 100  # 【变量】单笔盈亏%(多单正算)
+                all_trades.append(_trade(var, entry_d, d, "long", pnl, indicator, sent_mode))  # 【调用函数】格式化交易记录并入结果
                 pos = 0
             elif pos == -1 and xs and entry_px:
-                pnl = (entry_px - closes[i]) / entry_px * 100
-                all_trades.append(_trade(var, entry_d, d, "short", pnl, indicator, sent_mode))
+                pnl = (entry_px - closes[i]) / entry_px * 100  # 【变量】单笔盈亏%(空单反算)
+                all_trades.append(_trade(var, entry_d, d, "short", pnl, indicator, sent_mode))  # 【调用函数】格式化交易记录并入结果
                 pos = 0
 
             # ── 后入场:空仓时才开新仓,避免持仓期内反复开仓 ──
@@ -1851,24 +1851,24 @@ def _run_technical_backtest(
 
     if not all_trades:
         return {"total_trades": 0}
-    wins = [t for t in all_trades if t["outcome"] == "win"]
-    pnls = [t["pnl"] for t in all_trades]
-    avg = sum(pnls) / len(pnls)
+    wins = [t for t in all_trades if t["outcome"] == "win"]  # 【变量】盈利交易列表
+    pnls = [t["pnl"] for t in all_trades]  # 【变量】每笔盈亏列表
+    avg = sum(pnls) / len(pnls)  # 【变量】平均单笔盈亏
     # 手算最大回撤:沿累计 PnL 走,peak 记历史最高,dd = peak - 当前累计,取最大
-    cum = 0
-    peak = 0
-    dd = 0
+    cum = 0  # 【变量】累计盈亏游标
+    peak = 0  # 【变量】历史累计峰值
+    dd = 0  # 【变量】最大回撤跟踪值
     for p in pnls:
         cum += p
         peak = max(peak, cum)
         dd = max(dd, peak - cum)
     # 估计交易天数:用首末入场日的自然日天数 * 252/365 折算成交易日,
     # 但至少给 len(pnls)*trend_window 天,避免样本极少时年化指标被放大失真。
-    entry_dates = sorted({t["entry"] for t in all_trades})
+    entry_dates = sorted({t["entry"] for t in all_trades})  # 【变量】全部入场日(去重升序)
     td = (
         max(
             (
-                datetime.strptime(entry_dates[-1], "%Y-%m-%d")
+                datetime.strptime(entry_dates[-1], "%Y-%m-%d")  # 【调用函数】解析入场日字符串→datetime
                 - datetime.strptime(entry_dates[0], "%Y-%m-%d")
             ).days
             * 252
@@ -1877,9 +1877,9 @@ def _run_technical_backtest(
         )
         if len(entry_dates) >= 2
         else len(pnls) * P.get("trend_window", 5)
-    )
-    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)
-    result = {
+    )  # 【变量】估算交易日数(年化指标分母)
+    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)  # 【调用函数】汇总指标计算(盈亏序列→夏普/回撤等)
+    result = {  # 【变量】单策略输出 dict(前端直接渲染)
         "strategy": f"{indicator}{'_sent' if sent_mode else ''}",
         "total_trades": len(all_trades),
         "win_count": len(wins),
@@ -1945,7 +1945,7 @@ def _trade(var, entry, exit, direction, pnl, indicator, sent_mode):
 # 统一的指标名,sent_mode 表示是否情绪自适应版。12 个 = 6 指标 × (纯价格 + 情绪)。
 # _latest_technical_signal 与 web 前端都通过这个表把"策略名"翻译成"指标+模式",
 # 避免在回测与今日信号两处各写一份映射导致口径分裂。
-TECH_KEYS = {
+TECH_KEYS = {  # 【变量】12 个技术策略注册表:策略名 → (统一指标名, 是否情绪自适应版)
     "ma_cross": ("ma_cross", False),
     "ma_cross_sent": ("ma_cross", True),
     "macd": ("macd", False),
@@ -1972,19 +1972,19 @@ def _latest_technical_signal(strategy, variety, closes, highs, lows, dates, toda
     "今日信号"和"回测信号"口径一致。sent_mode 时情绪前向填充到 today 并走
     _adapt_sentiment_signal;纯价格版直接把 el/es 映射成 buy/sell/hold。
     """
-    indicator, sent_mode = TECH_KEYS[strategy]
-    T = _build_tech_series(indicator, closes, highs, lows, P)
+    indicator, sent_mode = TECH_KEYS[strategy]  # 【变量】策略名→(统一指标名, 是否情绪版)查表
+    T = _build_tech_series(indicator, closes, highs, lows, P)  # 【调用函数】预计算指标序列
     if n <= T["warmup"]:
         return None
     if sent_mode:
-        sent_data = _load_trends(variety) or _load_sentiment(variety)
+        sent_data = _load_trends(variety) or _load_sentiment(variety)  # 【调用函数】读取情绪数据
         if not sent_data:
             return None
-        sent_map = _build_forward_filled_sent_map(sent_data, dates)
-        ss = sent_map.get(today, 0.0)
+        sent_map = _build_forward_filled_sent_map(sent_data, dates)  # 【调用函数】情绪前向填充到每个价格日期
+        ss = sent_map.get(today, 0.0)  # 【变量】今日情绪评分(前向填充到 today)
     else:
-        ss = 0.0
-    el, es, _, _, tstr, tscale, treason = _tech_signal(indicator, i, closes, highs, lows, T, P)
+        ss = 0.0  # 【变量】纯价格版无情绪因子,恒为 0
+    el, es, _, _, tstr, tscale, treason = _tech_signal(indicator, i, closes, highs, lows, T, P)  # 【调用函数】统一信号判定
     if sent_mode:
         tw = P["trend_window"]
         trend = (closes[i] - closes[i - tw]) / closes[i - tw] if i >= tw and closes[i - tw] else 0.0
@@ -2300,22 +2300,22 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
     【关键逻辑】每天重估信号(频率远高于均线交叉类):收益 > 0.5% 开多、<-0.5% 开空、
     中间视为无信号。持仓按固定 hold 天离场;窗口末仍有持仓按最后一根 bar 强平。
     """
-    all_trades = []
-    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
+    all_trades = []  # 【变量】全部交易记录
+    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]  # 【变量】待遍历品种列表(默认前 10 个)
     for var in vlist:
-        p = _load_price(var)
+        p = _load_price(var)  # 【调用函数】读取价格 JSON(带 fallback)
         if not p or len(p.get("prices", [])) < lookback + hold + 5:
             continue
-        px = p["prices"]
-        closes = [float(x["close"]) for x in px]
-        dates = [str(x["date"])[:10] for x in px]
-        n = len(closes)
+        px = p["prices"]  # 【变量】价格列表
+        closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列
+        dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列
+        n = len(closes)  # 【变量】K 线根数
 
-        pos = 0
-        entry_px = 0
-        entry_d = ""
-        entry_i = 0
-        last_i = None  # 窗口内最后一根 bar;窗口末仍有持仓时按它强平
+        pos = 0  # 【变量】仓位:0 空仓 / 1 持多 / -1 持空
+        entry_px = 0  # 【变量】入场价
+        entry_d = ""  # 【变量】入场日期
+        entry_i = 0  # 【变量】入场下标(持仓天数判定 i-entry_i>=hold)
+        last_i = None  # 【变量】窗口内最后一根 bar;窗口末仍有持仓时按它强平
         for i in range(lookback, n):
             d = dates[i]
             if d < start_date or (end_date and d > end_date):
@@ -2325,9 +2325,9 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
                 (closes[i] - closes[i - lookback]) / closes[i - lookback]
                 if closes[i - lookback]
                 else 0
-            )
+            )  # 【变量】lookback 日收益率(动量度量)
             # 0.5% 阈值:超过才视为有动量,避免把微小噪音当信号
-            sig = 1 if ret > 0.005 else (-1 if ret < -0.005 else 0)
+            sig = 1 if ret > 0.005 else (-1 if ret < -0.005 else 0)  # 【变量】动量方向信号:+1 多 / -1 空 / 0 无信号
 
             # Exit after holding `hold` days
             if pos != 0 and entry_i > 0 and i - entry_i >= hold:
@@ -2381,23 +2381,23 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
 
     if not all_trades:
         return {"total_trades": 0}
-    wins = [t for t in all_trades if t["outcome"] == "win"]
-    pnls = [t["pnl"] for t in all_trades]
-    avg = sum(pnls) / len(pnls)
+    wins = [t for t in all_trades if t["outcome"] == "win"]  # 【变量】盈利交易列表
+    pnls = [t["pnl"] for t in all_trades]  # 【变量】每笔盈亏列表
+    avg = sum(pnls) / len(pnls)  # 【变量】平均单笔盈亏
     # 这行是遗留代码:计算了标准差但结果被丢弃(未赋值给任何变量),可视为冗余。
     (sum((x - avg) ** 2 for x in pnls) / len(pnls)) ** 0.5 if len(pnls) > 1 else 1
-    cum = 0
-    peak = 0
-    dd = 0
+    cum = 0  # 【变量】累计盈亏游标
+    peak = 0  # 【变量】历史累计峰值
+    dd = 0  # 【变量】最大回撤跟踪值
     for p in pnls:
         cum += p
         peak = max(peak, cum)
         dd = max(dd, peak - cum)
-    entry_dates = sorted({t["entry"] for t in all_trades})
+    entry_dates = sorted({t["entry"] for t in all_trades})  # 【变量】全部入场日(去重升序)
     td = (
         max(
             (
-                datetime.strptime(entry_dates[-1], "%Y-%m-%d")
+                datetime.strptime(entry_dates[-1], "%Y-%m-%d")  # 【调用函数】解析入场日字符串→datetime
                 - datetime.strptime(entry_dates[0], "%Y-%m-%d")
             ).days
             * 252
@@ -2406,8 +2406,8 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
         )
         if len(entry_dates) >= 2
         else len(pnls) * hold
-    )
-    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)
+    )  # 【变量】估算交易日数(自然日折算,至少 len(pnls)*hold 天)
+    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=td)  # 【调用函数】汇总指标计算
     return {
         "strategy": "momentum",
         "total_trades": len(all_trades),
@@ -2474,88 +2474,88 @@ def run_momentum_adaptive(
       3. 质量门控:维护最近 10 笔已平仓基线交易(recent_total>0 且胜率≥45%)才算
          "基线健康",只有健康时才允许在分歧/弱趋势时信任动量。
     """
-    all_adaptive = []  # Momentum + adaptive overlay
-    all_baseline = []  # Pure momentum baseline
-    decisions = {"momentum": 0, "contrarian": 0, "skipped": 0, "quality_skip": 0}
+    all_adaptive = []  # 【变量】动量+自适应覆盖路径交易记录;Momentum + adaptive overlay
+    all_baseline = []  # 【变量】纯动量基线交易记录;Pure momentum baseline
+    decisions = {"momentum": 0, "contrarian": 0, "skipped": 0, "quality_skip": 0}  # 【变量】各决策类别触发次数统计
 
-    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]
+    vlist = [variety] if variety else _get_all_varieties_with_data()[:10]  # 【变量】待遍历品种列表(默认前 10 个)
 
     for var in vlist:
-        price_data = _load_price(var)
-        sent_data = _load_trends(var) or _load_sentiment(var)
+        price_data = _load_price(var)  # 【调用函数】读取价格 JSON(带 fallback)
+        sent_data = _load_trends(var) or _load_sentiment(var)  # 【调用函数】读取情绪:优先趋势文件,缺失退回情绪文件
         if not price_data or not sent_data:
             continue
-        px = price_data.get("prices", [])
+        px = price_data.get("prices", [])  # 【变量】该品种价格列表
         if len(px) < max(lookback, trend_window) + hold + 10:
             continue
 
         # Build forward-filled sentiment map
-        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))
-        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}
-        sd_sorted = sorted(raw_sent.keys())
-        sent_map = {}
-        last_s = 0
-        si = 0
+        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))  # 【变量】情绪每日序列(兼容两种结构)
+        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}  # 【变量】日期→情绪评分原始映射
+        sd_sorted = sorted(raw_sent.keys())  # 【变量】情绪日期升序列表
+        sent_map = {}  # 【变量】日期→前向填充情绪评分
+        last_s = 0  # 【变量】最近一次有效情绪评分
+        si = 0  # 【变量】情绪日期游标
         for d in sorted(str(x["date"])[:10] for x in px):
             while si < len(sd_sorted) and sd_sorted[si] <= d:
                 last_s = raw_sent[sd_sorted[si]]
                 si += 1
             sent_map[d] = last_s
 
-        closes = [float(x["close"]) for x in px]
-        dates = [str(x["date"])[:10] for x in px]
-        n = len(closes)
+        closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列
+        dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列
+        n = len(closes)  # 【变量】K 线根数
 
-        pos_a = 0
-        entry_px_a = 0
-        entry_d_a = ""
-        entry_i_a = 0  # adaptive
-        pos_b = 0
-        entry_px_b = 0
-        entry_d_b = ""
-        entry_i_b = 0  # baseline
+        pos_a = 0  # 【变量】自适应路径仓位:0 空仓 / 1 持多 / -1 持空
+        entry_px_a = 0  # 【变量】自适应路径入场价
+        entry_d_a = ""  # 【变量】自适应路径入场日期
+        entry_i_a = 0  # 【变量】自适应路径入场下标;adaptive
+        pos_b = 0  # 【变量】基线路径仓位
+        entry_px_b = 0  # 【变量】基线路径入场价
+        entry_d_b = ""  # 【变量】基线路径入场日期
+        entry_i_b = 0  # 【变量】基线路径入场下标;baseline
 
         # Rolling baseline quality tracker (last N closed trades)
-        baseline_recent_pnls = []  # stores PnL of last 10 closed baseline trades
-        BASELINE_WINDOW = 10
-        last_i = None  # 窗口内最后一根 bar;窗口末仍有持仓时按它强平
+        baseline_recent_pnls = []  # 【变量】最近 N 笔已平仓基线交易的盈亏(质量门控依据);stores PnL of last 10 closed baseline trades
+        BASELINE_WINDOW = 10  # 【变量】质量门控窗口:只取最近 10 笔基线交易
+        last_i = None  # 【变量】窗口内最后一根 bar;窗口末仍有持仓时按它强平
 
         for i in range(max(lookback, trend_window), n):
             d = dates[i]
             if d < start_date or (end_date and d > end_date):
                 continue
             last_i = i
-            ss = sent_map.get(d, 0)
-            px_now = closes[i]
+            ss = sent_map.get(d, 0)  # 【变量】当日前向填充情绪评分
+            px_now = closes[i]  # 【变量】当日收盘价(入场参考价)
 
             # Pure momentum signal (lookback return)
             mom_ret = (
                 (closes[i] - closes[i - lookback]) / closes[i - lookback]
                 if closes[i - lookback]
                 else 0
-            )
-            mom_sig = 1 if mom_ret > 0.005 else (-1 if mom_ret < -0.005 else 0)
+            )  # 【变量】lookback 日收益率(纯动量信号源)
+            mom_sig = 1 if mom_ret > 0.005 else (-1 if mom_ret < -0.005 else 0)  # 【变量】纯动量方向:+1 多 / -1 空 / 0 无信号
 
             # Trend and divergence
             trend = (
                 (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
                 if closes[i - trend_window]
                 else 0
-            )
-            trend_pct = abs(trend) * 100
+            )  # 【变量】trend_window 日涨跌幅
+            trend_pct = abs(trend) * 100  # 【变量】趋势强度百分比(决策树分档用)
 
-            diverge_bearish = trend > 0.01 and ss < -0.1  # price up + bearish = top signal
-            diverge_bullish = trend < -0.01 and ss > 0.1  # price down + bullish = bottom signal
+            diverge_bearish = trend > 0.01 and ss < -0.1  # 【变量】看空背离:涨+情绪空;price up + bearish = top signal
+            diverge_bullish = trend < -0.01 and ss > 0.1  # 【变量】看多背离:跌+情绪多;price down + bullish = bottom signal
 
             # ── Baseline quality check ──
             # 基线质量门控:只有最近 5 笔以上基线交易的"累计盈亏>0 且胜率≥45%"才视为
             # 健康。健康时更愿意跟随动量(因为动量最近在赚钱);不健康时更容易逆情绪。
-            baseline_is_good = False
+            baseline_is_good = False  # 【变量】基线是否健康(近 5 笔以上、累计盈亏>0 且胜率≥45%)
             if len(baseline_recent_pnls) >= 5:
-                recent_wr = sum(1 for p in baseline_recent_pnls if p > 0.15) / len(
+                recent_wr = sum(1 for p in baseline_recent_pnls if p > 0.15) / len(  # 【变量】最近窗口胜率
                     baseline_recent_pnls
                 )
-                recent_total = sum(baseline_recent_pnls)
+                recent_total = sum(baseline_recent_pnls)  # 【变量】最近窗口累计盈亏
                 baseline_is_good = recent_total > 0 and recent_wr >= 0.45
 
             # ── Adaptive decision (quality-gated) ──
@@ -2640,7 +2640,7 @@ def run_momentum_adaptive(
 
             # Process adaptive
             if pos_a != 0 and entry_d_a and i - entry_i_a >= hold:
-                _close(
+                _close(  # 【调用函数】平仓并记录一笔交易(多/空盈亏与 outcome 分档)
                     pos_a,
                     entry_px_a,
                     entry_d_a,
@@ -2667,9 +2667,9 @@ def run_momentum_adaptive(
             # Process baseline — also track PnL for quality gating
             if pos_b != 0 and entry_d_b and i - entry_i_b >= hold:
                 if pos_b == 1:
-                    bl_pnl = (exit_px - entry_px_b) / entry_px_b * 100
+                    bl_pnl = (exit_px - entry_px_b) / entry_px_b * 100  # 【变量】基线单笔盈亏%(多单正算)
                 else:
-                    bl_pnl = (entry_px_b - exit_px) / entry_px_b * 100
+                    bl_pnl = (entry_px_b - exit_px) / entry_px_b * 100  # 【变量】基线单笔盈亏%(空单反算)
                 all_baseline.append(
                     {
                         "variety": var,
@@ -2684,9 +2684,9 @@ def run_momentum_adaptive(
                     }
                 )
                 # Track for quality gating
-                baseline_recent_pnls.append(bl_pnl)
+                baseline_recent_pnls.append(bl_pnl)  # 【变量】喂给质量门控的最近窗口盈亏队列
                 if len(baseline_recent_pnls) > BASELINE_WINDOW:
-                    baseline_recent_pnls.pop(0)
+                    baseline_recent_pnls.pop(0)  # 超出窗口则弹出最老的,保持固定长度
                 pos_b = 0
             if pos_b == 0:
                 if b_long:
@@ -2741,18 +2741,18 @@ def run_momentum_adaptive(
         return {"total_trades": 0, "message": "No signals"}
 
     # Build cumulative curves
-    all_dates = sorted({t["entry"] for t in all_adaptive + all_baseline})
-    a_map = {}
-    b_map = {}
+    all_dates = sorted({t["entry"] for t in all_adaptive + all_baseline})  # 【变量】全部入场日(升序,曲线 x 轴)
+    a_map = {}  # 【变量】自适应路径:按入场日聚合的当日盈亏
+    b_map = {}  # 【变量】基线路径:按入场日聚合的当日盈亏
     for t in all_adaptive:
         a_map[t["entry"]] = a_map.get(t["entry"], 0) + t["pnl"]
     for t in all_baseline:
         b_map[t["entry"]] = b_map.get(t["entry"], 0) + t["pnl"]
 
-    a_curve = []
-    b_curve = []
-    cum_a = 0
-    cum_b = 0
+    a_curve = []  # 【变量】自适应路径逐日累计盈亏曲线
+    b_curve = []  # 【变量】基线路径逐日累计盈亏曲线
+    cum_a = 0  # 【变量】自适应路径累计盈亏游标
+    cum_b = 0  # 【变量】基线路径累计盈亏游标
     for d in all_dates:
         cum_a += a_map.get(d, 0)
         cum_b += b_map.get(d, 0)
@@ -2764,13 +2764,13 @@ def run_momentum_adaptive(
         return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
 
     # Compute advanced metrics per sub-strategy
-    a_pnls = [t["pnl"] for t in all_adaptive]
-    b_pnls = [t["pnl"] for t in all_baseline]
-    all_eds = sorted({t["entry"] for t in all_adaptive + all_baseline})
+    a_pnls = [t["pnl"] for t in all_adaptive]  # 【变量】自适应路径每笔盈亏列表
+    b_pnls = [t["pnl"] for t in all_baseline]  # 【变量】基线路径每笔盈亏列表
+    all_eds = sorted({t["entry"] for t in all_adaptive + all_baseline})  # 【变量】全部入场日(去重升序)
     td_ma = (
         max(
             (
-                datetime.strptime(all_eds[-1], "%Y-%m-%d")
+                datetime.strptime(all_eds[-1], "%Y-%m-%d")  # 【调用函数】解析入场日字符串→datetime
                 - datetime.strptime(all_eds[0], "%Y-%m-%d")
             ).days
             * 252
@@ -2779,9 +2779,9 @@ def run_momentum_adaptive(
         )
         if len(all_eds) >= 2
         else 252
-    )
-    adv_a = compute_advanced_metrics(trade_pnls=a_pnls, total_trading_days=td_ma) if a_pnls else {}
-    adv_b = compute_advanced_metrics(trade_pnls=b_pnls, total_trading_days=td_ma) if b_pnls else {}
+    )  # 【变量】估算交易日数(年化指标分母,至少 20 天)
+    adv_a = compute_advanced_metrics(trade_pnls=a_pnls, total_trading_days=td_ma) if a_pnls else {}  # 【调用函数】自适应路径汇总指标
+    adv_b = compute_advanced_metrics(trade_pnls=b_pnls, total_trading_days=td_ma) if b_pnls else {}  # 【调用函数】基线路径汇总指标
 
     return {
         "strategy": "momentum_adaptive",
@@ -2851,27 +2851,27 @@ def apply_risk_management(
         return trades
 
     # Build price timeline
-    price_map = {}
+    price_map = {}  # 【变量】日期→收盘价查表(逐日止损检查用)
     for p in prices:
         price_map[str(p["date"])[:10]] = float(p["close"])
 
-    modified = []
+    modified = []  # 【变量】风控处理后的交易列表(输出,被止损的单被改写)
     for t in trades:
-        entry_d = t.get("entry", "")
-        direction = t.get("direction", "long")
-        entry_px = price_map.get(entry_d, 0)
+        entry_d = t.get("entry", "")  # 【变量】该笔交易入场日期
+        direction = t.get("direction", "long")  # 【变量】交易方向(long/short),决定止损判定上下
+        entry_px = price_map.get(entry_d, 0)  # 【变量】该笔交易入场价(从价格表反查)
         if not entry_px:
             modified.append(t)
             continue
 
         # Check if price hit stop-loss before original exit
-        exit_d = t.get("exit", "")
+        exit_d = t.get("exit", "")  # 【变量】原离场日期(止损若更早触发则改写它)
         price_map.get(exit_d, entry_px)  # 遗留无效果行:取值后未使用,可忽略
         # 只看 [入场日, 原离场日] 之间的交易日,确认止损是否在原始离场前触发
-        dates = sorted([d for d in price_map if entry_d <= d <= exit_d])
-        peak_px = entry_px
-        stopped_out = False
-        stop_px = 0
+        dates = sorted([d for d in price_map if entry_d <= d <= exit_d])  # 【变量】[入场,原离场] 之间的交易日(升序)
+        peak_px = entry_px  # 【变量】多单以来的最高价 / 空单以来的最低价(移动止损基准,初始=入场价)
+        stopped_out = False  # 【变量】是否被止损触发
+        stop_px = 0  # 【变量】触发止损那天的价格(重算 PnL 用)
 
         for d in dates:
             px = price_map[d]
@@ -2885,9 +2885,9 @@ def apply_risk_management(
                 # Trailing stop: update peak, exit if falls below peak * (1 - trailing%)
                 if px > peak_px:
                     peak_px = px
-                trail_level = peak_px * (1 - trailing_stop_pct / 100)
+                trail_level = peak_px * (1 - trailing_stop_pct / 100)  # 【变量】移动止损线 = 峰值回撤 trailing_stop_pct
                 # Never let trailing stop go below entry (protect breakeven)
-                trail_level = max(trail_level, entry_px)
+                trail_level = max(trail_level, entry_px)  # 【变量】止损线下沿不低于入场价(保本)
                 if trailing_stop_pct and px <= trail_level:
                     stopped_out = True
                     stop_px = px
@@ -2901,9 +2901,9 @@ def apply_risk_management(
                     break
                 if px < peak_px:
                     peak_px = px
-                trail_level = peak_px * (1 + trailing_stop_pct / 100)
+                trail_level = peak_px * (1 + trailing_stop_pct / 100)  # 【变量】移动止损线 = 峰值回撤 trailing_stop_pct(空单方向)
                 # Never let trailing stop go above entry (protect breakeven)
-                trail_level = min(trail_level, entry_px)
+                trail_level = min(trail_level, entry_px)  # 【变量】止损线上沿不高于入场价(保本)
                 if trailing_stop_pct and px >= trail_level:
                     stopped_out = True
                     stop_px = px
@@ -2914,14 +2914,14 @@ def apply_risk_management(
             # ⚠️ 用触发止损的价格(stop_px)重算盈亏,而非原离场价;这样风控后的
             # 每笔交易 PnL 口径与原始路径一致,都是"实际平仓价 - 入场价"。
             if direction == "long":
-                pnl = (stop_px - entry_px) / entry_px * 100
+                pnl = (stop_px - entry_px) / entry_px * 100  # 【变量】按止损价重算的盈亏%(多单正算)
             else:
-                pnl = (entry_px - stop_px) / entry_px * 100
-            t = dict(t)
+                pnl = (entry_px - stop_px) / entry_px * 100  # 【变量】按止损价重算的盈亏%(空单反算)
+            t = dict(t)  # 【变量】浅拷贝原交易 dict,避免改动调用方传入对象
             t["pnl"] = round(pnl, 2)
             t["exit"] = exit_d
             t["outcome"] = "win" if pnl > 0.15 else ("loss" if pnl < -0.15 else "breakeven")
-            t["stopped_out"] = True
+            t["stopped_out"] = True  # 【变量】标记被止损(前端可据此区分离场原因)
 
         modified.append(t)
 
@@ -2999,8 +2999,8 @@ def compute_advanced_metrics(
         max_drawdown_duration。
       - sharpe_like 是旧版兼容字段 = 平均盈亏/盈亏标准差,各策略对外展示用。
     """
-    n = len(trade_pnls)
-    RISK_FREE_RATE = 2.5  # China 10Y government bond ≈ 2.5% annual
+    n = len(trade_pnls)  # 【变量】交易笔数
+    RISK_FREE_RATE = 2.5  # 【变量】无风险利率(年化 2.5%,中国 10 年期国债经验值;夏普/索提诺扣减项);China 10Y government bond ≈ 2.5% annual
 
     if n == 0:
         return {
@@ -3020,26 +3020,26 @@ def compute_advanced_metrics(
         }
 
     # ── Basic stats ──
-    wins = [p for p in trade_pnls if p > 0.1]
-    losses = [p for p in trade_pnls if p < -0.1]
+    wins = [p for p in trade_pnls if p > 0.1]  # 【变量】盈利笔列表(按 ±0.1% 分档)
+    losses = [p for p in trade_pnls if p < -0.1]  # 【变量】亏损笔列表
     [p for p in trade_pnls if -0.1 <= p <= 0.1]  # 遗留:计算了打平组但结果被丢弃
 
-    avg_win = sum(wins) / len(wins) if wins else 0.0
-    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    avg_win = sum(wins) / len(wins) if wins else 0.0  # 【变量】平均盈利
+    avg_loss = sum(losses) / len(losses) if losses else 0.0  # 【变量】平均亏损
     # 盈亏比:平均赢/平均亏;无亏(avg_loss==0)时按是否盈利给 99 或 0(避免除零)
-    win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else (99.0 if avg_win > 0 else 0.0)
+    win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else (99.0 if avg_win > 0 else 0.0)  # 【变量】盈亏比(平均赢/平均亏)
 
-    gross_profit = sum(wins) if wins else 0.0
-    gross_loss = abs(sum(losses)) if losses else 0.0
+    gross_profit = sum(wins) if wins else 0.0  # 【变量】毛盈利(盈利笔之和)
+    gross_loss = abs(sum(losses)) if losses else 0.0  # 【变量】毛亏损(亏损笔绝对值之和)
     profit_factor = (
         round(gross_profit / gross_loss, 2)
         if gross_loss > 0
         else (99.0 if gross_profit > 0 else 0.0)
-    )
+    )  # 【变量】盈亏因子 = 毛盈利/毛亏损(无亏损时给 99 或 0)
 
-    total_return_pct = sum(trade_pnls)
-    avg_pnl = total_return_pct / n
-    std_pnl = math.sqrt(sum((p - avg_pnl) ** 2 for p in trade_pnls) / n) if n > 1 else 0.0
+    total_return_pct = sum(trade_pnls)  # 【变量】回测期总收益(每笔盈亏之和,单位 %)
+    avg_pnl = total_return_pct / n  # 【变量】平均单笔盈亏
+    std_pnl = math.sqrt(sum((p - avg_pnl) ** 2 for p in trade_pnls) / n) if n > 1 else 0.0  # 【变量】单笔盈亏标准差(波动度量)
 
     # ── Annualization ──
     total_trading_days = max(total_trading_days, 1)
@@ -3053,7 +3053,7 @@ def compute_advanced_metrics(
         annualized_return = -100.0  # total loss
 
     # Trades per year for scaling trade-level std → annual
-    trades_per_year = n * 252.0 / total_trading_days if total_trading_days > 0 else n
+    trades_per_year = n * 252.0 / total_trading_days if total_trading_days > 0 else n  # 【变量】每年交易次数(把单笔波动放大到年化)
 
     # Volatility: use daily returns if available, otherwise scale from trade PnLs
     if daily_returns and len(daily_returns) > 1:
@@ -3089,11 +3089,11 @@ def compute_advanced_metrics(
         sortino = 9.99 if annualized_return > RISK_FREE_RATE else 0.0
 
     # ── Max Drawdown & Duration ──
-    cumulative = 0.0
-    peak = 0.0
-    max_dd = 0.0
-    current_dd_len = 0
-    max_dd_duration = 0
+    cumulative = 0.0  # 【变量】累计盈亏游标(逐笔扫描)
+    peak = 0.0  # 【变量】历史累计峰值
+    max_dd = 0.0  # 【变量】最大回撤深度
+    current_dd_len = 0  # 【变量】当前回撤持续天数(不创新高就 +1)
+    max_dd_duration = 0  # 【变量】历史最长回撤持续天数
 
     for p in trade_pnls:
         cumulative += p
@@ -3103,15 +3103,15 @@ def compute_advanced_metrics(
         else:
             current_dd_len += 1
             max_dd_duration = max(max_dd_duration, current_dd_len)
-        dd = peak - cumulative
+        dd = peak - cumulative  # 【变量】当前回撤深度
         if dd > max_dd:
             max_dd = dd
 
     # ── Calmar Ratio ──
-    calmar = annualized_return / max_dd if max_dd > 0 else (99.0 if annualized_return > 0 else 0.0)
+    calmar = annualized_return / max_dd if max_dd > 0 else (99.0 if annualized_return > 0 else 0.0)  # 【变量】卡玛比率 = 年化收益/最大回撤
 
     # ── Legacy sharpe_like for backward compat ──
-    sharpe_like = round(avg_pnl / std_pnl, 2) if std_pnl > 0 else 0.0
+    sharpe_like = round(avg_pnl / std_pnl, 2) if std_pnl > 0 else 0.0  # 【变量】旧版兼容:平均盈亏/盈亏标准差(各策略对外展示)
 
     return {
         "sharpe_ratio": round(sharpe, 2),
@@ -3156,28 +3156,28 @@ def run_simulated_trading(
     注意这里"入场日=信号日",与 docstring 说的 T+1 略有出入,实际按当日价格成交
     【待确认】;每条交易存成 TradeRecord 收集,最后按品种统计 win_rate。
     """
-    all_trades = []
-    varieties_to_test = [variety] if variety else _get_all_varieties_with_data()
+    all_trades = []  # 【变量】全部模拟交易记录(TradeRecord 列表)
+    varieties_to_test = [variety] if variety else _get_all_varieties_with_data()  # 【变量】待测试品种列表
 
     for var in varieties_to_test:
-        sent_data = _load_sentiment(var)
-        price_data = _load_price(var)
+        sent_data = _load_sentiment(var)  # 【调用函数】读取情绪 JSON
+        price_data = _load_price(var)  # 【调用函数】读取价格 JSON(带 fallback)
         if not sent_data or not price_data:
             continue
 
-        series = sent_data.get("data", {}).get("daily_series", [])
-        prices_raw = price_data.get("prices", [])
+        series = sent_data.get("data", {}).get("daily_series", [])  # 【变量】情绪每日序列
+        prices_raw = price_data.get("prices", [])  # 【变量】原始价格列表
         if len(series) < 20:
             continue
 
-        price_map = {}
+        price_map = {}  # 【变量】日期→收盘价查表(取入场/离场价用)
         for p in prices_raw:
             d = str(p["date"])[:10]
             price_map[d] = float(p["close"])
 
         # Build date-aligned arrays
-        dates = []
-        scores = []
+        dates = []  # 【变量】对齐后的交易日序列(价格与情绪都有,且在回测窗口内)
+        scores = []  # 【变量】与 dates 对齐的情绪评分
         for s in series:
             d = s["date"]
             if d in price_map and d >= start_date and (not end_date or d <= end_date):
@@ -3186,13 +3186,13 @@ def run_simulated_trading(
 
         # Generate trades
         for i in range(len(dates) - horizon):
-            signal = scores[i]
+            signal = scores[i]  # 【变量】当日情绪信号(与 signal_threshold 比触发)
             if abs(signal) < signal_threshold:
                 continue
 
-            direction = "long" if signal > 0 else "short"
-            entry_date = dates[i]
-            exit_date = dates[i + horizon] if i + horizon < len(dates) else dates[-1]
+            direction = "long" if signal > 0 else "short"  # 【变量】交易方向(情绪正→多,负→空)
+            entry_date = dates[i]  # 【变量】入场日期(= 信号日,按当日价格成交)
+            exit_date = dates[i + horizon] if i + horizon < len(dates) else dates[-1]  # 【变量】离场日期(固定 horizon 天后)
 
             entry_px = price_map.get(entry_date, 0)
             exit_px = price_map.get(exit_date, 0)
@@ -3207,7 +3207,7 @@ def run_simulated_trading(
                 outcome = "win" if pnl > 0.1 else ("loss" if pnl < -0.1 else "breakeven")
 
             all_trades.append(
-                TradeRecord(
+                TradeRecord(  # 【调用函数】构造结构化交易记录数据类
                     variety=var,
                     entry_date=entry_date,
                     exit_date=exit_date,
@@ -3217,7 +3217,7 @@ def run_simulated_trading(
                     exit_price=round(exit_px, 2),
                     pnl_pct=round(pnl, 2),
                     outcome=outcome,
-                    horizon=(dates.index(exit_date) - dates.index(entry_date)),
+                    horizon=(dates.index(exit_date) - dates.index(entry_date)),  # 【变量】实际持仓天数
                 )
             )
 
@@ -3225,30 +3225,30 @@ def run_simulated_trading(
         return {"total_trades": 0, "message": "No trades generated"}
 
     # Compute statistics
-    wins = [t for t in all_trades if t.outcome == "win"]
-    losses = [t for t in all_trades if t.outcome == "loss"]
-    long_trades = [t for t in all_trades if t.direction == "long"]
-    short_trades = [t for t in all_trades if t.direction == "short"]
+    wins = [t for t in all_trades if t.outcome == "win"]  # 【变量】盈利交易列表
+    losses = [t for t in all_trades if t.outcome == "loss"]  # 【变量】亏损交易列表
+    long_trades = [t for t in all_trades if t.direction == "long"]  # 【变量】做多交易列表
+    short_trades = [t for t in all_trades if t.direction == "short"]  # 【变量】做空交易列表
 
-    pnls = [t.pnl_pct for t in all_trades]
+    pnls = [t.pnl_pct for t in all_trades]  # 【变量】每笔盈亏列表
 
     # Estimate trading days from trade date range
     # 用首末入场日的自然日天数 × 252/365 折算成交易日;样本过少时给至少
     # len(pnls)*horizon 天(或 20 天),避免年化指标被极端放大。
-    all_entry_dates = sorted({t.entry_date for t in all_trades})
+    all_entry_dates = sorted({t.entry_date for t in all_trades})  # 【变量】全部入场日(去重升序)
     if len(all_entry_dates) >= 2:
-        d0 = datetime.strptime(all_entry_dates[0], "%Y-%m-%d")
-        d1 = datetime.strptime(all_entry_dates[-1], "%Y-%m-%d")
-        trading_days = max((d1 - d0).days * 252 // 365, len(pnls))
+        d0 = datetime.strptime(all_entry_dates[0], "%Y-%m-%d")  # 【调用函数】解析首入场日→datetime
+        d1 = datetime.strptime(all_entry_dates[-1], "%Y-%m-%d")  # 【调用函数】解析末入场日→datetime
+        trading_days = max((d1 - d0).days * 252 // 365, len(pnls))  # 【变量】估算交易日数(自然日折算,至少 len(pnls) 天)
     else:
-        trading_days = max(len(pnls) * horizon, 20)
+        trading_days = max(len(pnls) * horizon, 20)  # 【变量】样本过少时兜底交易日数
 
-    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=trading_days)
+    advanced = compute_advanced_metrics(trade_pnls=pnls, total_trading_days=trading_days)  # 【调用函数】汇总指标计算
 
-    avg_pnl = sum(pnls) / len(pnls) if pnls else 0
+    avg_pnl = sum(pnls) / len(pnls) if pnls else 0  # 【变量】平均单笔盈亏
 
     # By variety
-    by_variety = defaultdict(lambda: {"trades": 0, "wins": 0, "avg_pnl": 0})
+    by_variety = defaultdict(lambda: {"trades": 0, "wins": 0, "avg_pnl": 0})  # 【变量】按品种聚合的统计 dict(键默认全 0)
     for t in all_trades:
         by_variety[t.variety]["trades"] += 1
         if t.outcome == "win":
@@ -3327,16 +3327,16 @@ def _compute_fundamental_factors(prices: list[dict]) -> dict[str, list]:
       - fund_score = 0.6*ma_signal + 0.25*momentum(归一化到 [-1,1],5% 收益记 1)
         + 0.15*vol_signal,合成在 [-1,1],供 run_strategy_comparison 用阈值开仓。
     """
-    n = len(prices)
-    closes = [p["close"] for p in prices]
-    volumes = [p.get("volume", 0) for p in prices]
+    n = len(prices)  # 【变量】K 线根数
+    closes = [p["close"] for p in prices]  # 【变量】收盘价序列
+    volumes = [p.get("volume", 0) for p in prices]  # 【变量】成交量序列(缺省 0)
 
-    ma_5 = []
-    ma_20 = []
-    ma_signal = []
-    momentum_5 = []
-    vol_ratio = []
-    vol_signal = []
+    ma_5 = []  # 【变量】5 日均值序列
+    ma_20 = []  # 【变量】20 日均值序列
+    ma_signal = []  # 【变量】价格相对 MA20 的趋势方向(+1 上 / -1 下)
+    momentum_5 = []  # 【变量】5 日收益率序列
+    vol_ratio = []  # 【变量】量比序列(当日量 / 20 日均量)
+    vol_signal = []  # 【变量】量能信号(+1 活跃 / -1 冷清 / 0 中性)
 
     for i in range(n):
         # MA
@@ -3371,12 +3371,12 @@ def _compute_fundamental_factors(prices: list[dict]) -> dict[str, list]:
         vol_signal.append(1.0 if vr > 1.2 else (-1.0 if vr < 0.8 else 0.0))
 
     # Combined fundamental score: 60% trend + 25% momentum + 15% volume
-    fund_score = []
+    fund_score = []  # 【变量】合成基本面得分序列(供 run_strategy_comparison 用阈值开仓)
     for i in range(n):
         m = momentum_5[i]
         # Normalize momentum to [-1, 1]
-        m_norm = max(-1.0, min(1.0, m * 20))  # 5% return → score=1.0
-        fs = 0.6 * ma_signal[i] + 0.25 * m_norm + 0.15 * vol_signal[i]
+        m_norm = max(-1.0, min(1.0, m * 20))  # 【变量】动量归一化到 [-1,1];5% return → score=1.0
+        fs = 0.6 * ma_signal[i] + 0.25 * m_norm + 0.15 * vol_signal[i]  # 【变量】加权合成:0.6 趋势 + 0.25 动量 + 0.15 量能
         fund_score.append(round(fs, 3))
 
     return {
@@ -3431,11 +3431,11 @@ def run_strategy_comparison(
         用的是下面"date-indexed cumulative PnL"的 map 累加方式构建 fund/combo 曲线,
         price 曲线是买入持有基准。
     """
-    all_trades_fund = []
-    all_trades_combo = []
+    all_trades_fund = []  # 【变量】纯基本面策略的交易记录
+    all_trades_combo = []  # 【变量】基本面+情绪策略的交易记录
 
-    sent_data = _load_trends(variety)
-    price_data = _load_price(variety)
+    sent_data = _load_trends(variety)  # 【调用函数】读取趋势/情绪 JSON
+    price_data = _load_price(variety)  # 【调用函数】读取价格 JSON(带 fallback)
     if not sent_data or not price_data:
         return {"error": f"No data for {variety}"}
 
@@ -3454,12 +3454,12 @@ def run_strategy_comparison(
         price_map[str(p["date"])[:10]] = float(p["close"])
 
     # Compute fundamental factors
-    factors = _compute_fundamental_factors(prices_raw)
-    fund_scores = factors["fund_score"]
-    price_dates = [str(p["date"])[:10] for p in prices_raw]
+    factors = _compute_fundamental_factors(prices_raw)  # 【调用函数】计算基本面因子(价格+量能合成得分)
+    fund_scores = factors["fund_score"]  # 【变量】基本面得分序列
+    price_dates = [str(p["date"])[:10] for p in prices_raw]  # 【变量】价格日期序列
 
     # Build date-aligned sentiment
-    sent_map = {}
+    sent_map = {}  # 【变量】日期→情绪评分映射(兼容 avg_score / sentiment_score 两个字段名)
     for s in series:
         d = s.get("date", "")
         if d:
@@ -3467,10 +3467,10 @@ def run_strategy_comparison(
             sent_map[d] = s.get("avg_score", s.get("sentiment_score", 0))
 
     # Merge: only use dates that appear in BOTH price and sentiment
-    dates = []
-    prices = []
-    sent_scores = []
-    f_scores = []
+    dates = []  # 【变量】对齐后的日期序列(价格与情绪重叠日,且在回测窗口内)
+    prices = []  # 【变量】与 dates 对齐的收盘价
+    sent_scores = []  # 【变量】与 dates 对齐的情绪评分
+    f_scores = []  # 【变量】与 dates 对齐的基本面得分
     for i, d in enumerate(price_dates):
         if d in sent_map and d >= start_date and (not end_date or d <= end_date):
             dates.append(d)
@@ -3478,18 +3478,18 @@ def run_strategy_comparison(
             sent_scores.append(sent_map[d])
             f_scores.append(fund_scores[i])
 
-    n = len(dates)
+    n = len(dates)  # 【变量】对齐后的有效交易日数
     if n < horizon + 10:
         return {"error": "Too few overlapping data points"}
 
     # --- Strategy 1: Pure Fundamental ---
     for i in range(n - horizon):
-        fs = f_scores[i]
+        fs = f_scores[i]  # 【变量】当日基本面得分(超阈值才开仓)
         if abs(fs) < fund_threshold:
             continue
-        direction = "long" if fs > 0 else "short"
-        entry_px = prices[i]
-        exit_px = prices[i + horizon] if i + horizon < n else prices[-1]
+        direction = "long" if fs > 0 else "short"  # 【变量】方向:得分正做多、负做空
+        entry_px = prices[i]  # 【变量】入场价
+        exit_px = prices[i + horizon] if i + horizon < n else prices[-1]  # 【变量】离场价(固定 horizon 天后)
         if not entry_px or not exit_px:
             continue
         if direction == "long":
@@ -3508,8 +3508,8 @@ def run_strategy_comparison(
 
     # --- Strategy 2: Fundamental + Sentiment ---
     for i in range(n - horizon):
-        fs = f_scores[i]
-        ss = sent_scores[i]
+        fs = f_scores[i]  # 【变量】当日基本面得分
+        ss = sent_scores[i]  # 【变量】当日情绪评分(与基本面方向一致才开仓)
         if abs(fs) < fund_threshold:
             continue
         # Both must agree on direction
@@ -3564,15 +3564,15 @@ def run_strategy_comparison(
         return cum_curve
 
     # Better approach: date-indexed cumulative PnL
-    fund_pnl_map = {t["date"]: t["pnl"] for t in all_trades_fund}
-    combo_pnl_map = {t["date"]: t["pnl"] for t in all_trades_combo}
+    fund_pnl_map = {t["date"]: t["pnl"] for t in all_trades_fund}  # 【变量】纯基本面策略:按日期聚合的当日盈亏
+    combo_pnl_map = {t["date"]: t["pnl"] for t in all_trades_combo}  # 【变量】基本面+情绪策略:按日期聚合的当日盈亏
 
-    fund_curve = []
-    combo_curve = []
-    price_curve = []
-    cum_fund = 0.0
-    cum_combo = 0.0
-    base_price = prices[0] if prices else 1
+    fund_curve = []  # 【变量】纯基本面策略累计盈亏曲线
+    combo_curve = []  # 【变量】基本面+情绪策略累计盈亏曲线
+    price_curve = []  # 【变量】买入持有基准曲线(价格涨跌幅%)
+    cum_fund = 0.0  # 【变量】纯基本面累计盈亏游标
+    cum_combo = 0.0  # 【变量】组合策略累计盈亏游标
+    base_price = prices[0] if prices else 1  # 【变量】基准价(买入持有曲线起点)
 
     for i in range(n):
         d = dates[i]
@@ -3592,9 +3592,9 @@ def run_strategy_comparison(
         return round(sum(1 for t in trades if t["outcome"] == "win") / len(trades), 3)
 
     # Compute advanced metrics per strategy
-    sc_td = max(len(dates) * 252 // 365, 30) if dates else 252
-    fund_pnls = [t["pnl"] for t in all_trades_fund]
-    combo_pnls = [t["pnl"] for t in all_trades_combo]
+    sc_td = max(len(dates) * 252 // 365, 30) if dates else 252  # 【变量】估算交易日数(年化分母,至少 30 天)
+    fund_pnls = [t["pnl"] for t in all_trades_fund]  # 【变量】纯基本面策略每笔盈亏列表
+    combo_pnls = [t["pnl"] for t in all_trades_combo]  # 【变量】组合策略每笔盈亏列表
     adv_fund = (
         compute_advanced_metrics(trade_pnls=fund_pnls, total_trading_days=sc_td)
         if fund_pnls
@@ -3670,28 +3670,28 @@ def run_trailing_strategy(
     max_holding 天。离场后跳到最后离场日的下一天,保证交易不重叠。flip_exits 统计
     因情绪翻转而离场的笔数(horizon<max_holding 近似)。
     """
-    all_trades = []
-    varieties_to_test = [variety] if variety else _get_all_varieties_with_data()
+    all_trades = []  # 【变量】全部模拟交易记录(TradeRecord 列表)
+    varieties_to_test = [variety] if variety else _get_all_varieties_with_data()  # 【变量】待测试品种列表
 
     for var in varieties_to_test:
-        sent_data = _load_sentiment(var)
-        price_data = _load_price(var)
+        sent_data = _load_sentiment(var)  # 【调用函数】读取情绪 JSON
+        price_data = _load_price(var)  # 【调用函数】读取价格 JSON(带 fallback)
         if not sent_data or not price_data:
             continue
 
-        series = sent_data.get("data", {}).get("daily_series", [])
-        prices_raw = price_data.get("prices", [])
+        series = sent_data.get("data", {}).get("daily_series", [])  # 【变量】情绪每日序列
+        prices_raw = price_data.get("prices", [])  # 【变量】原始价格列表
         if len(series) < 20:
             continue
 
-        price_map = {}
+        price_map = {}  # 【变量】日期→收盘价查表
         for p in prices_raw:
             d = str(p["date"])[:10]
             price_map[d] = float(p["close"])
 
         # Build date-aligned arrays
-        dates = []
-        scores = []
+        dates = []  # 【变量】对齐后的交易日序列
+        scores = []  # 【变量】与 dates 对齐的情绪评分
         for s in series:
             d = s["date"]
             if d in price_map and d >= start_date and (not end_date or d <= end_date):
@@ -3699,29 +3699,29 @@ def run_trailing_strategy(
                 scores.append(s.get("avg_score", 0))
 
         # Generate trades with trailing exit
-        i = 0
+        i = 0  # 【变量】外层 while 游标(逐日推进;离场后跳到离场日下一天,交易不重叠)
         while i < len(dates):
-            signal = scores[i]
+            signal = scores[i]  # 【变量】当日情绪信号(触发阈值检查)
             if abs(signal) < signal_threshold:
                 i += 1
                 continue
 
             # --- ENTRY ---
-            direction = "long" if signal > 0 else "short"
-            entry_date = dates[i]
-            entry_px = price_map.get(entry_date, 0)
+            direction = "long" if signal > 0 else "short"  # 【变量】交易方向(正→多,负→空)
+            entry_date = dates[i]  # 【变量】入场日期
+            entry_px = price_map.get(entry_date, 0)  # 【变量】入场价
             if not entry_px:
                 i += 1
                 continue
 
             # --- FIND EXIT ---
-            exit_date = None
-            exit_px = None
+            exit_date = None  # 【变量】离场日期(在情绪翻转或 max_holding 处确定)
+            exit_px = None  # 【变量】离场价格(待查找)
 
             # 在之后最多 max_holding 天里找"情绪反转"日:多单等情绪转负、空单等转正。
             for j in range(i + 1, min(i + max_holding + 1, len(dates))):
-                later_score = scores[j]
-                later_date = dates[j]
+                later_score = scores[j]  # 【变量】后续第 j 天的情绪评分
+                later_date = dates[j]  # 【变量】后续第 j 天的日期
 
                 # Check sentiment reversal
                 if (
@@ -3730,15 +3730,15 @@ def run_trailing_strategy(
                     or direction == "short"
                     and later_score > 0
                 ):
-                    exit_date = later_date
+                    exit_date = later_date  # 【变量】情绪反转即离场(顺情绪波浪的反转点)
                     break
 
             # If no flip within max_holding, exit at max_holding day
             if exit_date is None:
-                exit_idx = min(i + max_holding, len(dates) - 1)
+                exit_idx = min(i + max_holding, len(dates) - 1)  # 【变量】无翻转则取最长持仓日
                 exit_date = dates[exit_idx]
 
-            exit_px = price_map.get(exit_date, 0)
+            exit_px = price_map.get(exit_date, 0)  # 【变量】离场价(按离场日收盘价)
             if not exit_px:
                 i += 1
                 continue
@@ -3753,7 +3753,7 @@ def run_trailing_strategy(
             holding_days = dates.index(exit_date) - dates.index(entry_date)
 
             all_trades.append(
-                TradeRecord(
+                TradeRecord(  # 【调用函数】构造结构化交易记录数据类
                     variety=var,
                     entry_date=entry_date,
                     exit_date=exit_date,
@@ -3763,7 +3763,7 @@ def run_trailing_strategy(
                     exit_price=round(exit_px, 2),
                     pnl_pct=round(pnl, 2),
                     outcome=outcome,
-                    horizon=holding_days,
+                    horizon=holding_days,  # 【变量】实际持仓天数(离场日-入场日)
                 )
             )
 
@@ -3774,17 +3774,17 @@ def run_trailing_strategy(
         return {"total_trades": 0, "message": "No trades generated"}
 
     # Compute statistics
-    wins = [t for t in all_trades if t.outcome == "win"]
-    losses = [t for t in all_trades if t.outcome == "loss"]
-    long_trades = [t for t in all_trades if t.direction == "long"]
-    short_trades = [t for t in all_trades if t.direction == "short"]
+    wins = [t for t in all_trades if t.outcome == "win"]  # 【变量】盈利交易列表
+    losses = [t for t in all_trades if t.outcome == "loss"]  # 【变量】亏损交易列表
+    long_trades = [t for t in all_trades if t.direction == "long"]  # 【变量】做多交易列表
+    short_trades = [t for t in all_trades if t.direction == "short"]  # 【变量】做空交易列表
 
-    pnls = [t.pnl_pct for t in all_trades]
+    pnls = [t.pnl_pct for t in all_trades]  # 【变量】每笔盈亏列表
 
     # Estimate trading days
     # 与 run_simulated_trading 同款估算:自然日天数折算成交易日;样本过少时用
     # len(pnls)*max_holding 兜底,保证年化指标分母不会太小。
-    all_entry_dates = sorted({t.entry_date for t in all_trades})
+    all_entry_dates = sorted({t.entry_date for t in all_trades})  # 【变量】全部入场日(去重升序)
     if len(all_entry_dates) >= 2:
         d0 = datetime.strptime(all_entry_dates[0], "%Y-%m-%d")
         d1 = datetime.strptime(all_entry_dates[-1], "%Y-%m-%d")
@@ -3873,14 +3873,14 @@ def _build_forward_filled_sent_map(
     """
     if not sent_data:
         return {}
-    series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))
-    raw = {str(s.get("date", ""))[:10]: float(s.get("avg_score", 0)) for s in series}
-    sd_sorted = sorted(raw)
-    out: dict[str, float] = {}
+    series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))  # 【变量】情绪日度序列(兼容 data.daily_series 与顶层 series 两种存储结构)
+    raw = {str(s.get("date", ""))[:10]: float(s.get("avg_score", 0)) for s in series}  # 【变量】date(截断到日)→ 平均情绪得分 的映射
+    sd_sorted = sorted(raw)  # 【变量】升序情绪日期列表(双指针推进用)
+    out: dict[str, float] = {}  # 【变量】价格日期 → 前向填充情绪评分 的输出容器
     # 双指针:sd_sorted 已升序,对每个价格日期 d 把 <=d 的最新情绪逐步推进给 last_s,
     # 得到"当日能看到的最近一次情绪",即前向填充(不偷看未来)。
-    last_s = 0.0
-    si = 0
+    last_s = 0.0  # 【变量】当前已能看到的最新情绪评分(<= 当日,未命中时取 0)
+    si = 0  # 【变量】sd_sorted 游标(双指针中"已消费的情绪日期数")
     for d in price_dates:
         while si < len(sd_sorted) and sd_sorted[si] <= d:
             last_s = raw[sd_sorted[si]]
@@ -3903,7 +3903,7 @@ def _make_signal(
         "date": date,
         "variety": variety,
         "action": action,
-        "strength": round(strength, 3),
+        "strength": round(strength, 3),  # 【变量】策略原生信号强度(去 3 位小数,量纲随策略不同)
         # strength_pct = min(|strength|/scale, 1.0):把各策略不同量纲的强度归一化到 [0,1],
         # 跨策略可比,前端据此画强度条。
         "strength_pct": round(min(abs(strength) / scale, 1.0), 3),
@@ -3959,37 +3959,37 @@ def latest_trading_signal(
     """
     if not variety:
         return None
-    price_data = _load_price(variety)
+    price_data = _load_price(variety)  # 【调用函数】加载品种价格数据(多级 fallback 文件)
     if not price_data or not price_data.get("prices"):
         return None
-    px = price_data["prices"]
-    closes = [float(x["close"]) for x in px]
-    highs = [float(x["high"]) for x in px]
-    lows = [float(x["low"]) for x in px]
-    dates = [str(x["date"])[:10] for x in px]
-    n = len(closes)
+    px = price_data["prices"]  # 【变量】K线列表(每根:open/high/low/close/volume/date)
+    closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列
+    highs = [float(x["high"]) for x in px]  # 【变量】最高价序列
+    lows = [float(x["low"]) for x in px]  # 【变量】最低价序列
+    dates = [str(x["date"])[:10] for x in px]  # 【变量】K线日期序列(截断到日)
+    n = len(closes)  # 【变量】K线根数
     if n == 0:
         return None
     # "今天" = 该品种价格数据最后一条的日期。注意这里不看用户传入的 end_date,
     # 因为"今日操作"要回答的是当前最新交易日,而不是某个历史回测窗口的最后一天。
-    today = dates[-1]
-    i = n - 1
+    today = dates[-1]  # 【变量】"今天" = 最新交易日(最后一条K线日期)
+    i = n - 1  # 【变量】最新K线下标(回看窗与信号判定的锚点)
 
     # 情绪加载(按各策略原样选择)并向前填充到 today
     if strategy in ("fixed", "trailing"):
         sent_data = _load_sentiment(variety)
     elif strategy in ("contrarian", "adaptive_sent", "momentum_ad"):
-        sent_data = _load_trends(variety) or _load_sentiment(variety)
+        sent_data = _load_trends(variety) or _load_sentiment(variety)  # 【调用函数】趋势情绪优先,缺失时回退基础情绪
     elif strategy == "compare":
         sent_data = _load_trends(variety)
     else:
         sent_data = None
-    sent_map = _build_forward_filled_sent_map(sent_data, dates)
-    ss = sent_map.get(today, 0.0)
+    sent_map = _build_forward_filled_sent_map(sent_data, dates)  # 【调用函数】前向填充情绪到全部价格日期
+    ss = sent_map.get(today, 0.0)  # 【变量】今日前向填充情绪评分(默认 0)
 
     # ── 技术策略(MA cross / MACD / RSI / Bollinger / Turtle / ATR)──
-    if strategy in TECH_KEYS:
-        return _latest_technical_signal(
+    if strategy in TECH_KEYS:  # 【变量】TECH_KEYS 注册表判断属于技术策略族
+        return _latest_technical_signal(  # 【调用函数】技术策略最新信号(透传全部指标参数,复用回测信号判定)
             strategy,
             variety,
             closes,
@@ -4020,7 +4020,7 @@ def latest_trading_signal(
 
     # ── fixed / trailing:纯情绪阈值 ──
     if strategy in ("fixed", "trailing"):
-        if n < 20 or not sent_data:
+        if n < 20 or not sent_data:  # 【变量】至少 20 根K线且存在情绪数据才出信号(历史窗口下限)
             return None
         if ss > signal_threshold:
             sig = _make_signal(
@@ -4046,9 +4046,9 @@ def latest_trading_signal(
             return None
         mom_ret = (
             (closes[i] - closes[i - lookback]) / closes[i - lookback] if closes[i - lookback] else 0
-        )
-        pct = mom_ret * 100
-        if mom_ret > 0.005:
+        )  # 【变量】回看 lookback 日累计收益率(最新收盘相对彼时)
+        pct = mom_ret * 100  # 【变量】收益率百分比(仅用于 reason 文案)
+        if mom_ret > 0.005:  # 【变量】动量阈值 0.5%:超过看多
             sig = _make_signal(
                 variety,
                 today,
@@ -4057,7 +4057,7 @@ def latest_trading_signal(
                 f"回看{lookback}日收益 {pct:.2f}% > 0.5%",
                 scale=0.05,
             )
-        elif mom_ret < -0.005:
+        elif mom_ret < -0.005:  # 【变量】动量阈值 -0.5%:低于看空
             sig = _make_signal(
                 variety,
                 today,
@@ -4081,8 +4081,8 @@ def latest_trading_signal(
     if strategy == "donchian":
         if n < period + 1:
             return None
-        hh = max(highs[i - period : i])
-        ll = min(lows[i - period : i])
+        hh = max(highs[i - period : i])  # 【变量】period 日唐奇安通道上轨(前 period 根最高价峰值)
+        ll = min(lows[i - period : i])  # 【变量】period 日唐奇安通道下轨(前 period 根最低价谷值)
         if closes[i] > hh:
             sig = _make_signal(
                 variety,
@@ -4113,7 +4113,7 @@ def latest_trading_signal(
             (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
             if closes[i - trend_window]
             else 0
-        )
+        )  # 【变量】trend_window 日收益率(判定趋势方向/是否与情绪背离)
         if trend < -0.01 and ss > 0.1:
             main = _make_signal(
                 variety,
@@ -4148,10 +4148,10 @@ def latest_trading_signal(
             (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
             if closes[i - trend_window]
             else 0
-        )
-        trend_pct = abs(trend) * 100
-        diverge_bearish = trend > 0.01 and ss < -0.1
-        diverge_bullish = trend < -0.01 and ss > 0.1
+        )  # 【变量】trend_window 日收益率(判定趋势方向)
+        trend_pct = abs(trend) * 100  # 【变量】趋势强度百分比(强/中/弱分档用)
+        diverge_bearish = trend > 0.01 and ss < -0.1  # 【变量】看空背离:价格涨 + 情绪看空
+        diverge_bullish = trend < -0.01 and ss > 0.1  # 【变量】看多背离:价格跌 + 情绪看多
         if diverge_bearish:
             main = _make_signal(variety, today, "sell", abs(ss), "价格上涨 + 情绪看空(背离)→ 卖出")
         elif diverge_bullish:
@@ -4207,11 +4207,11 @@ def latest_trading_signal(
         # O(n) 纯动量基线重放:复刻 run_momentum_adaptive 里 baseline_is_good 的
         # 运行态(依赖最近 10 笔已平仓基线动量交易的盈亏)。重放窗口按默认回测
         # start_date="2025-01-01"(本函数不接收回测日期,聚焦"今天"视角)。
-        baseline_recent_pnls: list[float] = []
-        pos_b = 0
-        entry_px_b = 0.0
-        entry_d_b = ""
-        entry_i_b = 0
+        baseline_recent_pnls: list[float] = []  # 【变量】最近 10 笔已平仓基线动量交易盈亏(环形缓冲)
+        pos_b = 0  # 【变量】基线持仓方向:0 空仓 / 1 多 / -1 空
+        entry_px_b = 0.0  # 【变量】基线持仓入场价
+        entry_d_b = ""  # 【变量】基线持仓入场日期
+        entry_i_b = 0  # 【变量】基线持仓入场K线下标(算持仓时长)
         for j in range(max(lookback, trend_window), n - 1):
             dj = dates[j]
             if dj < "2025-01-01":
@@ -4220,14 +4220,14 @@ def latest_trading_signal(
                 (closes[j] - closes[j - lookback]) / closes[j - lookback]
                 if closes[j - lookback]
                 else 0
-            )
-            b_sig = 1 if b_ret > 0.005 else (-1 if b_ret < -0.005 else 0)
-            b_exit_px = closes[min(j + hold, n - 1)]
+            )  # 【变量】基线策略在 j 日的回看收益率
+            b_sig = 1 if b_ret > 0.005 else (-1 if b_ret < -0.005 else 0)  # 【变量】基线动量信号:±0.5% 阈值三态(1/-1/0)
+            b_exit_px = closes[min(j + hold, n - 1)]  # 【变量】基线持仓满 hold 日后的离场价
             if pos_b != 0 and entry_d_b and j - entry_i_b >= hold:
                 if pos_b == 1:
-                    bl_pnl = (b_exit_px - entry_px_b) / entry_px_b * 100
+                    bl_pnl = (b_exit_px - entry_px_b) / entry_px_b * 100  # 【变量】多单基线平仓盈亏(%)
                 else:
-                    bl_pnl = (entry_px_b - b_exit_px) / entry_px_b * 100
+                    bl_pnl = (entry_px_b - b_exit_px) / entry_px_b * 100  # 【变量】空单基线平仓盈亏(%)
                 baseline_recent_pnls.append(bl_pnl)
                 if len(baseline_recent_pnls) > 10:
                     baseline_recent_pnls.pop(0)
@@ -4243,27 +4243,27 @@ def latest_trading_signal(
                     entry_px_b = closes[j]
                     entry_d_b = dj
                     entry_i_b = j
-        baseline_is_good = False
+        baseline_is_good = False  # 【变量】基线质量门:近 5 笔累计盈利且胜率 >=45% 才算好基线
         if len(baseline_recent_pnls) >= 5:
-            recent_wr = sum(1 for p in baseline_recent_pnls if p > 0.15) / len(baseline_recent_pnls)
-            recent_total = sum(baseline_recent_pnls)
+            recent_wr = sum(1 for p in baseline_recent_pnls if p > 0.15) / len(baseline_recent_pnls)  # 【变量】近 5 笔基线胜率(单笔盈亏 >0.15% 记为胜)
+            recent_total = sum(baseline_recent_pnls)  # 【变量】近 5 笔基线累计盈亏(%)
             baseline_is_good = recent_total > 0 and recent_wr >= 0.45
 
         # 今日决策(镜像 run_momentum_adaptive 主循环里的自适应决策树)
         mom_ret = (
             (closes[i] - closes[i - lookback]) / closes[i - lookback] if closes[i - lookback] else 0
-        )
-        mom_sig = 1 if mom_ret > 0.005 else (-1 if mom_ret < -0.005 else 0)
+        )  # 【变量】今日回看收益
+        mom_sig = 1 if mom_ret > 0.005 else (-1 if mom_ret < -0.005 else 0)  # 【变量】今日动量信号:±0.5% 阈值三态
         trend = (
             (closes[i] - closes[i - trend_window]) / closes[i - trend_window]
             if closes[i - trend_window]
             else 0
-        )
-        trend_pct = abs(trend) * 100
-        diverge_bearish = trend > 0.01 and ss < -0.1
-        diverge_bullish = trend < -0.01 and ss > 0.1
+        )  # 【变量】今日趋势收益率
+        trend_pct = abs(trend) * 100  # 【变量】今日趋势强度百分比
+        diverge_bearish = trend > 0.01 and ss < -0.1  # 【变量】看空背离(涨 + 情绪空)
+        diverge_bullish = trend < -0.01 and ss > 0.1  # 【变量】看多背离(跌 + 情绪多)
 
-        strength_scale = 1.0
+        strength_scale = 1.0  # 【变量】强度归一化标尺:1.0=情绪/基本面得分;0.05=动量/突破(5% 封顶)
         if diverge_bearish:
             action, strength, reason = "sell", abs(ss), "价格上涨 + 情绪看空(背离)→ 卖出"
         elif diverge_bullish:
@@ -4294,9 +4294,9 @@ def latest_trading_signal(
             action = "buy" if ss < -0.1 else ("sell" if ss > 0.1 else "hold")
             strength = abs(ss)
             reason = "弱趋势 + 基线亏损 → 逆情绪"
-        main = _make_signal(variety, today, action, strength, reason, scale=strength_scale)
+        main = _make_signal(variety, today, action, strength, reason, scale=strength_scale)  # 【调用函数】构建主信号(自适应决策树输出)
         if mom_sig == 1:
-            sub = _make_signal(variety, today, "buy", abs(mom_ret), "纯动量基线看多", scale=0.05)
+            sub = _make_signal(variety, today, "buy", abs(mom_ret), "纯动量基线看多", scale=0.05)  # 【调用函数】构建基线子信号(纯动量参考)
         elif mom_sig == -1:
             sub = _make_signal(variety, today, "sell", abs(mom_ret), "纯动量基线看空", scale=0.05)
         else:
@@ -4305,10 +4305,10 @@ def latest_trading_signal(
 
     # ── compare:基本面 / 基本面+情绪 ──
     if strategy == "compare":
-        if n < 21 or not sent_data:
+        if n < 21 or not sent_data:  # 【变量】至少 21 根K线且存在情绪才计算(均线窗口 5/20 需求)
             return None
-        factors = _compute_fundamental_factors(px)
-        fs = factors["fund_score"][i]
+        factors = _compute_fundamental_factors(px)  # 【调用函数】计算均线/量比/动量等基本面因子序列
+        fs = factors["fund_score"][i]  # 【变量】最新交易日基本面综合得分
         if fs > fund_threshold:
             fund_sig = _make_signal(
                 variety, today, "buy", abs(fs), f"基本面得分 {fs:.3f} > 阈值 {fund_threshold:.2f}"
@@ -4354,7 +4354,7 @@ def _get_all_varieties_with_data() -> list[str]:
     (去掉 _sentiment 后缀)。docstring 说"both sentiment and price",但实现只检查
     情绪文件,是否真有价格文件由各策略后续 _load_price 自行兜底,【待确认】。
     """
-    varieties = set()
+    varieties = set()  # 【变量】品种代码集合(去重)
     for f in SENTIMENT_DIR.glob("*_sentiment.json"):
         varieties.add(f.stem.replace("_sentiment", ""))
     return sorted(varieties)
@@ -4377,29 +4377,29 @@ def compare_varieties(varieties: list[str]) -> list[dict]:
     占比则退回 bull-bear(看多占比-看空占比)。label 为空或 neutral 时按 score 的
     ±0.1 阈值给"偏多/偏空"。
     """
-    result = []
+    result = []  # 【变量】每品种对比指标 dict 列表(按 |score| 降序)
     for var in varieties:
-        sent = _load_sentiment(var)
+        sent = _load_sentiment(var)  # 【调用函数】加载品种情绪数据(空则跳过该品种)
         if not sent:
             continue
-        ss = sent.get("data", {}).get("social_sentiment", {})
-        series = sent.get("data", {}).get("daily_series", [])
+        ss = sent.get("data", {}).get("social_sentiment", {})  # 【变量】聚合情绪子结构(多空占比/总分/标签)
+        series = sent.get("data", {}).get("daily_series", [])  # 【变量】日度情绪序列(7 日趋势用)
         series[-1] if series else {}  # 遗留:取了最新一天但结果未使用
 
         # 7-day trend
         if len(series) >= 7:
-            recent_scores = [s.get("avg_score", 0) for s in series[-7:]]
-            trend_7d = round(sum(recent_scores) / 7, 3)
+            recent_scores = [s.get("avg_score", 0) for s in series[-7:]]  # 【变量】最近 7 日情绪得分列表
+            trend_7d = round(sum(recent_scores) / 7, 3)  # 【变量】7 日均情绪得分(近一周趋势)
         else:
             trend_7d = 0
 
         # Compute score from bull/bear ratio if overall_score is missing or 0
-        bull = ss.get("bullish_ratio", 0) or 0
-        bear = ss.get("bearish_ratio", 0) or 0
-        raw_score = ss.get("overall_score", 0) or 0
+        bull = ss.get("bullish_ratio", 0) or 0  # 【变量】看多占比(缺省 0)
+        bear = ss.get("bearish_ratio", 0) or 0  # 【变量】看空占比(缺省 0)
+        raw_score = ss.get("overall_score", 0) or 0  # 【变量】情绪总分(overall_score,为 0 时退回 bull-bear)
         if raw_score == 0 and (bull > 0 or bear > 0):
             raw_score = round(bull - bear, 3)
-        label = ss.get("overall_sentiment_label", "neutral")
+        label = ss.get("overall_sentiment_label", "neutral")  # 【变量】情绪标签(空/neutral 时按 ±0.1 阈值重判)
         if not label or label == "neutral":
             if raw_score > 0.1:
                 label = "偏多"
@@ -4435,24 +4435,24 @@ def get_all_variety_scores() -> list[dict]:
     退回 bull-bear),区别只是这里 label 阈值用 ±0.15(更宽),且 bull/bear 转成
     百分比整数(bull*100)供前端画占比条。
     """
-    varieties = []
+    varieties = []  # 【变量】全品种得分记录列表(按 |score| 降序)
     for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
-        var = f.stem.replace("_sentiment", "")
-        sent = _load_sentiment(var)
+        var = f.stem.replace("_sentiment", "")  # 【变量】由文件名反推品种代码
+        sent = _load_sentiment(var)  # 【调用函数】加载品种情绪数据(空则跳过)
         if not sent:
             continue
-        ss = sent.get("data", {}).get("social_sentiment", {})
-        series = sent.get("data", {}).get("daily_series", [])
-        latest = series[-1] if series else {}
+        ss = sent.get("data", {}).get("social_sentiment", {})  # 【变量】聚合情绪子结构(多空占比/总分/标签)
+        series = sent.get("data", {}).get("daily_series", [])  # 【变量】日度情绪序列
+        latest = series[-1] if series else {}  # 【变量】最新一天情绪数据(date 字段用)
 
         # Compute score from bull/bear ratio if overall_score is 0
-        bull = ss.get("bullish_ratio", 0) or 0
-        bear = ss.get("bearish_ratio", 0) or 0
-        raw_score = ss.get("overall_score", 0) or 0
+        bull = ss.get("bullish_ratio", 0) or 0  # 【变量】看多占比(缺省 0)
+        bear = ss.get("bearish_ratio", 0) or 0  # 【变量】看空占比(缺省 0)
+        raw_score = ss.get("overall_score", 0) or 0  # 【变量】情绪总分(overall_score,为 0 时退回 bull-bear)
         if raw_score == 0 and (bull > 0 or bear > 0):
             raw_score = round(bull - bear, 3)
 
-        label = ss.get("overall_sentiment_label", "neutral")
+        label = ss.get("overall_sentiment_label", "neutral")  # 【变量】情绪标签(空/neutral 时按 ±0.15 阈值重判)
         if not label or label == "neutral":
             if raw_score > 0.15:
                 label = "偏多"
@@ -4466,8 +4466,8 @@ def get_all_variety_scores() -> list[dict]:
                 "sector": sent.get("sector", ""),
                 "score": raw_score,
                 "label": label,
-                "bullish": round(bull * 100),
-                "bearish": round(bear * 100),
+                "bullish": round(bull * 100),  # 【变量】看多占比转百分比整数(前端占比条用)
+                "bearish": round(bear * 100),  # 【变量】看空占比转百分比整数(前端占比条用)
                 "posts": ss.get("total_posts_analyzed", 0),
                 "date": latest.get("date", ""),
             }

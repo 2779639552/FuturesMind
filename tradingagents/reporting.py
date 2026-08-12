@@ -6,19 +6,27 @@ CLI and ``TradingAgentsGraph.save_reports`` both call this, so a headless / API
 run produces the same on-disk report tree a CLI run does.
 """
 
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime  # 【调用包】生成报告时间戳
+from pathlib import Path  # 【调用包】跨平台路径操作与写盘
 
 
+# 【功能】把一次完整运行的各段报告写入 save_path 目录树
+#         (1_analysts / 2_research / 3_trading / 4_risk / 5_portfolio),
+#         并生成合并的 complete_report.md。
+# 【参数】final_state:运行终态字典(含 market_report / investment_debate_state 等报告字段);
+#         ticker:资产代码(用于报告标题);save_path:保存目录(不存在时自动创建)。
+# 【返回】Path:complete_report.md 的完整路径。
+# 【关键】CLI 与 API(save_reports)共用此写入器,保证两种入口落盘结果一致;
+#         各段只在对应报告字段存在时才写盘,缺段自动跳过。
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
-    save_path = Path(save_path)
-    save_path.mkdir(parents=True, exist_ok=True)
-    sections = []
+    save_path = Path(save_path)  # 【变量】规整为 Path 对象(兼容 str / Path 两种入参)
+    save_path.mkdir(parents=True, exist_ok=True)  # 【调用函数】递归创建目录,已存在不报错
+    sections = []  # 【变量】累积各段 Markdown 文本,最后拼进 complete_report.md
 
     # 1. Analysts
-    analysts_dir = save_path / "1_analysts"
-    analyst_parts = []
+    analysts_dir = save_path / "1_analysts"  # 【变量】分析师报告子目录
+    analyst_parts = []  # 【变量】(分析师名, 报告正文) 元组列表,用于拼 I 段
     if final_state.get("market_report"):
         analysts_dir.mkdir(exist_ok=True)
         (analysts_dir / "market.md").write_text(final_state["market_report"], encoding="utf-8")
@@ -45,9 +53,9 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
 
     # 2. Research
     if final_state.get("investment_debate_state"):
-        research_dir = save_path / "2_research"
-        debate = final_state["investment_debate_state"]
-        research_parts = []
+        research_dir = save_path / "2_research"  # 【变量】研究辩论报告子目录
+        debate = final_state["investment_debate_state"]  # 【变量】研究辩论状态(Bull/Bear/Manager)
+        research_parts = []  # 【变量】(研究员名, 报告正文) 元组列表,用于拼 II 段
         if debate.get("bull_history"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "bull.md").write_text(debate["bull_history"], encoding="utf-8")
@@ -77,9 +85,9 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
 
     # 4. Risk Management
     if final_state.get("risk_debate_state"):
-        risk_dir = save_path / "4_risk"
-        risk = final_state["risk_debate_state"]
-        risk_parts = []
+        risk_dir = save_path / "4_risk"  # 【变量】风控辩论报告子目录
+        risk = final_state["risk_debate_state"]  # 【变量】风控辩论状态(激进/保守/中性/组合经理)
+        risk_parts = []  # 【变量】(风控分析师名, 报告正文) 元组列表,用于拼 IV 段
         if risk.get("aggressive_history"):
             risk_dir.mkdir(exist_ok=True)
             (risk_dir / "aggressive.md").write_text(risk["aggressive_history"], encoding="utf-8")
@@ -108,6 +116,6 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             )
 
     # Write consolidated report
-    header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
+    header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"  # 【变量】合并报告标题与生成时间
+    (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")  # 【调用函数】UTF-8 落盘合并报告
     return save_path / "complete_report.md"

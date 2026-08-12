@@ -32,23 +32,23 @@ Usage:
 #   - 默认管理员:首次启动时自动创建 admin / agentsense2026(见 ensure_default_user)。
 # =============================================================================
 
-import hashlib
-import json
-import os
-import sqlite3
-import threading
-from contextlib import contextmanager
-from datetime import datetime, timedelta
-from pathlib import Path
+import hashlib  # 【调用包】SHA256 密码哈希(用户密码安全存储)
+import json  # 【调用包】JSON 序列化(存 varieties/platform_breakdown/data 等复杂字段)
+import os  # 【调用包】用户主目录定位(数据库默认路径)
+import sqlite3  # 【调用包】SQLite 数据库连接与操作
+import threading  # 【调用包】线程局部变量(每线程独立数据库连接)
+from contextlib import contextmanager  # 【调用包】上下文管理器装饰器(实现 _conn 自动提交/回滚)
+from datetime import datetime, timedelta  # 【调用包】日期时间计算(时间序列回溯)
+from pathlib import Path  # 【调用包】跨平台路径对象(数据库路径/目录创建)
 
-DB_DIR = Path(os.path.expanduser("~/.tradingagents"))
-DB_PATH = DB_DIR / "agentsense.db"
+DB_DIR = Path(os.path.expanduser("~/.tradingagents"))  # 【变量】数据库所在目录(~/.tradingagents)
+DB_PATH = DB_DIR / "agentsense.db"  # 【变量】SQLite 数据库文件完整路径
 
 # ── Singleton connection with thread-local ──────────────────────────────
 
 # 线程局部存储对象:每个线程访问 _local.db 时都会得到"只属于该线程"的属性副本。
 # 因为 SQLite 连接对象默认不允许跨线程使用,用线程局部变量保证线程安全。
-_local = threading.local()
+_local = threading.local()  # 【变量】线程局部存储:每个线程独立的 DB 实例槽位(保证线程安全)
 
 
 def get_db() -> "AgentSenseDB":
@@ -61,7 +61,7 @@ def get_db() -> "AgentSenseDB":
                后续同一线程内的调用直接复用,避免重复建连与重复建表。
     """
     if not hasattr(_local, "db"):
-        _local.db = AgentSenseDB()
+        _local.db = AgentSenseDB()  # 【变量】_local.db:当前线程首次创建的 DB 实例(后续复用)
     return _local.db
 
 
@@ -83,9 +83,9 @@ class AgentSenseDB:
         【返回】无。
         【关键逻辑】self.path 为实际连接使用的路径;Path 对象用于目录创建。
         """
-        self.path = str(path or DB_PATH)
+        self.path = str(path or DB_PATH)  # 【变量】实际连接路径(未传参时用全局默认)
         self.path_obj = Path(self.path)
-        self.path_obj.parent.mkdir(parents=True, exist_ok=True)
+        self.path_obj.parent.mkdir(parents=True, exist_ok=True)  # 【调用函数】确保数据库父目录存在(不存在则递归创建)
         self._init_tables()
 
     @contextmanager
@@ -101,10 +101,10 @@ class AgentSenseDB:
             - PRAGMA journal_mode=WAL:开启 WAL 日志模式,读写可并发,性能更好。
             - PRAGMA foreign_keys=ON:开启外键约束(本项目表间关联较弱,为健壮性保留)。
         """
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        conn = sqlite3.connect(self.path)  # 【调用函数】建立 SQLite 连接(每次操作新建,用完即关)
+        conn.row_factory = sqlite3.Row  # 【变量】row_factory:让结果行支持列名访问(row["id"])
+        conn.execute("PRAGMA journal_mode=WAL")  # 【调用函数】开启 WAL 日志模式(支持并发读写)
+        conn.execute("PRAGMA foreign_keys=ON")  # 【调用函数】开启外键约束(为健壮性保留)
         try:
             yield conn
             conn.commit()
@@ -258,7 +258,7 @@ class AgentSenseDB:
 
         Insert or ignore posts. Returns count of new posts inserted.
         """
-        count = 0
+        count = 0  # 【变量】count:本次真正新增的帖子条数(重复 note_id 不计)
         with self._conn() as c:
             for p in posts:
                 try:
@@ -283,7 +283,7 @@ class AgentSenseDB:
                             p.get("like_count", 0) or 0,
                             p.get("comment_count", 0) or 0,
                             p.get("share_count", 0) or 0,
-                            json.dumps(p.get("varieties", []), ensure_ascii=False),
+                            json.dumps(p.get("varieties", []), ensure_ascii=False),  # 【调用函数】把品种列表序列化为 JSON 文本存库
                         ),
                     )
                     if c.rowcount > 0:
@@ -307,8 +307,8 @@ class AgentSenseDB:
         【返回】list[dict]: 匹配的帖子字典列表,按发布时间倒序。
         【关键逻辑】动态拼接 WHERE 条件;品种按 JSON 数组文本模糊匹配。
         """
-        conditions = []
-        params = []
+        conditions = []  # 【变量】conditions:动态拼接的 WHERE 条件列表
+        params = []  # 【变量】params:与 conditions 一一对应的 SQL 参数
         if platform:
             conditions.append("platform = ?")
             params.append(platform)
@@ -401,7 +401,7 @@ class AgentSenseDB:
                     data.get("neutral_ratio", 0),
                     data.get("total_notes", 0),
                     data.get("author_count", 0),
-                    json.dumps(data.get("platform_breakdown", {}), ensure_ascii=False),
+                    json.dumps(data.get("platform_breakdown", {}), ensure_ascii=False),  # 【调用函数】把平台分布字典序列化为 JSON 文本存库
                 ),
             )
 
@@ -413,7 +413,7 @@ class AgentSenseDB:
         【返回】list[dict]: sentiment_daily 表中的记录列表(按日期升序)。
         【关键逻辑】先计算起始日期(since),再按 variety 与 date 范围查询。
         """
-        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")  # 【变量】since:回溯起始日期(YYYY-MM-DD,近 days 天)
         with self._conn() as c:
             rows = c.execute(
                 "SELECT * FROM sentiment_daily WHERE variety=? AND date>=? ORDER BY date",
@@ -453,7 +453,7 @@ class AgentSenseDB:
                     title,
                     message,
                     severity,
-                    json.dumps(data or {}, ensure_ascii=False),
+                    json.dumps(data or {}, ensure_ascii=False),  # 【调用函数】把附加数据字典序列化为 JSON 文本存库
                 ),
             )
             return c.lastrowid
@@ -524,7 +524,7 @@ class AgentSenseDB:
         【返回】无。
         【关键逻辑】status 由 error 是否为空决定;finished_at 由 SQL 写为当前时间。
         """
-        status = "error" if error else "success"
+        status = "error" if error else "success"  # 【变量】status:结束状态(error=有错误,否则 success)
         with self._conn() as c:
             c.execute(
                 "UPDATE collection_log SET status=?, posts_collected=?, posts_after_filter=?, error_msg=?, finished_at=datetime('now') WHERE id=?",
@@ -555,7 +555,7 @@ class AgentSenseDB:
         【返回】bool: 创建成功返回 True;用户名重复时捕获 IntegrityError 返回 False。
         【关键逻辑】密码绝不明文存储;sha256 哈希后落库。
         """
-        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest()  # 【调用函数】SHA256 哈希明文密码(绝不存明文);【变量】pwd_hash:哈希后的密码摘要
         try:
             with self._conn() as c:
                 c.execute(
@@ -573,7 +573,7 @@ class AgentSenseDB:
         【参数】username: 用户名;password: 明文密码。
         【返回】bool: 匹配返回 True,否则 False。
         """
-        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest()  # 【调用函数】SHA256 哈希输入密码,与库中记录比对
         with self._conn() as c:
             row = c.execute(
                 "SELECT id FROM users WHERE username=? AND password_hash=?", (username, pwd_hash)
@@ -591,7 +591,7 @@ class AgentSenseDB:
         Create default admin if no users exist.
         """
         with self._conn() as c:
-            count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]  # 【变量】count:当前用户总数(判断是否需要建默认管理员)
         if count == 0:
             self.create_user("admin", "agentsense2026", is_admin=True)
 
@@ -715,11 +715,11 @@ class AgentSenseDB:
         【关键逻辑】只统计 outcome != 'pending' 的已结算信号;胜率=胜场/总场。
         """
         with self._conn() as c:
-            total = c.execute(
+            total = c.execute(  # 【变量】total:已结算信号总数(不含 pending)
                 "SELECT COUNT(*) FROM trade_signals WHERE outcome != 'pending'"
             ).fetchone()[0]
             wins = c.execute("SELECT COUNT(*) FROM trade_signals WHERE outcome='win'").fetchone()[0]
-            avg_pnl = c.execute(
+            avg_pnl = c.execute(  # 【变量】avg_pnl:已结算信号的平均盈亏百分比
                 "SELECT AVG(pnl_pct) FROM trade_signals WHERE outcome != 'pending'"
             ).fetchone()[0]
         return {

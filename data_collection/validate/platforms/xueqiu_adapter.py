@@ -22,22 +22,22 @@ needs_detail_fetch=False：雪球搜索接口已返回全文+互动数据，无�
   - normalize: 统一 Schema；纯转发(转帖)且无正文的条目会被丢弃
 """
 
-import json
-import logging
-import re
-import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any
+import json  # 【调用包】Cookie 文件 JSON 解析
+import logging  # 【调用包】日志记录(会话建立/搜索)
+import re  # 【调用包】标题/正文 HTML 标签与实体清洗
+import time  # 【调用包】页面等待/页间延时
+from datetime import datetime  # 【调用包】毫秒时间戳→日期字符串
+from pathlib import Path  # 【调用包】Cookie 文件路径构建
+from typing import Any  # 【调用包】类型注解(浏览器对象等)
 
-from .base import PlatformAdapter
+from .base import PlatformAdapter  # 【调用包】基类接口契约(适配器抽象基类)
 
 logger = logging.getLogger("platforms.xueqiu")
 
-CREDENTIALS_DIR = Path(__file__).parent.parent / "credentials"
-COOKIE_FILE = CREDENTIALS_DIR / "xueqiu_cookie.txt"
+CREDENTIALS_DIR = Path(__file__).parent.parent / "credentials"  # 【变量】凭证根目录(../credentials)
+COOKIE_FILE = CREDENTIALS_DIR / "xueqiu_cookie.txt"  # 【变量】雪球登录 Cookie 文件路径
 
-SEARCH_TIMEOUT = 25
+SEARCH_TIMEOUT = 25  # 【变量】搜索超时等待秒数
 
 
 class XueqiuAdapter(PlatformAdapter):
@@ -53,12 +53,12 @@ class XueqiuAdapter(PlatformAdapter):
 
     def __init__(self):
         """初始化浏览器相关状态，均在 init() 中真正创建。"""
-        self._playwright: Any = None
-        self._browser: Any = None
-        self._context: Any = None
-        self._page: Any = None
-        self._intercepted: list[dict] = []
-        self._user_cookies: dict = {}  # 从 Cookie 文件解析出的用户 Cookie
+        self._playwright: Any = None  # 【变量】playwright 控制器
+        self._browser: Any = None  # 【变量】Chromium 浏览器实例
+        self._context: Any = None  # 【变量】浏览器上下文(视口/UA)
+        self._page: Any = None  # 【变量】当前页面(浏览器内 fetch 的执行处)
+        self._intercepted: list[dict] = []  # 【待确认】初始化但未见使用(疑似预留拦截器字段)
+        self._user_cookies: dict = {}  # 【变量】从 Cookie 文件解析出的用户 Cookie
 
     # ═══════════════════════════════════════════════════════════
     # 生命周期
@@ -76,22 +76,22 @@ class XueqiuAdapter(PlatformAdapter):
            最后访问行情页 /hq 把整个会话"跑热"，之后 fetch 搜索接口才稳。
         """
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.sync_api import sync_playwright  # 【调用包】Playwright 同步 API(驱动 Chromium 过 WAF)
         except ImportError:
             raise Exception(
                 "Playwright not installed. Run: pip install playwright && playwright install chromium"
             ) from None
 
-        self._user_cookies = self._load_cookies()
+        self._user_cookies = self._load_cookies()  # 【调用函数】解析 Cookie 文件→用户 Cookie 字典
 
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(
+        self._playwright = sync_playwright().start()  # 【调用函数】启动 Playwright 控制器
+        self._browser = self._playwright.chromium.launch(  # 【调用函数】启动无头 Chromium(反爬参数过 WAF)
             headless=True,
             # 关键反爬参数: 禁用"自动化受控"特性 + 无沙箱(容器/服务器环境需要)
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
         )
 
-        self._context = self._browser.new_context(
+        self._context = self._browser.new_context(  # 【调用函数】创建浏览器上下文(设定视口/UA)
             viewport={"width": 1280, "height": 800},
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -99,24 +99,24 @@ class XueqiuAdapter(PlatformAdapter):
                 "Chrome/130.0.0.0 Safari/537.36"
             ),
         )
-        self._page = self._context.new_page()
+        self._page = self._context.new_page()  # 【调用函数】创建新页面
 
         # 反检测: 覆盖 navigator.webdriver 为 undefined，伪装成真人浏览器
-        self._page.add_init_script(
+        self._page.add_init_script(  # 【调用函数】注入反检测脚本(抹掉 navigator.webdriver 标记)
             "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
         )
 
         # 访问首页
         logger.info("Navigating to xueqiu.com...")
         try:
-            self._page.goto("https://xueqiu.com/", wait_until="domcontentloaded", timeout=30000)
+            self._page.goto("https://xueqiu.com/", wait_until="domcontentloaded", timeout=30000)  # 【调用函数】访问首页(让雪球种下会话 Cookie)
             time.sleep(3)  # 等首页加载完、会话 Cookie 落地
         except Exception as e:
             logger.warning(f"Homepage: {e}")
 
         # 设置登录 Cookie
         if self._user_cookies:
-            self._context.add_cookies(
+            self._context.add_cookies(  # 【调用函数】注入登录 Cookie(domain=.xueqiu.com, 反爬关键)
                 [
                     {"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"}
                     for k, v in self._user_cookies.items()
@@ -126,7 +126,7 @@ class XueqiuAdapter(PlatformAdapter):
 
         # 访问行情页建立完整会话
         try:
-            self._page.goto("https://xueqiu.com/hq", wait_until="domcontentloaded", timeout=20000)
+            self._page.goto("https://xueqiu.com/hq", wait_until="domcontentloaded", timeout=20000)  # 【调用函数】访问行情页把会话"跑热"(之后 fetch 更稳)
             time.sleep(2)
         except Exception:
             pass
@@ -142,11 +142,11 @@ class XueqiuAdapter(PlatformAdapter):
         """
         try:
             if self._context:
-                self._context.close()
+                self._context.close()  # 【调用函数】关闭浏览器上下文
             if self._browser:
-                self._browser.close()
+                self._browser.close()  # 【调用函数】关闭 Chromium 浏览器
             if self._playwright:
-                self._playwright.stop()
+                self._playwright.stop()  # 【调用函数】停止 Playwright 控制器(防进程残留)
         except Exception:
             pass
 
@@ -166,15 +166,15 @@ class XueqiuAdapter(PlatformAdapter):
         """
         if not COOKIE_FILE.exists():
             return {}  # 没有 Cookie 文件 → 匿名会话(可能被 WAF 拦截)
-        raw = COOKIE_FILE.read_text(encoding="utf-8").strip()
+        raw = COOKIE_FILE.read_text(encoding="utf-8").strip()  # 【调用函数】读取 Cookie 文件全文(UTF-8)
         if not raw or raw.startswith("#"):
             return {}  # 空文件或以 # 开头的注释 → 视为无 Cookie
         cookies = {}
         # 优先按 JSON 格式解析
         if raw.startswith("{"):
             try:
-                data = json.loads(raw)
-                cookies = {k: str(v) for k, v in data.items()}
+                data = json.loads(raw)  # 【调用函数】按 JSON 格式解析 Cookie 字典
+                cookies = {k: str(v) for k, v in data.items()}  # 【变量】值统一转字符串(兼容浏览器格式)
                 if cookies:
                     return cookies
             except json.JSONDecodeError:
@@ -221,13 +221,13 @@ class XueqiuAdapter(PlatformAdapter):
         - 每页最多 20 条(per_page)，最多翻 5 页(page<=5)。
         - 过滤"纯转发且无自写正文"的条目(无内容价值)。
         """
-        import urllib.parse
+        import urllib.parse  # 【调用包】URL 编码搜索词
 
         all_items = []
         page = 1
 
         while len(all_items) < count and page <= 5:
-            q_enc = urllib.parse.quote(keyword)
+            q_enc = urllib.parse.quote(keyword)  # 【调用函数】URL 编码搜索词(中文安全拼接)
             per_page = min(20, count - len(all_items))  # 本页取多少条
 
             # 在浏览器内执行 JS: fetch 雪球搜索接口，失败返回 null
@@ -240,7 +240,7 @@ class XueqiuAdapter(PlatformAdapter):
                         return await r.json();
                     }} catch(e) {{ return null; }}
                 }}
-            """)
+            """)  # 【调用函数】浏览器内 fetch 调雪球搜索 API(绕过阿里云 WAF)
 
             page += 1
 
@@ -310,7 +310,7 @@ class XueqiuAdapter(PlatformAdapter):
             title = desc[:60]  # 无标题时截取正文前 60 字
 
         # 清理 HTML 标签
-        title = re.sub(r"<[^>]+>", "", title)
+        title = re.sub(r"<[^>]+>", "", title)  # 【调用函数】正则去除 HTML 标签
         desc = re.sub(r"<[^>]+>", "", desc)
         # 还原 HTML 实体 (&nbsp; &amp; 等)
         title = (
@@ -341,7 +341,7 @@ class XueqiuAdapter(PlatformAdapter):
             created_at = created_at / 1000
         try:
             publish_time = (
-                datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+                datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")  # 【调用函数】秒时间戳→日期字符串(毫秒已转秒)
                 if created_at > 0
                 else ""
             )
@@ -364,7 +364,7 @@ class XueqiuAdapter(PlatformAdapter):
 
         url = content_item.get("target", "") or f"https://xueqiu.com/{sid}"
 
-        return {
+        return {  # 【变量】统一 Schema 输出(键对齐 UNIFIED_SCHEMA_FIELDS)
             "platform": "xueqiu",
             "note_id": f"{self.id_prefix}{sid}",
             "title": title,
@@ -408,6 +408,6 @@ class XueqiuAdapter(PlatformAdapter):
         【功能】供外部查看/文档渲染雪球字段映射关系。
         【参数】无 【返回】dict（来自 base.FIELD_MAPPING_TABLE，取不到返回空 dict）
         """
-        from .base import FIELD_MAPPING_TABLE
+        from .base import FIELD_MAPPING_TABLE  # 【调用包】取雪球字段映射表(文档用)
 
-        return FIELD_MAPPING_TABLE.get("xueqiu", {})
+        return FIELD_MAPPING_TABLE.get("xueqiu", {})  # 【调用函数】返回映射表(取不到给空 dict)

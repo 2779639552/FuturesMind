@@ -40,7 +40,7 @@
       请以实际代码为准。
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field  # 【调用包】SentimentResult数据类 + asdict转字典
 
 # ================================================================
 # 情感词库 — 期货领域专用
@@ -374,7 +374,7 @@ class RuleEngine:
         result.bear_signals = len(bear_phrases)
 
         # 中性信号衰减: 如果有中性信号，整体偏向neutral
-        neutral_damping = 0.3 * len(neutral_phrases)
+        neutral_damping = 0.3 * len(neutral_phrases)  # 【变量】中性信号衰减系数(每条0.3), 命中中性词越多越偏向neutral
 
         # 2. 否定词处理 (否定词后的看多/看空词应翻转)
         bull_score, bear_score = self._apply_negation(text, bull_score, bear_score)
@@ -397,17 +397,17 @@ class RuleEngine:
             if total_signals == 1:
                 decay = 0.5  # 孤立的单个信号不太可信
             elif total_signals == 2:
-                decay = 0.75
+                decay = 0.75  # 【变量】仅2个信号时权重打75折
             else:
-                decay = 1.0
+                decay = 1.0  # 【变量】3个及以上信号权重不减
 
             # 双面信号(pure ambivalence): 多空都有→偏中性
-            ambivalence_penalty = 0.6 if bull_count > 0 and bear_count > 0 else 1.0
+            ambivalence_penalty = 0.6 if bull_count > 0 and bear_count > 0 else 1.0  # 【变量】多空信号并存→0.6系数(双面观点偏中性)
 
             adjusted = raw_score * decay * ambivalence_penalty
             # 中性信号衰减
             if neutral_damping > 0:
-                adjusted = adjusted * max(0.2, 1.0 - neutral_damping)
+                adjusted = adjusted * max(0.2, 1.0 - neutral_damping)  # 【变量】中性衰减下限0.2, 避免强信号被完全抹平
             result.score = round(max(-1.0, min(1.0, adjusted)), 3)
         else:
             result.score = 0.0
@@ -418,13 +418,13 @@ class RuleEngine:
         # 6. 置信度 (信号越多越确定)
         signal_count = result.bull_signals + result.bear_signals
         if signal_count >= 5:
-            result.confidence = min(1.0, 0.6 + signal_count * 0.08)
+            result.confidence = min(1.0, 0.6 + signal_count * 0.08)  # 【变量】≥5个信号: 0.6起步递增, 封顶1.0
         elif signal_count >= 2:
-            result.confidence = 0.4 + signal_count * 0.1
+            result.confidence = 0.4 + signal_count * 0.1  # 【变量】2~4个信号: 0.4起步, 每个信号+0.1
         elif signal_count == 1:
-            result.confidence = 0.3
+            result.confidence = 0.3  # 【变量】仅1个信号: 置信度0.3
         else:
-            result.confidence = 0.1
+            result.confidence = 0.1  # 【变量】无信号: 置信度0.1
 
         # 7. 确定性 (从修饰词判断)
         result.certainty = self._compute_certainty(text)
@@ -480,7 +480,7 @@ class RuleEngine:
             neg_pos = text.find(neg)
             if neg_pos < 0:
                 continue
-            after = text[neg_pos + len(neg) : neg_pos + len(neg) + 12]
+            after = text[neg_pos + len(neg) : neg_pos + len(neg) + 12]  # 【变量】只检查否定词后12字符范围内的情感词做翻转
             for phrase, weight in BULLISH_LEXICON.items():
                 if phrase in after:
                     bull -= weight * 1.5
@@ -542,7 +542,7 @@ class RuleEngine:
         if count == 0:
             return 0.5  # 默认中等
         # 归一化到 [0, 1]
-        return round(min(1.0, max(0.1, total_mod / count / 2.0)), 2)
+        return round(min(1.0, max(0.1, total_mod / count / 2.0)), 2)  # 【调用函数】确定性归一化到[0.1, 1.0]并保留2位小数
 
     def _compute_time_horizon(self, text: str) -> str:
         """【功能】从时间维度词表判断观点属于短期/中期/长期。
@@ -587,11 +587,11 @@ class FinBERTEngine:
             return
         try:
             import torch  # noqa: F401  availability check; actual use imports it again below
-            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer  # 【调用包】HuggingFace transformers (FinBERT加载)
 
-            self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_NAME)
-            self.model = AutoModelForSequenceClassification.from_pretrained(self.MODEL_NAME)
-            self.model.eval()
+            self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_NAME)  # 【调用函数】加载预训练分词器 (首次调用联网下载)
+            self.model = AutoModelForSequenceClassification.from_pretrained(self.MODEL_NAME)  # 【调用函数】加载预训练FinBERT分类模型
+            self.model.eval()  # 【调用函数】切换评估模式 (关闭dropout, 保证可复现)
             self._loaded = True
         except ImportError:
             raise ImportError(
@@ -608,10 +608,10 @@ class FinBERTEngine:
         self._lazy_load()
         import torch
 
-        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)  # 【调用函数】文本tokenize为模型输入 (截断到512 token)
         with torch.no_grad():
-            outputs = self.model(**inputs)
-            probs = torch.softmax(outputs.logits, dim=-1)[0]
+            outputs = self.model(**inputs)  # 【调用函数】前向推理, 输出情感logits
+            probs = torch.softmax(outputs.logits, dim=-1)[0]  # 【调用函数】softmax归一化为三类概率 [positive, negative, neutral]
 
         # FinBERT: [positive, negative, neutral]
         pos, neg, neu = probs[0].item(), probs[1].item(), probs[2].item()
@@ -664,14 +664,14 @@ class SentimentAnalyzer:
           - 规则引擎结果 asdict 打底。
           - 若双引擎启用, 额外附加 finbert_* 字段与 consensus:
             两引擎情感标签一致 → consensus=True 且 confidence 取两者较大值。"""
-        rule_result = self.rule_engine.analyze(text)
+        rule_result = self.rule_engine.analyze(text)  # 【调用函数】调用规则引擎对全文打分 (作为基础结果)
 
         output = asdict(rule_result)
 
         # 双引擎时，加入FinBERT结果做对比
         if self.finbert_engine:
             try:
-                fb_result = self.finbert_engine.analyze(text)
+                fb_result = self.finbert_engine.analyze(text)  # 【调用函数】调用FinBERT引擎分析 (双引擎对照)
                 output["finbert_sentiment"] = fb_result.sentiment
                 output["finbert_score"] = fb_result.score
                 output["finbert_confidence"] = fb_result.confidence
@@ -747,7 +747,7 @@ class SentimentAnalyzer:
                     context = context[: last_period + 1]
 
             # 对上下文做情感分析
-            r = self.analyze(context.strip())
+            r = self.analyze(context.strip())  # 【调用函数】对品种上下文片段复用analyze()打分
 
             results.append(
                 {
@@ -782,7 +782,7 @@ class SentimentAnalyzer:
         for note in notes:
             text = (note.get(title_field, "") or "") + " " + (note.get(text_field, "") or "")
             if text.strip():
-                sentiment = self.analyze(text.strip())
+                sentiment = self.analyze(text.strip())  # 【调用函数】对标题+正文拼接文本做整篇情感分析
                 note["sentiment"] = sentiment["sentiment"]
                 note["sentiment_score"] = sentiment["score"]
                 note["sentiment_confidence"] = sentiment["confidence"]

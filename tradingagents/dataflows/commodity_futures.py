@@ -47,22 +47,22 @@ Data sources (via akshare):
 #   具体格式与合并逻辑见 external_data.py。
 # ===========================================================================
 
-import json
-import logging
-import random
-import time
-import warnings
-from datetime import timedelta
+import json  # 【调用包】JSON 序列化(品种元信息输出)
+import logging  # 【调用包】日志输出(拉取失败告警)
+import random  # 【调用包】随机延时(降低免费接口请求频率)
+import time  # 【调用包】缓存时间戳与 TTL 过期判断
+import warnings  # 【调用包】过滤 AKShare "非交易日" 信息性警告
+from datetime import timedelta  # 【调用包】日期加减(get_verified_quote 拉取窗口推算)
 
-import pandas as pd
-import requests
+import pandas as pd  # 【调用包】行情 DataFrame 处理/指标计算/CSV 输出
+import requests  # 【调用包】HTTP 请求(东方财富 7x24 快讯接口)
 
 # 从 external_data.py(外部数据注入层)导入 Hybrid Mode 需要的工具函数:
 #   load_external_data      读取外部 JSON(没有/过期则返回 None)
 #   get_external_source_label  生成来源标签(如 "[source: Mysteel ..., updated: ...]")
 #   merge_basis_data        把外部现货价合并进基差结果
 #   merge_inventory_data    把外部社会/钢厂库存合并进仓单库存结果
-from tradingagents.dataflows.external_data import (
+from tradingagents.dataflows.external_data import (  # 【调用包】外部数据注入层(Hybrid Mode:读外部 JSON、合并基差/库存)
     get_external_source_label,
     load_external_data,
     merge_basis_data,
@@ -85,7 +85,7 @@ warnings.filterwarnings("ignore", message=r".*非交易日.*", category=UserWarn
 # _CACHE_TTL:      缓存有效期,单位秒,这里 300 秒 = 5 分钟。
 #                  在 TTL 内再次请求同一品种会直接复用缓存,避免重复请求免费接口;
 #                  超过 TTL 则视为过期,重新联网拉取。
-_response_cache: dict[str, tuple[float, pd.DataFrame]] = {}
+_response_cache: dict[str, tuple[float, pd.DataFrame]] = {}  # 【变量】内存缓存:键 "price:{品种代码}",值 (拉取时间戳, DataFrame)
 _CACHE_TTL = 300  # 5 minutes
 
 
@@ -115,7 +115,7 @@ _CACHE_TTL = 300  # 5 minutes
 # 作用:把"不同接口各自不同的品种代码"统一成一份映射,让后面的行情/基差/库存
 # 等函数都能通过同一个 symbol 找到各自需要的接口代码,实现"一处配置、处处使用"。
 
-VARIETY_METADATA = {
+VARIETY_METADATA = {  # 【变量】21个商品期货品种的元信息字典(接口代码/合约规格/板块/关键因素)
     "RB": {
         "name": "螺纹钢",
         "name_en": "Rebar",
@@ -668,7 +668,7 @@ def get_variety_info(symbol: str) -> str:
         return str(e)
 
     meta = VARIETY_METADATA[code].copy()
-    return json.dumps(meta, ensure_ascii=False, indent=2)
+    return json.dumps(meta, ensure_ascii=False, indent=2)  # 【调用函数】序列化为带缩进 JSON(ensure_ascii=False 保留中文)
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +722,7 @@ def get_futures_price(
 
     if df is None:
         try:
-            from akshare import futures_main_sina
+            from akshare import futures_main_sina  # 【调用包】AKShare 新浪主力连续行情接口
 
             time.sleep(random.uniform(0.1, 0.3))
             # Fetch with extended lookback for indicator calculation
@@ -730,8 +730,8 @@ def get_futures_price(
                 symbol=main_sym,
                 start_date="20200101",
                 end_date=end_date,
-            )
-            _response_cache[cache_key] = (now, df.copy())
+            )  # 【调用函数】新浪主力连续行情(从 2020 拉全量历史,便于后续指标计算)
+            _response_cache[cache_key] = (now, df.copy())  # 【变量】写入缓存:拉取时间戳 + DataFrame 副本
         except ImportError:
             return (
                 "DATA_ERROR: akshare is required for futures data. "
@@ -748,7 +748,7 @@ def get_futures_price(
         return f"NO_DATA_AVAILABLE: No price data for {meta['name']}({code})."
 
     # Rename columns to English standard
-    col_map = {
+    col_map = {  # 【变量】AKShare 中文列名 → 英文标准列名映射(行情接口,含动态结算价)
         "日期": "date",
         "开盘价": "open",
         "最高价": "high",
@@ -834,14 +834,14 @@ def get_futures_indicators(
     else:
         # Fetch fresh
         try:
-            from akshare import futures_main_sina
+            from akshare import futures_main_sina  # 【调用包】AKShare 新浪主力连续行情接口
 
             full_df = futures_main_sina(
                 symbol=main_sym,
                 start_date="20200101",
                 end_date=end_date,
-            )
-            _response_cache[cache_key] = (time.time(), full_df.copy())
+            )  # 【调用函数】拉全量历史(2020 至今),保证指标窗口足够长
+            _response_cache[cache_key] = (time.time(), full_df.copy())  # 【变量】写缓存,与 get_futures_price 共享同一缓存键
         except Exception as e:
             # Try using cached price data
             return f"NO_DATA_AVAILABLE: Cannot fetch data for indicators. Error: {e}"
@@ -850,7 +850,7 @@ def get_futures_indicators(
         return f"NO_DATA_AVAILABLE: No data for {meta['name']}({code})."
 
     # Normalize columns
-    col_map = {
+    col_map = {  # 【变量】AKShare 中文列名 → 英文标准列名映射(技术指标接口)
         "日期": "date",
         "开盘价": "open",
         "最高价": "high",
@@ -980,14 +980,14 @@ def get_futures_basis(
     spot_code = meta["spot_code"]
 
     try:
-        from akshare import futures_spot_price_daily
+        from akshare import futures_spot_price_daily  # 【调用包】AKShare 现货+基差接口(东方财富)
 
         time.sleep(random.uniform(0.1, 0.3))
         df = futures_spot_price_daily(
             start_day=start_date.replace("-", ""),
             end_day=end_date.replace("-", ""),
             vars_list=[spot_code],
-        )
+        )  # 【调用函数】东财现货价+基差接口(日期去横杠,按品种 spot_code 查询)
     except ImportError:
         return "DATA_ERROR: akshare is required."
     except Exception as e:
@@ -1000,7 +1000,7 @@ def get_futures_basis(
         return f"NO_DATA_AVAILABLE: No basis data for {meta['name']}({code})."
 
     # Normalize column names (akshare returns Chinese columns)
-    col_map = {
+    col_map = {  # 【变量】AKShare 中文列名 → 英文标准列名映射(现货/基差接口)
         "日期": "date",
         "品种": "symbol",
         "现货价格": "spot_price",
@@ -1064,7 +1064,7 @@ def get_futures_basis(
     #   有外部现货价且未过期 -> 在结果前追加一行外部现货价说明(视为更可信);
     #   没有/过期              -> 原样返回免费接口的 CSV,并打上 FREE_API 来源标记。
     # 返回元组第二项 used_external 标记是否用到了外部数据(当前调用方未使用)。
-    merged, used_external = merge_basis_data(code, api_output)
+    merged, used_external = merge_basis_data(code, api_output)  # 【调用函数】合并外部现货价(无外部数据则原样返回并标注 FREE_API)
     return merged
 
 
@@ -1109,10 +1109,10 @@ def get_futures_inventory(
     inv_code = meta["inv_code"]
 
     try:
-        from akshare import futures_inventory_em
+        from akshare import futures_inventory_em  # 【调用包】AKShare 仓单库存接口(东方财富)
 
         time.sleep(random.uniform(0.1, 0.3))
-        df = futures_inventory_em(symbol=inv_code)
+        df = futures_inventory_em(symbol=inv_code)  # 【调用函数】东财仓单库存(一次返回全部历史)
     except ImportError:
         return "DATA_ERROR: akshare is required."
     except Exception as e:
@@ -1123,7 +1123,7 @@ def get_futures_inventory(
         return f"NO_DATA_AVAILABLE: No inventory data for {meta['name']}({code})."
 
     # Normalize columns
-    col_map = {
+    col_map = {  # 【变量】AKShare 中文列名 → 英文标准列名映射(库存接口)
         "日期": "date",
         "库存": "inventory",
         "变化": "change",
@@ -1161,7 +1161,7 @@ def get_futures_inventory(
     #   有社会库存/钢厂库存 -> 输出"仓单(免费API) + 社会/钢厂库存(外部)"合并报告,
     #                           并附给大模型的解读指引(两部分同向/反向的含义);
     #   没有                 -> 仅返回免费 API 仓单 CSV,标注 FREE_API 来源。
-    merged, used_external = merge_inventory_data(code, api_output)
+    merged, used_external = merge_inventory_data(code, api_output)  # 【调用函数】合并外部社会/钢厂库存(无外部数据则原样返回并标注 FREE_API)
     return merged
 
 
@@ -1201,7 +1201,7 @@ def get_futures_news(
     Returns:
         Formatted news text with headlines, timestamps, and source labels.
     """
-    import uuid
+    import uuid  # 【调用包】生成请求跟踪号(req_trace)
 
     all_news: list[dict] = []
 
@@ -1220,12 +1220,12 @@ def get_futures_news(
             "pageSize": "30",
             "req_trace": str(uuid.uuid4()),
         }
-        em_headers = {
+        em_headers = {  # 【变量】请求头(User-Agent/Referer,模拟浏览器访问)
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://kuaixun.eastmoney.com/",
         }
-        r_em = requests.get(em_url, params=em_params, headers=em_headers, timeout=10)
-        d_em = r_em.json()
+        r_em = requests.get(em_url, params=em_params, headers=em_headers, timeout=10)  # 【调用函数】抓东方财富 7x24 快讯(30条)
+        d_em = r_em.json()  # 【调用函数】解析响应 JSON(取 fastNewsList 列表)
         for item in d_em.get("data", {}).get("fastNewsList", []):
             title = item.get("title", "")
             summary = item.get("summary", "")[:300]
@@ -1243,9 +1243,9 @@ def get_futures_news(
 
     # --- Source 3: SHMET (commodity-specific, fallback) ---
     try:
-        from akshare import futures_news_shmet
+        from akshare import futures_news_shmet  # 【调用包】AKShare SHMET 商品新闻接口
 
-        df = futures_news_shmet()
+        df = futures_news_shmet()  # 【调用函数】SHMET 商品新闻(商品属性强,兜底源)
         if not df.empty:
             for _, row in df.head(15).iterrows():
                 time_str = str(row.get("发布时间", ""))
@@ -1276,7 +1276,7 @@ def get_futures_news(
 
     # Broader keyword set: catch general commodity, macro, and policy news
     # that could affect ANY commodity futures (not just steel-specific)
-    commodity_kw = [
+    commodity_kw = [  # 【变量】通用商品/宏观/政策新闻过滤关键词(东财快讯命中任一即保留)
         # Black metals
         "螺纹",
         "热卷",
@@ -1399,7 +1399,7 @@ def get_futures_news(
         "盈利率",
     ]
 
-    symbol_specific = {
+    symbol_specific = {  # 【变量】品种专属新闻过滤关键词(在通用关键词基础上追加,按品种代码索引)
         "RB": ["螺纹", "钢材", "地产", "基建", "唐山", "铁水", "废钢", "钢厂", "限产", "新开工"],
         "HC": ["热卷", "钢材", "汽车", "家电", "出口", "制造业"],
         "I": ["铁矿石", "铁矿", "BHP", "FMG", "力拓", "淡水河谷", "港口", "罢工", "到港"],
@@ -1494,7 +1494,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
 
     Returns a formatted text report suitable for LLM consumption.
     """
-    import akshare as ak
+    import akshare as ak  # 【调用包】AKShare 宏观指标系列接口(macro_*)
 
     parts = [
         "# CHINA MACROECONOMIC INDICATORS (for commodity futures analysis)",
@@ -1505,7 +1505,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
 
     # --- GDP ---
     try:
-        gdp = ak.macro_china_gdp()
+        gdp = ak.macro_china_gdp()  # 【调用函数】GDP 季度数据(含三产业同比)
         if not gdp.empty:
             latest = gdp.iloc[-1]
             parts.append("## GDP (季度)")
@@ -1527,7 +1527,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
 
     # --- PMI ---
     try:
-        pmi = ak.macro_china_pmi()
+        pmi = ak.macro_china_pmi()  # 【调用函数】制造业/非制造业 PMI(附荣枯线判断)
         if not pmi.empty:
             latest = pmi.iloc[-1]
             parts.append("## PMI (制造业采购经理指数)")
@@ -1550,7 +1550,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
 
     # --- Fixed Asset Investment ---
     try:
-        fai = ak.macro_china_gdzctz()
+        fai = ak.macro_china_gdzctz()  # 【调用函数】固定资产投资(FAI,当月/累计同比)
         if not fai.empty:
             latest = fai.iloc[-1]
             parts.append("## 固定资产投资 (FAI)")
@@ -1570,7 +1570,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
 
     # --- Real Estate ---
     try:
-        re = ak.macro_china_real_estate()
+        re = ak.macro_china_real_estate()  # 【调用函数】房地产景气指数(与螺纹钢需求强相关)
         if not re.empty:
             latest = re.iloc[-1]
             col_date = next((c for c in re.columns if "日期" in str(c)), re.columns[0])
@@ -1599,7 +1599,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
 
     # --- Industrial Production ---
     try:
-        ip = ak.macro_china_gyzjz()
+        ip = ak.macro_china_gyzjz()  # 【调用函数】工业增加值(月度同比/累计增长)
         if not ip.empty:
             latest = ip.iloc[-1]
             parts.append("## 工业增加值")
@@ -1616,7 +1616,7 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
 
     # --- Construction Industry Index ---
     try:
-        ci = ak.macro_china_construction_index()
+        ci = ak.macro_china_construction_index()  # 【调用函数】建筑业指数(日度,建筑活动强弱直接反映)
         if not ci.empty:
             latest = ci.iloc[-1]
             col_date = next((c for c in ci.columns if "日期" in str(c)), ci.columns[0])
@@ -1678,10 +1678,10 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
     ]
 
     # --- External Data Section ---
-    ext = load_external_data(variety)
+    ext = load_external_data(variety)  # 【调用函数】读外部 JSON 供需数据(无/过期返回 None)
     if ext:
         data = ext.get("data", {})
-        source_label = get_external_source_label(variety)
+        source_label = get_external_source_label(variety)  # 【调用函数】生成外部数据来源标签(标注在报告头)
         parts.append(f"## External Data (来源: {source_label})")
         parts.append("")
 
@@ -1779,9 +1779,9 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
     # --- Free API: Construction Index ---
     parts.append("## Construction Industry Index (FREE API)")
     try:
-        import akshare as ak
+        import akshare as ak  # 【调用包】AKShare 免费接口(建筑业指数)
 
-        ci = ak.macro_china_construction_index()
+        ci = ak.macro_china_construction_index()  # 【调用函数】建筑业指数(日度,免费兜底补充)
         if not ci.empty:
             col_date = next((c for c in ci.columns if "日期" in str(c)), ci.columns[0])
             col_val = next(
@@ -1802,9 +1802,9 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
     # --- Free API: Real Estate Climate Index ---
     parts.append("## Real Estate Climate Index (FREE API)")
     try:
-        import akshare as ak
+        import akshare as ak  # 【调用包】AKShare 免费接口(房地产景气指数)
 
-        re = ak.macro_china_real_estate()
+        re = ak.macro_china_real_estate()  # 【调用函数】房地产景气指数(免费兜底补充,关联螺纹钢需求)
         if not re.empty:
             col_date = next((c for c in re.columns if "日期" in str(c)), re.columns[0])
             col_val = next(
@@ -1875,7 +1875,7 @@ def get_verified_quote(
         return "VERIFIED_SNAPSHOT_ERROR: date parameter is required."
 
     # Fetch a window around the target date (30 days before, 5 days after)
-    from datetime import datetime as dt
+    from datetime import datetime as dt  # 【调用包】日期字符串解析(YYYY-MM-DD)
 
     try:
         target_dt = dt.strptime(date, "%Y-%m-%d")
@@ -1885,7 +1885,7 @@ def get_verified_quote(
     fetch_start = (target_dt - timedelta(days=30)).strftime("%Y-%m-%d")
     fetch_end = (target_dt + timedelta(days=5)).strftime("%Y-%m-%d")
 
-    price_result = get_futures_price(symbol, fetch_start, fetch_end)
+    price_result = get_futures_price(symbol, fetch_start, fetch_end)  # 【调用函数】复用价格接口拉目标日前后窗口行情(30天前~5天后)
     if price_result.startswith("NO_DATA") or price_result.startswith("DATA_ERROR"):
         return f"VERIFIED_SNAPSHOT_UNAVAILABLE: {price_result}"
 
@@ -1997,9 +1997,9 @@ def get_futures_sentiment(symbol: str, start_date: str = "", end_date: str = "")
     Returns:
         Formatted sentiment report text or "no data" message.
     """
-    from tradingagents.dataflows.sentiment_data import get_futures_sentiment as _impl
+    from tradingagents.dataflows.sentiment_data import get_futures_sentiment as _impl  # 【调用包】情绪数据模块(读 *_sentiment.json 并格式化)
 
-    return _impl(symbol)
+    return _impl(symbol)  # 【调用函数】转发给 sentiment_data 模块的同名实现
 
 
 # ---------------------------------------------------------------------------

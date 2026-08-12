@@ -9,8 +9,11 @@ When adding a new provider, register its env var here so the CLI flow
 prompts for it automatically instead of failing on first API call.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # 【调用包】启用延迟求值的类型注解(仅类型层面)
 
+# 【变量】厂商名 -> API Key 环境变量名的映射表(单一事实来源)。
+#         值为 None 表示该厂商不走"单 Key 环境变量"鉴权(Bedrock 用 AWS 凭证链,
+#         ollama 本地不鉴权)。
 PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -44,6 +47,10 @@ PROVIDER_API_KEY_ENV: dict[str, str | None] = {
 }
 
 
+# 【功能】查询某厂商 API Key 对应的环境变量名。
+# 【参数】provider: 厂商名(大小写不敏感, 函数内会 .lower())。
+# 【返回】环境变量名字符串; 无对应(未知厂商或本地无鉴权)时返回 None。
+# 【关键】未知厂商也返回 None —— 调用方应理解为"无法检查 Key", 而非"无需 Key"。
 def get_api_key_env(provider: str) -> str | None:
     """Return the env var name for `provider`'s API key, or None if not applicable.
 

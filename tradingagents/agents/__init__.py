@@ -1,3 +1,17 @@
+"""Agent 层包:统一导出全部 Agent 节点工厂与状态类型(仅 re-export)。
+
+【导出内容】
+- 分析师: create_fundamentals_analyst / create_market_analyst / create_news_analyst /
+  create_sentiment_analyst(含废弃别名 create_social_media_analyst,仅向后兼容)
+- 研究方: create_bull_researcher / create_bear_researcher / create_research_manager
+- 风险辩论: create_aggressive_debator / create_conservative_debator / create_neutral_debator
+- 组合与交易: create_portfolio_manager / create_trader
+- 状态类型: AgentState / InvestDebateState / RiskDebateState
+- 工具: create_msg_delete
+
+【说明】本文件不包含任何业务逻辑,只做统一 re-export,便于上层 (commodity_demo.py 等) 一处导入。
+"""
+
 from .analysts.fundamentals_analyst import create_fundamentals_analyst
 from .analysts.market_analyst import create_market_analyst
 from .analysts.news_analyst import create_news_analyst

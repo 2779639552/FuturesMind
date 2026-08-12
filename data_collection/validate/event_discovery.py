@@ -3,12 +3,12 @@
 — 品种共现矩阵、情感时序异常、爆款笔记品种触发
 """
 
-from collections import Counter, defaultdict
-from itertools import combinations
+from collections import Counter, defaultdict  # 【调用包】品种共现频次统计 + 品种→笔记集合
+from itertools import combinations  # 【调用包】品种两两组合(枚举共现对)
 
-import pandas as pd
-import plotly.graph_objects as go
-from report_utils import (
+import pandas as pd  # 【调用包】DataFrame 分组聚合(情感时序异常检测)
+import plotly.graph_objects as go  # 【调用包】Plotly 图表对象(共现热力图/时序图/爆款图)
+from report_utils import (  # 【调用包】report_utils: 情感标签 + 统计卡片/HTML 渲染
     SENTIMENT_LABELS,
     chart_to_html,
     expand_varieties,
@@ -16,15 +16,19 @@ from report_utils import (
 )
 
 
+# 【功能】事件与关联发现: 品种共现矩阵、爆款笔记分析、情感时序异常检测, 返回终端文本 + HTML 图表。
+# 【参数】df: 已打好情感标签的笔记 DataFrame。
+# 【返回】{"text": 终端报告文本, "html": 图表 HTML 片段}。
+# 【关键】异常检测用"日均情感偏离均值 > 1.5σ"的简单规则, 数据不足 3 天时跳过。
 def analyze(df: pd.DataFrame) -> dict:
     """事件发现与关联分析"""
-    vdf = expand_varieties(df)
+    vdf = expand_varieties(df)  # 【调用函数】跨文件(report_utils): 一帖多品种拆多行, 便于品种级统计
     vdf_valid = vdf[vdf["variety_name"] != ""].copy()
 
     # === 1. 品种共现矩阵 ===
     # 统计每篇笔记中同时出现的品种对
-    cooccur = Counter()
-    variety_notes = defaultdict(set)  # 品种→笔记ID集合
+    cooccur = Counter()  # 【变量】{(品种a, 品种b): 同篇共现次数}
+    variety_notes = defaultdict(set)  # 【变量】品种→笔记ID集合(用于 Jaccard 相似度)
 
     for _, row in df.iterrows():
         vnames = [v.get("name", "") for v in (row.get("varieties") or []) if v.get("name")]
@@ -32,15 +36,15 @@ def analyze(df: pd.DataFrame) -> dict:
         for v in vnames:
             variety_notes[v].add(note_id)
         # 品种对
-        for a, b in combinations(sorted(set(vnames)), 2):
+        for a, b in combinations(sorted(set(vnames)), 2):  # 【调用函数】标准库: 枚举笔记内品种两两组合
             cooccur[(a, b)] += 1
 
     # 共现矩阵 Top
-    top_pairs = cooccur.most_common(15)
+    top_pairs = cooccur.most_common(15)  # 【变量】共现频次 Top15 品种对
     text = ""
     if top_pairs:
         # Jaccard 相似度
-        jaccard_pairs = []
+        jaccard_pairs = []  # 【变量】(a, b, 共现次数, Jaccard 相似度) 列表, 度量品种对关联紧密度
         for (a, b), cnt in cooccur.items():
             union = len(variety_notes[a] | variety_notes[b])
             jac = cnt / union if union > 0 else 0
@@ -64,7 +68,7 @@ def analyze(df: pd.DataFrame) -> dict:
             text += f"\n    {a} ↔ {b}: {jac:.3f} (共{cnt}次)"
 
     # === 2. 爆款笔记分析 ===
-    high_eng = df.nlargest(10, "engagement")
+    high_eng = df.nlargest(10, "engagement")  # 【变量】互动分最高的 Top10 笔记(爆款样本)
     text += f"\n\n{'=' * 70}"
     text += "\n  爆款笔记 (Top 10 互动)\n"
     text += f"{'=' * 70}"
@@ -76,7 +80,7 @@ def analyze(df: pd.DataFrame) -> dict:
         text += f"\n     品种: {vnames or '无'} | 情感: {SENTIMENT_LABELS.get(row['sentiment'], row['sentiment'])} | 作者: {row['author_name']}"
 
     # 爆款涉及的品种
-    hot_varieties = Counter()
+    hot_varieties = Counter()  # 【变量】爆款笔记中涉及的品种频次
     for _, row in high_eng.iterrows():
         for v in row.get("variety_names") or []:
             hot_varieties[v] += 1
@@ -89,7 +93,7 @@ def analyze(df: pd.DataFrame) -> dict:
 
     # 按日期聚合
     df["date"] = df["dt"].dt.date
-    daily_sent = (
+    daily_sent = (  # 【变量】按日期聚合的日均情感/笔记数/情感标准差
         df.groupby("date")
         .agg(
             avg_sentiment=("sentiment_score", "mean"),
@@ -102,9 +106,9 @@ def analyze(df: pd.DataFrame) -> dict:
 
     if len(daily_sent) >= 3:
         # 简单异常检测：情感偏离均值 > 1.5 标准差
-        overall_mean = daily_sent["avg_sentiment"].mean()
-        overall_std = daily_sent["avg_sentiment"].std()
-        anomalies = (
+        overall_mean = daily_sent["avg_sentiment"].mean()  # 【变量】全部日期的日均情感均值
+        overall_std = daily_sent["avg_sentiment"].std()  # 【变量】全部日期的日均情感标准差
+        anomalies = (  # 【变量】日均情感偏离均值超过 1.5σ 的异常日期
             daily_sent[(daily_sent["avg_sentiment"] - overall_mean).abs() > 1.5 * overall_std]
             if overall_std > 0
             else pd.DataFrame()
@@ -131,7 +135,7 @@ def analyze(df: pd.DataFrame) -> dict:
 
     charts_html = ""
 
-    charts_html += stat_cards_html(
+    charts_html += stat_cards_html(  # 【调用函数】跨文件(report_utils): 生成 HTML 统计卡片
         {
             "品种对总数": str(len(cooccur)),
             "最强关联": f"{top_pairs[0][0][0]}↔{top_pairs[0][0][1]}" if top_pairs else "N/A",
@@ -144,7 +148,7 @@ def analyze(df: pd.DataFrame) -> dict:
     list(variety_notes.keys())
     # 取提及最多的15个品种
     vc = vdf_valid["variety_name"].value_counts()
-    top15_v = vc.head(15).index.tolist()
+    top15_v = vc.head(15).index.tolist()  # 【变量】提及量最高的前15个品种(共现热力图行列)
 
     if len(top15_v) >= 3:
         # 构建共现矩阵
@@ -172,7 +176,7 @@ def analyze(df: pd.DataFrame) -> dict:
         fig1.update_layout(
             title="品种共现热力图 (同一篇笔记中同时出现)",
         )
-        charts_html += chart_to_html(fig1, "cooccur_heatmap", 450)
+        charts_html += chart_to_html(fig1, "cooccur_heatmap", 450)  # 【调用函数】跨文件(report_utils): 共现热力图转内嵌 HTML
 
     # Chart 2: 情感时序
     if len(daily_sent) >= 2:
@@ -219,7 +223,7 @@ def analyze(df: pd.DataFrame) -> dict:
             yaxis={"title": "笔记数"},
             yaxis2={"title": "日均情感分数", "overlaying": "y", "side": "right", "range": [-1, 1]},
         )
-        charts_html += chart_to_html(fig2, "sentiment_timeline", 350)
+        charts_html += chart_to_html(fig2, "sentiment_timeline", 350)  # 【调用函数】跨文件(report_utils): 情感时序图转内嵌 HTML
 
     # Chart 3: 爆款笔记
     if len(high_eng) > 0:
@@ -247,7 +251,7 @@ def analyze(df: pd.DataFrame) -> dict:
             xaxis_title="互动总分",
             yaxis_title="",
         )
-        charts_html += chart_to_html(fig3, "hot_notes", 350)
+        charts_html += chart_to_html(fig3, "hot_notes", 350)  # 【调用函数】跨文件(report_utils): 爆款笔记图转内嵌 HTML
 
     return {
         "text": text,

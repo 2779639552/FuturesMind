@@ -32,13 +32,13 @@ Centralizes the "where is the 思路2 validate data?" question so every module
 #        data/think2_validate,保证全新克隆也能渲染页面。
 # =============================================================================
 
-import os
-from pathlib import Path
+import os  # 【调用包】环境变量/用户主目录操作
+from pathlib import Path  # 【调用包】跨平台路径对象(候选目录/返回值)
 
 # 候选路径元组:按优先级从上到下探测,存在即用。
 # 前 3 个指向用户本地的思路2 项目(不同命名/位置的兼容写法);
 # 最后 1 个是仓库自带的样例数据目录 data/think2_validate,兜底使用。
-_THINK2_CANDIDATES = (
+_THINK2_CANDIDATES = (  # 【变量】候选数据目录元组(按优先级探测,存在即用)
     Path(os.path.expanduser("~/Desktop/思路2/validate")),
     Path(os.path.expanduser("~/Desktop/silu2/validate")),
     Path(os.path.expanduser("~/projects/silu2/validate")),
@@ -58,7 +58,7 @@ def resolve_think2_dir() -> Path:
             - 全都不存在时返回第一个候选路径(即仓库内置样例位置),
               保证调用方总能拿到一个"可用的"路径而不抛异常。
     """
-    env = os.environ.get("THINK2_DIR", "").strip()
+    env = os.environ.get("THINK2_DIR", "").strip()  # 【调用函数】读环境变量 THINK2_DIR(显式覆盖数据目录);【变量】env:覆盖值(空串=未设置)
     if env:
         return Path(env)
     for candidate in _THINK2_CANDIDATES:

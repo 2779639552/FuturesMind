@@ -1,79 +1,82 @@
-from typing import Annotated
+from typing import Annotated  # 【调用包】类型注解:给状态字段附加说明元数据
 
-from langgraph.graph import MessagesState
-from typing_extensions import TypedDict
+from langgraph.graph import MessagesState  # 【调用包】LangGraph 内置"消息状态"基类(含 messages 键)
+from typing_extensions import TypedDict  # 【调用包】TypedDict:定义结构化子状态的键值类型
 
 
+# 【功能】研究员团队(多空辩论)的对话子状态,挂在 AgentState 上供辩论节点读写。
 # Researcher team state
 class InvestDebateState(TypedDict):
-    bull_history: Annotated[str, "Bullish Conversation history"]  # Bullish Conversation history
-    bear_history: Annotated[str, "Bearish Conversation history"]  # Bullish Conversation history
-    history: Annotated[str, "Conversation history"]  # Conversation history
-    current_response: Annotated[str, "Latest response"]  # Last response
-    judge_decision: Annotated[str, "Final judge decision"]  # Last response
-    count: Annotated[int, "Length of the current conversation"]  # Conversation length
+    bull_history: Annotated[str, "Bullish Conversation history"]  # Bullish Conversation history【变量】多方历史对话全文,跨回合累积
+    bear_history: Annotated[str, "Bearish Conversation history"]  # Bullish Conversation history【变量】空方历史对话全文(原英文注释疑为复制粘贴错误)
+    history: Annotated[str, "Conversation history"]  # Conversation history【变量】多空合并后的对话历史
+    current_response: Annotated[str, "Latest response"]  # Last response【变量】最新一方回复文本
+    judge_decision: Annotated[str, "Final judge decision"]  # Last response【变量】辩论裁判(研究员团队)的最终判断
+    count: Annotated[int, "Length of the current conversation"]  # Conversation length【变量】当前对话轮数
 
 
+# 【功能】风控团队(激进/保守/中性三方辩论)的对话子状态。
 # Risk management team state
 class RiskDebateState(TypedDict):
     aggressive_history: Annotated[
         str, "Aggressive Agent's Conversation history"
-    ]  # Conversation history
+    ]  # Conversation history【变量】激进风控方的历史对话全文
     conservative_history: Annotated[
         str, "Conservative Agent's Conversation history"
-    ]  # Conversation history
-    neutral_history: Annotated[str, "Neutral Agent's Conversation history"]  # Conversation history
-    history: Annotated[str, "Conversation history"]  # Conversation history
-    latest_speaker: Annotated[str, "Analyst that spoke last"]
+    ]  # Conversation history【变量】保守风控方的历史对话全文
+    neutral_history: Annotated[str, "Neutral Agent's Conversation history"]  # Conversation history【变量】中性风控方的历史对话全文
+    history: Annotated[str, "Conversation history"]  # Conversation history【变量】三方合并后的对话历史
+    latest_speaker: Annotated[str, "Analyst that spoke last"]  # 【变量】最后发言的分析师标识
     current_aggressive_response: Annotated[
         str, "Latest response by the aggressive analyst"
-    ]  # Last response
+    ]  # Last response【变量】激进方最新回复
     current_conservative_response: Annotated[
         str, "Latest response by the conservative analyst"
-    ]  # Last response
+    ]  # Last response【变量】保守方最新回复
     current_neutral_response: Annotated[
         str, "Latest response by the neutral analyst"
-    ]  # Last response
-    judge_decision: Annotated[str, "Judge's decision"]
-    count: Annotated[int, "Length of the current conversation"]  # Conversation length
+    ]  # Last response【变量】中性方最新回复
+    judge_decision: Annotated[str, "Judge's decision"]  # 【变量】风控裁判的最终决定
+    count: Annotated[int, "Length of the current conversation"]  # Conversation length【变量】当前对话轮数
 
 
+# 【功能】全流程共享的主状态(LangGraph 图内各节点间传递),由 MessagesState 扩展而来。
 class AgentState(MessagesState):
-    company_of_interest: Annotated[str, "Company that we are interested in trading"]
-    asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
-    instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
-    trade_date: Annotated[str, "What date we are trading at"]
+    company_of_interest: Annotated[str, "Company that we are interested in trading"]  # 【变量】待分析的目标公司/标的代码
+    asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]  # 【变量】资产类型(如 stock/crypto),影响分析与措辞
+    instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]  # 【变量】运行开始时解析出的确定性标的身份文本(公司/行业/交易所)
+    trade_date: Annotated[str, "What date we are trading at"]  # 【变量】交易日(YYYY-MM-DD)
 
-    sender: Annotated[str, "Agent that sent this message"]
+    sender: Annotated[str, "Agent that sent this message"]  # 【变量】当前消息的发送代理名,用于图路由
 
     # research step
-    market_report: Annotated[str, "Report from the Market Analyst"]
-    sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]
-    news_report: Annotated[str, "Report from the News Researcher of current world affairs"]
-    fundamentals_report: Annotated[str, "Report from the Fundamentals Researcher"]
+    market_report: Annotated[str, "Report from the Market Analyst"]  # 【变量】市场分析师报告
+    sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]  # 【变量】情绪分析师报告
+    news_report: Annotated[str, "Report from the News Researcher of current world affairs"]  # 【变量】新闻研究员报告
+    fundamentals_report: Annotated[str, "Report from the Fundamentals Researcher"]  # 【变量】基本面研究员报告
 
     # commodity futures research
-    technical_report: Annotated[str, "Technical analysis report for commodity futures"]
+    technical_report: Annotated[str, "Technical analysis report for commodity futures"]  # 【变量】技术面分析报告(商品期货)
     fundamental_report: Annotated[
         str, "Fundamental (supply/demand/basis) report for commodity futures"
-    ]
-    macro_report: Annotated[str, "Macro & policy analysis report for commodity futures"]
-    discussion_summary: Annotated[str, "Roundtable discussion summary for commodity futures"]
-    scenario_analysis: Annotated[str, "Three-scenario stress test analysis"]
-    debate_state: Annotated[dict, "Commodity futures bull vs bear debate state (v2.4)"]
+    ]  # 【变量】基本面(供需/基差)分析报告(商品期货)
+    macro_report: Annotated[str, "Macro & policy analysis report for commodity futures"]  # 【变量】宏观与政策分析报告(商品期货)
+    discussion_summary: Annotated[str, "Roundtable discussion summary for commodity futures"]  # 【变量】圆桌讨论纪要(商品期货)
+    scenario_analysis: Annotated[str, "Three-scenario stress test analysis"]  # 【变量】三情景压力测试分析
+    debate_state: Annotated[dict, "Commodity futures bull vs bear debate state (v2.4)"]  # 【变量】多空辩论子状态(商品期货 v2.4)
 
     # researcher team discussion step
     investment_debate_state: Annotated[
         InvestDebateState, "Current state of the debate on if to invest or not"
-    ]
-    investment_plan: Annotated[str, "Plan generated by the Analyst"]
+    ]  # 【变量】投研团队"是否投资"辩论子状态
+    investment_plan: Annotated[str, "Plan generated by the Analyst"]  # 【变量】研究员(分析师)生成的投资计划
 
-    trader_investment_plan: Annotated[str, "Plan generated by the Trader"]
+    trader_investment_plan: Annotated[str, "Plan generated by the Trader"]  # 【变量】交易员生成的投资计划
 
     # risk management team discussion step
-    risk_debate_state: Annotated[RiskDebateState, "Current state of the debate on evaluating risk"]
-    final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
+    risk_debate_state: Annotated[RiskDebateState, "Current state of the debate on evaluating risk"]  # 【变量】风控团队风险辩论子状态
+    final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]  # 【变量】风控分析师给出的最终交易决定
     past_context: Annotated[
         str,
         "Memory log context injected at run start (same-ticker decisions + cross-ticker lessons)",
-    ]
+    ]  # 【变量】记忆日志注入的历史上下文(同标的决策+跨标的教训)

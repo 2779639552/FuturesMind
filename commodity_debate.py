@@ -34,12 +34,12 @@ Researcher/Research Manager pattern.
 #     让辩论者在发言前实时查价/核证,而非纯靠 LLM 记忆与推测。
 # ===========================================================================
 
-import logging
+import logging  # 【调用包】日志记录(辩论进度/异常)
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage  # 【调用包】LLM 消息对象(把提示词封装为人类消息)
 
-from tradingagents.agents.analysts.commodity_analysts import _run_tool_loop
-from tradingagents.agents.utils.commodity_futures_tools import (
+from tradingagents.agents.analysts.commodity_analysts import _run_tool_loop  # 【调用包】工具调用循环(LLM 可反复请求调用工具查证)
+from tradingagents.agents.utils.commodity_futures_tools import (  # 【调用包】期货数据工具集(实时行情/核价/技术指标/情绪/品种信息)
     get_futures_indicators,
     get_futures_price,
     get_futures_sentiment,
@@ -52,11 +52,11 @@ logger = logging.getLogger(__name__)
 
 # Debate tool loop: fewer iterations than analysts (debate needs quick fact-checks)
 # 辩论中的工具调用轮次上限:比分析师更少,因为辩论只需要"快速查证",不需要长篇研报。
-DEBATE_MAX_ITERATIONS = 3
+DEBATE_MAX_ITERATIONS = 3  # 【变量】辩论中工具调用轮次上限(辩论只需快速查证,故比分析师少)
 
 # Tools available to debaters (fact-checking + live data)
 # 辩论者可用工具清单:覆盖"实时行情 + 精确历史核价 + 技术指标 + 情绪 + 品种信息"。
-DEBATE_TOOLS = [
+DEBATE_TOOLS = [  # 【变量】辩论者可用的工具清单(实时行情+核价+指标+情绪+品种信息)
     get_realtime_price,  # Live market price —— 当前实时市场价
     get_verified_quote,  # Precise historical snapshot —— 指定日期精确 OHLCV(用于核证)
     get_futures_price,  # Recent price history —— 近期价格历史
@@ -67,7 +67,7 @@ DEBATE_TOOLS = [
 
 # Moderator tools: narrower set, focused on fact-checking
 # 主持人工具清单:比辩论者更窄,只聚焦"事实核查"(价格相关),不需要技术指标/情绪等。
-MODERATOR_TOOLS = [
+MODERATOR_TOOLS = [  # 【变量】主持人工具清单(只留事实核查相关,比辩论者更窄)
     get_realtime_price,
     get_verified_quote,
     get_futures_price,
@@ -89,7 +89,7 @@ def _print_stage_header(title, progress_callback=None):
     【关键逻辑】有回调走回调,无回调走 logger.info,两者择一,保证任何环境都能输出。
     """
     if progress_callback:
-        progress_callback("stage_header", {"title": title})
+        progress_callback("stage_header", {"title": title})  # 【调用函数】通过回调上报阶段标题(供 CLI 面板/Web 前端展示)
     else:
         logger.info("=== %s ===", title)
 
@@ -102,7 +102,7 @@ def _debate_progress_callback(event_type, data):
     # 【返回】无。
     # 【关键逻辑】与 commodity_demo.py 的 console_progress_callback 不同,这里用 logger.debug
     #            (默认不打印),避免辩论过程中的多次查证刷屏;仅调试时需要。
-    label = data.get("label", "Debate")
+    label = data.get("label", "Debate")  # 【变量】label:角色标签(如 Bull-R1),用于日志区分
     if event_type == "tool_call":
         logger.debug("[%s] %s(%s)", label, data["tool_name"], data.get("args_brief", ""))
     elif event_type == "tool_result":
@@ -134,16 +134,16 @@ def create_bull_debater(llm, label="Bull"):
         fundamental = state.get("fundamental_report", "")
         macro = state.get("macro_report", "")
         sentiment = state.get("sentiment_report", "")
-        symbol = state["company_of_interest"]  # 当前分析的期货品种,如 "RB"
+        symbol = state["company_of_interest"]  # 当前分析的期货品种,如 "RB"  # 【变量】symbol:分析对象品种代码
         trade_date = state.get("trade_date", "")
-        debate_state = state.get("debate_state", {})
+        debate_state = state.get("debate_state", {})  # 【变量】debate_state:辩论共享状态(多空互读的数据载体)
         # 读取空方上一轮论点 —— 这就是"辩论互读"的关键:多方要针对空方发言进行反驳
-        bear_last = debate_state.get("bear_last", "")
+        bear_last = debate_state.get("bear_last", "")  # 【变量】bear_last:空方上一条论点(多方需反驳)
         round_num = debate_state.get("round", 0) + 1  # 当前辩论轮次 +1
 
         # 若有空方论点则构造"需反驳"上下文,否则是开篇立论
         if bear_last:
-            opponent_context = f"空方论点（需要反驳）：\n{bear_last[:1000]}"
+            opponent_context = f"空方论点（需要反驳）：\n{bear_last[:1000]}"  # 【变量】opponent_context:需反驳的对手论点上下文(无对手则开篇立论)
         else:
             opponent_context = "请发表你的开篇多方立论。"
 
@@ -181,12 +181,12 @@ Sentiment: {sentiment[:600] if sentiment else "N/A"}
         logger.info("Bull R%d (with tools)...", round_num)
 
         # Build initial message —— 把构造好的 system_message 作为唯一一条初始消息发给 LLM
-        initial_msg = HumanMessage(content=system_message)
+        initial_msg = HumanMessage(content=system_message)  # 【调用函数】封装 system_message 为 LLM 初始消息
 
         # Run tool-calling loop —— 调用工具循环:LLM 在回答前可反复请求调用工具(查价/核证),
         # 最多 DEBATE_MAX_ITERATIONS=3 轮,结果会通过 _debate_progress_callback 实时上报。
         try:
-            result = _run_tool_loop(
+            result = _run_tool_loop(  # 【调用函数】运行工具调用循环:LLM 最多 3 轮查证后给出论点
                 llm,
                 DEBATE_TOOLS,
                 [initial_msg],
@@ -198,7 +198,7 @@ Sentiment: {sentiment[:600] if sentiment else "N/A"}
             logger.error("Bull debater failed: %s", e)
             # Fallback to simple invoke —— 工具循环一旦报错(如网络/模型异常),降级为"纯 LLM 直接生成",
             # 保证辩论流程不会因为一次工具调用失败而中断。
-            fallback = llm.invoke(
+            fallback = llm.invoke(  # 【调用函数】llm.invoke:工具循环异常时降级为纯 LLM 生成
                 f"用中文为 {symbol} 商品期货构建最强看涨论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}"
             )
             result = fallback.content if hasattr(fallback, "content") else str(fallback)
@@ -216,7 +216,7 @@ Sentiment: {sentiment[:600] if sentiment else "N/A"}
         #   bull_last     —— 本轮论点,供"空方"下一轮读取反驳;
         #   bear_last     —— 原样保留空方上一条论点(多方不修改它);
         #   round         —— 推进轮次。这就是"辩论互读"的数据载体。
-        new_debate_state = {
+        new_debate_state = {  # 【变量】new_debate_state:更新后的辩论状态(写回本轮论点并推进轮次)
             "bull_history": debate_state.get("bull_history", "") + "\n" + result,
             "bear_history": debate_state.get("bear_history", ""),
             "bull_last": result,
@@ -256,16 +256,16 @@ def create_bear_debater(llm, label="Bear"):
         fundamental = state.get("fundamental_report", "")
         macro = state.get("macro_report", "")
         sentiment = state.get("sentiment_report", "")
-        symbol = state["company_of_interest"]
+        symbol = state["company_of_interest"]  # 【变量】symbol:分析对象品种代码
         trade_date = state.get("trade_date", "")
-        debate_state = state.get("debate_state", {})
+        debate_state = state.get("debate_state", {})  # 【变量】debate_state:辩论共享状态(多空互读的数据载体)
         # 读取多方上一条论点 —— 空方必须针对多方发言进行反驳
-        bull_last = debate_state.get("bull_last", "")
+        bull_last = debate_state.get("bull_last", "")  # 【变量】bull_last:多方上一条论点(空方需反驳)
         round_num = debate_state.get("round", 0) + 1
 
         # 若有多方论点则构造"需反驳"上下文,否则是开篇立论
         if bull_last:
-            opponent_context = f"多方论点（需要反驳）：\n{bull_last[:1000]}"
+            opponent_context = f"多方论点（需要反驳）：\n{bull_last[:1000]}"  # 【变量】opponent_context:需反驳的对手论点上下文(无对手则开篇立论)
         else:
             opponent_context = "请发表你的开篇空方立论。"
 
@@ -303,11 +303,11 @@ Sentiment: {sentiment[:600] if sentiment else "N/A"}
         logger.info("Bear R%d (with tools)...", round_num)
 
         # Build initial message —— 把 system_message 作为初始消息发送给 LLM
-        initial_msg = HumanMessage(content=system_message)
+        initial_msg = HumanMessage(content=system_message)  # 【调用函数】封装 system_message 为 LLM 初始消息
 
         # Run tool-calling loop —— 与多方相同:最多 3 轮工具查证,失败则降级
         try:
-            result = _run_tool_loop(
+            result = _run_tool_loop(  # 【调用函数】运行工具调用循环:空方最多 3 轮查证后给出论点
                 llm,
                 DEBATE_TOOLS,
                 [initial_msg],
@@ -318,7 +318,7 @@ Sentiment: {sentiment[:600] if sentiment else "N/A"}
         except Exception as e:
             logger.error("Bear debater failed: %s", e)
             # 降级:工具循环异常时直接用 LLM 生成看跌论点,避免流程中断
-            fallback = llm.invoke(
+            fallback = llm.invoke(  # 【调用函数】llm.invoke:工具循环异常时降级为纯 LLM 生成
                 f"用中文为 {symbol} 商品期货构建最强看跌论点。引用数据。\n技术面：{technical[:1500]}\n基本面：{fundamental[:1500]}\n宏观：{macro[:1000]}"
             )
             result = fallback.content if hasattr(fallback, "content") else str(fallback)
@@ -336,7 +336,7 @@ Sentiment: {sentiment[:600] if sentiment else "N/A"}
         #   bear_last     —— 本轮论点,供"多方"下一轮反驳;
         #   bull_last     —— 原样保留多方上一条论点;
         #   round         —— 推进轮次。
-        new_debate_state = {
+        new_debate_state = {  # 【变量】new_debate_state:更新后的辩论状态(与多方镜像,写回空方论点)
             "bull_history": debate_state.get("bull_history", ""),
             "bear_history": debate_state.get("bear_history", "") + "\n" + result,
             "bull_last": debate_state.get("bull_last", ""),
@@ -376,12 +376,12 @@ def create_debate_moderator(llm):
         technical = state.get("technical_report", "")
         fundamental = state.get("fundamental_report", "")
         macro = state.get("macro_report", "")
-        symbol = state["company_of_interest"]
+        symbol = state["company_of_interest"]  # 【变量】symbol:分析对象品种代码
         trade_date = state.get("trade_date", "")
-        debate_state = state.get("debate_state", {})
+        debate_state = state.get("debate_state", {})  # 【变量】debate_state:辩论共享状态(多空互读的数据载体)
         # 读取双方完整辩论历史(主持人要看全程,而不只是最后一轮)
-        bull_history = debate_state.get("bull_history", "")
-        bear_history = debate_state.get("bear_history", "")
+        bull_history = debate_state.get("bull_history", "")  # 【变量】bull_history:多方完整辩论历史(主持人需通读)
+        bear_history = debate_state.get("bear_history", "")  # 【变量】bear_history:空方完整辩论历史
 
         system_message = f"""You are the debate MODERATOR for {symbol} commodity futures (as of {trade_date}).
 
@@ -427,14 +427,14 @@ Macro: {macro[:400] if macro else "N/A"}
 ### 反事实检验
 ### 辩论总结
 """
-        _print_stage_header("[Moderator] Reviewing debate (with fact-check tools)...")
+        _print_stage_header("[Moderator] Reviewing debate (with fact-check tools)...")  # 【调用函数】上报阶段标题(有回调走回调,否则打日志)
 
-        initial_msg = HumanMessage(content=system_message)
+        initial_msg = HumanMessage(content=system_message)  # 【调用函数】封装 system_message 为 LLM 初始消息
 
         # Run tool-calling loop for fact-checking —— 主持人用更窄的 MODERATOR_TOOLS
         # 核查双方论点中的关键事实(如价格水平、方向断言),最多 3 轮。
         try:
-            result = _run_tool_loop(
+            result = _run_tool_loop(  # 【调用函数】主持人工具循环:核查双方论点关键事实(最多 3 轮)
                 llm,
                 MODERATOR_TOOLS,
                 [initial_msg],
@@ -445,7 +445,7 @@ Macro: {macro[:400] if macro else "N/A"}
         except Exception as e:
             logger.error("Moderator failed: %s", e)
             # 降级:工具循环异常时直接用 LLM 总结辩论,保证后续节点能拿到讨论结果
-            fallback = llm.invoke(
+            fallback = llm.invoke(  # 【调用函数】llm.invoke:工具循环异常时降级为纯 LLM 总结
                 f"Summarize the bull vs bear debate for {symbol}. Bull: {bull_history[:1000]} Bear: {bear_history[:1000]}"
             )
             result = fallback.content if hasattr(fallback, "content") else str(fallback)

@@ -21,7 +21,7 @@
 #      匹配, 剩余的走 OpenAI 兼容判定再统一交给 OpenAIClient。
 # =============================================================================
 
-from .base_client import BaseLLMClient
+from .base_client import BaseLLMClient  # 【调用包】统一客户端基类(所有厂商客户端的公共父类)
 
 
 def create_llm_client(
@@ -70,7 +70,7 @@ def create_llm_client(
         这样新增一家厂商 = 在工厂里加一个分支 + 写一个 BaseLLMClient 子类,
         业务代码完全不动。
     """
-    provider_lower = provider.lower()
+    provider_lower = provider.lower()  # 【变量】归一化后的厂商名(小写), 供后续分支逐一比对
 
     # Native (non-OpenAI) APIs are matched first so their string check doesn't
     # import the OpenAI client. Everything else is OpenAI-compatible and routes
@@ -79,40 +79,40 @@ def create_llm_client(
     # 触发 OpenAI 客户端的导入 (延迟导入的副作用: 只要不 import 就不加载 SDK)。
     # 其余厂商都是 OpenAI 兼容的, 统一走下面 provider registry 判定。
     if provider_lower == "anthropic":
-        from .anthropic_client import AnthropicClient
+        from .anthropic_client import AnthropicClient  # 【调用包】延迟导入 Anthropic 原生客户端(仅选中 anthropic 才加载)
 
         # 【中文说明】Anthropic(Claude) 原生 SDK。只有真的选了 anthropic 才会
         # import anthropic_client, 避免测试/未用场景下引入重 SDK 或触发鉴权。
-        return AnthropicClient(model, base_url, **kwargs)
+        return AnthropicClient(model, base_url, **kwargs)  # 【调用函数】构造 Anthropic 客户端(Claude)
 
     if provider_lower == "google":
-        from .google_client import GoogleClient
+        from .google_client import GoogleClient  # 【调用包】延迟导入 Google(Gemini) 原生客户端
 
         # 【中文说明】Google(Gemini) 原生 SDK 分支。
-        return GoogleClient(model, base_url, **kwargs)
+        return GoogleClient(model, base_url, **kwargs)  # 【调用函数】构造 Google Gemini 客户端
 
     if provider_lower == "azure":
-        from .azure_client import AzureOpenAIClient
+        from .azure_client import AzureOpenAIClient  # 【调用包】延迟导入微软 Azure OpenAI 客户端
 
         # 【中文说明】微软 Azure OpenAI 分支 (虽属 OpenAI 兼容族, 但连接参数不同,
         # 有独立客户端)。
-        return AzureOpenAIClient(model, base_url, **kwargs)
+        return AzureOpenAIClient(model, base_url, **kwargs)  # 【调用函数】构造 Azure OpenAI 客户端(需 AZURE_* 环境变量)
 
     if provider_lower == "bedrock":
-        from .bedrock_client import BedrockClient
+        from .bedrock_client import BedrockClient  # 【调用包】延迟导入 AWS Bedrock 客户端(含可选 langchain-aws 依赖)
 
         # 【中文说明】AWS Bedrock 分支。
-        return BedrockClient(model, base_url, **kwargs)
+        return BedrockClient(model, base_url, **kwargs)  # 【调用函数】构造 AWS Bedrock 客户端(Converse API)
 
     # 【中文说明】走到这里说明不是原生厂商。is_openai_compatible() 会用白名单/
     # 规则判断该 provider 是否走 OpenAI 兼容协议 (含 "openai" 本身及各种兼容
     # 中转服务); OpenAIClient 是"单一事实来源", 负责统一承载所有兼容厂商。
-    from .openai_client import OpenAIClient, is_openai_compatible
+    from .openai_client import OpenAIClient, is_openai_compatible  # 【调用包】延迟导入 OpenAI 兼容客户端及兼容性判定函数
 
-    if is_openai_compatible(provider_lower):
+    if is_openai_compatible(provider_lower):  # 【调用函数】查 OpenAI 兼容厂商注册表, 判定是否走 Chat Completions 兼容协议
         # 【关键逻辑】把 provider_lower 一并传给 OpenAIClient, 让它在内部区分
         # 具体是哪家兼容服务 (不同兼容服务的 base_url / 鉴权方式可能不同)。
-        return OpenAIClient(model, base_url, provider=provider_lower, **kwargs)
+        return OpenAIClient(model, base_url, provider=provider_lower, **kwargs)  # 【调用函数】统一交给 OpenAIClient(单一事实来源)
 
     # 【中文说明】兜底: 不是任何已知厂商 → 抛异常, 让配置错误在启动/建图时立刻
     # 暴露, 而不是在运行中途才莫名其妙地失败。

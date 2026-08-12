@@ -1,3 +1,12 @@
+"""TradingAgents 核心包:在 import 时加载 .env 并压制上游警告,为各入口统一准备运行时环境。
+
+本包不 re-export 业务对象,职责是「先于一切导入完成环境准备」:
+1) 加载项目 .env(含 .env.enterprise),使 DEFAULT_CONFIG 的环境变量覆盖
+   (见 tradingagents.default_config)与所有 llm_clients 消费者都能读到用户密钥;
+2) 预导入 langchain_core,并在 langgraph-checkpoint 修复版本到达前压制其
+   PendingDeprecationWarning(具体见下方代码注释)。
+"""
+
 import contextlib
 import warnings
 

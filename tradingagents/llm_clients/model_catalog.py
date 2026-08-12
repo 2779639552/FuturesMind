@@ -1,12 +1,15 @@
 """Shared model catalog for CLI selections and validation."""
 
-from __future__ import annotations
+from __future__ import annotations  # 【调用包】启用延迟求值的类型注解
 
+# 【变量】模型选项 = (展示标签, 实际模型 ID) 二元组
 ModelOption = tuple[str, str]
+# 【变量】厂商 -> 模式(quick/deep) -> 模型选项列表 的嵌套字典类型
 ProviderModeOptions = dict[str, dict[str, list[ModelOption]]]
 
 # Providers that serve many / frequently-changing models: offer only "Custom
 # model ID" rather than a list that goes stale.
+# 【变量】模型频繁变动的厂商只提供 "Custom model ID" 一项, 避免列表过期
 _CUSTOM_ONLY: dict[str, list[ModelOption]] = {
     "quick": [("Custom model ID", "custom")],
     "deep": [("Custom model ID", "custom")],
@@ -16,6 +19,7 @@ _CUSTOM_ONLY: dict[str, list[ModelOption]] = {
 # Shared model list for GLM via Z.AI (international) and BigModel (China).
 # Source: docs.z.ai (GLM Coding Plan supported models + LLM guides).
 # All GLM 4.7+ entries support thinking mode via thinking={"type":"enabled"}.
+# 【变量】GLM 共享模型列表(国际 Z.AI 与中国 BigModel 共用同一组 ID)
 _GLM_MODELS: dict[str, list[ModelOption]] = {
     "quick": [
         ("GLM-5-Turbo - Fast, switchable thinking modes", "glm-5-turbo"),
@@ -43,6 +47,7 @@ _GLM_MODELS: dict[str, list[ModelOption]] = {
 # the backing model. Users who want a specific generation pick it
 # explicitly; users who really want auto-latest can enter the alias via
 # "Custom model ID".
+# 【变量】Qwen 共享模型列表(全球 dashscope-intl 与中国 dashscope 共用)
 _QWEN_MODELS: dict[str, list[ModelOption]] = {
     "quick": [
         ("Qwen 3.7 Plus - Latest, balanced speed/cost", "qwen3.7-plus"),
@@ -61,6 +66,7 @@ _QWEN_MODELS: dict[str, list[ModelOption]] = {
 # Shared model list for MiniMax's global and CN endpoints (same IDs).
 # Full official lineup per platform.minimax.io/docs/api-reference/text-openai-api.
 # M3 carries a 1M-token context window; the M2.x line is 204,800 tokens.
+# 【变量】MiniMax 共享模型列表(全球 .io 与中国 .com 区域 ID 相同)
 _MINIMAX_MODELS: dict[str, list[ModelOption]] = {
     "quick": [
         ("MiniMax-M3 - Latest, 1M ctx, native multimodal", "MiniMax-M3"),
@@ -78,6 +84,8 @@ _MINIMAX_MODELS: dict[str, list[ModelOption]] = {
 }
 
 
+# 【变量】全量模型目录: 厂商 -> quick/deep 模式 -> 模型选项列表。
+#         CLI 下拉选择与模型名校验共用的"单一事实来源"。
 MODEL_OPTIONS: ProviderModeOptions = {
     "openai": {
         "quick": [
@@ -194,11 +202,16 @@ MODEL_OPTIONS: ProviderModeOptions = {
 }
 
 
+# 【功能】取某厂商某模式下可选的模型列表。
+# 【参数】provider: 厂商名; mode: "quick" 或 "deep"。
+# 【返回】[(展示标签, 模型 ID), ...]; 厂商/模式不存在时抛 KeyError。
 def get_model_options(provider: str, mode: str) -> list[ModelOption]:
     """Return shared model options for a provider and selection mode."""
     return MODEL_OPTIONS[provider.lower()][mode]
 
 
+# 【功能】从共享 CLI 目录构建"厂商 -> 已知模型名列表"映射(供校验用)。
+# 【关键】对每个厂商把 quick/deep 两模式的模型 ID 去重并排序。
 def get_known_models() -> dict[str, list[str]]:
     """Build known model names from the shared CLI catalog."""
     return {

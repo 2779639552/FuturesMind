@@ -29,12 +29,12 @@ a tool → node executes it → LLM processes the result → repeat until report
 #   - commodity_debate.py 负责让多位分析师的报告进入"辩论"环节并做综合。
 # =============================================================================
 
-import logging
+import logging  # 【调用包】标准库日志;记录工具调用信息与分析失败异常
 
-from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, ToolMessage  # 【调用包】LangChain 消息类型;HumanMessage 承载最终报告、ToolMessage 回填工具结果给 LLM
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # 【调用包】构建带历史占位符的提示模板;让 LLM 依据对话历史决策
 
-from tradingagents.agents.utils.agent_utils import get_language_instruction
+from tradingagents.agents.utils.agent_utils import get_language_instruction  # 【调用包】语言指令;在系统提示末尾追加"用中文输出"约束
 from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_basis,
     get_futures_indicators,
@@ -45,7 +45,7 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_supply_demand,
     get_variety_info,
     get_verified_quote,
-)
+)  # 【调用包】商品期货行情/指标/库存/基差/宏观/新闻/供需/品种信息/核验报价工具;由 LLM 通过 _run_tool_loop 调度取数
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ def _run_tool_loop(
 
         # 关键一步：把全部历史消息（含此前工具结果）连同工具定义一起交给 LLM。
         # LLM 返回的 response 中可能带 tool_calls（它想调用哪些工具及其参数）。
-        response = llm.bind_tools(tools).invoke(messages)
+        response = llm.bind_tools(tools).invoke(messages)  # 【调用函数】LLM 核心调用:绑定工具后让 LLM 决策(是否调用工具/调用哪些)
         # 把 LLM 本轮的回答追加进对话历史，保持上下文连贯（含它的思考过程）。
         messages.append(response)
 
@@ -162,7 +162,7 @@ def _run_tool_loop(
             if tool_name in tool_map:
                 try:
                     # 真正执行工具函数（@tool 装饰的函数可通过 .invoke(args) 调用）。
-                    result = tool_map[tool_name].invoke(tool_args)
+                    result = tool_map[tool_name].invoke(tool_args)  # 【调用函数】调度执行 LLM 请求的工具(实际取数),结果将回填给 LLM
                     # Truncate very long results to avoid token overflow
                     # 工具返回可能很长（如新闻/库存列表），截断到 8000 字符，避免撑爆 LLM 上下文。
                     if isinstance(result, str) and len(result) > 8000:
@@ -190,7 +190,7 @@ def _run_tool_loop(
 
             # 关键一步：把工具执行结果以 ToolMessage 形式"回填"给 LLM。
             # tool_call_id 必须与上文 LLM 请求中的 id 完全一致，LLM 才知道这段结果对应哪次调用。
-            messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
+            messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))  # 【调用函数】把工具结果包装为 ToolMessage 回填,按 tool_call_id 与 LLM 请求配对
 
     # Hit max iterations
     # 循环终止条件之二：达到最大轮数仍未结束。强制返回最后一次 LLM 输出，避免无限循环。
@@ -229,7 +229,7 @@ def create_commodity_technical_analyst(llm, label="Technical", progress_callback
         current_date = state["trade_date"]
         symbol = state["company_of_interest"]
 
-        tools = [
+        tools = [  # 【变量】本节点向 LLM 注册的工具白名单(技术/基本面/宏观各 4-6 个),将被 bind_tools 绑定
             get_variety_info,
             get_futures_price,
             get_futures_indicators,
@@ -289,12 +289,12 @@ End your report with:
         # --- Self-Evolution Injection ---
         # Prepend evolution memory context so the analyst sees user preferences
         # and past lessons BEFORE the analysis framework instructions.
-        evolution_ctx = state.get("past_context", "")
+        evolution_ctx = state.get("past_context", "")  # 【变量】进化记忆上下文;非空时前置到系统提示,让分析师参考历史教训与用户偏好
         if evolution_ctx:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
-        prompt = ChatPromptTemplate.from_messages(
+        prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [
                 (
                     "system",
@@ -313,12 +313,12 @@ End your report with:
         prompt = prompt.partial(symbol=symbol)
 
         # Build initial messages
-        initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]
+        initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]  # 【调用函数】用历史消息填充模板,生成对话初始消息
 
         # Run tool-calling loop
         try:
             report = _run_tool_loop(
-                llm, tools, initial_messages, progress_callback=progress_callback, label=label
+                llm, tools, initial_messages, progress_callback=progress_callback, label=label  # 【调用函数】进入工具循环:LLM 决策→取数→写报告,直至完成或达轮数上限
             )
         except Exception as e:
             logger.error("Technical analyst failed: %s", e)
@@ -362,7 +362,7 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
         current_date = state["trade_date"]
         symbol = state["company_of_interest"]
 
-        tools = [
+        tools = [  # 【变量】本节点向 LLM 注册的工具白名单(技术/基本面/宏观各 4-6 个),将被 bind_tools 绑定
             get_variety_info,
             get_futures_price,
             get_futures_basis,
@@ -459,12 +459,12 @@ End with:
 """ + get_language_instruction()
 
         # --- Self-Evolution Injection ---
-        evolution_ctx = state.get("past_context", "")
+        evolution_ctx = state.get("past_context", "")  # 【变量】进化记忆上下文;非空时前置到系统提示,让分析师参考历史教训与用户偏好
         if evolution_ctx:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
-        prompt = ChatPromptTemplate.from_messages(
+        prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [
                 (
                     "system",
@@ -482,11 +482,11 @@ End with:
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(symbol=symbol)
 
-        initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]
+        initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]  # 【调用函数】用历史消息填充模板,生成对话初始消息
 
         try:
             report = _run_tool_loop(
-                llm, tools, initial_messages, progress_callback=progress_callback, label=label
+                llm, tools, initial_messages, progress_callback=progress_callback, label=label  # 【调用函数】进入工具循环:LLM 决策→取数→写报告,直至完成或达轮数上限
             )
         except Exception as e:
             logger.error("Fundamental analyst failed: %s", e)
@@ -530,7 +530,7 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
         current_date = state["trade_date"]
         symbol = state["company_of_interest"]
 
-        tools = [
+        tools = [  # 【变量】本节点向 LLM 注册的工具白名单(技术/基本面/宏观各 4-6 个),将被 bind_tools 绑定
             get_variety_info,
             get_futures_news,
             get_futures_price,
@@ -603,12 +603,12 @@ End with:
 """ + get_language_instruction()
 
         # --- Self-Evolution Injection ---
-        evolution_ctx = state.get("past_context", "")
+        evolution_ctx = state.get("past_context", "")  # 【变量】进化记忆上下文;非空时前置到系统提示,让分析师参考历史教训与用户偏好
         if evolution_ctx:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
-        prompt = ChatPromptTemplate.from_messages(
+        prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [
                 (
                     "system",
@@ -626,11 +626,11 @@ End with:
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(symbol=symbol)
 
-        initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]
+        initial_messages = [prompt.format_prompt(messages=state["messages"]).to_messages()[0]]  # 【调用函数】用历史消息填充模板,生成对话初始消息
 
         try:
             report = _run_tool_loop(
-                llm, tools, initial_messages, progress_callback=progress_callback, label=label
+                llm, tools, initial_messages, progress_callback=progress_callback, label=label  # 【调用函数】进入工具循环:LLM 决策→取数→写报告,直至完成或达轮数上限
             )
         except Exception as e:
             logger.error("Macro analyst failed: %s", e)

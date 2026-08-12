@@ -23,11 +23,11 @@
       由 sentiment.py / batch_collect.py 的 enrich 流程提前打好。
 """
 
-from collections import Counter
+from collections import Counter  # 【调用包】7级情感标签频次统计(Counter)
 
-import pandas as pd
-import plotly.graph_objects as go
-from report_utils import (
+import pandas as pd  # 【调用包】DataFrame 数据处理与品种-情感矩阵构造
+import plotly.graph_objects as go  # 【调用包】Plotly 图表对象(柱状图/热力图/直方图)
+from report_utils import (  # 【调用包】report_utils: 情感标签/颜色常量 + 终端/HTML 渲染工具
     SENTIMENT_COLORS,
     SENTIMENT_LABELS,
     SENTIMENT_ORDER,
@@ -49,8 +49,8 @@ def analyze(df: pd.DataFrame) -> dict:
         便于做品种级统计 (来自 report_utils)。
       - 文本报告与 HTML 图表并行构建, 最后一起返回。
     """
-    vdf = expand_varieties(df)
-    vdf_valid = vdf[vdf["variety_name"] != ""].copy()
+    vdf = expand_varieties(df)  # 【调用函数】跨文件(report_utils): 一帖多品种拆多行, 便于品种级统计
+    vdf_valid = vdf[vdf["variety_name"] != ""].copy()  # 【变量】只保留带有效品种名的行(品种级分析样本)
 
     # === 1. 7级情感分布 ===
     # Counter 统计每个 7 级标签出现的次数 (即情感分布的直方图数据)
@@ -59,7 +59,7 @@ def analyze(df: pd.DataFrame) -> dict:
         sent_dist[s] += 1
     total = len(df)
 
-    text = terminal_table(
+    text = terminal_table(  # 【调用函数】跨文件(report_utils): 生成终端等宽表格文本
         ["情感等级", "条数", "占比", "分布"],
         [
             [SENTIMENT_LABELS.get(k, k), str(v), f"{v / total * 100:.0f}%", "█" * (v // 3)]
@@ -84,7 +84,7 @@ def analyze(df: pd.DataFrame) -> dict:
         + sent_dist.get("bearish", 0)
         + sent_dist.get("slightly_bearish", 0)
     )
-    neutral_total = sent_dist.get("neutral", 0)
+    neutral_total = sent_dist.get("neutral", 0)  # 【变量】中性帖子数(7级中的 neutral)
     text += f"\n  牛熊比: {bull_total}牛 / {neutral_total}中 / {bear_total}熊 = {bull_total / (bear_total + 1):.2f}:1"
 
     # === 2. 高确信度信号 ===
@@ -118,7 +118,7 @@ def analyze(df: pd.DataFrame) -> dict:
                     vars_str,
                 ]
             )
-        text += terminal_table(
+        text += terminal_table(  # 【调用函数】跨文件(report_utils): 高确信信号 Top10 表格
             ["内容预览", "情感", "分数", "确信", "涉及品种"],
             hc_rows,
             title="最高确信度信号 Top 10",
@@ -152,7 +152,7 @@ def analyze(df: pd.DataFrame) -> dict:
             row[sent] = count
         matrix_data.append(row)
 
-    matrix_df = pd.DataFrame(matrix_data)
+    matrix_df = pd.DataFrame(matrix_data)  # 【变量】品种×情感 计数矩阵, 用于热力图与明细表
 
     # ================================================================
     # HTML 图表
@@ -166,7 +166,7 @@ def analyze(df: pd.DataFrame) -> dict:
     charts_html = ""
 
     # 统计卡片
-    charts_html += stat_cards_html(
+    charts_html += stat_cards_html(  # 【调用函数】跨文件(report_utils): 生成 HTML 统计卡片
         {
             "笔记总数": str(total),
             "牛熊比": f"{bull_total}:{bear_total}",
@@ -197,7 +197,7 @@ def analyze(df: pd.DataFrame) -> dict:
         xaxis_title="情感等级",
         yaxis_title="笔记数量",
     )
-    charts_html += chart_to_html(fig1, "sent_dist", 400)
+    charts_html += chart_to_html(fig1, "sent_dist", 400)  # 【调用函数】跨文件(report_utils): Plotly 图转内嵌 HTML 片段
 
     # Chart 2: 品种-情感热力图
     if len(matrix_df) >= 3:
@@ -230,13 +230,13 @@ def analyze(df: pd.DataFrame) -> dict:
             xaxis_title="情感等级",
             yaxis_title="品种",
         )
-        charts_html += chart_to_html(fig2, "variety_sent_heatmap", max(300, len(y_labels) * 22))
+        charts_html += chart_to_html(fig2, "variety_sent_heatmap", max(300, len(y_labels) * 22))  # 【调用函数】跨文件(report_utils): 品种×情感热力图转内嵌 HTML
 
     # Chart 3: Confidence 分布
     fig3 = go.Figure()
-    conf_bull = df[df["sentiment"].str.contains("bullish", na=False)]["sentiment_confidence"]
-    conf_bear = df[df["sentiment"].str.contains("bearish", na=False)]["sentiment_confidence"]
-    conf_neutral = df[df["sentiment"] == "neutral"]["sentiment_confidence"]
+    conf_bull = df[df["sentiment"].str.contains("bullish", na=False)]["sentiment_confidence"]  # 【变量】看多帖子的置信度序列
+    conf_bear = df[df["sentiment"].str.contains("bearish", na=False)]["sentiment_confidence"]  # 【变量】看空帖子的置信度序列
+    conf_neutral = df[df["sentiment"] == "neutral"]["sentiment_confidence"]  # 【变量】中性帖子的置信度序列
 
     fig3.add_trace(
         go.Histogram(
@@ -271,7 +271,7 @@ def analyze(df: pd.DataFrame) -> dict:
         yaxis_title="笔记数",
         barmode="overlay",
     )
-    charts_html += chart_to_html(fig3, "conf_hist", 350)
+    charts_html += chart_to_html(fig3, "conf_hist", 350)  # 【调用函数】跨文件(report_utils): 置信度分布直方图转内嵌 HTML
 
     return {
         "text": text,

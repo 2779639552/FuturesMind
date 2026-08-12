@@ -13,18 +13,18 @@ v2 改进:
       python backtest_weights.py --grid-search
 """
 
-import argparse
-import json
-import math
-import os
-from collections import defaultdict
-from datetime import datetime
-from pathlib import Path
+import argparse  # 【调用包】命令行参数解析(--min-points/--horizons/--grid-search)
+import json  # 【调用包】读写 *_sentiment.json / *_price.json / *_weights.json 等 JSON 文件
+import math  # 【调用包】数学函数(sqrt 求标准差 / exp 算 softmax)
+import os  # 【调用包】扫描 output/trends 目录发现品种
+from collections import defaultdict  # 【调用包】默认字典, 用于按平台/按品种池化信号
+from datetime import datetime  # 【调用包】时间戳(写入权重文件的 updated 字段)
+from pathlib import Path  # 【调用包】跨平台路径处理(TRENDS_DIR)
 
-TRENDS_DIR = Path(__file__).parent / "output" / "trends"
+TRENDS_DIR = Path(__file__).parent / "output" / "trends"  # 【变量】时序/权重文件输出目录
 
-DEFAULT_MIN_POINTS = 10
-DEFAULT_HORIZONS = [1, 3, 5]
+DEFAULT_MIN_POINTS = 10  # 【变量】平台权重生效所需的最少数据点门槛
+DEFAULT_HORIZONS = [1, 3, 5]  # 【变量】默认回测周期(1/3/5 天后的价格变化)
 GRID_SEARCH_STEPS = 11  # 0.0, 0.1, ..., 1.0
 
 
@@ -33,20 +33,28 @@ GRID_SEARCH_STEPS = 11  # 0.0, 0.1, ..., 1.0
 # ============================================================
 
 
+# 【功能】读取某品种的时序情感 JSON(output/trends/{variety}_sentiment.json)。
+# 【参数】variety: 品种名(如 "螺纹钢")。
+# 【返回】解析后的 dict; 文件不存在返回 None。
+# 【关键】数据来自 trend_aggregator.py 的聚合产物。
 def load_sentiment(variety: str) -> dict | None:
     path = TRENDS_DIR / f"{variety}_sentiment.json"
     if not path.exists():
         return None
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        return json.load(f)  # 【调用函数】落盘读取: 反序列化品种情感时序 JSON
 
 
+# 【功能】读取某品种的价格 JSON(output/trends/{variety}_price.json)。
+# 【参数】variety: 品种名。
+# 【返回】解析后的 dict; 文件不存在返回 None。
+# 【关键】数据来自 price_fetcher.py 抓取的 akshare 日线。
 def load_price(variety: str) -> dict | None:
     path = TRENDS_DIR / f"{variety}_price.json"
     if not path.exists():
         return None
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        return json.load(f)  # 【调用函数】落盘读取: 反序列化品种价格 JSON
 
 
 # ============================================================
@@ -54,6 +62,9 @@ def load_price(variety: str) -> dict | None:
 # ============================================================
 
 
+# 【功能】计算两序列的皮尔逊相关系数(情绪信号 vs 价格涨跌幅)。
+# 【参数】x/y: 等长浮点序列; 样本数 < 3 或任一方标准差为 0 时返回 0.0。
+# 【返回】相关系数 ∈ [-1, 1]。
 def pearson_r(x: list[float], y: list[float]) -> float:
     n = len(x)
     if n < 3:
@@ -68,6 +79,9 @@ def pearson_r(x: list[float], y: list[float]) -> float:
     return cov / (std_x * std_y)
 
 
+# 【功能】对 dict 打分做温度 softmax, 输出同 key 的概率权重。
+# 【参数】scores: {平台: 合成分数}; temperature: 温度参数(越小越集中在高分平台)。
+# 【返回】{平台: 归一化权重}; 空输入或分母为 0 时退化为均匀分布。
 def softmax(scores: dict[str, float], temperature: float = 1.0) -> dict[str, float]:
     if not scores:
         return {}
@@ -79,6 +93,9 @@ def softmax(scores: dict[str, float], temperature: float = 1.0) -> dict[str, flo
     return {p: math.exp(s / temperature) / exp_sum for p, s in items}
 
 
+# 【功能】评估预测信号的方向准确率与 Pearson r。
+# 【参数】signals: 情绪信号序列; changes: 对应的未来价格涨跌幅序列。
+# 【返回】{"direction_accuracy", "pearson_r", "data_points"}; 空序列时准确率默认 0.5。
 def compute_accuracy(signals: list[float], changes: list[float]) -> dict:
     """计算方向准确率和 Pearson r"""
     n = len(signals)
@@ -97,6 +114,11 @@ def compute_accuracy(signals: list[float], changes: list[float]) -> dict:
 # ============================================================
 
 
+# 【功能】从单个品种时序中提取四类情绪信号与"未来 horizon 天价格涨跌幅"的配对样本。
+# 【参数】series: 品种情感日度记录列表; price_map: {日期: 收盘价}; horizon: 预测周期天数。
+# 【返回】{"simple": {signals,changes}, "author": {...}, "platform": {平台: {...}}, "combined": {...}};
+#        无未来价格或信号为 0 的样本被跳过。
+# 【关键】价格日对齐: 以 t+horizon 日收盘价计算涨跌幅。
 def extract_signals(series: list[dict], price_map: dict[str, float], horizon: int) -> dict:
     """对单个品种提取三种情绪信号 vs 未来价格变化的配对。
 
@@ -108,8 +130,8 @@ def extract_signals(series: list[dict], price_map: dict[str, float], horizon: in
             "combined_weighted": (signals[], changes[])  # 平台加权合成 (如果有)
         }
     """
-    all_dates = sorted(set(list(price_map.keys()) + [s["date"] for s in series]))
-    date_to_idx = {d: i for i, d in enumerate(all_dates)}
+    all_dates = sorted(set(list(price_map.keys()) + [s["date"] for s in series]))  # 【变量】品种全部日期并集(排序), 用于对齐价格
+    date_to_idx = {d: i for i, d in enumerate(all_dates)}  # 【变量】日期→序号索引, 便于定位未来 horizon 天的价格
 
     result = {
         "simple": {"signals": [], "changes": []},
@@ -164,6 +186,10 @@ def extract_signals(series: list[dict], price_map: dict[str, float], horizon: in
 # ============================================================
 
 
+# 【功能】全品种池化回测: 汇总各平台信号, 由方向准确率+Pearson 合成平台权重, 并按 horizon 评估。
+# 【参数】varieties: 品种列表; horizons: 回测周期; min_points: 平台权重生效最少样本; dir_weight: 方向准确率 vs |r| 的权重占比。
+# 【返回】{"results_by_horizon": {hN: {...}}, "best_horizon", "best_accuracy"}; 无数据品种自动跳过。
+# 【关键】权重来源三态: global_backtest(多平台 softmax) / single_platform(单平台) / fallback_equal(等权)。
 def compute_global_backtest(
     varieties: list[str],
     horizons: list[int],
@@ -177,16 +203,16 @@ def compute_global_backtest(
     results = {}
 
     for horizon in horizons:
-        pool_platforms = defaultdict(lambda: {"signals": [], "changes": []})
-        pool_simple = {"signals": [], "changes": []}
-        pool_author = {"signals": [], "changes": []}
+        pool_platforms = defaultdict(lambda: {"signals": [], "changes": []})  # 【变量】各平台跨品种池化后的信号/涨跌样本
+        pool_simple = {"signals": [], "changes": []}  # 【变量】全部品种池化的简单平均信号样本
+        pool_author = {"signals": [], "changes": []}  # 【变量】全部品种池化的作者加权信号样本
 
         total_pairs = 0
         n_varieties_with_data = 0
 
         for variety in varieties:
-            sent_data = load_sentiment(variety)
-            price_data = load_price(variety)
+            sent_data = load_sentiment(variety)  # 【调用函数】同文件: 读品种情感时序 JSON(带 fallback)
+            price_data = load_price(variety)  # 【调用函数】同文件: 读品种价格 JSON(带 fallback)
             if not sent_data or not price_data:
                 continue
             series = sent_data.get("series", [])
@@ -194,8 +220,8 @@ def compute_global_backtest(
             if not series or not prices:
                 continue
 
-            price_map = {str(p["date"])[:10]: float(p["close"]) for p in prices}
-            signals = extract_signals(series, price_map, horizon)
+            price_map = {str(p["date"])[:10]: float(p["close"]) for p in prices}  # 【变量】{日期(yyyy-mm-dd): 收盘价} 价格映射表
+            signals = extract_signals(series, price_map, horizon)  # 【调用函数】同文件: 提取该品种四类信号与未来涨跌配对
             n_varieties_with_data += 1
 
             # 池化: 平台
@@ -214,9 +240,9 @@ def compute_global_backtest(
 
         # 平台级评估
         platform_metrics = {}
-        platform_scores_for_softmax = {}
+        platform_scores_for_softmax = {}  # 【变量】达到 min_points 门槛的平台合成分数(用于 softmax 定权)
         for plat in pool_platforms:
-            m = compute_accuracy(
+            m = compute_accuracy(  # 【调用函数】同文件: 计算该平台的方向准确率与 Pearson r
                 pool_platforms[plat]["signals"],
                 pool_platforms[plat]["changes"],
             )
@@ -229,7 +255,7 @@ def compute_global_backtest(
 
         # Softmax → 平台权重
         if len(platform_scores_for_softmax) >= 2:
-            platform_weights = softmax(platform_scores_for_softmax, temperature=0.25)
+            platform_weights = softmax(platform_scores_for_softmax, temperature=0.25)  # 【调用函数】温度 softmax: 平台分→权重(低温集中)
             weight_source = "global_backtest"
         elif len(platform_scores_for_softmax) == 1:
             only = list(platform_scores_for_softmax.keys())[0]
@@ -283,6 +309,9 @@ def compute_global_backtest(
 # ============================================================
 
 
+# 【功能】逐品种独立回测: 计算各 horizon 的简单平均/作者加权预测力, 以 h1 作者加权准确率为排行分。
+# 【参数】varieties: 品种列表; horizons: 回测周期; min_points: 保留阈值。
+# 【返回】{品种: {"name", "horizons": {hN: {simple_avg, author_weighted}}, "score"}}; 无数据品种跳过。
 def compute_variety_backtests(
     varieties: list[str],
     horizons: list[int],
@@ -301,7 +330,7 @@ def compute_variety_backtests(
         if not series or not prices:
             continue
 
-        price_map = {str(p["date"])[:10]: float(p["close"]) for p in prices}
+        price_map = {str(p["date"])[:10]: float(p["close"]) for p in prices}  # 【变量】{日期: 收盘价} 价格映射表
         vresult = {"name": variety, "horizons": {}}
 
         for horizon in horizons:
@@ -329,6 +358,10 @@ def compute_variety_backtests(
 # ============================================================
 
 
+# 【功能】网格搜索最优 dir_weight(0.0~1.0), 目标为 h1 作者加权方向准确率最大化。
+# 【参数】varieties: 品种列表; horizons: 回测周期; min_points: 保留阈值。
+# 【返回】{"optimal_dir_weight", "optimal_accuracy", "all_results", "best_backtest"}。
+# 【关键】dir_weight=1 → 纯方向准确率; =0 → 纯 |Pearson r|。
 def grid_search_optimal_weight(
     varieties: list[str],
     horizons: list[int],
@@ -370,6 +403,10 @@ def grid_search_optimal_weight(
 # ============================================================
 
 
+# 【功能】将回测得到的平台权重与品种级结果落盘: _global_weights.json + 各品种 *_weights.json。
+# 【参数】global_backtest: 全局回测结果; variety_backtests: 品种级回测结果。
+# 【返回】None; 副作用: 写 JSON 文件并打印保存统计。
+# 【关键】默认权重取 h1 平台 softmax 权重; 同时为每个品种生成平台加权 sentiment 时序。
 def apply_and_save(
     varieties: list[str],
     global_backtest: dict,
@@ -380,7 +417,7 @@ def apply_and_save(
 
     # 取 h1 的权重作为默认
     h1 = global_backtest["results_by_horizon"].get("h1", {})
-    weights = h1.get("platform_weights", {})
+    weights = h1.get("platform_weights", {})  # 【变量】h1 周期下的平台权重(用于后续加权 sentiment)
     metrics = h1.get("platform_metrics", {})
 
     # 保存全局权重
@@ -401,7 +438,7 @@ def apply_and_save(
         }
 
     with open(TRENDS_DIR / "_global_weights.json", "w", encoding="utf-8") as f:
-        json.dump(global_out, f, ensure_ascii=False, indent=2)
+        json.dump(global_out, f, ensure_ascii=False, indent=2)  # 【调用函数】落盘: 序列化全局权重(ensure_ascii=False 保留中文)
 
     # 保存品种级权重
     for variety in varieties:
@@ -412,7 +449,7 @@ def apply_and_save(
         series = sent_data.get("series", [])
 
         # 加权序列
-        weighted_series = []
+        weighted_series = []  # 【变量】按平台权重合成的每日加权情感分数序列
         for entry in series:
             ps = entry.get("platform_scores", {})
             w_sum, w_total = 0.0, 0.0
@@ -447,7 +484,7 @@ def apply_and_save(
         }
 
         with open(TRENDS_DIR / f"{variety}_weights.json", "w", encoding="utf-8") as f:
-            json.dump(variety_out, f, ensure_ascii=False, indent=2)
+            json.dump(variety_out, f, ensure_ascii=False, indent=2)  # 【调用函数】落盘: 序列化该品种权重与加权时序
 
     print(f"Saved: _global_weights.json + {len(varieties)} variety weights")
 
@@ -457,6 +494,9 @@ def apply_and_save(
 # ============================================================
 
 
+# 【功能】主流程: 发现品种 → 全局回测 → 品种级回测 → 可选网格搜索 → 保存权重, 全程打印报告。
+# 【参数】min_points: 平台权重生效最少样本; horizons: 回测周期; do_grid_search: 是否执行网格搜索。
+# 【返回】{"global_backtest", "variety_backtests", "grid_search"(未执行时为 None)}。
 def run_all(
     min_points: int = DEFAULT_MIN_POINTS,
     horizons: list[int] = None,
@@ -471,7 +511,7 @@ def run_all(
     varieties = sorted(
         {
             f.replace("_sentiment.json", "")
-            for f in os.listdir(TRENDS_DIR)
+            for f in os.listdir(TRENDS_DIR)  # 【调用函数】外部系统调用: 扫描目录列出 *_sentiment.json 对应的品种
             if f.endswith("_sentiment.json")
         }
     )
@@ -483,7 +523,7 @@ def run_all(
     print("=" * 60)
     print("  1. Global Backtest (all varieties pooled)")
     print("=" * 60)
-    global_backtest = compute_global_backtest(varieties, horizons, min_points)
+    global_backtest = compute_global_backtest(varieties, horizons, min_points)  # 【调用函数】同文件: 全品种池化回测, 得出平台权重
 
     for _hk, hd in global_backtest["results_by_horizon"].items():
         print(f"\n  Horizon {hd['horizon_days']}d:")
@@ -516,7 +556,7 @@ def run_all(
     print(f"\n{'=' * 60}")
     print("  2. Per-Variety Backtest")
     print("=" * 60)
-    variety_backtests = compute_variety_backtests(varieties, horizons, min_points)
+    variety_backtests = compute_variety_backtests(varieties, horizons, min_points)  # 【调用函数】同文件: 逐品种独立回测
 
     # 排行
     ranked = sorted(variety_backtests.items(), key=lambda x: -x[1].get("score", 0))
@@ -544,7 +584,7 @@ def run_all(
         print(f"\n{'=' * 60}")
         print("  3. Grid Search: optimal dir_weight")
         print("=" * 60)
-        gs = grid_search_optimal_weight(varieties, horizons, min_points)
+        gs = grid_search_optimal_weight(varieties, horizons, min_points)  # 【调用函数】同文件: 网格搜索最优 dir_weight
         print(f"  Optimal dir_weight: {gs['optimal_dir_weight']}")
         print(f"  Best accuracy: {gs['optimal_accuracy']:.3f}")
         print("  Top 5 weights:")
@@ -557,7 +597,7 @@ def run_all(
     print(f"\n{'=' * 60}")
     print("  4. Saving weights")
     print("=" * 60)
-    apply_and_save(varieties, global_backtest, variety_backtests)
+    apply_and_save(varieties, global_backtest, variety_backtests)  # 【调用函数】同文件: 应用权重并落盘 JSON
 
     return {
         "global_backtest": global_backtest,

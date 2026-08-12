@@ -9,17 +9,21 @@ v3: 作者影响力加权 — 粉丝数(log压缩) + 领域发帖量 + 互动数
 输出: output/trends/{variety}_sentiment.json
 """
 
-import json
-import math
-import sys
-from collections import defaultdict
-from pathlib import Path
+import json  # 【调用包】读写品种情感时序 JSON 与回测权重 JSON
+import math  # 【调用包】log/log10 压缩作者粉丝数与发帖量权重
+import sys  # 【调用包】__main__ 中无数据文件时退出
+from collections import defaultdict  # 【调用包】按品种/日期/平台聚合的默认字典
+from pathlib import Path  # 【调用包】跨平台路径处理(OUTPUT_DIR)
 
-from dedupe import load_unique_records_with_platform_fallback
+from dedupe import load_unique_records_with_platform_fallback  # 【调用包】跨文件(dedupe): 多 JSONL 去重加载(带平台回退)
 
-OUTPUT_DIR = Path(__file__).parent / "output" / "trends"
+OUTPUT_DIR = Path(__file__).parent / "output" / "trends"  # 【变量】聚合时序结果输出目录
 
 
+# 【功能】全数据集扫描构建作者画像索引(发帖量/总互动/最大粉丝/分品种发帖数/均互动)。
+# 【参数】records: 去重清洗后的笔记记录列表。
+# 【返回】{author_id: {total_posts, total_engagement, total_fans, name, variety_posts, avg_engagement}}。
+# 【关键】粉丝数取多次出现的最大值(防止单次缺失); 分品种发帖数为领域专注度依据。
 def _build_author_index(records: list[dict]) -> dict:
     """构建全数据集作者画像索引。
 
@@ -32,7 +36,7 @@ def _build_author_index(records: list[dict]) -> dict:
         if not aid:
             continue
 
-        engagement = (
+        engagement = (  # 【变量】单条笔记互动分(评论×2、分享×0.5 加权)
             (note.get("like_count") or 0)
             + (note.get("comment_count") or 0) * 2
             + (note.get("share_count") or 0) * 0.5
@@ -72,6 +76,10 @@ def _build_author_index(records: list[dict]) -> dict:
     return author_index
 
 
+# 【功能】计算单条笔记的综合权重 = 互动权重 × 作者粉丝权重 × 作者品种专注度权重。
+# 【参数】note: 笔记记录; author_index: _build_author_index 的产物。
+# 【返回】float 权重(任一维度缺失时取 1.0, 三项独立相乘)。
+# 【关键】粉丝数用 log10、专注度用 ln 压缩, 均设上限防大 V/爆款主导。
 def _compute_note_weight(
     note: dict,
     author_index: dict[str, dict],
@@ -82,7 +90,7 @@ def _compute_note_weight(
     三项独立相乘, 任何一项缺失均不影响其他维度。
     """
     # --- 1. 互动权重 (per-post buzz, capped to prevent viral dominance) ---
-    engagement = (
+    engagement = (  # 【变量】单条笔记互动分(评论×2、分享×0.5 加权)
         (note.get("like_count") or 0)
         + (note.get("comment_count") or 0) * 2
         + (note.get("share_count") or 0) * 0.5
@@ -124,23 +132,27 @@ def _compute_note_weight(
     return final_weight
 
 
+# 【功能】主聚合: 多 JSONL → 按(品种, 日期)聚合加权情感分数, 输出每品种 *_sentiment.json 与汇总索引。
+# 【参数】jsonl_paths: 采集数据 JSONL 文件路径列表。
+# 【返回】{品种: {"series": [...], "stats": {...}}}; 无有效记录时返回空 dict。
+# 【关键】链式流程: 去重 → 清洗 → 作者画像 → 按日加权平均; 存在回测权重时追加 weighted_score。
 def aggregate(jsonl_paths: list[str]) -> dict:
     """聚合多个JSONL文件的情感时序数据 (多平台, 去重, 作者加权)"""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # 去重加载
-    records = load_unique_records_with_platform_fallback(jsonl_paths, verbose=True)
+    records = load_unique_records_with_platform_fallback(jsonl_paths, verbose=True)  # 【调用函数】跨文件(dedupe): 多批次去重加载, 后读覆盖先读
     if not records:
         print("No records to aggregate!")
         return {}
 
     # 数据清洗: 缺失值/异常值处理
-    from data_cleaner import clean_records
+    from data_cleaner import clean_records  # 【调用包】跨文件(data_cleaner): 清洗缺失/异常值
 
-    records = clean_records(records, verbose=True)
+    records = clean_records(records, verbose=True)  # 【调用函数】跨文件(data_cleaner): 过滤无效日期/空内容, 截断异常分
 
     # 构建作者画像索引 (全数据集, 一次扫描)
-    author_index = _build_author_index(records)
+    author_index = _build_author_index(records)  # 【调用函数】同文件: 一次扫描构建作者画像
 
     # 作者统计摘要
     total_authors = len(author_index)
@@ -153,12 +165,12 @@ def aggregate(jsonl_paths: list[str]) -> dict:
     )
 
     # {variety: {date: [scores]}}
-    daily = defaultdict(lambda: defaultdict(list))
-    note_counts = defaultdict(lambda: defaultdict(int))
-    platform_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    daily = defaultdict(lambda: defaultdict(list))  # 【变量】{品种: {日期: [含 score/weight 的记录]}} 原始聚合容器
+    note_counts = defaultdict(lambda: defaultdict(int))  # 【变量】{品种: {日期: 笔记数}}
+    platform_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))  # 【变量】{品种: {日期: {平台: 条数}}}
 
     # 作者维度统计 (用于 audit trail)
-    author_variety_sentiment: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    author_variety_sentiment: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))  # 【变量】{作者: {品种: [情感分]}} 审计用
 
     for note in records:
         date = (note.get("publish_time", "") or "")[:10]
@@ -169,7 +181,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
         aid = note.get("author_id", "")
 
         # 计算综合权重 (v3: 包含作者影响力)
-        weight = _compute_note_weight(note, author_index)
+        weight = _compute_note_weight(note, author_index)  # 【调用函数】同文件: 互动×粉丝×专注度三项连乘权重
 
         # 品种级情感
         for vs in note.get("variety_sentiments", []) or []:
@@ -202,13 +214,13 @@ def aggregate(jsonl_paths: list[str]) -> dict:
         # ---- 加载回测权重 ----
         global_weights_path = OUTPUT_DIR / "_global_weights.json"
         variety_weights_path = OUTPUT_DIR / f"{variety}_weights.json"
-        platform_weights: dict[str, float] = {}
-        weight_source = "equal"
-        combined_metrics: dict = {}
+        platform_weights: dict[str, float] = {}  # 【变量】平台权重(来自 backtest_weights 回测产物)
+        weight_source = "equal"  # 【变量】权重来源说明(equal / global_backtest / single_platform / fallback_equal)
+        combined_metrics: dict = {}  # 【变量】品种级回测指标(方向准确率/Pearson r/样本量)
         if global_weights_path.exists():
             try:
                 with open(global_weights_path, encoding="utf-8") as wf:
-                    wdata = json.load(wf)
+                    wdata = json.load(wf)  # 【调用函数】落盘读取: 全局平台回测权重
                 platform_weights = wdata.get("weights", {})
                 weight_source = wdata.get("weight_source", "equal")
             except Exception:
@@ -216,7 +228,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
         if variety_weights_path.exists():
             try:
                 with open(variety_weights_path, encoding="utf-8") as vf:
-                    vdata = json.load(vf)
+                    vdata = json.load(vf)  # 【调用函数】落盘读取: 该品种回测指标
                 combined_metrics = vdata.get("combined_metrics", {})
             except Exception:
                 pass
@@ -226,15 +238,15 @@ def aggregate(jsonl_paths: list[str]) -> dict:
             items = dates[date]
 
             # 加权平均 (全平台, 含作者影响力)
-            total_weight = sum(it["weight"] for it in items)
+            total_weight = sum(it["weight"] for it in items)  # 【变量】当日全部记录的权重和(加权平均分母)
             avg_score = (
                 sum(it["score"] * it["weight"] for it in items) / total_weight
                 if total_weight > 0
                 else 0
-            )
+            )  # 【变量】按权重加权的当日综合情感分
 
             # 简单平均 (对照, 不加权)
-            simple_avg = sum(it["score"] for it in items) / len(items)
+            simple_avg = sum(it["score"] for it in items) / len(items)  # 【变量】当日简单平均情感分(对照基准)
 
             sentiments = [it["sentiment"] for it in items]
             bull = sum(1 for s in sentiments if "bull" in s)
@@ -246,9 +258,9 @@ def aggregate(jsonl_paths: list[str]) -> dict:
                 p = it.get("platform", "xhs")
                 by_platform.setdefault(p, []).append(it)
 
-            platform_scores = {}
+            platform_scores = {}  # 【变量】分平台加权平均分与多空/条数统计
             for p, pitems in by_platform.items():
-                pw_total = sum(i["weight"] for i in pitems)
+                pw_total = sum(i["weight"] for i in pitems)  # 【变量】该平台当日权重和
                 pw_avg = (
                     sum(i["score"] * i["weight"] for i in pitems) / pw_total if pw_total > 0 else 0
                 )
@@ -261,7 +273,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
                 }
 
             # ---- 加权合成 (回测权重) ----
-            weighted_score = None
+            weighted_score = None  # 【变量】按回测平台权重合成的综合情感分(无权重时为 None)
             if platform_weights and platform_scores:
                 w_total = 0.0
                 w_sum = 0.0
@@ -273,15 +285,15 @@ def aggregate(jsonl_paths: list[str]) -> dict:
                     weighted_score = round(w_sum / w_total, 3)
 
             # ---- 作者影响力摘要 (该日期的TOP作者) ----
-            author_contribs = defaultdict(float)
+            author_contribs = defaultdict(float)  # 【变量】{作者id: 当日权重贡献和}
             for it in items:
                 aid = it.get("author_id", "")
                 if aid:
                     author_contribs[aid] += it["weight"]
-            top_authors = sorted(author_contribs.items(), key=lambda x: -x[1])[:3]
+            top_authors = sorted(author_contribs.items(), key=lambda x: -x[1])[:3]  # 【变量】当日权重贡献前三作者
 
             # 展示作者名
-            author_names = []
+            author_names = []  # 【变量】TOP 作者的展示信息(昵称/权重贡献/粉丝/发帖数)
             for aid, contrib in top_authors:
                 info = author_index.get(aid, {})
                 name = info.get("name", aid[:8])
@@ -297,7 +309,7 @@ def aggregate(jsonl_paths: list[str]) -> dict:
                     }
                 )
 
-            entry = {
+            entry = {  # 【变量】单日情感聚合条目(供时序 series 使用)
                 "date": date,
                 "avg_score": round(avg_score, 3),
                 "simple_avg": round(simple_avg, 3),
@@ -314,8 +326,8 @@ def aggregate(jsonl_paths: list[str]) -> dict:
 
         # 计算趋势指标
         if len(series) >= 3:
-            recent = [s["avg_score"] for s in series[-5:]]
-            trend = (
+            recent = [s["avg_score"] for s in series[-5:]]  # 【变量】最近5日的加权情感分(趋势判定窗口)
+            trend = (  # 【变量】近5日均值趋势标签: >0.1 偏多 / <-0.1 偏空 / 其余震荡
                 "偏多"
                 if sum(recent) / len(recent) > 0.1
                 else ("偏空" if sum(recent) / len(recent) < -0.1 else "震荡")
@@ -360,16 +372,16 @@ def aggregate(jsonl_paths: list[str]) -> dict:
         # 写文件
         out_path = OUTPUT_DIR / f"{variety}_sentiment.json"
         with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(result[variety], f, ensure_ascii=False, indent=2)
+            json.dump(result[variety], f, ensure_ascii=False, indent=2)  # 【调用函数】落盘: 写该品种情感时序 JSON
 
     # 写汇总索引
-    index = {v: data.get("stats", {}) for v, data in result.items()}
+    index = {v: data.get("stats", {}) for v, data in result.items()}  # 【变量】{品种: 统计摘要} 汇总索引
     with open(OUTPUT_DIR / "_index.json", "w", encoding="utf-8") as f:
-        json.dump(index, f, ensure_ascii=False, indent=2)
+        json.dump(index, f, ensure_ascii=False, indent=2)  # 【调用函数】落盘: 写 _index.json 汇总索引
 
     # 写作者画像索引 (audit trail)
     # 仅保留有粉丝数据的作者, 压缩输出
-    author_export = {}
+    author_export = {}  # 【变量】审计用作者画像(压缩字段, 仅保留有粉丝/多发作者)
     for aid, info in sorted(author_index.items(), key=lambda x: -x[1]["total_fans"]):
         if info["total_posts"] >= 2 or info["total_fans"] > 0:
             author_export[aid] = {
@@ -380,11 +392,11 @@ def aggregate(jsonl_paths: list[str]) -> dict:
             }
     if author_export:
         with open(OUTPUT_DIR / "_author_index.json", "w", encoding="utf-8") as f:
-            json.dump(author_export, f, ensure_ascii=False, indent=2)
+            json.dump(author_export, f, ensure_ascii=False, indent=2)  # 【调用函数】落盘: 写作者画像索引
         print(f"Author index saved: {len(author_export)} authors → _author_index.json")
 
     # 全局平台统计
-    global_platform = defaultdict(int)
+    global_platform = defaultdict(int)  # 【变量】{平台: 笔记数} 全数据集平台分布
     for record in records:
         global_platform[record.get("platform", "xhs")] += 1
     plat_summary = ", ".join(f"{p}: {c}" for p, c in sorted(global_platform.items()))
@@ -401,9 +413,9 @@ def aggregate(jsonl_paths: list[str]) -> dict:
 
 
 if __name__ == "__main__":
-    import glob
+    import glob  # 【调用包】通配符匹配 output 目录下的 batch_*.jsonl 文件
 
-    paths = sorted(glob.glob(str(Path(__file__).parent / "output" / "batch_*.jsonl")))
+    paths = sorted(glob.glob(str(Path(__file__).parent / "output" / "batch_*.jsonl")))  # 【调用函数】文件系统通配: 发现所有采集 JSONL
     if not paths:
         print("No batch JSONL files found!")
         sys.exit(1)

@@ -16,31 +16,31 @@
 #   → 运行分析(期间用 Rich Live 仪表板实时显示 Agent 状态 / 消息 / 报告进度)
 #   → 分析完成后进入「反馈循环」,用户可输入 /feedback /exit /help
 # =====================================================================
-import contextlib
-import datetime
-import os
-import time
-from collections import deque
-from functools import wraps
-from pathlib import Path
+import contextlib  # 【调用包】抑制异常(仪表板回退/关闭 Live 时用)
+import datetime  # 【调用包】时间戳与日期解析
+import os  # 【调用包】环境变量优先规则与路径
+import time  # 【调用包】运行时长统计
+from collections import deque  # 【调用包】双端队列(消息/工具调用缓冲,定长自动丢旧)
+from functools import wraps  # 【调用包】装饰器保留原函数元信息
+from pathlib import Path  # 【调用包】跨平台路径操作
 
-import typer
-from rich import box
-from rich.align import Align
-from rich.console import Console
-from rich.layout import Layout
-from rich.live import Live
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.rule import Rule
-from rich.spinner import Spinner
-from rich.table import Table
-from rich.text import Text
+import typer  # 【调用包】命令行框架(Typer prompt / Option / app)
+from rich import box  # 【调用包】Rich 表格边框样式
+from rich.align import Align  # 【调用包】终端居中排版
+from rich.console import Console  # 【调用包】Rich 终端输出
+from rich.layout import Layout  # 【调用包】仪表板分栏布局
+from rich.live import Live  # 【调用包】实时重绘上下文(仪表板核心)
+from rich.markdown import Markdown  # 【调用包】报告 Markdown 渲染
+from rich.panel import Panel  # 【调用包】边框面板组件
+from rich.rule import Rule  # 【调用包】分隔线组件
+from rich.spinner import Spinner  # 【调用包】转圈动画(in_progress 状态)
+from rich.table import Table  # 【调用包】表格组件(进度/消息/统计)
+from rich.text import Text  # 【调用包】富文本(换行折叠)
 
-from cli.announcements import display_announcements, fetch_announcements
-from cli.models import AssetType
-from cli.stats_handler import StatsCallbackHandler
-from cli.utils import (
+from cli.announcements import display_announcements, fetch_announcements  # 【调用包】公告拉取与展示
+from cli.models import AssetType  # 【调用包】资产类型枚举(判断商品期货分支)
+from cli.stats_handler import StatsCallbackHandler  # 【调用包】LLM/工具/token 统计回调
+from cli.utils import (  # 【调用包】CLI 交互工具函数(输入校验/选择/API key 等)
     ask_anthropic_effort,
     ask_gemini_thinking_config,
     ask_glm_region,
@@ -62,21 +62,21 @@ from cli.utils import (
     select_research_depth,
     select_shallow_thinking_agent,
 )
-from tradingagents.agents.utils.user_feedback_agent import create_user_feedback_node
-from tradingagents.dataflows.evolution_memory import get_evolution_context
-from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.graph.analyst_execution import (
+from tradingagents.agents.utils.user_feedback_agent import create_user_feedback_node  # 【调用包】用户反馈节点(自进化)
+from tradingagents.dataflows.evolution_memory import get_evolution_context  # 【调用包】进化记忆注入(prompt)
+from tradingagents.default_config import DEFAULT_CONFIG  # 【调用包】默认运行配置(含环境变量覆盖)
+from tradingagents.graph.analyst_execution import (  # 【调用包】分析师执行计划与耗时跟踪
     AnalystWallTimeTracker,
     build_analyst_execution_plan,
     get_initial_analyst_node,
     sync_analyst_tracker_from_chunk,
 )
-from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.reporting import write_report_tree
+from tradingagents.graph.trading_graph import TradingAgentsGraph  # 【调用包】核心交易分析图
+from tradingagents.reporting import write_report_tree  # 【调用包】报告目录树写入(CLI/API 共用)
 
-console = Console()
+console = Console()  # 【变量】全局 Rich 控制台,所有终端输出都走它
 
-app = typer.Typer(
+app = typer.Typer(  # 【变量】Typer 应用实例,注册 analyze 命令
     name="TradingAgents",
     help="TradingAgents CLI: Multi-Agents LLM Financial Trading Framework",
     add_completion=True,  # Enable shell completion
@@ -97,7 +97,7 @@ app = typer.Typer(
 # Create a deque to store recent messages with a maximum length
 class MessageBuffer:
     # Fixed teams that always run (not user-selectable)
-    FIXED_AGENTS = {
+    FIXED_AGENTS = {  # 【变量】固定团队→Agent 列表(股票/加密路径,不可由用户勾选)
         "Research Team": ["Bull Researcher", "Bear Researcher", "Research Manager"],
         "Trading Team": ["Trader"],
         "Risk Management": ["Aggressive Analyst", "Neutral Analyst", "Conservative Analyst"],
@@ -105,7 +105,7 @@ class MessageBuffer:
     }
 
     # Analyst name mapping
-    ANALYST_MAPPING = {
+    ANALYST_MAPPING = {  # 【变量】分析师 key → 仪表板 Agent 名映射
         "market": "Market Analyst",
         "social": "Sentiment Analyst",
         "news": "News Analyst",
@@ -118,7 +118,7 @@ class MessageBuffer:
     }
 
     # Commodity analyst report mapping (different state keys)
-    COMMODITY_REPORT_MAP = {
+    COMMODITY_REPORT_MAP = {  # 【变量】商品分析师 key → 报告段落 key 映射(状态键不同)
         "commodity_technical": "technical_report",
         "commodity_fundamental": "fundamental_report",
         "commodity_macro": "macro_report",
@@ -128,7 +128,7 @@ class MessageBuffer:
     # Report section mapping: section -> (analyst_key for filtering, finalizing_agent)
     # analyst_key: which analyst selection controls this section (None = always included)
     # finalizing_agent: which agent must be "completed" for this report to count as done
-    REPORT_SECTIONS = {
+    REPORT_SECTIONS = {  # 【变量】报告段落→(控制该段的分析师key, 定稿Agent)映射,驱动完成计数
         "market_report": ("market", "Market Analyst"),
         "news_report": ("news", "News Analyst"),
         "fundamentals_report": ("fundamentals", "Fundamentals Analyst"),
@@ -377,7 +377,7 @@ class MessageBuffer:
 
 
 # message_buffer:全局唯一的 UI 状态缓冲池实例,整个 CLI 运行期间各函数都读写它。
-message_buffer = MessageBuffer()
+message_buffer = MessageBuffer()  # 【变量】全局消息缓冲池实例(仪表板数据源)
 
 
 # 【功能】创建 Rich Live 仪表板的整体布局(header / main / footer 三行)。
@@ -450,7 +450,7 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     progress_table.add_column("Status", style="yellow", justify="center", width=20)
 
     # Group agents by team - filter to only include agents in agent_status
-    all_teams = {
+    all_teams = {  # 【变量】股票/加密路径的团队→Agent 映射(进度表分组)
         "Analyst Team": [
             "Market Analyst",
             "Sentiment Analyst",
@@ -464,7 +464,7 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     }
 
     # Commodity mode: use a simplified team structure
-    commodity_teams = {
+    commodity_teams = {  # 【变量】商品期货路径的简化团队映射
         "Commodity Analysts": [
             "Technical Analyst",
             "Fundamental Analyst",
@@ -561,10 +561,10 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     all_messages.sort(key=lambda x: x[0], reverse=True)
 
     # Calculate how many messages we can show based on available space
-    max_messages = 12
+    max_messages = 12  # 【变量】消息面板最多展示条数
 
     # Get the first N messages (newest ones)
-    recent_messages = all_messages[:max_messages]
+    recent_messages = all_messages[:max_messages]  # 【变量】按时间倒序截取的最新消息
 
     # Add messages to table (already in newest-first order)
     for timestamp, msg_type, content in recent_messages:
@@ -664,8 +664,8 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
 def get_user_selections():
     """Get all user selections before starting the analysis display."""
     # Display ASCII art welcome message
-    with open(Path(__file__).parent / "static" / "welcome.txt", encoding="utf-8") as f:
-        welcome_ascii = f.read()
+    with open(Path(__file__).parent / "static" / "welcome.txt", encoding="utf-8") as f:  # 【调用函数】读取 ASCII 欢迎横幅文件
+        welcome_ascii = f.read()  # 【变量】横幅文本内容
 
     # Create welcome box content
     welcome_content = f"{welcome_ascii}\n"
@@ -687,8 +687,8 @@ def get_user_selections():
     console.print()  # Add vertical space before announcements
 
     # Fetch and display announcements (silent on failure)
-    announcements = fetch_announcements()
-    display_announcements(console, announcements)
+    announcements = fetch_announcements()  # 【调用函数】跨模块:拉取远端公告(异常静默回退兜底)
+    display_announcements(console, announcements)  # 【调用函数】跨模块:在终端渲染公告面板
 
     # Create a boxed questionnaire for each step
     # 【功能】生成一个带标题和提示语的小方框(Panel),用于逐步提问。
@@ -730,8 +730,8 @@ def get_user_selections():
             "SPY",
         )
     )
-    selected_ticker = get_ticker()
-    asset_type = detect_asset_type(selected_ticker)
+    selected_ticker = get_ticker()  # 【调用函数】跨模块:交互获取并规范化 ticker
+    asset_type = detect_asset_type(selected_ticker)  # 【调用函数】跨模块:识别资产类型(股票/加密/商品期货)
     # Only announce when it's not the default stock path, to avoid printing
     # "stock" on every run.
     if asset_type.value != "stock":
@@ -743,7 +743,7 @@ def get_user_selections():
     # 然后直接返回,跳过股票 / 加密路径的 Step5~Step8。
     if asset_type == AssetType.COMMODITY_FUTURES:
         # Re-prompt with commodity-specific validation
-        selected_ticker = get_commodity_ticker()
+        selected_ticker = get_commodity_ticker()  # 【调用函数】跨模块:按品种代码白名单重新校验输入
 
         # Step 2: Analysis date
         default_date = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -760,7 +760,7 @@ def get_user_selections():
         if os.environ.get("TRADINGAGENTS_OUTPUT_LANGUAGE"):
             output_language = DEFAULT_CONFIG["output_language"]
         else:
-            output_language = ask_output_language()
+            output_language = ask_output_language()  # 【调用函数】跨模块:交互选择输出语言
 
         # Step 4: Select commodity analysts
         console.print(
@@ -769,7 +769,7 @@ def get_user_selections():
                 "Select your commodity analyst agents (3 parallel analysts → synthesis)",
             )
         )
-        selected_analysts = select_commodity_analysts()
+        selected_analysts = select_commodity_analysts()  # 【调用函数】跨模块:多选商品期货分析师
 
         # Minimal selections for commodity path
         selections = {
@@ -835,7 +835,7 @@ def get_user_selections():
         console.print(
             create_question_box("Step 5: Research Depth", "Select your research depth level")
         )
-        selected_research_depth = select_research_depth()
+        selected_research_depth = select_research_depth()  # 【调用函数】跨模块:选择研究深度(1/3/5 轮)
 
     # Step 6: LLM Provider (skipped when set via TRADINGAGENTS_LLM_PROVIDER).
     # The backend URL comes from TRADINGAGENTS_LLM_BACKEND_URL when set,
@@ -846,45 +846,45 @@ def get_user_selections():
         selected_llm_provider = DEFAULT_CONFIG["llm_provider"].lower()
         backend_url = resolve_backend_url(
             selected_llm_provider, env_url=DEFAULT_CONFIG["backend_url"]
-        )
+        )  # 【调用函数】跨模块:解析后端地址(环境优先)
         console.print(f"[green]✓ LLM provider from environment:[/green] {selected_llm_provider}")
         console.print(f"[green]✓ Backend URL:[/green] {backend_url}")
         # Still confirm/persist the API key so the run doesn't fail later.
-        ensure_api_key(selected_llm_provider)
+        ensure_api_key(selected_llm_provider)  # 【调用函数】跨模块:确认/持久化 API key(有副作用)
     else:
         console.print(create_question_box("Step 6: LLM Provider", "Select your LLM provider"))
-        selected_llm_provider, backend_url = select_llm_provider()
+        selected_llm_provider, backend_url = select_llm_provider()  # 【调用函数】跨模块:交互选择提供商与端点
 
         # Providers with regional endpoints prompt for the region as a secondary
         # step so the main dropdown stays clean (mainland China and international
         # accounts cannot share API keys).
         if selected_llm_provider == "qwen":
-            selected_llm_provider, backend_url = ask_qwen_region()
+            selected_llm_provider, backend_url = ask_qwen_region()  # 【调用函数】跨模块:按区域返回提供商键+地址
         elif selected_llm_provider == "minimax":
-            selected_llm_provider, backend_url = ask_minimax_region()
+            selected_llm_provider, backend_url = ask_minimax_region()  # 【调用函数】跨模块:按区域返回提供商键+地址
         elif selected_llm_provider == "glm":
-            selected_llm_provider, backend_url = ask_glm_region()
+            selected_llm_provider, backend_url = ask_glm_region()  # 【调用函数】跨模块:按平台返回提供商键+地址
 
         # Honor an explicit env backend URL even when the provider was chosen
         # interactively, so it isn't overwritten by the menu default (#978).
         backend_url = resolve_backend_url(
             selected_llm_provider, backend_url, env_url=DEFAULT_CONFIG["backend_url"]
-        )
+        )  # 【调用函数】跨模块:解析后端地址(环境优先)
 
         # The generic OpenAI-compatible endpoint has no default; ask for it if
         # neither the menu nor the environment supplied one.
         if selected_llm_provider == "openai_compatible" and not backend_url:
-            backend_url = prompt_openai_compatible_url()
+            backend_url = prompt_openai_compatible_url()  # 【调用函数】跨模块:询问 OpenAI 兼容端点 URL
 
         # For Ollama, surface the resolved endpoint (OLLAMA_BASE_URL vs default)
         # before model selection so it's obvious where we're connecting.
         if selected_llm_provider == "ollama":
-            confirm_ollama_endpoint(backend_url)
+            confirm_ollama_endpoint(backend_url)  # 【调用函数】跨模块:展示并软校验 Ollama 端点
 
         # Confirm the provider's API key is present; prompt the user to paste
         # one and persist it to .env if it's missing, so the analysis run
         # doesn't fail later at the first API call.
-        ensure_api_key(selected_llm_provider)
+        ensure_api_key(selected_llm_provider)  # 【调用函数】跨模块:确认/持久化 API key(有副作用)
 
     # Step 7: Thinking agents (skipped when either model is set via environment)
     if os.environ.get("TRADINGAGENTS_QUICK_THINK_LLM") or os.environ.get(
@@ -902,8 +902,8 @@ def get_user_selections():
                 "Step 7: Thinking Agents", "Select your thinking agents for analysis"
             )
         )
-        selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider)
-        selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider)
+        selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider)  # 【调用函数】跨模块:选快速思考模型
+        selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider)  # 【调用函数】跨模块:选深度思考模型
 
     # Step 8: Provider-specific reasoning/thinking configuration. Each knob is
     # settable via its TRADINGAGENTS_* env var; when that var is set (or the
@@ -989,7 +989,7 @@ def get_analysis_date():
 # 【关键逻辑】这是 CLI 与 API 共用的报告写入函数,具体实现见 write_report_tree。
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
     """Save the complete analysis report to disk (shared CLI/API writer)."""
-    return write_report_tree(final_state, ticker, save_path)
+    return write_report_tree(final_state, ticker, save_path)  # 【调用函数】跨模块:写入报告目录树并返回 complete_report 路径
 
 
 # 【功能】在终端按顺序完整展示最终分析报告(避免长报告被终端截断)。
@@ -1114,16 +1114,16 @@ def update_research_team_status(status):
 
 # 分析师执行顺序(股票 / 加密路径):决定状态流转时谁先运行、谁是下一个。
 # Ordered list of analysts for status transitions
-ANALYST_ORDER = ["market", "social", "news", "fundamentals"]
+ANALYST_ORDER = ["market", "social", "news", "fundamentals"]  # 【变量】分析师固定执行顺序
 # 分析师 key → 展示用的 Agent 名称 的映射。
-ANALYST_AGENT_NAMES = {
+ANALYST_AGENT_NAMES = {  # 【变量】分析师 key → 仪表板展示名映射
     "market": "Market Analyst",
     "social": "Sentiment Analyst",
     "news": "News Analyst",
     "fundamentals": "Fundamentals Analyst",
 }
 # 分析师 key → 报告段落 key 的映射。
-ANALYST_REPORT_MAP = {
+ANALYST_REPORT_MAP = {  # 【变量】分析师 key → 报告段落 key 映射
     "market": "market_report",
     "social": "sentiment_report",
     "news": "news_report",
@@ -1370,8 +1370,8 @@ def _run_interactive_loop(
             console.print("\n[bold cyan]Starting feedback session...[/bold cyan]")
             console.print("[dim](Type /done to end debate, /skip to skip)[/dim]\n")
             try:
-                feedback_result = feedback_node(final_state)
-                fb_summary = feedback_result.get("user_feedback_summary", "")
+                feedback_result = feedback_node(final_state)  # 【调用函数】跨模块:执行用户反馈辩论会话
+                fb_summary = feedback_result.get("user_feedback_summary", "")  # 【变量】反馈会话生成的总结文本
                 if fb_summary:
                     fb_path = report_dir / "user_feedback_summary.md"
                     fb_path.write_text(fb_summary, encoding="utf-8")
@@ -1412,10 +1412,10 @@ def _run_commodity_analysis(selections: dict, config: dict, stats_handler):
     from tradingagents.dataflows.config import set_config
     from tradingagents.llm_clients import create_llm_client
 
-    set_config(config)
+    set_config(config)  # 【调用函数】跨模块:把运行配置写入数据层全局配置
 
-    ticker = selections["ticker"]
-    trade_date = selections["analysis_date"]
+    ticker = selections["ticker"]  # 【变量】品种代码
+    trade_date = selections["analysis_date"]  # 【变量】分析日期
 
     # Build commodity graph (same as commodity_demo.py)
     from langchain_core.messages import HumanMessage
@@ -1432,12 +1432,12 @@ def _run_commodity_analysis(selections: dict, config: dict, stats_handler):
     from tradingagents.agents.utils.agent_states import AgentState
 
     # Create LLM with stats tracking for the Rich Live dashboard
-    llm_client = create_llm_client(
+    llm_client = create_llm_client(  # 【调用函数】跨模块:按提供商/模型创建 LLM 客户端(绑定统计回调)
         config["llm_provider"],
         config["deep_think_llm"],
         callbacks=[stats_handler] if stats_handler else None,
     )
-    llm = llm_client.get_llm()
+    llm = llm_client.get_llm()  # 【调用函数】取出底层 LLM 对象供节点调用
 
     # CLI progress callback: feeds tool-call events into the Rich Live dashboard
     # 【功能】工具调用回调:把"工具调用 / 工具结果"事件写入 message_buffer,
@@ -1455,10 +1455,10 @@ def _run_commodity_analysis(selections: dict, config: dict, stats_handler):
             )
 
     # Create analyst nodes for selected analysts
-    selected = {a.value for a in selections["analysts"]}
+    selected = {a.value for a in selections["analysts"]}  # 【变量】选中分析师 key 的集合(用于判断加哪些节点)
 
-    graph = StateGraph(AgentState)
-    has_any = False
+    graph = StateGraph(AgentState)  # 【变量】LangGraph 状态图(并行分析师 → synthesis)
+    has_any = False  # 【变量】是否已添加至少一个分析师节点
 
     if "commodity_technical" in selected:
         graph.add_node(
@@ -1555,7 +1555,7 @@ RATING: [...] | CONFIDENCE: [...] | SCORE: [...]
 ### 最终建议
 ### 操作参考
 """
-        result = llm.invoke(prompt_text)
+        result = llm.invoke(prompt_text)  # 【调用函数】外部 API:LLM 生成四维度综合研判
         return {"investment_plan": result.content, "final_trade_decision": result.content}
 
     graph.add_node("synthesis", synthesis_node)
@@ -1563,20 +1563,20 @@ RATING: [...] | CONFIDENCE: [...] | SCORE: [...]
     # User Feedback node (self-evolution) — created but NOT added to graph.
     # It runs standalone after streaming completes so interactive input()
     # gets a clean terminal. Enable/disable via selections.
-    feedback_enabled = not selections.get("no_feedback", False)
-    feedback_node = create_user_feedback_node(llm, max_rounds=5, enabled=feedback_enabled)
+    feedback_enabled = not selections.get("no_feedback", False)  # 【变量】是否启用用户反馈(默认启用)
+    feedback_node = create_user_feedback_node(llm, max_rounds=5, enabled=feedback_enabled)  # 【调用函数】跨模块:创建用户反馈辩论节点(不进图,流式后独立跑)
 
     graph.add_edge("synthesis", END)
 
-    app = graph.compile()
+    app = graph.compile()  # 【调用函数】LangGraph 编译为可执行图
 
     # Show info
     console.print(f"\n[bold]Variety:[/bold] {ticker}")
-    info = get_variety_info(ticker)
+    info = get_variety_info(ticker)  # 【调用函数】跨模块:拉取品种基础信息
     console.print(Panel(info[:500], title="Variety Info", border_style="blue"))
 
     # Load evolution memory for prompt injection
-    evolution_context = get_evolution_context(ticker)
+    evolution_context = get_evolution_context(ticker)  # 【调用函数】跨模块:读取进化记忆(注入 initial_state)
 
     # Initial state
     initial_msg = HumanMessage(
@@ -1653,7 +1653,7 @@ RATING: [...] | CONFIDENCE: [...] | SCORE: [...]
         # 流式执行:app.stream(..., stream_mode="values") 逐块产出最新完整状态。
         # 每收到一个 chunk 就更新 message_buffer 并刷新仪表板,形成"实时进度"效果。
         # Stream execution — each chunk IS the full state (stream_mode="values" default)
-        for chunk in app.stream(initial_state, stream_mode="values"):
+        for chunk in app.stream(initial_state, stream_mode="values"):  # 【调用函数】LangGraph 流式执行(每块为完整状态)
             # chunk IS the full AgentState dict (stream_mode="values")
             final_state.update(chunk)
 
@@ -1709,12 +1709,12 @@ RATING: [...] | CONFIDENCE: [...] | SCORE: [...]
                 live_ctx.stop()
 
     # Save results
-    results_dir = Path(config["results_dir"]) / ticker / trade_date
+    results_dir = Path(config["results_dir"]) / ticker / trade_date  # 【变量】本次运行结果目录(品种/日期)
     results_dir.mkdir(parents=True, exist_ok=True)
-    report_dir = results_dir / "reports"
+    report_dir = results_dir / "reports"  # 【变量】报告子目录(分段 .md 与 complete_report.md)
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    report_sections = [
+    report_sections = [  # 【变量】(状态键, 展示标题) 待落盘的商品报告段落表
         ("technical_report", "Technical Analysis"),
         ("fundamental_report", "Fundamental Analysis"),
         ("macro_report", "Macro/News Analysis"),
@@ -1722,15 +1722,15 @@ RATING: [...] | CONFIDENCE: [...] | SCORE: [...]
         ("user_feedback_summary", "User Feedback & Debate"),
     ]
 
-    full_report = f"# Commodity Futures Analysis: {ticker}\n\n**Date**: {trade_date}\n\n---\n\n"
+    full_report = f"# Commodity Futures Analysis: {ticker}\n\n**Date**: {trade_date}\n\n---\n\n"  # 【变量】合并后的完整报告 Markdown 起始
     for key, title in report_sections:
         content = final_state.get(key, "")
         if content:
             full_report += f"## {title}\n\n{content}\n\n---\n\n"
             (report_dir / f"{key}.md").write_text(content, encoding="utf-8")
 
-    complete_path = report_dir / "complete_report.md"
-    complete_path.write_text(full_report, encoding="utf-8")
+    complete_path = report_dir / "complete_report.md"  # 【变量】商品完整报告路径
+    complete_path.write_text(full_report, encoding="utf-8")  # 【调用函数】UTF-8 落盘完整报告
 
     console.print(f"\n[green]Report saved to:[/green] {complete_path}")
     display_complete_report(final_state)
@@ -1808,7 +1808,7 @@ def run_analysis(checkpoint: bool | None = None):
     config = _build_run_config(selections, checkpoint)
 
     # Create stats callback handler for tracking LLM/tool calls
-    stats_handler = StatsCallbackHandler()
+    stats_handler = StatsCallbackHandler()  # 【调用函数】跨模块:创建统计回调,绑定到图与 LLM
 
     # ================================================================
     # Commodity Futures Path
@@ -1819,13 +1819,13 @@ def run_analysis(checkpoint: bool | None = None):
         return
 
     # Normalize analyst selection to predefined order (selection is a 'set', order is fixed)
-    selected_set = {analyst.value for analyst in selections["analysts"]}
-    selected_analyst_keys = [a for a in ANALYST_ORDER if a in selected_set]
-    analyst_execution_plan = build_analyst_execution_plan(selected_analyst_keys)
-    analyst_wall_time_tracker = AnalystWallTimeTracker(analyst_execution_plan)
+    selected_set = {analyst.value for analyst in selections["analysts"]}  # 【变量】用户所选分析师 key 集合
+    selected_analyst_keys = [a for a in ANALYST_ORDER if a in selected_set]  # 【变量】按固定顺序排列的选中分析师 key
+    analyst_execution_plan = build_analyst_execution_plan(selected_analyst_keys)  # 【调用函数】跨模块:构建分析师执行计划
+    analyst_wall_time_tracker = AnalystWallTimeTracker(analyst_execution_plan)  # 【调用函数】跨模块:创建各分析师真实耗时跟踪器
 
     # Initialize the graph with callbacks bound to LLMs
-    graph = TradingAgentsGraph(
+    graph = TradingAgentsGraph(  # 【调用函数】跨模块:创建核心交易分析图(绑定统计回调)
         selected_analyst_keys,
         config=config,
         debug=True,
@@ -1839,12 +1839,12 @@ def run_analysis(checkpoint: bool | None = None):
     start_time = time.time()
 
     # Create result directory
-    results_dir = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"]
+    results_dir = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"]  # 【变量】本次运行结果目录(品种/日期)
     results_dir.mkdir(parents=True, exist_ok=True)
-    report_dir = results_dir / "reports"
+    report_dir = results_dir / "reports"  # 【变量】报告子目录
     report_dir.mkdir(parents=True, exist_ok=True)
-    log_file = results_dir / "message_tool.log"
-    log_file.touch(exist_ok=True)
+    log_file = results_dir / "message_tool.log"  # 【变量】消息/工具调用日志文件
+    log_file.touch(exist_ok=True)  # 【调用函数】确保日志文件存在(不存在则创建)
 
     # 【功能】包装 message_buffer.add_message:调用原方法后,把最新一条消息
     #         追加写入 log 文件(message_tool.log)。
@@ -1959,10 +1959,10 @@ def run_analysis(checkpoint: bool | None = None):
         # Resolve the instrument identity once here so all agents anchor to
         # the real company (#814); the CLI builds state directly rather than
         # going through propagate(), so this must happen on the CLI path too.
-        instrument_context = graph.resolve_instrument_context(
+        instrument_context = graph.resolve_instrument_context(  # 【调用函数】跨模块:解析标的真实身份(锚定真实公司)
             selections["ticker"], selections["asset_type"]
         )
-        init_agent_state = graph.propagator.create_initial_state(
+        init_agent_state = graph.propagator.create_initial_state(  # 【调用函数】跨模块:构建图初始状态
             selections["ticker"],
             selections["analysis_date"],
             asset_type=selections["asset_type"],
@@ -1970,14 +1970,14 @@ def run_analysis(checkpoint: bool | None = None):
         )
         # Pass callbacks to graph config for tool execution tracking
         # (LLM tracking is handled separately via LLM constructor)
-        args = graph.propagator.get_graph_args(callbacks=[stats_handler])
+        args = graph.propagator.get_graph_args(callbacks=[stats_handler])  # 【调用函数】跨模块:取图运行参数(注入回调)
 
         # Stream the analysis
-        trace = []
+        trace = []  # 【变量】累积所有流式 chunk(每块为单节点增量),供结束后合并终态
         # 流式运行分析图:graph.graph.stream(...) 每个 chunk 是当前节点的增量更新。
         # 每收到一块就处理消息、更新分析师/团队状态并调用 update_display() 重绘
         # 仪表板,让用户实时看到分析进度。
-        for chunk in graph.graph.stream(init_agent_state, **args):
+        for chunk in graph.graph.stream(init_agent_state, **args):  # 【调用函数】LangGraph 流式运行分析图(每块为节点增量)
             # Process all messages in chunk, deduplicating by message ID
             for message in chunk.get("messages", []):
                 msg_id = getattr(message, "id", None)
@@ -2081,7 +2081,7 @@ def run_analysis(checkpoint: bool | None = None):
 
         # Streamed chunks are per-node deltas, not full state. Merge them
         # so every report field populated across the run is present.
-        final_state = {}
+        final_state = {}  # 【变量】合并后的最终状态(含全部报告字段)
         for chunk in trace:
             final_state.update(chunk)
 
@@ -2108,8 +2108,8 @@ def run_analysis(checkpoint: bool | None = None):
     # Prompt to save report
     save_choice = typer.prompt("Save report?", default="Y").strip().upper()
     if save_choice in ("Y", "YES", ""):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")  # 【变量】时间戳(用于默认目录名)
+        default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"  # 【变量】默认报告保存路径
         save_path_str = typer.prompt(
             "Save path (press Enter for default)", default=str(default_path)
         ).strip()
@@ -2163,9 +2163,9 @@ def analyze(
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
 
-        n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
+        n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])  # 【调用函数】跨模块:清空已保存的断点文件,返回清除数量
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+    run_analysis(checkpoint=checkpoint)  # 【调用函数】进入主分析流程(收集选择 → 建图 → 流式运行)
 
 
 # 当本文件被直接运行(python cli/main.py)时,进入 Typer 应用入口。

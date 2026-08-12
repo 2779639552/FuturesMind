@@ -1,13 +1,13 @@
-import os
+import os  # 【调用包】环境变量读取与路径拼接
 
-_TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
+_TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")  # 【变量】用户主目录下的数据根目录(日志/缓存/记忆)
 
 # Single source of truth for env-var → config-key overrides. To expose
 # a new config key for environment-based override, add a row here — no
 # entry-point script changes required. Coercion is driven by the type
 # of the existing default, so users can keep writing plain strings in
 # their .env file.
-_ENV_OVERRIDES = {
+_ENV_OVERRIDES = {  # 【变量】环境变量名 → 配置键 的映射表(新增可覆盖键只需在此加一行)
     "TRADINGAGENTS_LLM_PROVIDER": "llm_provider",
     "TRADINGAGENTS_DEEP_THINK_LLM": "deep_think_llm",
     "TRADINGAGENTS_QUICK_THINK_LLM": "quick_think_llm",
@@ -28,10 +28,14 @@ _ENV_OVERRIDES = {
 }
 
 
-_BOOL_TRUE = ("true", "1", "yes", "on")
-_BOOL_FALSE = ("false", "0", "no", "off")
+_BOOL_TRUE = ("true", "1", "yes", "on")  # 【变量】布尔环境变量判真集合
+_BOOL_FALSE = ("false", "0", "no", "off")  # 【变量】布尔环境变量判假集合
 
 
+# 【功能】把环境变量的字符串值按「参考默认值」的类型强制转换(bool / int / float / 原样字符串)。
+# 【参数】value:环境变量的原始字符串;reference:配置中已有的默认值,决定转换目标类型。
+# 【返回】转换后的值(bool / int / float / str)。
+# 【关键】非法布尔/非数字会抛 ValueError 而不是静默回退,让配置错误在启动时暴露。
 def _coerce(value: str, reference):
     """Coerce env-var string to the type of the existing default value.
 
@@ -55,10 +59,14 @@ def _coerce(value: str, reference):
     return value
 
 
+# 【功能】把全部 TRADINGAGENTS_* 环境变量就地覆盖到 config 字典上。
+# 【参数】config:要覆盖的配置字典(会被就地修改)。
+# 【返回】dict:覆盖完成后的同一个 config 对象。
+# 【关键】空值(None / "")不覆盖;某个变量值非法时抛 ValueError 并指明是哪个变量。
 def _apply_env_overrides(config: dict) -> dict:
     """Apply TRADINGAGENTS_* env vars to the config dict in-place."""
     for env_var, key in _ENV_OVERRIDES.items():
-        raw = os.environ.get(env_var)
+        raw = os.environ.get(env_var)  # 【变量】环境变量原始字符串
         if raw is None or raw == "":
             continue
         try:
@@ -68,27 +76,27 @@ def _apply_env_overrides(config: dict) -> dict:
     return config
 
 
-DEFAULT_CONFIG = _apply_env_overrides(
+DEFAULT_CONFIG = _apply_env_overrides(  # 【变量】默认运行配置:先写默认值,再用环境变量覆盖
     {
-        "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
+        "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),  # 【变量】项目根目录(本文件所在目录)
         "results_dir": os.getenv(
             "TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")
-        ),
+        ),  # 【变量】分析结果输出目录(可用 TRADINGAGENTS_RESULTS_DIR 覆盖)
         "data_cache_dir": os.getenv(
             "TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")
-        ),
+        ),  # 【变量】数据缓存目录(可用 TRADINGAGENTS_CACHE_DIR 覆盖)
         "memory_log_path": os.getenv(
             "TRADINGAGENTS_MEMORY_LOG_PATH",
             os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md"),
-        ),
+        ),  # 【变量】交易记忆日志文件路径
         # Optional cap on the number of resolved memory log entries. When set,
         # the oldest resolved entries are pruned once this limit is exceeded.
         # Pending entries are never pruned. None disables rotation entirely.
         "memory_log_max_entries": None,
         # LLM settings
-        "llm_provider": "openai",
-        "deep_think_llm": "gpt-5.5",
-        "quick_think_llm": "gpt-5.4-mini",
+        "llm_provider": "openai",  # 【变量】默认 LLM 提供商(openai / google / anthropic / ollama 等)
+        "deep_think_llm": "gpt-5.5",  # 【变量】深度思考模型(复杂推理/最终报告)
+        "quick_think_llm": "gpt-5.4-mini",  # 【变量】快速思考模型(轻量/日常任务)
         # When None, each provider's client falls back to its own default endpoint
         # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
         # The CLI overrides this per provider when the user picks one. Keeping a
@@ -115,15 +123,15 @@ DEFAULT_CONFIG = _apply_env_overrides(
         # Internal agent debate stays in English for reasoning quality
         "output_language": "English",
         # Debate and discussion settings
-        "max_debate_rounds": 1,
-        "max_risk_discuss_rounds": 1,
-        "max_recur_limit": 100,
+        "max_debate_rounds": 1,  # 【变量】投研辩论最大轮数(默认 1)
+        "max_risk_discuss_rounds": 1,  # 【变量】风控讨论最大轮数(默认 1)
+        "max_recur_limit": 100,  # 【变量】递归/循环深度上限,防止死循环
         # News / data fetching parameters
         # Increase for longer lookback strategies or to broaden macro coverage;
         # decrease to reduce token usage in agent prompts.
-        "news_article_limit": 20,  # max articles per ticker (ticker-news)
-        "global_news_article_limit": 10,  # max articles for global/macro news
-        "global_news_lookback_days": 7,  # macro news lookback window
+        "news_article_limit": 20,  # max articles per ticker (ticker-news) 【变量】每只标的抓取的新闻条数上限
+        "global_news_article_limit": 10,  # max articles for global/macro news 【变量】宏观新闻抓取条数上限
+        "global_news_lookback_days": 7,  # macro news lookback window 【变量】宏观新闻回溯窗口(天)
         # Search queries used by get_global_news for macro headlines. Extend or
         # replace to broaden geographic / sector coverage.
         "global_news_queries": [

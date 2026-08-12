@@ -3,23 +3,26 @@
 — 视频vs图文、正文长度vs互动、标签、发布时间、地域
 """
 
-from collections import Counter
+from collections import Counter  # 【调用包】高频标签/地域频次统计
 
-import pandas as pd
-import plotly.graph_objects as go
-from report_utils import (
+import pandas as pd  # 【调用包】DataFrame 分组聚合(长度桶/时段分布)
+import plotly.graph_objects as go  # 【调用包】Plotly 图表对象(散点/箱线/时段图)
+from report_utils import (  # 【调用包】report_utils: HTML/统计卡片/表格渲染
     chart_to_html,
     dataframe_to_html,
     stat_cards_html,
 )
 
 
+# 【功能】内容策略分析: 图文vs视频、正文长度vs互动、高频标签、发布时间、地域分布, 返回终端文本 + HTML。
+# 【参数】df: 含 desc_length/is_video/tags/dt/ip_location 等字段的笔记 DataFrame。
+# 【返回】{"text": 终端报告文本, "html": 图表 HTML 片段}。
 def analyze(df: pd.DataFrame) -> dict:
     """内容特征与互动关系分析"""
 
     # === 1. 图文 vs 视频 ===
-    image_notes = df[~df["is_video"]]
-    video_notes = df[df["is_video"]]
+    image_notes = df[~df["is_video"]]  # 【变量】图文笔记子集(非视频)
+    video_notes = df[df["is_video"]]  # 【变量】视频笔记子集
 
     text = f"{'=' * 70}\n"
     text += "  内容形式对比\n"
@@ -32,12 +35,12 @@ def analyze(df: pd.DataFrame) -> dict:
         text += f", 均互动: {video_notes['engagement'].mean():.0f}"
 
     # === 2. 正文长度 vs 互动 ===
-    df["desc_len_bucket"] = pd.cut(
+    df["desc_len_bucket"] = pd.cut(  # 【调用函数】pandas 分箱: 把正文长度切成 6 个区间桶
         df["desc_length"],
         bins=[0, 50, 100, 200, 400, 800, 9999],
         labels=["0-50", "50-100", "100-200", "200-400", "400-800", "800+"],
     )
-    len_stats = (
+    len_stats = (  # 【变量】各长度桶的笔记数/均互动/均赞(内容长度×互动规律)
         df.groupby("desc_len_bucket", observed=False)
         .agg(
             count=("note_id", "count"),
@@ -54,11 +57,11 @@ def analyze(df: pd.DataFrame) -> dict:
             text += f"\n    {bucket}字: {int(row['count']):3d}条, 均互动{row['avg_engagement']:5.0f}, 均赞{row['avg_likes']:4.0f} {bar}"
 
     # === 3. 高频标签 ===
-    all_tags = []
+    all_tags = []  # 【变量】全部标签展平列表(聚合各笔记 tags)
     for tags in df["tags"]:
         if isinstance(tags, list):
             all_tags.extend(tags)
-    tag_counts = Counter(all_tags).most_common(20)
+    tag_counts = Counter(all_tags).most_common(20)  # 【变量】频次 Top20 标签
 
     if tag_counts:
         text += "\n\n  高频标签 Top 20:"
@@ -67,7 +70,7 @@ def analyze(df: pd.DataFrame) -> dict:
 
     # === 4. 发布时间分布 ===
     df["hour"] = df["dt"].dt.hour
-    hour_stats = (
+    hour_stats = (  # 【变量】按小时聚合的发文量/均互动(找最佳发帖时段)
         df.groupby("hour")
         .agg(
             count=("note_id", "count"),
@@ -78,11 +81,11 @@ def analyze(df: pd.DataFrame) -> dict:
 
     # 最佳时段
     if len(hour_stats) > 0:
-        best_hour = hour_stats.loc[hour_stats["avg_engagement"].idxmax()]
+        best_hour = hour_stats.loc[hour_stats["avg_engagement"].idxmax()]  # 【变量】均互动最高的小时行
         text += f"\n\n  最佳发帖时段: {int(best_hour['hour'])}:00 (均互动 {best_hour['avg_engagement']:.0f})"
 
     # === 5. 地域分布 ===
-    geo_counts = Counter(df["ip_location"].dropna()).most_common(10)
+    geo_counts = Counter(df["ip_location"].dropna()).most_common(10)  # 【变量】地域 Top10 频次
     if geo_counts:
         text += "\n\n  地域分布 Top 10:"
         for loc, cnt in geo_counts:
@@ -95,7 +98,7 @@ def analyze(df: pd.DataFrame) -> dict:
 
     charts_html = ""
 
-    charts_html += stat_cards_html(
+    charts_html += stat_cards_html(  # 【调用函数】跨文件(report_utils): 生成 HTML 统计卡片
         {
             "图文笔记": f"{len(image_notes)}条",
             "视频笔记": f"{len(video_notes)}条",
@@ -125,11 +128,11 @@ def analyze(df: pd.DataFrame) -> dict:
         z = pd.DataFrame({"x": df["desc_length"], "y": df["engagement"]}).dropna()
         if len(z) > 2:
             try:
-                import numpy as np
+                import numpy as np  # 【调用包】numpy: 多项式拟合趋势线(按需导入)
 
-                coeffs = np.polyfit(z["x"], z["y"], 1)
-                trend_x = [z["x"].min(), z["x"].max()]
-                trend_y = [coeffs[0] * trend_x[0] + coeffs[1], coeffs[0] * trend_x[1] + coeffs[1]]
+                coeffs = np.polyfit(z["x"], z["y"], 1)  # 【调用函数】numpy: 一元线性拟合(长度 vs 互动)
+                trend_x = [z["x"].min(), z["x"].max()]  # 【变量】趋势线横坐标端点(最短/最长正文)
+                trend_y = [coeffs[0] * trend_x[0] + coeffs[1], coeffs[0] * trend_x[1] + coeffs[1]]  # 【变量】趋势线纵坐标端点(拟合值)
                 fig1.add_trace(
                     go.Scatter(
                         x=trend_x,
@@ -147,7 +150,7 @@ def analyze(df: pd.DataFrame) -> dict:
         xaxis_title="正文长度(字)",
         yaxis_title="互动总分",
     )
-    charts_html += chart_to_html(fig1, "desc_len_eng", 400)
+    charts_html += chart_to_html(fig1, "desc_len_eng", 400)  # 【调用函数】跨文件(report_utils): 长度vs互动散点图转内嵌 HTML
 
     # Chart 2: 内容形式箱线图
     fig2 = go.Figure()
@@ -161,7 +164,7 @@ def analyze(df: pd.DataFrame) -> dict:
                 )
             )
     fig2.update_layout(title="图文 vs 视频 互动分布", yaxis_title="互动总分")
-    charts_html += chart_to_html(fig2, "type_box", 350)
+    charts_html += chart_to_html(fig2, "type_box", 350)  # 【调用函数】跨文件(report_utils): 图文vs视频箱线图转内嵌 HTML
 
     # Chart 3: 时段热力图
     fig3 = go.Figure()
@@ -191,7 +194,7 @@ def analyze(df: pd.DataFrame) -> dict:
         yaxis={"title": "发文量"},
         yaxis2={"title": "平均互动", "overlaying": "y", "side": "right"},
     )
-    charts_html += chart_to_html(fig3, "hour_heat", 350)
+    charts_html += chart_to_html(fig3, "hour_heat", 350)  # 【调用函数】跨文件(report_utils): 时段分布图转内嵌 HTML
 
     return {
         "text": text,
