@@ -131,15 +131,15 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
 
 
 def _run_daily_pipeline():
-    """每日全量处理管道:微博采集 → 聚合 → 回测 → 重新生成情感 JSON。
+    """每日全量处理管道:多平台采集 → 聚合 → 回测 → 重新生成情感 JSON。
 
-    【功能】每天定时执行的主流程:先采集微博,再跑情感聚合、权重回测与
-            情感 JSON 文件重生成,最后写入完成/失败告警。
+    【功能】每天定时执行的主流程:依次采集微博/雪球/知乎/东财股吧,再跑
+            情感聚合、权重回测与情感 JSON 文件重生成,最后写入完成/失败告警。
     【参数】无。
     【返回】无。
     【关键逻辑】
             - 开始前写 pipeline_started 告警。
-            - 微博(weibo)被注释为"fast, stable",是首选采集源。
+            - 4 平台顺序采集,单平台失败(凭据缺失/超时)跳过不影响其他平台。
             - 聚合+回测+生成 通过一段内嵌 Python 脚本(-c)在 THINK2_DIR 子进程
               中执行,依次调用 trend_aggregator.aggregate、backtest_weights.run_all、
               generate_tradingagents_sentiment 生成各品种情感 JSON。
@@ -153,9 +153,20 @@ def _run_daily_pipeline():
         severity="info",
     )
 
-    # 先采集微博(速度快、接口稳定,故作为默认来源)
-    # Collect from weibo (fast, stable)
-    _run_platform_collection("weibo", per_kw=15, since_days=7)
+    # 多平台采集: 微博→雪球→知乎→东财股吧 顺序执行。
+    # 单平台失败(如凭据缺失/超时)由 _run_platform_collection 内部兜底记录,
+    # 外层再包一层 try/except 保证某个平台抛错不会拖垮整条管道。
+    # Collect from all platforms sequentially; per-platform failure skips to next
+    for _p in ("weibo", "xueqiu", "zhihu", "eastmoney_guba"):
+        try:
+            _run_platform_collection(_p, per_kw=15, since_days=7)
+        except Exception as _e:
+            db.create_alert(  # 【调用函数】写入"采集异常"告警(外层兜底)
+                "collection_error",
+                f"{_p} pipeline error",
+                str(_e)[:300],
+                severity="error",
+            )
 
     # Aggregate + backtest + regenerate
     try:

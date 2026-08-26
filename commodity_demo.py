@@ -7,13 +7,14 @@ commodity-specialized analysts (Technical, Fundamental, Macro/News) and uses
 free Chinese futures data via AKShare.
 
 Architecture:
-    START → 3 Analysts (parallel) → Roundtable Discussion → Synthesis
-          → User Feedback (self-evolution) → END
+    START → 4 Analysts (parallel) → Bull/Bear Debate → Synthesis
+          → Scenario Analysis → User Feedback (self-evolution) → END
 
-The three analysts run in parallel, then a discussion node compares their
-perspectives, then the synthesis node produces the final recommendation,
-then the user feedback node engages the user in debate and saves lessons
-to Evolution Memory for progressive self-improvement.
+The four analysts (technical/fundamental/macro/sentiment) run in parallel,
+then the multi-round Bull/Bear debate (commodity_debate.py) surfaces agreement
+and divergence, then the synthesis node produces the final recommendation,
+then the scenario node stress-tests it with bull/base/bear cases, then the
+user feedback node engages the user and saves lessons to Evolution Memory.
 
 Usage:
     venv/Scripts/python commodity_demo.py [symbol] [date] [--no-feedback] [--feedback-rounds N]
@@ -60,6 +61,7 @@ Examples:
 
 import logging  # 【调用包】日志(进度/异常;basicConfig 控制输出级别)
 import os  # 【调用包】路径/环境变量操作(定位项目根目录/保存目录)
+import re  # 【调用包】正则(解析情绪质量横幅 [SENTIMENT_QUALITY] 的 weight_cap)
 import sys  # 【调用包】命令行参数读取与 sys.path 调整
 from datetime import datetime  # 【调用包】时间戳/耗时统计
 
@@ -237,128 +239,34 @@ def safe_print(text, max_chars=2000):
 
 
 # ---------------------------------------------------------------------------
-# Multi-round Adversarial Debate (v2.4 — replaces single-round Discussion)
+# Multi-round Adversarial Debate lives in commodity_debate.py (Bull/Bear nodes).
+# The old single-round create_discussion_node was removed as dead code -- it had
+# been superseded by the debate flow in build_commodity_graph (worklog 2026-08-13).
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-
-
-def create_discussion_node(llm):
-    """Roundtable discussion — chief strategist reviews all four reports.
-
-    This node sits between the parallel analysts and the final synthesis.
-    It forces the LLM to explicitly compare perspectives, identify agreement
-    and disagreement, and surface key assumptions — making the reasoning
-    chain visible to the user before the final recommendation.
-    """
-    # 【功能】创建"圆桌讨论"图节点:首席策略师阅读四名分析师(技术/基本面/宏观/情绪)
-    #          的报告,要求 LLM 显式比较各方观点、找出共识与分歧、标注关键假设、做
-    #          反事实检验(近因偏差抑制),输出一份"圆桌讨论纪要"存入 discussion_summary。
-    # 【参数】llm: 语言模型客户端,用于生成讨论纪要。
-    # 【返回】node: 符合 LangGraph 节点签名的闭包函数 node(state) -> dict。
-    # 【关键逻辑】该节点位于"并行分析师"与"综合研判"之间:它把四份报告拼进同一个提示词
-    #           (每份截断 3000/2000 字符以控制 token 消耗),强制模型先"综合对比"再给结论,
-    #           让最终建议背后的推理链条对用户可见。
-    # 【待确认】函数名虽为 create_discussion_node,但在 build_commodity_graph() 中
-    #           当前并未被直接使用(已由 commodity_debate 的辩论流程取代),此处保留。
-
-    def node(state):
-        # 从共享状态取出四份分析师报告(可能为空字符串)
-        technical = state.get("technical_report", "")
-        fundamental = state.get("fundamental_report", "")
-        macro = state.get("macro_report", "")
-        sentiment = state.get("sentiment_report", "")
-        symbol = state["company_of_interest"]  # 【变量】symbol:分析对象品种代码
-
-        prompt_text = f"""You are the chief commodity strategist presiding over a roundtable discussion of three independent analysts who have just completed their research on commodity futures variety `{symbol}`.
-
-Below are their reports. Your job is NOT to make the final recommendation yet — that comes later. Your job is to moderate a discussion that surfaces the key points of agreement and disagreement.
-
----
-
-**TECHNICAL ANALYST REPORT** (price action, indicators, volume/OI):
-{technical[:3000] if technical else "Not available."}
-
-**FUNDAMENTAL ANALYST REPORT** (supply/demand, basis, inventory, industrial chain):
-{fundamental[:3000] if fundamental else "Not available."}
-
-**MACRO & POLICY ANALYST REPORT** (policy, macro cycles, geopolitics):
-{macro[:3000] if macro else "Not available."}
-
-**SENTIMENT ANALYST REPORT** (social media sentiment, market psychology):
-{sentiment[:2000] if sentiment else "Not available."}
-
----
-
-**Your Task — Roundtable Discussion**:
-
-1. **Summarize each analyst's core logic** in 2-3 sentences. What data did they rely on? What is their key argument?
-
-2. **Identify Points of Agreement**: Where do two or more analysts converge? Cite specific data points they agree on.
-
-3. **Identify Points of Divergence**: Where do they disagree? Is it a disagreement about *data* (different sources giving different pictures) or about *interpretation* (same data, different conclusions)?
-
-4. **Flag Key Assumptions**: What critical assumptions underpin each analyst's view? Which assumptions, if wrong, would flip their conclusion?
-
-5. **Signpost Uncertainties**: What important information is missing? What would you want to know to increase confidence?
-
-6. **Sentiment-Signal Cross-Validation**:
-   - Does the sentiment analyst's market psychology align with or diverge from the other three?
-   - If sentiment is extreme while fundamentals point the opposite way → powerful contrarian signal.
-   - If sentiment agrees with fundamentals AND technicals → higher conviction. Flag this.
-
-7. **Counterfactual Challenge** (ANTI-RECENCY-BIAS):
-   - "If the most recent 1-2 trading days had shown exactly the OPPOSITE price action (e.g., a sharp drop instead of a rally), would the technical analyst's conclusion flip? Would the fundamental analyst change their view?"
-   - If the technical view would flip on a single day's different outcome, it is TOO DEPENDENT on recent price noise. Flag this explicitly.
-   - The fundamental and macro views should be robust to short-term price fluctuations. If they are not, identify why.
-   - This challenge helps the synthesis node distinguish between durable signals and transient noise.
-
-**Output Format** (in Chinese):
-
-## 圆桌讨论纪要
-
-### 一、各分析师核心逻辑
-- **技术面**：[2-3句核心逻辑]
-- **基本面**：[2-3句核心逻辑]
-- **宏观面**：[2-3句核心逻辑]
-- **情绪面**：[2-3句核心逻辑]
-
-### 二、四方共识点
-[列出具体共识，标注数据来源]
-
-### 三、四方分歧点
-[列出具体分歧，区分"数据源差异"还是"解读差异"]
-
-### 四、情绪-信号交叉验证
-[情绪面是否与其他三维度一致？如不一致，是否为反向信号？]
-
-### 五、关键假设与风险
-[如果某个假设不成立会怎样？]
-
-### 六、信息缺口
-[缺少哪些关键信息？]
-
-### 七、反事实检验 (Counterfactual Check)
-**若最近1-2日价格反向运动**：[各分析师结论是否会翻转？哪些结论是稳健的，哪些是脆弱的？]
-
-Remember: You are moderating a DISCUSSION, not making the final call. Be fair to all four perspectives.
-"""
-
-        print_stage_header("[Discussion] Roundtable discussion...")
-        result = llm.invoke(prompt_text)  # 调用 LLM 生成讨论纪要
-        logger.info("Discussion done.")
-
-        # 返回状态更新:discussion_summary 供"综合研判"节点参考;messages 追加到历史
-        return {
-            "discussion_summary": result.content,
-            "messages": [HumanMessage(content=f"[Roundtable Discussion]\n{result.content}")],
-        }
-
-    return node
 
 
 # ---------------------------------------------------------------------------
 # Synthesis node: final recommendation with weighted perspectives
 # ---------------------------------------------------------------------------
+
+# 【正则】情绪质量横幅首行: [SENTIMENT_QUALITY] level=... weight_cap=...
+_SENTIMENT_QUALITY_RE = re.compile(r"\[SENTIMENT_QUALITY\]\s+([^\n]*)")
+
+
+# 【功能】从情绪分析师报告首行横幅解析 weight_cap(0.0~1.0,情绪维度占综合权重上限)。
+# 【参数】sentiment: 完整 sentiment_report 文本(非截断版)。
+# 【返回】float|None: 解析成功返回 weight_cap;横幅缺失/解析失败返回 None(走旧 1/10 兜底,不 crash)。
+# 【关键】横幅由 sentiment_analyst.py 节点在报告产出后 prepend,机器可读固定前缀。
+def _parse_sentiment_cap(sentiment: str) -> float | None:
+    """Parse the weight_cap from the [SENTIMENT_QUALITY] banner line (None on failure)."""
+    m = _SENTIMENT_QUALITY_RE.search(sentiment or "")
+    if not m:
+        return None
+    fields = dict(kv.split("=", 1) for kv in m.group(1).split() if "=" in kv)
+    try:
+        return float(fields.get("weight_cap", ""))
+    except (ValueError, TypeError):
+        return None
 
 
 def create_synthesis_node(llm):
@@ -381,6 +289,21 @@ def create_synthesis_node(llm):
         sentiment = state.get("sentiment_report", "")
         discussion = state.get("discussion_summary", "")
         symbol = state["company_of_interest"]
+
+        # 情绪维度权重硬上限(2026-08-25 强制门控):从分析师报告首行横幅解析 weight_cap,
+        # 作为提示词里不可突破的数字上限;解析失败回退旧"稀疏数据封顶1/10"规则。
+        cap = _parse_sentiment_cap(sentiment)  # 【调用函数】解析情绪质量横幅 weight_cap(0~1)
+        if cap is not None and cap < 1.0:
+            cap_rule = (
+                f"- **Sentiment weight HARD CAP**: 情绪维度权重不得超过 {cap * 10:.0f}/10 "
+                f"（{cap:.0%}）。该上限来自自动数据质量门控(posts/sample/accuracy/staleness)，"
+                f"覆盖动态权重公式与所有特殊规则(含背离翻倍)，不可突破。"
+            )
+        else:
+            cap_rule = (
+                "- **Sparse sentiment data (<10 posts/day)**: Cap sentiment weight at 1/10, "
+                "regardless of other criteria."
+            )
 
         prompt_text = f"""You are the chief commodity strategist. You have received four independent analysis reports AND a roundtable discussion summary for commodity futures variety `{symbol}`.
 
@@ -428,7 +351,7 @@ def create_synthesis_node(llm):
    - **Sentiment-Price DIVERGENCE (sentiment opposite to price trend)**: DOUBLE the sentiment weight (this is a leading indicator!). Example: price falling but sentiment rising = sentiment may lead the turn. This was seen in the RB case where sentiment correctly predicted the bounce.
    - **Basis/Contango STRUCTURAL SHIFT**: If basis has flipped sign (e.g., Backwardation→Contango) or changed >50% in magnitude, DOUBLE fundamental weight. This is the single strongest fundamental signal.
    - **Volume+OI CONFIRMATION/DIVERGENCE**: If price move is confirmed by volume+OI, strengthen technical weight by 1.5×. If price move is contradicted by OI (e.g., price up but OI down = short covering), halve technical weight.
-   - **Sparse sentiment data (<10 posts/day)**: Cap sentiment weight at 1/10, regardless of other criteria.
+   {cap_rule}
 
 3. **Recency Bias Check** (MANDATORY):
    - Ask yourself: "If the most recent 1-2 trading days showed the OPPOSITE price action, would my conclusion change?"
@@ -543,12 +466,11 @@ def create_scenario_node(llm):
     #           综合研判产出的是"基准情景",本节点负责校验该基准是否经得起牛熊两端的考验。
 
     def node(state):
-        # 取综合研判结果与技术/基本面报告作为输入(宏观/情绪报告被读取但未使用,属历史遗留)
+        # 取综合研判结果与技术/基本面报告作为输入(宏观/情绪维度已在分析师阶段体现,
+        # 此处不需要再引用,历史遗留的未用读入已移除)
         synthesis = state.get("investment_plan", "")  # 【变量】synthesis:综合研判基准结论(情景分析的输入)
         technical = state.get("technical_report", "")
         fundamental = state.get("fundamental_report", "")
-        state.get("macro_report", "")  # 【待确认】读取后未使用,疑为历史遗留
-        state.get("sentiment_report", "")  # 【待确认】同上,读取后未使用
         symbol = state["company_of_interest"]  # 【变量】symbol:分析对象品种代码
 
         prompt_text = f"""You are a scenario analyst. The synthesis strategist has produced a base-case recommendation for `{symbol}`. Your job is to stress-test it with three explicit scenarios.

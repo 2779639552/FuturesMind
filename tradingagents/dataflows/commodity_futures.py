@@ -12,10 +12,16 @@ Supported varieties:
     ZCE (郑州): TA(PTA), MA(甲醇), FG(玻璃), SA(纯碱), UR(尿素),
                 PF(短纤), CF(棉花), SR(白糖), OI(菜油), RM(菜粕),
                 AP(苹果), CJ(红枣), PK(花生), SM(锰硅), SF(硅铁)
-    SHFE (上期): RB(螺纹钢), HC(热卷), CU(铜), AU(黄金), AG(白银), RU(橡胶)
+    SHFE (上期): RB(螺纹钢), HC(热卷)
     DCE (大商): I(铁矿石), JM(焦煤), J(焦炭), M(豆粕)
-    INE (上能): SC(原油)
-    (共20品种)
+    (共21品种,与 VARIETY_METADATA 一致;此前误列 CU/AU/AG/RU/SC 已删除)
+
+Note on variety scopes:
+    - 21 池 = 完整分析池: 价格/指标/基差/库存/新闻/供需/情绪全部可用。
+    - 思路2 采集池(57 品种映射, generate_tradingagents_sentiment.py)仅提供
+      情绪数据;21 之外品种(如 CU/AU/AG/RU/SC)请求价格/供需等会经
+      _validate_symbol 显式拒绝,不会静默降级。
+    - 详见 worklog/2026-08-21: 分裂不是病,静默才是。
 
 Data sources (via akshare):
     - futures_main_sina: daily OHLCV + open interest (Sina Finance)
@@ -686,6 +692,28 @@ def get_variety_info(symbol: str) -> str:
 #           3) 结果带 5 分钟缓存(_response_cache),命中缓存则跳过联网;
 #           4) 把中文列名重命名为英文标准列名,最后转成 CSV。
 #           ★ 注意:此函数是纯免费 API 拉取,不走 Hybrid Mode 的外部 JSON。
+
+
+def _cached_covers_end(cached_df, end_date) -> bool:
+    """缓存行情是否已覆盖到请求的 end_date(防跨 end_date 静默截断)。
+
+    【背景】_response_cache 的键是 "price:{main_sym}",不含请求的起止日期。
+          5 分钟 TTL 窗口内,若先后请求两个不同的 end_date,后到的请求命中旧缓存
+          会静默返回只到旧日期为止的数据(旧缓存末行 < 新请求的 end_date)。
+    【逻辑】缓存末行日期 >= 请求 end_date → 覆盖充分,可直接用;否则返回 False,
+          调用方应视为缓存未命中重新拉取。
+    【注意】缓存里存的是 AKShare 原始中文列名("日期"),此处两者都兼容。
+    """
+    date_col = "日期" if "日期" in cached_df.columns else "date"
+    if date_col not in cached_df.columns or cached_df[date_col].empty:
+        return False  # 无法判断 → 视为不覆盖,重拉
+    max_d = pd.to_datetime(cached_df[date_col]).max()
+    try:
+        return bool(max_d >= pd.to_datetime(end_date))
+    except (ValueError, TypeError):
+        return False  # 解析失败 → 保守重拉,绝不静默返回旧数据
+
+
 def get_futures_price(
     symbol: str,
     start_date: str,
@@ -716,7 +744,13 @@ def get_futures_price(
     now = time.time()
     if cache_key in _response_cache:
         cached_at, cached_df = _response_cache[cache_key]
-        df = cached_df.copy() if now - cached_at < _CACHE_TTL else None
+        # TTL 内命中且缓存已覆盖请求的 end_date → 直接用;否则视为未命中重拉,
+        # 避免"缓存键不含日期 → 5 分钟窗口内跨 end_date 请求被静默截断"。
+        df = (
+            cached_df.copy()
+            if (now - cached_at < _CACHE_TTL and _cached_covers_end(cached_df, end_date))
+            else None
+        )
     else:
         df = None
 
@@ -831,7 +865,14 @@ def get_futures_indicators(
     if cache_key in _response_cache:
         _, full_df = _response_cache[cache_key]
         full_df = full_df.copy()
+        # 与 get_futures_price 同一守卫:缓存末行日期必须覆盖请求的 end_date,
+        # 否则视为未命中重拉(指标同样存在跨 end_date 静默截断问题)。
+        if not _cached_covers_end(full_df, end_date):
+            full_df = None
     else:
+        full_df = None
+
+    if full_df is None:
         # Fetch fresh
         try:
             from akshare import futures_main_sina  # 【调用包】AKShare 新浪主力连续行情接口
@@ -1416,6 +1457,9 @@ def get_futures_news(
         "OI": ["菜油", "菜籽油", "油菜籽", "生物柴油"],
         "RM": ["菜粕", "菜籽粕", "水产", "饲料"],
         "PF": ["短纤", "涤短", "涤纶", "纺织"],
+        "AP": ["苹果", "冷库", "套袋", "优果率", "交割果", "早熟", "晚熟"],
+        "CJ": ["红枣", "灰枣", "骏枣", "阿克苏", "若羌", "托市"],
+        "PK": ["花生", "油料米", "通货米", "花生粕", "筛选厂", "进口米"],
         "SM": ["锰硅", "硅锰", "锰矿"],
         "SF": ["硅铁", "硅石"],
     }

@@ -20,6 +20,7 @@
 """
 
 from .base import PlatformAdapter  # 【调用包】基类契约(注册表类型标注用)
+from .eastmoney_guba_adapter import EastmoneyGubaAdapter  # 【调用包】东方财富股吧适配器类(注册到 ADAPTERS)
 from .weibo_adapter import WeiboAdapter  # 【调用包】微博适配器类(注册到 ADAPTERS)
 from .xhs_adapter import XHSAdapter  # 【调用包】小红书适配器类(注册到 ADAPTERS)
 from .xueqiu_adapter import XueqiuAdapter  # 【调用包】雪球适配器类(注册到 ADAPTERS)
@@ -31,6 +32,7 @@ ADAPTERS: dict[str, type[PlatformAdapter]] = {  # 【变量】平台标识→适
     "weibo": WeiboAdapter,
     "zhihu": ZhihuAdapter,
     "xueqiu": XueqiuAdapter,
+    "eastmoney_guba": EastmoneyGubaAdapter,
 }
 
 # 平台标识 → 展示名(用于日志/界面显示)
@@ -39,6 +41,7 @@ ADAPTER_DISPLAY_NAMES = {  # 【变量】平台标识→展示名(日志/界面�
     "weibo": "微博",
     "zhihu": "知乎",
     "xueqiu": "雪球",
+    "eastmoney_guba": "东方财富股吧",
 }
 
 

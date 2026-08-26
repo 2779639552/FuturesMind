@@ -56,6 +56,7 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_variety_info,
     get_verified_quote,
 )  # 【调用包】商品期货情绪/行情/品种信息/核验报价工具;情绪数据由 get_futures_sentiment 读取(思路2 项目采集)
+from tradingagents.dataflows.sentiment_data import load_sentiment_data, sentiment_quality  # 【调用包】情绪数据质量门控(等级/权重上限);节点产出报告前注入机器可读横幅,供辩论/综合节点读取并强制 cap
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +350,22 @@ End with:
         except Exception as e:
             logger.error("Sentiment analyst failed: %s", e)
             report = f"ANALYSIS_ERROR: Sentiment analysis failed: {e}"
+
+        # 质量横幅注入(2026-08-25 置信度公式化):把机器可读的质量门控信息 prepend 到报告首行,
+        # 供辩论多方/空方与综合节点解析 weight_cap,实现"强制门控"而不仅是 LLM 提示建议。
+        # 【关键】横幅放在 state["sentiment_report"] 首行,综合节点 [:2000] 截断不会丢失。
+        # 2026-08-26 包成 HTML 注释:合成节点 _parse_sentiment_cap 的正则照常匹配,但前端
+        #   marked 渲染成不可见注释,避免机器横幅泄漏进用户界面(结果页/历史/下载)。
+        try:
+            quality = sentiment_quality(symbol, load_sentiment_data(symbol))
+            banner = (
+                f"<!-- [SENTIMENT_QUALITY] level={quality['level']} posts={quality['posts']} "
+                f"data_points={quality['data_points']} acc={quality['direction_accuracy']} "
+                f"weight_cap={quality['weight_cap']} platforms={quality['platforms']} -->\n"
+            )
+        except Exception:  # 质量计算失败时退回纯报告,不阻断分析
+            banner = ""
+        report = banner + report
 
         return {
             "messages": [HumanMessage(content=f"[Sentiment Analyst Report]\n{report}")],

@@ -220,6 +220,8 @@ class XueqiuAdapter(PlatformAdapter):
           从而绕过阿里云 WAF 风控。
         - 每页最多 20 条(per_page)，最多翻 5 页(page<=5)。
         - 过滤"纯转发且无自写正文"的条目(无内容价值)。
+        - sortId=2 按时间排序(实测: sortId=1 相关性排序返回的旧帖会被每日管道
+          --since 窗口过滤为 0, 无法采到近期内容; sortId=2 返回当日新帖)。
         """
         import urllib.parse  # 【调用包】URL 编码搜索词
 
@@ -233,7 +235,7 @@ class XueqiuAdapter(PlatformAdapter):
             # 在浏览器内执行 JS: fetch 雪球搜索接口，失败返回 null
             result = self._page.evaluate(f"""
                 async () => {{
-                    const url = '/query/v1/search/status.json?sortId=1&q={q_enc}&count={per_page}&page={page}';
+                    const url = '/query/v1/search/status.json?sortId=2&q={q_enc}&count={per_page}&page={page}';
                     try {{
                         const r = await fetch(url);
                         if (!r.ok) return null;

@@ -15,6 +15,7 @@ JSON schema matches the output of generate_tradingagents_sentiment.py.
 
 import json  # 【调用包】JSON 读取(情绪数据文件解析)
 import logging  # 【调用包】日志输出(加载/过期告警)
+import re  # 【调用包】正则(板块名剥离括号子板块)
 from datetime import datetime, timedelta, timezone  # 【调用包】时间解析/过期判断/北京时区定义
 from pathlib import Path  # 【调用包】路径操作(数据目录与文件定位)
 
@@ -26,6 +27,26 @@ EXTERNAL_DATA_DIR = Path.home() / ".tradingagents" / "external_data"  # 【变�
 # even before any local data is collected. Mirrors web_app.SENTIMENT_DIR.
 _REPO_SENTIMENT_DIR = Path(__file__).resolve().parents[2] / "data" / "external_data"  # 【变量】仓库内置样本数据目录(新克隆无本地数据时兜底)
 BEIJING_TZ = timezone(timedelta(hours=8))  # 【变量】北京时间时区(UTC+8,数据时间戳对齐用)
+
+# --- 数据质量门控阈值(2026-08-25 置信度公式化) ---
+# 【说明】sentiment_quality() 用这些常量把"帖子数/样本量/方向准确率/新鲜度/平台多样性"
+#         转成质量等级(HIGH/MEDIUM/LOW/INSUFFICIENT/IGNORE)与情绪维度权重上限 weight_cap。
+# 【关键】cap 语义 = 综合节点中情绪维度占权重的上限(/10 计);HIGH 的 cap=1.0 表示不限,
+#         由综合 LLM 自行按证据强度分配。
+QUALITY_MIN_POSTS = 3  # 【常量】帖子数下限:低于此 → 数据不足,彻底禁用(cap=0)
+QUALITY_CONTRARIAN_ACC = 0.40  # 【常量】方向准确率反指阈值:低于此且样本足够 → 视为系统性反指,禁用
+QUALITY_CONTRARIAN_MIN_POINTS = 10  # 【常量】触发"反指禁用"所需回测样本量(防小样本误伤)
+QUALITY_HIGH_POSTS = 30  # 【常量】HIGH 门槛:帖子数
+QUALITY_HIGH_PLATFORMS = 2  # 【常量】HIGH 门槛:有效平台数(≥2 才给 HIGH)
+QUALITY_MEDIUM_POSTS = 10  # 【常量】MEDIUM 门槛:帖子数
+QUALITY_LOW_CAP = 0.15  # 【常量】LOW 权重上限(15%)
+QUALITY_MEDIUM_CAP = 0.30  # 【常量】MEDIUM 权重上限(30%)
+QUALITY_STALE_MULTIPLIER = 0.5  # 【常量】数据过期 → cap 减半
+QUALITY_ACC_BOOST = 0.55  # 【常量】方向准确率 ≥ 此值 → cap ×1.25
+QUALITY_ACC_BOOST_MULT = 1.25  # 【常量】高准确率上浮系数
+QUALITY_ACC_PENALTY = 0.45  # 【常量】方向准确率 < 此值 → cap ×0.5
+QUALITY_ACC_PENALTY_MULT = 0.5  # 【常量】低准确率下调系数
+QUALITY_ACC_N_MIN = 5  # 【常量】准确率调整所需最小样本量
 
 
 # 【功能】选择情绪数据目录:优先用户真实数据,无任何 *_sentiment.json 时回退到仓库样本。
@@ -86,6 +107,209 @@ def load_sentiment_data(variety: str) -> dict | None:
     return data
 
 
+# 【功能】对品种情绪数据做质量门控,返回质量等级与情绪维度权重上限。
+# 【参数】symbol: 品种代码; data: load_sentiment_data(symbol) 的返回值(可为 None)。
+# 【返回】dict:{level, weight_cap, posts, data_points, direction_accuracy, stale, platforms,
+#              factors(原始输入), reason(人读理由)}。
+# 【关键】这是"置信度公式化 + 强制门控"的数据源头:综合节点/情绪分析师的权重上限都从这里取,
+#         替代此前仅写在 LLM 提示词里的"建议权重"(sentiment_analyst.py / commodity_demo.py)。
+# 【硬规则】(1) data=None → IGNORE; (2) posts<3 → INSUFFICIENT; (3) acc<0.40 且 N>=10 → IGNORE(反指);
+#         (4) 基础档 HIGH/MEDIUM/LOW; (5) 过期减半; (6) 高/低准确率上浮/下调。
+def sentiment_quality(symbol: str, data: dict | None) -> dict:
+    """Score sentiment data quality and derive a hard weight cap for the sentiment dimension."""
+    if data is None:
+        return {
+            "level": "IGNORE",
+            "weight_cap": 0.0,
+            "posts": 0,
+            "data_points": 0,
+            "direction_accuracy": None,
+            "stale": False,
+            "platforms": 0,
+            "factors": {"data": None},
+            "reason": f"{symbol} 无情绪数据文件",
+        }
+
+    d = data.get("data", {})
+    ss = d.get("social_sentiment", {})
+    spc = d.get("sentiment_price_correlation", {})
+    posts = int(ss.get("total_posts_analyzed", 0) or 0)
+    data_points = int(spc.get("data_points", 0) or 0)
+    acc = spc.get("direction_accuracy")
+    acc = float(acc) if acc is not None else None
+    stale = bool(data.get("_stale", False))
+    platforms = sum(1 for c in (ss.get("platforms", {}) or {}).values() if int(c or 0) > 0)
+
+    factors = {
+        "posts": posts,
+        "data_points": data_points,
+        "direction_accuracy": acc,
+        "stale": stale,
+        "platforms": platforms,
+    }
+
+    # 硬规则 1: 帖子不足 → 数据不足,彻底禁用
+    if posts < QUALITY_MIN_POSTS:
+        return {
+            "level": "INSUFFICIENT", "weight_cap": 0.0,
+            "posts": posts, "data_points": data_points,
+            "direction_accuracy": acc, "stale": stale, "platforms": platforms,
+            "factors": factors,
+            "reason": f"帖子数 {posts} < {QUALITY_MIN_POSTS}, 情绪数据不足",
+        }
+
+    # 硬规则 2: 系统性反指(样本足够且准确率过低 → 方向是反的,禁用)
+    if acc is not None and data_points >= QUALITY_CONTRARIAN_MIN_POINTS and acc < QUALITY_CONTRARIAN_ACC:
+        return {
+            "level": "IGNORE", "weight_cap": 0.0,
+            "posts": posts, "data_points": data_points,
+            "direction_accuracy": acc, "stale": stale, "platforms": platforms,
+            "factors": factors,
+            "reason": f"方向准确率 {acc:.0%} < {QUALITY_CONTRARIAN_ACC:.0%}(N={data_points}), 情绪为系统性反指,禁用",
+        }
+
+    # 基础档
+    if posts >= QUALITY_HIGH_POSTS and platforms >= QUALITY_HIGH_PLATFORMS:
+        level, cap = "HIGH", 1.0
+        reason = f"数据充足({posts}帖/{platforms}平台), 权重不设硬上限"
+    elif posts >= QUALITY_MEDIUM_POSTS:
+        level, cap = "MEDIUM", QUALITY_MEDIUM_CAP
+        reason = f"数据中等({posts}帖), 情绪权重上限 {QUALITY_MEDIUM_CAP:.0%}"
+    else:
+        level, cap = "LOW", QUALITY_LOW_CAP
+        reason = f"数据稀疏({posts}帖), 情绪权重上限 {QUALITY_LOW_CAP:.0%}"
+
+    # 过期减半(HIGH 降为 MEDIUM)
+    if stale:
+        cap *= QUALITY_STALE_MULTIPLIER
+        if level == "HIGH":
+            level = "MEDIUM"
+        reason += f"; 数据过期 → 上限减半({cap:.0%})"
+
+    # 方向准确率修正(样本足够才用)
+    if acc is not None and data_points >= QUALITY_ACC_N_MIN:
+        if acc >= QUALITY_ACC_BOOST:
+            cap *= QUALITY_ACC_BOOST_MULT
+            reason += f"; 高准确率({acc:.0%}) → 上浮×{QUALITY_ACC_BOOST_MULT}"
+        elif acc < QUALITY_ACC_PENALTY:
+            cap *= QUALITY_ACC_PENALTY_MULT
+            reason += f"; 低准确率({acc:.0%}) → 下调×{QUALITY_ACC_PENALTY_MULT}"
+
+    cap = round(max(0.0, min(1.0, cap)), 3)
+    return {
+        "level": level, "weight_cap": cap,
+        "posts": posts, "data_points": data_points,
+        "direction_accuracy": acc, "stale": stale, "platforms": platforms,
+        "factors": factors,
+        "reason": reason,
+    }
+
+
+# 【功能】auto 模式(自动判定是否包含情绪分析师)的唯一入口。
+# 【参数】symbol: 品种代码。
+# 【返回】bool: True=应包含情绪维度(自身质量合格,或同板块复合情绪可用);False=退化为三分析师。
+def should_include_sentiment(symbol: str) -> bool:
+    """auto mode: include sentiment if its own data is usable, or a sector fallback exists."""
+    data = load_sentiment_data(symbol)
+    if data is not None:
+        q = sentiment_quality(symbol, data)
+        if q["level"] not in ("INSUFFICIENT", "IGNORE"):
+            return True
+    return get_sector_sentiment_fallback(symbol) is not None
+
+
+# 【功能】从 VARIETY_METADATA 反查"大板块→品种列表",剥离括号子板块(如 黑色系(合金)→黑色系)。
+# 【参数】metadata: 可选,默认延迟导入 VARIETY_METADATA(防与 commodity_futures 循环导入)。
+# 【返回】dict[str, list[str]]: {大板块: [品种代码,...]}。
+def build_sector_to_varieties(metadata: dict | None = None) -> dict[str, list[str]]:
+    """Reverse-map VARIETY_METADATA.sector_cn into broad sectors (parenthesized sub-sector stripped)."""
+    if metadata is None:
+        from tradingagents.dataflows.commodity_futures import VARIETY_METADATA  # noqa: E402  # 【调用包】延迟导入防循环
+        metadata = VARIETY_METADATA
+    sector_map: dict[str, list[str]] = {}
+    for code, meta in metadata.items():
+        sector_cn = (meta.get("sector_cn") or "").strip()
+        if not sector_cn:
+            continue
+        bucket = re.sub(r"[（(].*?[)）]", "", sector_cn).strip()
+        sector_map.setdefault(bucket, []).append(code)
+    return sector_map
+
+
+# 【功能】品种自身质量 LOW/INSUFFICIENT 时,聚合同板块质量较好兄弟品种的情绪作为降级参考。
+# 【参数】variety: 品种代码; min_sibling_posts: 兄弟品种最低帖子数(低于则弃); max_siblings: 最多取几个。
+# 【返回】dict|None: {sector, weighted_avg_score, total_posts, n_siblings, siblings[],
+#                    avg_direction_accuracy, weight_cap:0.15}; 同板块无可用兄弟 → None(彻底跳过)。
+def get_sector_sentiment_fallback(variety: str, min_sibling_posts: int = 10, max_siblings: int = 5) -> dict | None:
+    """Aggregate same-sector siblings' sentiment as a degraded fallback when the variety is too sparse."""
+    sector_map = build_sector_to_varieties()
+    bucket = next((k for k, v in sector_map.items() if variety in v), None)
+    if bucket is None:
+        return None
+    siblings = [c for c in sector_map[bucket] if c != variety]
+
+    usable: list[dict] = []
+    for sib in siblings:
+        sib_data = load_sentiment_data(sib)
+        if sib_data is None:
+            continue
+        q = sentiment_quality(sib, sib_data)
+        if q["level"] in ("INSUFFICIENT", "IGNORE") or q["posts"] < min_sibling_posts:
+            continue
+        sib_ss = sib_data.get("data", {}).get("social_sentiment", {})
+        usable.append({
+            "code": sib,
+            "name": sib_data.get("variety_name", sib),
+            "avg_score": sib_ss.get("avg_score", 0),
+            "posts": q["posts"],
+            "level": q["level"],
+            "direction_accuracy": q["direction_accuracy"],
+        })
+    if not usable:
+        return None
+
+    usable.sort(key=lambda x: -x["posts"])
+    usable = usable[:max_siblings]
+    total_posts = sum(int(x["posts"]) for x in usable)
+    weighted_avg_score = (
+        round(sum(float(x["avg_score"] or 0) * int(x["posts"]) for x in usable) / total_posts, 4) if total_posts else 0.0
+    )
+    accs = [x["direction_accuracy"] for x in usable if x["direction_accuracy"] is not None]
+    avg_acc = round(sum(accs) / len(accs), 4) if accs else None
+
+    return {
+        "sector": bucket,
+        "weighted_avg_score": weighted_avg_score,
+        "total_posts": total_posts,
+        "n_siblings": len(usable),
+        "siblings": usable,
+        "avg_direction_accuracy": avg_acc,
+        "weight_cap": 0.15,  # 【常量】板块复合降级 → 权重减半(≤15%),仅参考不作主判断
+    }
+
+
+# 【功能】格式化"板块参考情绪"降级段文本(供 get_futures_sentiment 复用)。
+# 【参数】fallback: get_sector_sentiment_fallback() 的返回值。
+# 【返回】str: 板块参考段的多行文本。
+def _format_sector_fallback_section(fallback: dict) -> str:
+    """Format the sector-reference (degraded) section text."""
+    lines = [
+        f"  板块: {fallback['sector']} | 兄弟品种数: {fallback['n_siblings']} | 总参考帖子: {fallback['total_posts']}",
+        f"  加权平均情绪分: {fallback['weighted_avg_score']:+.3f} (按帖子数加权)",
+    ]
+    if fallback["avg_direction_accuracy"] is not None:
+        lines.append(f"  兄弟平均方向准确率: {fallback['avg_direction_accuracy']:.1%}")
+    lines.append("  兄弟品种明细:")
+    for sib in fallback["siblings"]:
+        acc_txt = f"{sib['direction_accuracy']:.0%}" if sib["direction_accuracy"] is not None else "N/A"
+        lines.append(
+            f"    - {sib['code']} ({sib['name']}): avg_score={sib['avg_score']:+.3f}, "
+            f"posts={sib['posts']}, 质量={sib['level']}, acc={acc_txt}"
+        )
+    lines.append("  注意: 本段为同板块参考情绪,权重减半(≤15%),不作主判断依据。")
+    return "\n".join(lines)
+
+
 # 【功能】把品种情绪数据格式化为给"情绪分析师"的 LLM 结构化提示文本。
 # 【参数】symbol: 品种代码(如 "RB")。
 # 【返回】结构化中文提示文本;无数据时返回带可能原因与占位评估的引导说明。
@@ -104,8 +328,18 @@ def get_futures_sentiment(symbol: str) -> str:
         Formatted text ready for LLM consumption, or a message indicating no data.
     """
     data = load_sentiment_data(symbol)  # 【调用函数】加载情绪数据(无/损坏/过期返回 None 或带 _stale 标记)
+    quality = sentiment_quality(symbol, data)  # 【调用函数】质量门控(等级/权重上限),供第0段与第7段使用
 
     if data is None:
+        # 无本品种数据时,先尝试同板块复合情绪降级;无可用降级才返回占位提示
+        fallback = get_sector_sentiment_fallback(symbol)  # 【调用函数】同板块兄弟品种复合情绪
+        if fallback is not None:
+            return (
+                f"[情绪数据] 品种 {symbol} 暂无社交媒体情绪数据。\n"
+                f"可用降级: 采用同板块复合情绪(见下方板块参考情绪段)。\n\n"
+                f"## 7. 板块参考情绪（本品种数据不足，降级参考同板块）\n"
+                f"{_format_sector_fallback_section(fallback)}\n"
+            )
         return (
             f"[情绪数据] 品种 {symbol} 暂无社交媒体情绪数据。\n"
             f"可能原因: (1) 该品种尚未采集足够的社交媒体内容, "
@@ -140,6 +374,20 @@ def get_futures_sentiment(symbol: str) -> str:
         )
 
     lines.append("=" * 60)
+    lines.append("")
+
+    # --- Section 0: Data Quality Gate (2026-08-25 置信度公式化) ---
+    lines.append("## 0. 数据质量门控")
+    lines.append(
+        f"  质量等级: {quality['level']} | 帖子数: {quality['posts']} | "
+        f"回测样本: {quality['data_points']} | 有效平台: {quality['platforms']}"
+    )
+    if quality["direction_accuracy"] is not None:
+        lines.append(f"  方向准确率: {quality['direction_accuracy']:.1%}")
+    lines.append(
+        f"  情绪权重上限: {quality['weight_cap']:.0%} (weight_cap={quality['weight_cap']})"
+    )
+    lines.append(f"  判定理由: {quality['reason']}")
     lines.append("")
 
     # --- Section 1: Overall Sentiment ---
@@ -184,11 +432,19 @@ def get_futures_sentiment(symbol: str) -> str:
     # --- Section 3: Daily Time Series ---
     lines.append("## 3. 每日情绪时序（最近30天）")
     if ds:
+        # 近7日均值摘要(2026-08-25: 修掉"标题最近30天/切片仅14天"不一致,并给 LLM 一个平滑趋势读数)
+        _last7 = ds[-7:]
+        if _last7:
+            _a7 = sum(dd.get("avg_score", 0) for dd in _last7) / len(_last7)
+            _n7 = sum(dd.get("note_count", 0) for dd in _last7) / len(_last7)
+            _b7 = sum(dd.get("bull_count", 0) for dd in _last7)
+            _r7 = sum(dd.get("bear_count", 0) for dd in _last7)
+            lines.append(f"  近7日均值: 平均分 {_a7:+.3f} | 日均帖子 {_n7:.1f} | 看多 {_b7} | 看空 {_r7}")
         lines.append(
             f"  {'Date':<12} {'Score':>7} {'Notes':>5} {'Bull':>4} {'Bear':>4} {'Platforms'}"
         )
         lines.append(f"  {'-' * 12} {'-' * 7} {'-' * 5} {'-' * 4} {'-' * 4} {'-' * 20}")
-        for d in ds[-14:]:  # Show last 14 days to keep prompt manageable
+        for d in ds[-30:]:  # 最近30天(与标题一致)
             score = d.get("avg_score", 0)
             # Visual indicator
             if score > 0.2:
@@ -251,6 +507,16 @@ def get_futures_sentiment(symbol: str) -> str:
         "  6. **数据量评估**: 样本量 < 10 条时，降低情绪分析的权重；样本量 < 3 条时，标注'无可靠情绪数据'。"
     )
     lines.append('  7. **时效性**: 如果数据标注为"已过期"，在分析中明确说明并降低权重。')
+    lines.append("")
+
+    # --- Section 7: Sector Reference (degraded fallback) ---
+    # 本品种质量 LOW/INSUFFICIENT(数据稀疏)或 IGNORE(反指禁用)且有同板块兄弟复合情绪
+    # → 追加降级段(权重减半,仅参考);data=None 的情况已在顶部单独处理。
+    if quality["level"] in ("LOW", "INSUFFICIENT", "IGNORE"):
+        _fb = get_sector_sentiment_fallback(symbol)  # 【调用函数】同板块兄弟品种复合情绪
+        if _fb is not None:
+            lines.append("## 7. 板块参考情绪（本品种数据不足，降级参考同板块）")
+            lines.append(_format_sector_fallback_section(_fb))
 
     return "\n".join(lines)
 

@@ -12,3 +12,6 @@ waitress>=3.0
 
 # Chinese futures market data
 akshare>=1.18
+
+# Eastmoney Guba / xueqiu / zhihu collection (Playwright APIRequestContext, WAF TLS bypass)
+playwright>=1.61

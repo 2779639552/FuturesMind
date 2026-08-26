@@ -35,6 +35,7 @@ dependencies = [
     "waitress>=3.0",
     "akshare>=1.18",
     "apscheduler>=3.10,<4",
+    "playwright>=1.61,<2",
 ]
 
 [project.optional-dependencies]

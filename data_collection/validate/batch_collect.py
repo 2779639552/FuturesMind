@@ -28,7 +28,7 @@
     与 hybrid_pipeline.py 的关系:
       - hybrid_pipeline 是"小红书专用"的两层(Playwright+API拦截)采集器。
       - 本文件是"多平台通用"采集器, 通过 platforms 模块的 get_adapter()
-        按 --platform 参数获取对应平台适配器 (xhs/weibo/zhihu/xueqiu)。
+        按 --platform 参数获取对应平台适配器 (xhs/weibo/zhihu/xueqiu/eastmoney_guba)。
       下游: 采集出的 JSONL 交给 analyze.py / trend_aggregator.py 做分析聚合。
 """
 
@@ -52,6 +52,14 @@ from platforms.base import CredentialError, PlatformAdapter  # 【调用包】�
 from sentiment import SentimentAnalyzer  # 【调用包】规则情感分析器 (7级分类)
 
 logger = logging.getLogger("batch.collect")
+
+# Windows GBK 控制台/管道下, emoji(如 ⚠️/🟢)会触发 UnicodeEncodeError 崩溃,
+# 掩盖真实错误(如适配器凭证缺失)。errors="replace" 把不可编码字符降级为 '?'
+# 而非崩溃——这是调度器子进程(GBK 捕获 stdout)的安全兜底, 不改变正常中文输出。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(errors="replace")
 
 # ============================================================
 # 配置
@@ -216,11 +224,68 @@ DEFAULT_KEYWORDS_XUEQIU = [  # 【变量】雪球平台默认关键词列表
     "期货基本面",
 ]
 
+DEFAULT_KEYWORDS_EASTMONEY_GUBA = [  # 【变量】东财股吧平台默认关键词列表(带"期货"后缀, 覆盖21品种池+稀疏品种长尾扩充)
+    # 黑色系
+    "螺纹钢期货",
+    "铁矿石期货",
+    "焦炭期货",
+    "焦煤期货",
+    "热卷期货",
+    "硅铁期货",
+    "锰硅期货",
+    # 有色
+    "沪铜期货",
+    "沪铝期货",
+    "沪锌期货",
+    "沪镍期货",
+    "黄金期货",
+    "白银期货",
+    "碳酸锂期货",
+    "工业硅期货",
+    # 能化
+    "原油期货",
+    "PTA期货",
+    "甲醇期货",
+    "纯碱期货",
+    "PVC期货",
+    "玻璃期货",
+    "尿素期货",
+    "橡胶期货",
+    "沥青期货",
+    "短纤期货",
+    # 农产品
+    "豆粕期货",
+    "豆油期货",
+    "棕榈油期货",
+    "菜粕期货",
+    "白糖期货",
+    "棉花期货",
+    "玉米期货",
+    "生猪期货",
+    "鸡蛋期货",
+    "苹果期货",
+    "红枣期货",
+    "花生期货",
+    # 稀疏品种长尾扩充(股吧帖子长尾词, 补 AP/CJ/PK/FG/UR/PF 等帖子量; 不用裸"苹果"避免撞Apple)
+    "苹果冷库",
+    "苹果套袋",
+    "玻璃库存",
+    "浮法玻璃",
+    "尿素出口",
+    "涤纶短纤",
+    # 主题词
+    "期货实盘",
+    "期货技术分析",
+    "期货基本面",
+    "商品期货",
+]
+
 DEFAULT_KEYWORDS = {  # 【变量】平台名→默认关键词列表映射 (按--platform选择)
     "xhs": DEFAULT_KEYWORDS_XHS,
     "weibo": DEFAULT_KEYWORDS_WEIBO,
     "zhihu": DEFAULT_KEYWORDS_ZHIHU,
     "xueqiu": DEFAULT_KEYWORDS_XUEQIU,
+    "eastmoney_guba": DEFAULT_KEYWORDS_EASTMONEY_GUBA,
 }
 
 
@@ -346,7 +411,7 @@ class MultiPlatformCollector:
     ):
         # 平台名 + 通过工厂函数 get_adapter 拿到对应适配器实例
         self.platform_name = platform
-        self.adapter: PlatformAdapter = get_adapter(platform)  # 【调用函数】工厂函数获取平台适配器实例 (xhs/weibo/zhihu/xueqiu)
+        self.adapter: PlatformAdapter = get_adapter(platform)  # 【调用函数】工厂函数获取平台适配器实例 (xhs/weibo/zhihu/xueqiu/eastmoney_guba)
         # 自适应延时控制器 (三档模式在构造时决定)
         self.limiter = RateLimiter(safe_mode=safe_mode, turbo_mode=turbo_mode)
         # NER 与情感分析器 (纯文本, 平台无关)

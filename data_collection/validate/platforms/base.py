@@ -137,6 +137,22 @@ FIELD_MAPPING_TABLE = {  # 【变量】"平台 → 统一字段←平台原始�
         "image_urls": "pics[].url",
         "url": "xueqiu.com/{id} / target",
     },
+    "eastmoney_guba": {
+        "platform": '"eastmoney_guba"',
+        "note_id": '"emg:" + id (搜索接口 gubaArticleWeb 主键)',
+        "title": "title (去<em>高亮)",
+        "desc": "content (去HTML + 剥 $合约标签$ 包裹符号)",
+        "author_name": '"unknown" (搜索响应无作者字段, v1 缺省)',
+        "author_id": '"" (同上)',
+        "like_count": "0 (搜索响应无互动字段, v1 缺省)",
+        "comment_count": "0 (同上)",
+        "collect_count": "0 (无此概念)",
+        "share_count": "0",
+        "publish_time": "createTime (已是 YYYY-MM-DD HH:MM:SS)",
+        "ip_location": '"" (不支持)',
+        "image_urls": "[] (无此字段)",
+        "url": "url (http→https 升级)",
+    },
 }
 
 

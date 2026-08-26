@@ -365,13 +365,19 @@ class TestCommoditySentimentAnalyst:
             "**数据质量**: 145 posts, fresh."
         )
         llm = MagicMock()
+        # 【2026-08-26】横幅包成 HTML 注释(前端 marked 不可见),合成节点正则仍照常匹配
+        quality = {"level": "MEDIUM", "weight_cap": 0.3, "posts": 16, "data_points": 13,
+                   "direction_accuracy": 0.615, "stale": False, "platforms": 3}
+        expected_banner = "<!-- [SENTIMENT_QUALITY] level=MEDIUM posts=16 data_points=13 acc=0.615 weight_cap=0.3 platforms=3 -->\n"
         with patch(
             "tradingagents.agents.analysts.sentiment_analyst._run_tool_loop", return_value=report
-        ) as mock_loop:
+        ) as mock_loop, patch(
+            "tradingagents.agents.analysts.sentiment_analyst.sentiment_quality", return_value=quality
+        ):
             result = create_commodity_sentiment_analyst(llm)(_make_commodity_state())
         mock_loop.assert_called_once()
-        assert result["sentiment_report"] == report
-        assert result["messages"][0].content == f"[Sentiment Analyst Report]\n{report}"
+        assert result["sentiment_report"] == expected_banner + report
+        assert result["messages"][0].content == f"[Sentiment Analyst Report]\n{expected_banner}{report}"
 
     def test_symbol_and_date_reach_tool_loop_prompt(self):
         captured = {}
@@ -420,11 +426,17 @@ class TestCommoditySentimentAnalyst:
 
     def test_analysis_error_when_tool_loop_raises(self):
         llm = MagicMock()
+        quality = {"level": "HIGH", "weight_cap": 1.0, "posts": 97, "data_points": 31,
+                   "direction_accuracy": 0.548, "stale": False, "platforms": 3}
         with patch(
             "tradingagents.agents.analysts.sentiment_analyst._run_tool_loop",
             side_effect=ValueError("provider timeout"),
+        ), patch(
+            "tradingagents.agents.analysts.sentiment_analyst.sentiment_quality", return_value=quality
         ):
             result = create_commodity_sentiment_analyst(llm)(_make_commodity_state())
-        assert result["sentiment_report"].startswith("ANALYSIS_ERROR:")
+        # 【2026-08-26】错误报告同样被质量横幅前置(HTML 注释包裹)
+        assert result["sentiment_report"].startswith("<!-- [SENTIMENT_QUALITY]")
+        assert "ANALYSIS_ERROR:" in result["sentiment_report"]
         assert "provider timeout" in result["sentiment_report"]
         assert "ANALYSIS_ERROR" in result["messages"][0].content
