@@ -44,7 +44,9 @@ PDF+MD export, LLM config panel, real-time token stats, dynamic paths.
 
 import glob  # 【调用包】批量路径匹配(如 batch_*.jsonl 文件列举)
 import io  # 【调用包】内存字节流(BytesIO,PDF 下载响应)
+from collections import defaultdict  # 【调用包】字典计数(缺失键自动给默认值,非标数据聚合用)
 import json  # 【调用包】JSON 序列化/反序列化(配置、行情缓存、批次文件)
+import logging  # 【调用包】日志记录(报告落盘异常等)
 import os  # 【调用包】路径/环境变量操作
 import re  # 【调用包】正则提取报告章节与评级字段
 import secrets  # 【调用包】生成安全 token 与 secret_key
@@ -53,6 +55,7 @@ import threading  # 【调用包】后台线程与进度锁
 import time  # 【调用包】耗时统计与轮询间隔
 from datetime import datetime, timedelta  # 【调用包】日期解析与时间窗计算
 from functools import wraps  # 【调用包】保留被装饰函数元数据(鉴权装饰器)
+from urllib.parse import urlparse  # 【调用包】URL 域名解析(platform 缺失时按 url 推断平台)
 from pathlib import Path  # 【调用包】路径对象操作(目录扫描/文件拼接)
 
 from dotenv import load_dotenv  # 【调用包】加载 .env 环境变量
@@ -117,7 +120,7 @@ from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调�
 )
 from tradingagents.dataflows.config import set_config  # noqa: E402  # 【调用包】把配置同步到全局(供 Agent 图/LLM 读取)
 from tradingagents.dataflows.evolution_memory import get_evolution_context  # noqa: E402  # 【调用包】读取进化记忆(历史学习上下文)
-from tradingagents.dataflows.sentiment_data import load_sentiment_data  # noqa: E402  # 【调用包】加载品种情绪数据(判断是否启用情绪分析师)
+from tradingagents.dataflows.sentiment_data import should_include_sentiment  # noqa: E402  # 【调用包】质量感知判定:自身质量合格或板块复合可用才启用情绪分析师
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402  # 【调用包】默认配置(LLM provider/模型名)
 from tradingagents.llm_clients import create_llm_client  # noqa: E402  # 【调用包】创建 LLM 客户端(辩论接口用)
 
@@ -160,6 +163,8 @@ THINK2_TRENDS = THINK2_OUTPUT / "trends" if THINK2_OUTPUT else None  # 【变量
 
 LOG_DIR = Path(os.path.expanduser("~/.tradingagents/logs"))  # 【变量】日志目录(用户主目录下,跨项目共享)
 REPORT_DIR = LOG_DIR  # 【变量】分析报告保存目录(与日志同目录)
+
+logger = logging.getLogger(__name__)  # 【变量】模块级日志器(报告落盘/章节解析异常用)
 
 # Template path (reload on every request for live editing)
 TEMPLATE_PATH = Path(__file__).parent / "web_template.html"  # 【变量】前端模板路径(每次请求重读,支持热改)
@@ -662,6 +667,172 @@ def api_sentiment_posts():
     return jsonify({"_meta": meta, "posts": posts[:200]})
 
 
+# ═══════════════════════════════════════════════════════════════════
+# 非标数据可视化聚合(batch JSONL → 关系图 / 桑基图数据)
+# 纯函数可单测;输入为 batch_*.jsonl 的逐条记录 dict。
+# ═══════════════════════════════════════════════════════════════════
+def _iter_batch_records():
+    """逐条 yield 全部 batch_*.jsonl 的记录(note_id 去重,跳过 platform 为 '?')。
+
+    【功能】把 api_sentiment_posts 里的"glob + 去重 + 过滤"读取逻辑收敛为公共
+    生成器,供关系图/桑基等批量聚合 API 复用,避免各自重复读文件。
+    【返回】逐条 dict;目录缺失或单文件异常时静默跳过。
+    """
+    if not THINK2_OUTPUT or not THINK2_OUTPUT.exists():
+        return
+    seen = set()  # 【变量】note_id 去重集合(同一帖在多个批次文件里只算一次)
+    for fpath in sorted(glob.glob(str(THINK2_OUTPUT / "batch_*.jsonl"))):  # 【调用包】glob:批量匹配批次文件
+        try:
+            f = open(fpath, encoding="utf-8")
+        except Exception:
+            continue
+        with f:
+            for line in f:
+                try:  # 【变量】坏行只跳过该行,不丢弃整个文件后续记录
+                    if not line.strip():
+                        continue
+                    d = json.loads(line)
+                    nid = d.get("note_id", "")
+                    if not nid or nid in seen:
+                        continue
+                    seen.add(nid)
+                    if d.get("platform") in (None, "", "?"):
+                        continue
+                    yield d
+                except Exception:
+                    continue
+
+
+def _build_variety_platform_graph(records, top_varieties=25):
+    """品种 ↔ 平台 ↔ 板块 三层关系图数据(帖子 NER 品种 × 采集平台 × 板块归属)。
+
+    【功能】把批量帖子聚合成 ECharts graph 可渲染的三类节点与两类边:
+      节点: platform(采集平台) / variety(帖子 NER 品种) / sector(板块归属)。
+      边:   variety↔platform 共现帖数;variety→sector 归属(值为品种帖数)。
+      品种只保留帖子数 Top N(防图过密);节点 value = 关联帖数(前端映射节点大小)。
+    【参数】records: _iter_batch_records() 产出或等价 dict 列表;top_varieties: 品种上限。
+    【返回】{"nodes": [{id,name,type,value}...], "links": [{source,target,value}...]}。
+    """
+    variety_posts = defaultdict(int)  # 【变量】品种 → 帖数
+    platform_posts = defaultdict(int)  # 【变量】平台 → 帖数
+    variety_sector = {}  # 【变量】品种 → 板块名(通常各帖一致,取最后一次)
+    variety_platform = defaultdict(int)  # 【变量】(品种, 平台) → 共现帖数
+
+    for d in records:
+        pl = d.get("platform", "?")
+        platform_posts[pl] += 1
+        for v in (d.get("varieties") or []):  # 【变量】varieties 为 null/缺失都按空列表处理(否则 for None 崩)
+            if not isinstance(v, dict):
+                continue
+            name = v.get("name", "")
+            if not name:
+                continue
+            variety_posts[name] += 1
+            variety_sector[name] = v.get("sector") or "其他"  # 【变量】板块名(null/缺失兜底,避免产出 None 节点)
+            variety_platform[(name, pl)] += 1
+
+    top = {
+        name for name, _ in sorted(variety_posts.items(), key=lambda x: -x[1])[:top_varieties]
+    }  # 【变量】帖子数 Top N 品种集合
+    sector_posts = defaultdict(int)  # 【变量】板块 → 归属该板块的 top 品种帖数合计
+    for name in top:
+        sector_posts[variety_sector.get(name, "其他")] += variety_posts[name]
+
+    nodes = []  # 【变量】节点列表
+    node_ids = set()  # 【变量】已注册节点 id(防重)
+
+    def _add_node(nid, ntype, label, value):
+        if nid in node_ids:
+            return
+        node_ids.add(nid)
+        nodes.append({"id": nid, "name": label, "type": ntype, "value": value})
+
+    for pl, n in sorted(platform_posts.items(), key=lambda x: -x[1]):
+        _add_node(pl, "platform", pl, n)
+    for name, n in sorted(variety_posts.items(), key=lambda x: -x[1]):
+        if name in top:
+            _add_node(name, "variety", name, n)
+    for sec, n in sector_posts.items():
+        _add_node(sec, "sector", sec, n)
+
+    links = []  # 【变量】边列表(source/target 为节点 id)
+    for (name, pl), n in variety_platform.items():
+        if name in top:
+            links.append({"source": name, "target": pl, "value": n})
+    for name in top:
+        sec = variety_sector.get(name, "其他")
+        links.append({"source": name, "target": sec, "value": variety_posts[name]})
+
+    return {"nodes": nodes, "links": links}
+
+
+def _sent_dir(score):
+    """情绪得分 → 方向标签(与前端 renderPostCards 阈值一致)。"""
+    try:
+        score = float(score)  # 【变量】数值化:字符串/其他类型统一转 float,失败视为中性
+    except (TypeError, ValueError):
+        score = 0.0
+    if score > 0.1:
+        return "看多"
+    if score < -0.1:
+        return "看空"
+    return "中性"
+
+
+def _build_sentiment_sankey(records, top_varieties=15):
+    """平台 → 品种 → 多/空 三层桑基流量数据。
+
+    【功能】把批量帖子按"平台-品种-情绪方向"聚合成计数链,供 ECharts sankey 渲染。
+    方向判定优先用品种级 variety_sentiments[].score(比整帖 score 更贴近该品种);
+    无品种级情感时退回整帖 sentiment_score 挂到 varieties 首个品种。
+    品种只保留 Top N;links 的 source/target 为节点序号(匹配 ECharts sankey)。
+    【参数】records: _iter_batch_records() 产出或等价 dict 列表;top_varieties: 品种上限。
+    【返回】{"nodes": [{"name"}...], "links": [{"source","target","value"}...]}。
+    """
+    flow = defaultdict(int)  # 【变量】(平台, 品种, 方向) → 计数
+    variety_total = defaultdict(int)  # 【变量】品种 → 帖数(取 Top N 用)
+
+    for d in records:
+        pl = d.get("platform", "?")
+        vs_list = d.get("variety_sentiments") or []
+        if not vs_list:
+            score = d.get("sentiment_score") or 0  # 【变量】整帖情感(null 兜底为中性)
+            for v in (d.get("varieties") or [])[:1]:  # 【变量】varieties 为 null 时按空列表处理
+                if not isinstance(v, dict):
+                    continue
+                name = v.get("name", "")
+                if name:
+                    flow[(pl, name, _sent_dir(score))] += 1
+                    variety_total[name] += 1
+            continue
+        for vs in vs_list:
+            name = vs.get("variety", "")
+            if not name:
+                continue
+            score = vs.get("score") or 0  # 【变量】品种级情感(null 兜底为中性)
+            flow[(pl, name, _sent_dir(score))] += 1
+            variety_total[name] += 1
+
+    top = {
+        name for name, _ in sorted(variety_total.items(), key=lambda x: -x[1])[:top_varieties]
+    }  # 【变量】帖子数 Top N 品种集合
+    platforms = sorted({pl for pl, _, _ in flow})  # 【变量】有流量的平台
+    directions = ["看多", "看空", "中性"]  # 【变量】方向层节点(固定三态)
+    nodes = (
+        [{"name": p} for p in platforms]
+        + [{"name": n} for n in sorted(top)]
+        + [{"name": d} for d in directions]
+    )
+    name_index = {nd["name"]: i for i, nd in enumerate(nodes)}  # 【变量】节点名 → 序号
+
+    links = []  # 【变量】边列表(平台→品种、品种→方向 两段)
+    for (pl, name, direction), n in flow.items():
+        if name in top:
+            links.append({"source": name_index[pl], "target": name_index[name], "value": n})
+            links.append({"source": name_index[name], "target": name_index[direction], "value": n})
+    return {"nodes": nodes, "links": links}
+
+
 # 【功能】获取品种日线价格,供前端画折线 / K 线。
 # 【参数】days=回看天数(默认 180,强制限制在 30~730)。
 # 【返回】{"_meta": {price_start, price_end, data_points}, "prices": [{date, close}, ...]}。
@@ -798,6 +969,60 @@ def api_backtest():
     return jsonify(result)
 
 
+# 【功能】把一次完整分析的结果落盘为历史报告文件 commodity_{symbol}_{ts}.md,
+#          格式与 CLI 入口 commodity_demo.py 完全一致(标题/日期/耗时 + 各章节)。
+# 【关键】此前只有 CLI 会写盘,Web 分析(run_analysis)从不落盘,导致 /api/history
+#         只能列出 CLI 时代的旧文件(2026-07-21 之后停更)。本函数补上 Web 侧落盘。
+# 【参数】symbol: 品种代码;trade_date: 交易日;final_state: 图最终状态;
+#         elapsed: 本次分析耗时秒数。
+# 【返回】写入成功的文件路径;目录不存在会自动创建。
+def _persist_analysis_report(symbol, trade_date, final_state, elapsed):
+    """Save a finished analysis to REPORT_DIR in CLI-compatible markdown format."""
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # 时间戳用于文件名唯一化
+    fpath = REPORT_DIR / f"commodity_{symbol}_{timestamp}.md"
+    # 各阶段产物,顺序与分析流程一致(分析师 -> 辩论 -> 研判 -> 情景)
+    reports = [  # 【变量】reports:各阶段报告(标题,内容)列表,标题与 CLI 一致
+        ("Technical Analysis", final_state.get("technical_report", "")),
+        ("Fundamental Analysis", final_state.get("fundamental_report", "")),
+        ("Macro/News Analysis", final_state.get("macro_report", "")),
+        ("Sentiment Analysis", final_state.get("sentiment_report", "")),
+        ("Debate Moderator Summary", final_state.get("discussion_summary", "")),
+        ("Synthesis & Recommendation", final_state.get("investment_plan", "")),
+        ("Scenario Analysis", final_state.get("scenario_analysis", "")),
+    ]
+    with open(fpath, "w", encoding="utf-8") as f:  # 以 UTF-8 写入(跳过空内容段)
+        f.write(f"# Commodity Futures Analysis: {symbol}\n\n")
+        f.write(f"**Date**: {trade_date}\n")
+        f.write(f"**Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"**Elapsed**: {elapsed:.0f}s\n\n")
+        f.write("---\n\n")
+        for title, content in reports:
+            if content:
+                f.write(f"## {title}\n\n{content}\n\n---\n\n")
+    logger.info("Report saved: %s", fpath)
+    return fpath
+
+
+# 【功能】按 url 域名推断平台代码(防漏)。早期批次文件部分记录缺 platform 字段,
+#          在统计/列表处用此函数兜底,避免显示为 "?" 或数据被跳过。
+# 【参数】url: 帖子 url(如 https://www.xiaohongshu.com/explore/...)。
+# 【返回】平台代码 weibo/xhs/zhihu/xueqiu/eastmoney_guba;推断不出返回 "?"。
+def _infer_platform(url):
+    """Infer platform code from a post URL (fallback when `platform` field missing)."""
+    dom = urlparse(url or "").netloc.lower()
+    for kw, plat in (
+        ("xiaohongshu", "xhs"),
+        ("weibo", "weibo"),
+        ("zhihu", "zhihu"),
+        ("xueqiu", "xueqiu"),
+        ("eastmoney", "eastmoney_guba"),  # 2026-08-26 补:东财股吧 URL 域名 guba.eastmoney.com
+    ):
+        if kw in dom:
+            return plat
+    return "?"
+
+
 # 【功能】列出最近 20 份已保存的分析报告(commodity_*.md)。
 # 【返回】[{symbol, filename, size, time, path}, ...]。
 @app.route("/api/history")
@@ -805,7 +1030,15 @@ def api_history():
     """Get past analysis reports."""
     reports = []
     if REPORT_DIR.exists():
-        for f in sorted(REPORT_DIR.glob("commodity_*.md"), reverse=True)[:20]:
+        # 过滤 *_comparison.md(CLI 附带产物,非独立报告,避免占用历史列表)。
+        # 按"修改时间"降序排序(而非文件名):文件名是 commodity_{品种}_{时间戳},
+        # 若按文件名排序,会退化成按品种字母排序(如 AP 永远排在 RB/TA 之后),
+        # 导致新落盘报告被挤到列表底部、看似"历史报告停更"。
+        for f in sorted(
+            (p for p in REPORT_DIR.glob("commodity_*.md") if not p.name.endswith("_comparison.md")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:20]:
             stat = f.stat()
             name = f.stem.replace("commodity_", "")
             parts = name.split("_", 1)
@@ -904,7 +1137,13 @@ def api_report(filename):
         "Synthesis",
         "Scenario",
     ]:
-        m = re.search(rf"## {sec}\n(.*?)(?=\n## |\n---\n|\Z)", content, re.DOTALL)
+        # 正则放宽:允许标题带后缀(如 CLI 的 "Debate Moderator Summary"/"Synthesis & Recommendation"),
+        # 用 ^## <sec>[^\n]* 匹配同一章标题任意结尾,保证新旧报告都能解析到章节。
+        m = re.search(
+            rf"^## {re.escape(sec)}[^\n]*\n(.*?)(?=\n## |\n---\n|\Z)",
+            content,
+            re.DOTALL | re.MULTILINE,
+        )
         if m:
             sections[sec] = m.group(1).strip()[:5000]
 
@@ -968,7 +1207,7 @@ def api_run_analysis():
     elif inc_choice == "exclude":
         include_sentiment = False
     else:  # "auto" (default)
-        include_sentiment = load_sentiment_data(symbol) is not None
+        include_sentiment = should_include_sentiment(symbol)  # 【调用函数】质量感知判定(数据不足但有板块复合也算含)
 
     # 阶段列表:不带情绪分析时,过滤掉 "sentiment" 阶段,进度条也随之少一段。
     stages = (
@@ -1081,6 +1320,14 @@ def api_run_analysis():
                     _tracker.update_stats(llm=_tracker.llm_calls + 1)
             _tracker._stage_reports["_final_state"] = final_state
             _tracker.mark_complete(final_state)
+
+            # 把本次分析落盘为历史报告(与 CLI 相同格式),供 /api/history 与
+            # /api/report/<file> 读取。此前 Web 分析从不写盘,历史报告因此停更。
+            # 落盘失败只记日志,不阻断分析完成状态。
+            try:
+                _persist_analysis_report(symbol, trade_date, final_state, elapsed=_tracker.elapsed)
+            except Exception:
+                logger.exception("Failed to persist analysis report for %s", symbol)
 
             # 事后校验:把 Agent 预测方向与真实行情走势对比;若背离则把该案例
             # 存入进化记忆(store_prediction),供后续轮次学习。失败不影响分析完成。
@@ -1495,40 +1742,48 @@ def api_update_data():
                     import subprocess  # 【调用包】子进程调用(运行采集脚本)
 
                     venv_py = os.path.join(os.path.dirname(sys.executable), "python")
-                    cmd = [
-                        venv_py,
-                        "batch_collect.py",
-                        "--platform",
-                        platforms[0],
-                        "--per-kw",
-                        str(per_kw),
-                        "--turbo",
-                        "--no-detail",
-                    ]
-                    if since_date:
-                        cmd.extend(["--since", since_date])
 
                     # 【关键逻辑】采集子进程在后台线程里跑, 主生成器只负责轮询推进度,
                     # 避免整条 SSE 流被 subprocess.run 阻塞住(前端"1/7 采集数据"看起来像卡住)。
+                    # 每个平台一个 batch_collect.py 子进程顺序执行; 单平台失败(凭据缺失/超时)
+                    # 记入 results 后继续下一个, 不影响其他平台。
                     # 一个关键词对应一个 batch_{平台}_{时间戳}.jsonl, 每 4 秒对比一次输出目录,
                     # 有新批次文件就实时推一条 log(完成几个关键词/最新文件多少条);
                     # 若超过 15 秒无新文件, 推一条心跳消息保持"活着"的观感。子进程结束(含
                     # 600 秒超时转异常)后再把最终 stdout/stderr 里关键行推出去。
                     pre_batches = set(glob.glob(str(THINK2_OUTPUT / "batch_*.jsonl")))  # 【变量】采集前已有批次文件集合(用于发现新文件)
-                    holder = {}  # 【变量】跨线程容器:子进程结果写 holder["res"],异常写 holder["err"]
+                    holder = {}  # 【变量】跨线程容器:各平台子进程结果写 holder["res"],异常写 holder["err"]
 
-                    # 【功能】在后台线程里跑采集子进程,结果/异常写入 holder 容器,避免阻塞 SSE 生成器。
+                    # 【功能】在后台线程里顺序跑各平台采集子进程,结果/异常写入 holder 容器,避免阻塞 SSE 生成器。
                     def _run_collect():
-                        try:
-                            holder["res"] = subprocess.run(
-                                cmd,  # 【调用函数】后台线程里运行思路2采集脚本 batch_collect.py
-                                cwd=str(THINK2_DIR),
-                                capture_output=True,
-                                text=True,
-                                timeout=600,  # 【变量】采集子进程超时上限 600 秒
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            holder["err"] = str(e)
+                        results = []  # 【变量】各平台采集结果列表: [(platform, subprocess.CompletedProcess|None), ...]
+                        for _p in platforms:  # 【关键逻辑】多平台顺序采集(原只采 platforms[0])
+                            _cmd = [
+                                venv_py,
+                                "batch_collect.py",
+                                "--platform",
+                                _p,
+                                "--per-kw",
+                                str(per_kw),
+                                "--turbo",
+                                "--no-detail",
+                            ]
+                            if since_date:
+                                _cmd.extend(["--since", since_date])
+                            try:
+                                results.append(
+                                    (_p, subprocess.run(  # 【调用函数】后台线程里运行思路2采集脚本 batch_collect.py(单平台)
+                                        _cmd,
+                                        cwd=str(THINK2_DIR),
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=600,  # 【变量】单平台采集子进程超时上限 600 秒
+                                    ))
+                                )
+                            except Exception as e:  # noqa: BLE001
+                                results.append((_p, None))  # 单平台失败: 记为 None, 继续下一平台
+                                holder["errs"] = holder.get("errs", []) + [f"{_p}: {e}"]
+                        holder["res"] = results
 
                     th = threading.Thread(target=_run_collect, daemon=True)
                     th.start()
@@ -1566,10 +1821,11 @@ def api_update_data():
                             yield f"data: {json.dumps({'type': 'log', 'msg': f'[采集中] 关键词批处理进行中, 已等待 {waited}s (完成批次: {last_count})...'}, ensure_ascii=False)}\n\n"
 
                     th.join()
-                    if "err" in holder:
-                        yield f"data: {json.dumps({'type': 'log', 'msg': f'collect 阶段出错: {holder['err']}'}, ensure_ascii=False)}\n\n"
-                    else:
-                        result = holder["res"]
+                    for _perr in holder.get("errs", []):
+                        yield f"data: {json.dumps({'type': 'log', 'msg': f'collect 单平台失败(已跳过): {_perr}'}, ensure_ascii=False)}\n\n"
+                    for _p, result in holder.get("res", []):
+                        if result is None:
+                            continue  # 平台失败已在 errs 里单独上报
                         lines = (result.stdout or "").split("\n") + (result.stderr or "").split("\n")
                         for line in lines:
                             if any(
@@ -1720,7 +1976,8 @@ def api_update_data():
                                     if nid in total_seen:
                                         continue
                                     total_seen.add(nid)
-                                    plat = d.get("platform", "?")
+                                    # platform 字段缺失时按 url 域名兜底推断(2026-07 早期数据缺该字段)
+                                    plat = d.get("platform") or _infer_platform(d.get("url", ""))
                                     platform_counts[plat] = platform_counts.get(plat, 0) + 1
                                     total_posts += 1
                                     pt = (d.get("publish_time", "") or "")[:10]
@@ -2009,6 +2266,22 @@ def api_crossplatform(variety):
     return jsonify(result)
 
 
+# 【功能】品种-平台-板块关系图(非标数据可视化:帖子 NER 品种 × 采集平台 × 板块归属)。
+# 【返回】{"nodes": [{id,name,type,value}...], "links": [{source,target,value}...]}。
+@app.route("/api/analysis/graph")
+def api_analysis_graph():
+    """返回 ECharts graph 数据:平台/品种/板块三类节点 + 共现与归属边。"""
+    return jsonify(_build_variety_platform_graph(_iter_batch_records()))
+
+
+# 【功能】平台→品种→多/空 三层桑基流量(非标数据可视化)。
+# 【返回】{"nodes": [{name}...], "links": [{source,target,value}...]}。
+@app.route("/api/analysis/sankey")
+def api_analysis_sankey():
+    """返回 ECharts sankey 数据:平台→品种→情绪方向三层计数。"""
+    return jsonify(_build_sentiment_sankey(_iter_batch_records()))
+
+
 # ═══════════════════════════════════════════════════════════════════
 # P2: Watchlist
 # P2 自选列表(/api/watchlist,GET / POST / DELETE)。
@@ -2041,7 +2314,9 @@ def api_watchlist():
 # ═══════════════════════════════════════════════════════════════════
 # P3: Simulated Trading
 # 模拟交易(重点路由组,20+ 条策略端点):/api/trading/*
-# · 综合类:run / contrarian / adaptive_sentiment / apply_risk(风控) / multi_compare / compare
+# · 综合类:run / contrarian / adaptive_sentiment / apply_risk(风控) / compare
+#   (multi_compare 合并端点已于 2026-08-25 删除:仅支持 5 策略且无成本/风控,
+#    前端多策略改为逐策略拉取+共享口径,见 worklog 2026-08-11)
 # · 策略类:momentum_strat / momentum_adaptive / donchian / ma_cross(_sent) /
 #   macd(_sent) / rsi(_sent) / bollinger(_sent) / turtle(_sent) / atr(_sent) / trailing
 # · 每个策略端点都调用 signal_analyzer 中对应的回测函数,并附带今日信号 today_signal。
@@ -2156,181 +2431,6 @@ def api_apply_risk():
     return jsonify({"trades": result})
 
 
-# 【功能】一次运行多个策略,返回各自的累计收益曲线(PnL),便于前端横向对比。
-# 【请求体】{"strategies": ["fixed","trailing",...], "variety": ..., "horizon": 3,
-#             "start_date": ..., "end_date": ...}
-# 【返回】{"curves": {策略名: [累计收益,...]}, "stats": {策略名: {trades,win_rate,total_pnl,label,...}},
-#           "dates": 公共交易日轴, "price_curve": 价格归一化曲线(%)}
-# 【关键逻辑】
-#   · 逐策略调用对应回测函数;先把"入场日 → 当日 PnL"映射出来(strategy_pnls),
-#     再按公共日期轴累加,得到可对齐比较的曲线。
-#   · 某个策略抛异常不影响其它策略,错误信息写入 stats[策略名].error。
-#   · price_curve 以起始收盘价为基准做百分比归一化。
-@app.route("/api/trading/multi_compare", methods=["POST"])
-def api_trading_multi():
-    """Run multiple strategies and return all PnL curves in one response."""
-    data = request.json or {}
-    strategies = data.get("strategies", ["fixed", "trailing"])
-    variety = data.get("variety", "")
-    horizon = data.get("horizon", 3)
-    start_date = data.get("start_date", "2025-01-01")
-    end_date = data.get("end_date", "2026-07-21")
-    data.get("stop_loss", 0)
-    data.get("trail_stop", 0)
-
-    result = {"curves": {}, "stats": {}, "dates": [], "price_curve": []}
-    # Per-strategy PnL deltas: {strategy: {entry_date: pnl}}
-    strategy_pnls = {}  # 【变量】各策略"入场日 → 当日 PnL"映射,用于对齐累计收益曲线
-
-    for s in strategies:
-        try:
-            if s == "fixed":
-                r = run_simulated_trading(  # 【调用函数】跨模块回测:情绪固定阈值(用于对比曲线)
-                    variety=variety, horizon=horizon, signal_threshold=0.2, start_date=start_date
-                )
-                trades = r.get("recent_trades", [])
-                pnl_map = {}
-                for t in trades:
-                    d = str(t.get("entry", ""))
-                    p = float(t.get("pnl", 0))
-                    pnl_map[d] = pnl_map.get(d, 0) + p
-                strategy_pnls[s] = pnl_map
-                result["stats"]["fixed"] = {
-                    "trades": r.get("total_trades", 0),
-                    "win_rate": r.get("win_rate", 0),
-                    "total_pnl": round(sum(pnl_map.values()), 2),
-                    "label": "情绪固定",
-                    "advanced_metrics": r.get("advanced_metrics", {}),
-                }
-
-            elif s == "trailing":
-                r = run_trailing_strategy(  # 【调用函数】跨模块回测:情绪跟踪止盈(用于对比曲线)
-                    variety=variety,
-                    signal_threshold=0.2,
-                    max_holding=10,
-                    start_date=start_date,
-                    end_date=end_date,
-                )
-                trades = r.get("recent_trades", [])
-                pnl_map = {}
-                for t in trades:
-                    d = str(t.get("entry", ""))
-                    p = float(t.get("pnl", 0))
-                    pnl_map[d] = pnl_map.get(d, 0) + p
-                strategy_pnls[s] = pnl_map
-                result["stats"]["trailing"] = {
-                    "trades": r.get("total_trades", 0),
-                    "win_rate": r.get("win_rate", 0),
-                    "total_pnl": round(sum(pnl_map.values()), 2),
-                    "label": "情绪反转",
-                    "advanced_metrics": r.get("advanced_metrics", {}),
-                }
-
-            elif s == "adaptive_sent":
-                r = run_adaptive_sentiment(  # 【调用函数】跨模块回测:自适应情绪(用于对比曲线)
-                    variety=variety, start_date=start_date, end_date=end_date
-                )
-                c = r.get("curves", {}).get("adaptive", [])
-                dates = r.get("dates", [])
-                pnl_map = {}
-                if len(dates) == len(c):
-                    prev = 0
-                    for i, d in enumerate(dates):
-                        delta = c[i] - prev
-                        prev = c[i]
-                        if delta != 0:
-                            pnl_map[d] = round(delta, 2)
-                strategy_pnls[s] = pnl_map
-                result["stats"]["adaptive_sent"] = {
-                    "trades": r.get("adaptive", {}).get("trades", 0),
-                    "win_rate": r.get("adaptive", {}).get("win_rate", 0),
-                    "total_pnl": round(c[-1], 2) if c else 0,
-                    "label": "自适应",
-                    "advanced_metrics": r.get("adaptive", {}).get("advanced_metrics", {}),
-                }
-
-            elif s == "contrarian":
-                r = run_contrarian_sentiment(  # 【调用函数】跨模块回测:逆情绪(用于对比曲线)
-                    variety=variety, start_date=start_date, end_date=end_date
-                )
-                c = r.get("curves", {}).get("contrarian", [])
-                dates = r.get("dates", [])
-                pnl_map = {}
-                if len(dates) == len(c):
-                    prev = 0
-                    for i, d in enumerate(dates):
-                        delta = c[i] - prev
-                        prev = c[i]
-                        if delta != 0:
-                            pnl_map[d] = round(delta, 2)
-                strategy_pnls[s] = pnl_map
-                result["stats"]["contrarian"] = {
-                    "trades": r.get("contrarian", {}).get("trades", 0),
-                    "win_rate": r.get("contrarian", {}).get("win_rate", 0),
-                    "total_pnl": round(c[-1], 2) if c else 0,
-                    "label": "逆情绪",
-                    "advanced_metrics": r.get("contrarian", {}).get("advanced_metrics", {}),
-                }
-            elif s == "momentum_ad":
-                r = run_momentum_adaptive(variety=variety, start_date=start_date, end_date=end_date)  # 【调用函数】跨模块回测:动量+自适应(用于对比曲线)
-                c = r.get("curves", {}).get("adaptive", [])
-                dates = r.get("dates", [])
-                pnl_map = {}
-                if len(dates) == len(c):
-                    prev = 0
-                    for i, d in enumerate(dates):
-                        delta = c[i] - prev
-                        prev = c[i]
-                        if delta != 0:
-                            pnl_map[d] = round(delta, 2)
-                strategy_pnls[s] = pnl_map
-                result["stats"]["momentum_ad"] = {
-                    "trades": r.get("adaptive", {}).get("trades", 0),
-                    "win_rate": r.get("adaptive", {}).get("win_rate", 0),
-                    "total_pnl": round(c[-1], 2) if c else 0,
-                    "label": "动量+自适应",
-                    "advanced_metrics": r.get("adaptive", {}).get("advanced_metrics", {}),
-                }
-        except Exception as e:
-            result["stats"][s] = {"error": str(e)[:100]}
-
-    # Build price curve and common date grid
-    common_dates = []
-    if variety:
-        from signal_analyzer import _load_price as _lp2  # 【调用包】价格数据加载(内部接口)
-
-        pdata = _lp2(variety)  # 【调用函数】加载真实价格数据(用于价格归一化曲线)
-        if pdata:
-            prices = pdata.get("prices", [])
-            if prices:
-                base = float(prices[0]["close"])
-                px_curve = []
-                for px in prices:
-                    d = str(px["date"])[:10]
-                    if start_date <= d <= end_date:
-                        px_curve.append(round((float(px["close"]) - base) / base * 100, 2))
-                        common_dates.append(d)
-                result["price_curve"] = px_curve
-
-    # Build aligned curves: iterate common dates, accumulate PnL for each strategy
-    if common_dates:
-        result["dates"] = common_dates
-        for s in strategy_pnls:
-            pnl_map = strategy_pnls[s]
-            cum = 0
-            aligned = []
-            for d in common_dates:
-                if d in pnl_map:
-                    cum += pnl_map[d]
-                aligned.append(round(cum, 2))
-            result["curves"][s] = aligned
-            # Update total_pnl
-            if s in result["stats"]:
-                result["stats"][s]["total_pnl"] = round(cum, 2)
-    else:
-        result["dates"] = []
-
-    return jsonify(result)
 
 
 # 【功能】动量策略(纯价格,追涨杀跌)。参数 variety/start_date/end_date。
@@ -2858,7 +2958,7 @@ def _get_actual_outcome(variety: str, trade_date: str, horizon_days: int = 5) ->
 def _run_agent_for_variety(symbol: str, trade_date: str, config: dict) -> dict:
     """Run full agent pipeline for one variety and extract RATING."""
     try:
-        include_sentiment = load_sentiment_data(symbol) is not None
+        include_sentiment = should_include_sentiment(symbol)  # 【调用函数】质量感知判定(数据不足但有板块复合也算含)
         app_graph, _ = build_commodity_graph(
             config, enable_feedback=False, include_sentiment=include_sentiment  # 【调用函数】构建 LangGraph 多分析师图
         )
@@ -3029,7 +3129,7 @@ def _validate_one_variety(variety: str, trade_date: str, config: dict) -> dict:
     """Run full Agent pipeline with per-stage progress tracking."""
     global _val_state
     try:
-        include_sentiment = load_sentiment_data(variety) is not None
+        include_sentiment = should_include_sentiment(variety)  # 【调用函数】质量感知判定(数据不足但有板块复合也算含)
         app_graph, _ = build_commodity_graph(
             config, enable_feedback=False, include_sentiment=include_sentiment  # 【调用函数】构建 LangGraph 多分析师图
         )

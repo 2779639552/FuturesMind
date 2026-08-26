@@ -488,6 +488,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 .platform-tag.zhihu { background: rgba(45,212,191,0.2); color: var(--teal); }
 .platform-tag.xhs { background: rgba(255,90,31,0.2); color: var(--brand); }
 .platform-tag.xueqiu { background: rgba(14,165,233,0.2); color: #0ea5e9; }
+.platform-tag.eastmoney_guba { background: rgba(245,158,11,0.2); color: #f59e0b; }
 
 /* ============================================================
    COLLAPSIBLE / EXPANDER
@@ -792,7 +793,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       <b>每关键词条数</b>：每个品种关键词搜索多少条帖子。微博API每词最多约20条。<br>
       <b>最低帖数阈值</b>：品种帖子数少于此值则不生成情绪JSON。<br>
       <b>收集起始日期</b>：只保留该日期之后的帖子。注意：平台API本身只返回近1-3个月数据。<br>
-      <b>平台</b>：微博(快,3min) | 知乎(慢,10min) | 小红书(反爬) | 雪球(Playwright,5min)。
+      <b>平台</b>：微博(快,3min) | 知乎(慢,10min) | 小红书(反爬) | 雪球(Playwright,5min) | 东财股吧(免登录,2min)。
     </div>
   </div>
   <div class="grid grid-2" style="margin-bottom:16px">
@@ -809,6 +810,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
         <label style="cursor:pointer;margin-right:14px;display:inline"><input type="checkbox" id="plat-zhihu" onchange="App.updatePlatformHint()"> 知乎</label>
         <label style="cursor:pointer;display:inline"><input type="checkbox" id="plat-xhs" onchange="App.updatePlatformHint()"> 小红书</label>
         <label style="cursor:pointer;display:inline;margin-left:14px"><input type="checkbox" id="plat-xueqiu" onchange="App.updatePlatformHint()"> 雪球</label>
+        <label style="cursor:pointer;display:inline;margin-left:14px"><input type="checkbox" id="plat-emg" onchange="App.updatePlatformHint()"> 东财股吧</label>
       </div>
       <div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)" id="platform-hint">流程: 多平台采集 → 粉丝解析 → 情绪聚合 → 回测 → 生成JSON</div>
       <div style="margin-top:4px;font-size:0.72rem;color:var(--amber)">
@@ -875,6 +877,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <button class="btn btn-outline btn-sm" data-asub="framework" onclick="App.switchAnalysisSub('framework')">框架说明</button>
     <button class="btn btn-outline btn-sm" data-asub="agentval" onclick="App.switchAnalysisSub('agentval')" style="border-color:var(--green);font-weight:700">Agent验证</button>
     <button class="btn btn-outline btn-sm" data-asub="agentbt" onclick="App.switchAnalysisSub('agentbt')" style="border-color:var(--brand)">Agent回测</button>
+    <button class="btn btn-outline btn-sm" data-asub="graph" onclick="App.switchAnalysisSub('graph')" style="border-color:var(--green)">图谱</button>
   </div>
 
   <!-- Comprehensive Analysis (anomalies + divergence + leadlag + ranking + compare) -->
@@ -1041,6 +1044,22 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
         </select>
       </h3>
       <div id="events-list"></div>
+    </div>
+  </div>
+
+  <!-- Graph & Sankey (非标数据可视化) -->
+  <div class="analysis-sub" id="asub-graph" style="display:none">
+    <div class="grid grid-2" style="margin-bottom:14px">
+      <div class="card">
+        <h3>品种-平台-板块关系图</h3>
+        <div class="chart-container" id="chart-graph" style="height:420px"></div>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-top:6px">节点大小 = 帖子数;橙=平台,蓝=品种,绿=板块。可拖拽/缩放。</div>
+      </div>
+      <div class="card">
+        <h3>平台 → 品种 → 多/空 情绪流量</h3>
+        <div class="chart-container" id="chart-sankey" style="height:420px"></div>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-top:6px">流向:平台采集 → 帖子涉及品种 → 情绪方向(绿=多/红=空/灰=中性)。</div>
+      </div>
     </div>
   </div>
 </div>
@@ -1809,12 +1828,15 @@ const App = {
     const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
     return {
       backgroundColor: 'transparent',
-      title: { text: title, left: 'center', textStyle: { color: isDark ? '#888' : '#666', fontSize: 12 } },
+      // 标题置顶居中(top:4);legend 显式下移到标题下方(top:30, 居中)。
+      // 若不显式指定 legend.top,ECharts 会把它放在与标题同一行(y:0)且居中,与标题文字重叠。
+      // grid.top 预留 56px 容纳「标题 + 图例」两行,避免绘图区与文字标识重叠。
+      title: { text: title, left: 'center', top: 4, textStyle: { color: isDark ? '#888' : '#666', fontSize: 12 } },
       tooltip: { trigger: 'axis' },
-      grid: { left: 50, right: 20, top: 40, bottom: 30 },
+      grid: { left: 50, right: 20, top: 56, bottom: 30 },
       xAxis: { type: 'category', axisLine: { lineStyle: { color: isDark ? '#333' : '#ddd' } }, axisLabel: { color: isDark ? '#666' : '#999' } },
       yAxis: { type: 'value', axisLine: { lineStyle: { color: isDark ? '#333' : '#ddd' } }, axisLabel: { color: isDark ? '#666' : '#999' }, splitLine: { lineStyle: { color: isDark ? '#1a1a1a' : '#eee' } } },
-      legend: { textStyle: { color: isDark ? '#888' : '#666' } }
+      legend: { top: 30, left: 'center', textStyle: { color: isDark ? '#888' : '#666' } }
     };
   },
 
@@ -2224,6 +2246,7 @@ const App = {
     if (document.getElementById('plat-zhihu').checked) { plats.push('知乎'); t += 16; }
     if (document.getElementById('plat-xhs').checked) { plats.push('小红书'); t += 3; }
     if (document.getElementById('plat-xueqiu').checked) { plats.push('雪球'); t += 5; }
+    if (document.getElementById('plat-emg').checked) { plats.push('东财股吧'); t += 2; }
     document.getElementById('platform-hint').textContent =
       '流程: 多平台采集 → 时间过滤 → 粉丝解析 → 情绪聚合(作者加权) → 回测调优 → 生成JSON | ' +
       (plats.length ? '平台: ' + plats.join(' + ') + ' | 预计: ' + t + 'min'
@@ -2249,6 +2272,7 @@ const App = {
     if (document.getElementById('plat-zhihu').checked) platforms.push('zhihu');
     if (document.getElementById('plat-xhs').checked) platforms.push('xhs');
     if (document.getElementById('plat-xueqiu').checked) platforms.push('xueqiu');
+    if (document.getElementById('plat-emg').checked) platforms.push('eastmoney_guba');
     if (!platforms.length) {
       this.toast('请至少选择一个平台', 'error');
       btn.disabled = false; btn.textContent = '一键更新';
@@ -2268,7 +2292,7 @@ const App = {
           // Render platform summary card
           const platforms = d.platforms || {};
           const pct = (count) => d.total ? (count / d.total * 100).toFixed(0) + '%' : '';
-          const platNames = { weibo: '微博', zhihu: '知乎', xhs: '小红书', xueqiu: '雪球' };
+          const platNames = { weibo: '微博', zhihu: '知乎', xhs: '小红书', xueqiu: '雪球', eastmoney_guba: '东财股吧' };
           let cardsHTML = '<div class="grid grid-3" style="margin-top:12px">';
           for (const [plat, count] of Object.entries(platforms).sort((a,b) => b[1] - a[1])) {
             const name = platNames[plat] || plat;
@@ -2329,6 +2353,7 @@ const App = {
     if (sub === 'comprehensive') this.loadComprehensive();
     if (sub === 'authors') this.loadAuthors();
     if (sub === 'events') this.loadEvents();
+    if (sub === 'graph') { this.loadGraphChart(); this.loadSankeyChart(); }
   },
 
   // Load ALL comprehensive analysis sections
@@ -2589,6 +2614,81 @@ const App = {
             ${e.url ? `<a href="${e.url}" target="_blank" rel="noopener" style="color:var(--blue);display:block;margin-top:4px">${e.title}</a>` : `<span style="display:block;margin-top:4px">${e.title}</span>`}
           </div>`).join('');
     } catch(e) {}
+  },
+
+  // 【功能】品种-平台-板块关系图(非标数据可视化): ECharts graph 力导向图。
+  // 【输入】无 【渲染】#chart-graph 【后端】GET /api/analysis/graph
+  async loadGraphChart() {
+    try {
+      const r = await fetch('/api/analysis/graph');  // 【调用函数】后端接口: 品种-平台-板块关系图数据
+      const d = await r.json();
+      const chart = this._initChart('chart-graph');
+      if (!chart) return;
+      const nodes = d.nodes || [];
+      const links = d.links || [];
+      if (!nodes.length) {
+        chart.setOption({ title: { text: '暂无数据(先跑一次数据采集)', left: 'center', top: 'center', textStyle: { color: '#888', fontSize: 13 } } });
+        return;
+      }
+      const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+      const TYPE_COLOR = { platform: '#ff8c42', variety: '#4a9eff', sector: '#59c285' };
+      const CAT = { platform: '平台', variety: '品种', sector: '板块' };
+      chart.setOption({
+        backgroundColor: 'transparent',
+        title: { text: '品种-平台-板块关系图', left: 'center', top: 4, textStyle: { color: isDark ? '#888' : '#666', fontSize: 12 } },
+        tooltip: { trigger: 'item', formatter: p => {
+          if (p.dataType === 'edge') return `${p.data.source} ↔ ${p.data.target}<br>共现 ${p.data.value} 帖`;
+          return `${p.data.name}(${CAT[p.data.type] || ''})<br>${p.data.value} 帖`;
+        } },
+        legend: { top: 30, left: 'center', textStyle: { color: isDark ? '#888' : '#666' } },
+        series: [{
+          type: 'graph', layout: 'force', roam: true,
+          categories: [{ name: '平台' }, { name: '品种' }, { name: '板块' }],
+          data: nodes.map(n => ({
+            id: n.id, name: n.name, value: n.value, category: CAT[n.type], type: n.type,
+            symbolSize: Math.max(10, Math.sqrt(n.value) * 2.2),
+            itemStyle: { color: TYPE_COLOR[n.type] || '#aaa' }
+          })),
+          links: links.map(l => ({ source: l.source, target: l.target, value: l.value, lineStyle: { width: Math.max(1, Math.min(9, Math.sqrt(l.value) * 0.7)) } })),
+          label: { show: true, fontSize: 10 },
+          force: { repulsion: 150, edgeLength: [40, 130], gravity: 0.08 },
+          lineStyle: { opacity: 0.45, curveness: 0.1 },
+          emphasis: { focus: 'adjacency', lineStyle: { width: 3 } }
+        }]
+      });
+    } catch (e) { /* ignore */ }
+  },
+
+  // 【功能】平台→品种→多/空 三层桑基流量图(非标数据可视化): ECharts sankey。
+  // 【输入】无 【渲染】#chart-sankey 【后端】GET /api/analysis/sankey
+  async loadSankeyChart() {
+    try {
+      const r = await fetch('/api/analysis/sankey');  // 【调用函数】后端接口: 平台→品种→多/空 桑基数据
+      const d = await r.json();
+      const chart = this._initChart('chart-sankey');
+      if (!chart) return;
+      const nodes = d.nodes || [];
+      const links = d.links || [];
+      if (!links.length) {
+        chart.setOption({ title: { text: '暂无数据(先跑一次数据采集)', left: 'center', top: 'center', textStyle: { color: '#888', fontSize: 13 } } });
+        return;
+      }
+      const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+      const DIR_COLOR = { '看多': '#59c285', '看空': '#e05252', '中性': '#8a8a8a' };
+      chart.setOption({
+        backgroundColor: 'transparent',
+        title: { text: '平台 → 品种 → 多/空 情绪流量', left: 'center', top: 4, textStyle: { color: isDark ? '#888' : '#666', fontSize: 12 } },
+        tooltip: { trigger: 'item', triggerOn: 'mousemove' },
+        series: [{
+          type: 'sankey', nodeWidth: 14, nodeGap: 12,
+          data: nodes.map(n => (DIR_COLOR[n.name] ? { ...n, itemStyle: { color: DIR_COLOR[n.name] } } : n)),
+          links: links,
+          lineStyle: { color: 'gradient', opacity: 0.35, curveness: 0.5 },
+          label: { color: isDark ? '#aaa' : '#666', fontSize: 11 },
+          emphasis: { focus: 'adjacency' }
+        }]
+      });
+    } catch (e) { /* ignore */ }
   },
 
   // ═══════════════════════════════════════════════════════
@@ -3337,25 +3437,36 @@ const App = {
 
     // Fetch price data for common date grid (only for specific variety)
     let commonDates = [];  // 【变量】多策略曲线对齐的公共日期轴(有价格数据时用交易日, 否则回退到交易日期集合)
-    let priceCurve = [];  // 【变量】品种价格基准曲线(相对起始价涨跌%, 虚线绘制在次坐标轴)
-    let marketReturn = 0;  // 【变量】市场买入持有收益(价格曲线末点涨幅%), 用于与各策略收益对比
+    let priceCurve = [];  // 【变量】品种价格基准曲线(相对窗口起始价涨跌%, 虚线绘制在次坐标轴)
+    let marketReturn = 0;  // 【变量】市场买入持有收益(窗口内价格末点涨幅%), 用于与各策略收益对比
     const priceVariety = v && v.trim() ? v : 'RB';  // Default to RB for market benchmark
     try {
-      const pr = await fetch('/api/price/' + priceVariety + '?days=365');  // 【调用函数】后端接口: 拉取市场基准品种价格(365天, 计算买入持有收益)
-        const pd = await pr.json();
-        const prices = pd.prices || pd;
-        if (prices.length > 1) {
-          const base = prices[0].close;
-          prices.forEach(p => {
-            const d = p.date;
-            if (d >= startDate && d <= endDate) {
-              commonDates.push(d);
-              priceCurve.push(((p.close - base) / base * 100).toFixed(1));
-            }
-          });
-          marketReturn = parseFloat(priceCurve[priceCurve.length-1]) || 0;
-        }
-      } catch(e) {}
+      // 基准必须与策略用同一窗口: 取数天数按所选区间跨度动态计算(覆盖区间+30天缓冲, 上限730天)。
+      // 旧代码写死 days=365 且 base 钉在「整个取数窗口第一天」→ 买入持有收益恒等于「近365日涨幅」,
+      // 调整区间(改 startDate)时数值不变, 与随窗口变化的策略曲线脱节。
+      let fetchDays = 365;
+      const s0 = startDate || '';
+      const e0 = endDate || new Date().toISOString().slice(0, 10);  // 【变量】endDate 为空时按今天估算取数跨度
+      if (s0) {
+        const span = Math.round((new Date(e0) - new Date(s0)) / 86400000);  // 【变量】区间跨度(天)
+        if (span > 0) fetchDays = Math.min(730, span + 30);  // 【变量】取数天数: 覆盖所选区间 + 30 天缓冲, 上限 730(接口上限)
+      }
+      const pr = await fetch('/api/price/' + priceVariety + '?days=' + fetchDays);  // 【调用函数】后端接口: 拉取市场基准品种价格(按所选区间, 计算买入持有收益)
+      const pd = await pr.json();
+      const prices = pd.prices || pd;
+      if (prices.length > 1) {
+        let base = prices[0].close;  // 【变量】买入持有锚点: 窗口内第一条价格(而非整个取数窗口第一条), 随所选区间变化
+        prices.forEach(p => {
+          const d = p.date;
+          if (d >= startDate && d <= endDate) {
+            if (commonDates.length === 0) base = p.close;  // 区间内首条 → 作为基准锚点
+            commonDates.push(d);
+            priceCurve.push(((p.close - base) / base * 100).toFixed(1));
+          }
+        });
+        marketReturn = parseFloat(priceCurve[priceCurve.length-1]) || 0;
+      }
+    } catch(e) {}
     // Fallback: use collected trade dates
     if (commonDates.length === 0) {
       commonDates = [...allDatesSet].sort();
@@ -3423,85 +3534,6 @@ const App = {
       }).join('');
   },
 
-  // 【功能】(已废弃的旧版多策略对比) 改用一个后端合并端点 /api/trading/multi_compare 一次取全部曲线。
-  //         保留仅为参考, 当前界面已改走上方逐策略拉取的 runMultiCompare。
-  async _old_runMultiCompare() {
-    const v = document.getElementById('trade-variety').value;
-    const startDate = document.getElementById('trade-start').value;
-    const endDate = document.getElementById('trade-end').value;
-    const cbs = document.querySelectorAll('.multi-cb:checked');
-    if (cbs.length === 0) { this.toast('Select at least one strategy','error'); return; }
-
-    const strategies = Array.from(cbs).map(cb => cb.value);  // 【变量】从多策略面板勾选得到的策略代码数组
-    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'};  // 【变量】策略代码 → 中文显示名(多策略卡片标题与图例)
-    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#a78bfa','bollinger_sent':'#8b5cf6','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#e879f9','atr_sent':'#d946ef'};  // 【变量】策略代码 → 曲线颜色(与卡片左边框色一致)
-
-    document.getElementById('trading-summary').innerHTML = '<span class="node">Running all strategies...</span>';
-
-    try {
-      const r = await fetch('/api/trading/multi_compare', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({variety:v||'', strategies, horizon:3, start_date:startDate, end_date:endDate})
-      });
-      const d = await r.json();
-
-      // Summary
-      document.getElementById('trading-summary').innerHTML = strategies.map(s => {
-        const st = d.stats[s] || {};
-        const costAdj = costOn ? (st.trades||0) * ((commRate||0)*2 + (slipTick||0)*0.02) : 0;
-        const pnl = (st.total_pnl||0) - costAdj; const vsMkt = pnl - marketReturn;
-      return `<b style="color:${colors[s]}">${names[s]}</b>: ${st.trades||0}t/${((st.win_rate||0)*100).toFixed(0)}%/${pnl>0?'+':''}${pnl.toFixed(1)}% <span style="font-size:0.75rem;color:${vsMkt>=0?'var(--green)':'var(--red)'}">vs市场${vsMkt>0?'+':''}${vsMkt.toFixed(1)}%</span>`;
-      }).join(' | ');
-
-      // Stats cards
-      document.getElementById('trading-stats').innerHTML = strategies.map(s => {
-        const st = d.stats[s] || {};
-        return `<div class="card" style="border-left:3px solid ${colors[s]}"><h3>${names[s]}</h3><div style="font-size:1.3rem;color:${colors[s]}">${((st.win_rate||0)*100).toFixed(0)}%</div><div style="font-size:0.7rem">${st.trades||0}笔</div></div>`;
-      }).join('');
-
-      // Chart
-      const el = document.getElementById('chart-trading-pnl');
-      if (el) {
-        el.style.display = 'block'; el.style.height = '350px';
-        if (this._chartInstances['chart-trading-pnl']) {
-          try { this._chartInstances['chart-trading-pnl'].dispose(); } catch(e) {}
-        }
-        const chart = echarts.init(el);  // 【调用函数】ECharts: 创建旧版多策略对比图实例(已废弃方法内使用)
-        this._chartInstances['chart-trading-pnl'] = chart;
-        chart.setOption({
-          title:{text:'Multi-Strategy Comparison',left:'center',textStyle:{color:'#888',fontSize:12}},
-          tooltip:{trigger:'axis'},
-          legend:{data:[...strategies.map(s=>names[s]),'品种价格'].filter(Boolean),bottom:0,textStyle:{color:'#888',fontSize:9}},
-          backgroundColor:'#0f0f0f',
-          grid:{left:60,right:70,top:45,bottom:35},
-          xAxis:{type:'category',data:d.dates||[],axisLabel:{show:false},
-            axisLine:{lineStyle:{color:'#444'}},axisTick:{show:false}},
-          yAxis:[
-            {type:'value',axisLabel:{formatter:v=>v+'%',color:'#aaa'},
-             splitLine:{lineStyle:{color:'#222'}},axisLine:{lineStyle:{color:'#444'}}},
-            {type:'value',axisLabel:{formatter:v=>v+'%',color:'#aaa'},
-             splitLine:{show:false},axisLine:{lineStyle:{color:'#444'}}}
-          ],
-          series: [
-            ...strategies.map(s => ({
-              name:names[s], type:'line', data:d.curves[s]||[], smooth:true, showSymbol:false,
-              lineStyle:{color:colors[s],width:3},
-              areaStyle:{color:colors[s]+'20'},
-            })),
-            ...(d.price_curve&&d.price_curve.length>0 ? [{
-              name:'品种价格', type:'line', data:d.price_curve, smooth:true, showSymbol:false,
-              lineStyle:{color:'#888',width:1,type:'dashed'}, yAxisIndex:1,
-            }] : []),
-          ]
-        }, true);
-        chart.resize();
-      }
-      // Trade details: first strategy's recent trades
-      document.getElementById('trading-detail').innerHTML = strategies.length > 0
-        ? `<div style="color:var(--text-muted);padding:12px">${strategies.length} strategies compared. Use single-strategy mode for detailed trade list.</div>`
-        : '';
-    } catch(e) { this.toast('Comparison failed','error'); }
-  },
 
   // ═══════════════════════════════════════════════════════
   // SYSTEM TAB — 系统运维页
