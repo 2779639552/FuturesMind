@@ -313,7 +313,9 @@ def generate_sentiment_json(
         )
 
     # Platform weights from backtest
-    platform_weights = weights.get("platform_weights", {})
+    # 【修复 2026-08-26】weights 文件里平台权重存在 "weights" 键(apply_and_save 写入),
+    # 原读 "platform_weights" 恒为空 {} → 生成的 *_sentiment.json 平台权重段对 LLM 缺失。
+    platform_weights = weights.get("weights", {})
     weight_source = weights.get("weight_source", "not_calibrated")
 
     # Combined metrics (sentiment-price correlation)
