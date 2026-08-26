@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:#111}
+  .wrap{margin:10px}
+  .cap{color:#888;font:11px sans-serif;margin:4px 2px}
+</style>
+</head>
+<body>
+<!-- 复刻 _baseChartOptions + loadComparisonChart 的 option, 与线上完全一致 -->
+<div class="wrap">
+  <div class="cap">width=800 对比图 (当前线上 config)</div>
+  <div id="c1" style="width:800px;height:260px"></div>
+</div>
+<div class="wrap">
+  <div class="cap">width=560 窄卡片 (当前线上 config)</div>
+  <div id="c2" style="width:560px;height:260px"></div>
+</div>
+<div class="wrap">
+  <div class="cap">width=800 多图例项(3 系列, 模拟跨平台情绪对比)</div>
+  <div id="c3" style="width:800px;height:260px"></div>
+</div>
+<script src="http://localhost:5000/static/echarts.min.js"></script>
+<script>
+(function(){
+  const isDark = true;
+  const baseOpt = (title) => ({
+    backgroundColor: 'transparent',
+    title: { text: title, left: 'center', top: 4, textStyle: { color: isDark ? '#888' : '#666', fontSize: 12 } },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 50, right: 20, top: 56, bottom: 30 },
+    xAxis: { type: 'category', axisLine: { lineStyle: { color: isDark ? '#333' : '#ddd' } }, axisLabel: { color: isDark ? '#666' : '#999' } },
+    yAxis: { type: 'value', axisLine: { lineStyle: { color: isDark ? '#333' : '#ddd' } }, axisLabel: { color: isDark ? '#666' : '#999' }, splitLine: { lineStyle: { color: isDark ? '#1a1a1a' : '#eee' } } },
+    legend: { top: 30, left: 'center', textStyle: { color: isDark ? '#888' : '#666' } }
+  });
+
+  // 与 loadComparisonChart 相同的 series(name → 触发 legend 显示)
+  const dates = Array.from({length: 20}, (_, i) => `2026-08-${String(i+1).padStart(2,'0')}`);
+  const closes = dates.map((_, i) => 3100 - i * 12 + Math.sin(i) * 30);
+  const sym = 'RB', date = '2026-08-15';
+  const series = [{
+    name: sym + ' Close', type: 'line',
+    data: closes,
+    smooth: true, showSymbol: false,
+    lineStyle: { color: '#ff5a1f', width: 2 },
+    markLine: { silent: true, data: [{ xAxis: date, label: { formatter: '分析日', color: '#fbbf24' }, lineStyle: { color: '#fbbf24', type: 'dashed' } }] }
+  }];
+
+  // 标题长度不同, 复刻不同 actual_direction/pct 组合
+  ['实际: BEAR (-3.2%)', '实际: BULL (+12.5%)'].forEach((title, i) => {
+    const el = i === 0 ? 'c1' : 'c2';
+    const opt = Object.assign({}, baseOpt(title));
+    opt.xAxis.data = dates;
+    opt.series = [Object.assign({}, series[0], {data: closes})];
+    echarts.init(document.getElementById(el)).setOption(opt);
+  });
+
+  // 多图例项: 3 系列, 图例更宽, 验证不换行顶到绘图区
+  const c3 = echarts.init(document.getElementById('c3'));
+  c3.setOption(Object.assign({}, baseOpt('跨平台情绪对比'), {
+    xAxis: { type: 'category', data: dates.slice(0, 8), axisLabel: { color: '#666' } },
+    yAxis: { type: 'value', axisLabel: { color: '#666' }, splitLine: { lineStyle: { color: '#1a1a1a' } } },
+    series: ['东财', '财联社', 'SHMET'].map((n, si) => ({
+      name: n, type: 'line', data: closes.slice(0, 8).map(v => v + si * 50 - 50),
+      smooth: true, showSymbol: false, lineStyle: { width: 2 }
+    }))
+  }));
+})();
+</script>
+</body>
+</html>

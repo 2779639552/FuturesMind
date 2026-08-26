@@ -2840,7 +2840,8 @@ def apply_risk_management(
     【返回】新的交易列表。被止损的交易会生成 dict 副本,改写 pnl/exit/outcome,并加
     stopped_out=True;未触发的原样保留。
     【关键逻辑】
-      - 先按日期把 close 建成查表,再对每笔交易在 [entry, exit] 区间逐日检查。
+      - 先按日期把 close 建成查表,再对每笔交易在 (entry, exit] 区间逐日检查
+        (左开右闭,跳过入场日——当日按收盘价入场,不可能同日触发止损)。
       - 多单:价格跌破 entry*(1-止损%)→ 止损;否则更新峰值,跌破 peak*(1-移动%)
         → 止损;移动止损下沿不低于 entry(保护不亏本)。
       - 空单逻辑完全镜像(上下颠倒)。
@@ -2867,8 +2868,11 @@ def apply_risk_management(
         # Check if price hit stop-loss before original exit
         exit_d = t.get("exit", "")  # 【变量】原离场日期(止损若更早触发则改写它)
         price_map.get(exit_d, entry_px)  # 遗留无效果行:取值后未使用,可忽略
-        # 只看 [入场日, 原离场日] 之间的交易日,确认止损是否在原始离场前触发
-        dates = sorted([d for d in price_map if entry_d <= d <= exit_d])  # 【变量】[入场,原离场] 之间的交易日(升序)
+        # 只看 (入场日, 原离场日] 之间的交易日,确认止损是否在原始离场前触发。
+        # 左开右闭:跳过入场日。入场日收盘价 px == entry_px,若连同保本钳制
+        # trail_level==entry_px 一起判定,px<=trail_level 恒真 → 任何带移动止损的
+        # 交易入场日必被清零(worklog/2026-08-13-trailing-stop-entryday-bug.md)。
+        dates = sorted([d for d in price_map if entry_d < d <= exit_d])  # 【变量】(入场,原离场] 之间的交易日(升序)
         peak_px = entry_px  # 【变量】多单以来的最高价 / 空单以来的最低价(移动止损基准,初始=入场价)
         stopped_out = False  # 【变量】是否被止损触发
         stop_px = 0  # 【变量】触发止损那天的价格(重算 PnL 用)
