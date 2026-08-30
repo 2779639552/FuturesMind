@@ -234,6 +234,7 @@ test_final.png
 trading_final.png
 trading_test.png
 test_trading.html
+scripts/smoke_graph_sankey.png
 
 # Temporary scripts
 propagate_test.py

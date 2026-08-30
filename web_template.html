@@ -1027,6 +1027,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
         <div style="padding-bottom:8px"><label style="display:inline;cursor:pointer"><input type="checkbox" id="bt-run-agent"> 批量运行Agent</label></div>
         <button class="btn btn-primary" id="btn-bt-start" onclick="App.startBatchBacktest()">开始回测</button>
       </div>
+      <div style="margin-top:8px;font-size:0.75rem;color:var(--text-muted)">📌 历史价格已<b>后复权</b>（按<b>真实主力切换日历</b>消除换月跳空）；回测基于复权后价格。</div>
     </div>
     <div class="card" style="margin-bottom:14px"><h3>回测结果摘要</h3><div id="bt-summary"><span style="color:var(--text-muted)">点击开始回测</span></div></div>
     <div class="grid grid-3" id="bt-stats" style="margin-bottom:14px"></div>
@@ -1095,7 +1096,8 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       <b>年化波动率</b>：收益率的标准差年化值。低波动=策略稳定。<br>
       <b>盈亏比(Profit Factor)</b>：总盈利/总亏损。>1.5=良好，>2=优秀。<br>
       <b>最大回撤</b>：累计收益从峰值回落的最大幅度。<br>
-      <b>基本面因子</b>：趋势(60%) + 动量(25%) + 成交量(15%)，合成 fund_score ∈ [-1,+1]。
+      <b>基本面因子</b>：趋势(60%) + 动量(25%) + 成交量(15%)，合成 fund_score ∈ [-1,+1]。<br><br>
+      📌 <b>数据口径</b>：历史价格已<b>后复权</b>（按<b>真实主力切换日历</b>消除换月跳空，最新价不变）；复权只影响历史段、不影响当前价位。
     </div>
   </div>
   <div class="grid grid-2" style="margin-bottom:14px">
@@ -1853,8 +1855,9 @@ const App = {
       const prices = d.prices || d; // Support both new {_meta, prices} and old array format
       const chart = this._initChart('chart-price');
       if (!chart) return;
+      const adjTag = (d._meta && d._meta.adjusted) ? ' · 后复权' : '';  // 【变量】复权标注: 后端已消除换月跳空
       chart.setOption({
-        ...this._baseChartOptions(sym + ' 价格走势'),
+        ...this._baseChartOptions(sym + ' 价格走势' + adjTag),
         series: [{
           type: 'line', data: prices.map(p => [p.date, p.close]),
           smooth: true, showSymbol: false,
@@ -1888,7 +1891,7 @@ const App = {
       document.getElementById('meta-sent-end').textContent = meta.sentiment_end || '-';
       document.getElementById('meta-price-start').textContent = meta.price_start || '-';
       document.getElementById('meta-price-end').textContent = meta.price_end || '-';
-      document.getElementById('overlay-badge').textContent = `${data.length} 个交易日`;
+      document.getElementById('overlay-badge').textContent = `${data.length} 个交易日` + (meta.adjusted ? ' · 后复权' : '');  // 【变量】复权标注(价格轴已消除换月跳空)
 
       const chart = this._initChart('chart-overlay');
       if (!chart) return;
@@ -2901,6 +2904,7 @@ const App = {
       //   所以顺序必须是 ①apply_risk ②每笔减 cpt。
       let tradesAdj = d.recent_trades || [];
       let totalAdj = (d.total_pnl != null ? d.total_pnl : d.avg_pnl_pct) || 0;
+      let riskApplied = false;  // 【变量】风控是否实际应用(apply_risk 会改写被止损单的 pnl/outcome/exit)
       if (stopLoss > 0 || trailStop > 0) {
         try {
           const rk = await fetch('/api/trading/apply_risk', {  // 【调用函数】后端接口: 对交易明细应用止损/移动止盈(用真实价格重算每笔 pnl)
@@ -2908,7 +2912,7 @@ const App = {
             body: JSON.stringify({variety: v||'RB', trades: tradesAdj, stop_loss: stopLoss, trail_stop: trailStop})
           });
           const rkd = await rk.json();
-          if (rkd.trades) tradesAdj = rkd.trades;
+          if (rkd.trades) { tradesAdj = rkd.trades; riskApplied = true; }
         } catch(e) {}
       }
       if (costOn && commRate > 0) {
@@ -2934,7 +2938,13 @@ const App = {
         }
       }
       if (subs.length===0 && d.win_rate!==undefined) {
-        subs.push({key:"main", label:d.strategy||strat, trades:d.total_trades||0, win_rate:d.win_rate||0, total_pnl:totalAdj, advanced_metrics:d.advanced_metrics});
+        // 风控重算后:主卡笔数/胜率从 tradesAdj 重新统计,与 totalAdj 同口径
+        // (避免"胜率100% 但收益-0.9%"这类原始 outcome 与风控后 pnl 的矛盾展示)。
+        const mainTrades = riskApplied ? tradesAdj.length : (d.total_trades||0);
+        const mainWR = riskApplied && tradesAdj.length > 0
+          ? tradesAdj.filter(t=>t.outcome==='win').length / tradesAdj.length
+          : (d.win_rate||0);
+        subs.push({key:"main", label:d.strategy||strat, trades:mainTrades, win_rate:mainWR, total_pnl:totalAdj, advanced_metrics:d.advanced_metrics});
       }
       if (subs.length===0 && d.stats) {
         for (const [k,v] of Object.entries(d.stats)) {
@@ -3333,6 +3343,7 @@ const App = {
         // Apply risk management via backend (uses real price data).
         // 成本不在这一层预扣:apply_risk 会对止损单重算 pnl(预扣会被抹掉),
         // 统一在下方 pnlMap 累计后一次扣减 → 与单卡回测口径一致,避免双重扣减。
+        let riskApplied = false;  // 【变量】风控是否实际应用(apply_risk 会改写被止损单的 pnl/outcome/exit)
         if (stopLoss > 0 || trailStop > 0) {
           try {
             const riskR = await fetch('/api/trading/apply_risk', {  // 【调用函数】后端接口: 对交易明细应用风控(与单卡回测同口径, 先风控后成本)
@@ -3340,7 +3351,7 @@ const App = {
               body: JSON.stringify({variety: v||'RB', trades, stop_loss: stopLoss, trail_stop: trailStop})
             });
             const riskD = await riskR.json();
-            if (riskD.trades) trades = riskD.trades;
+            if (riskD.trades) { trades = riskD.trades; riskApplied = true; }
           } catch(e) {}
         }
         // `recent_trades` format: each trade has {entry, exit, pnl}
@@ -3392,6 +3403,13 @@ const App = {
         // Extract stats from API response
         let stTrades = d.total_trades ?? d.adaptive?.trades ?? d.contrarian?.trades ?? d.consensus?.trades ?? d.stats?.weighted?.trades ?? d.hybrid?.trades ?? trades.length;
         let stWR = d.win_rate ?? d.adaptive?.win_rate ?? d.contrarian?.win_rate ?? d.consensus?.win_rate ?? d.stats?.weighted?.win_rate ?? d.hybrid?.win_rate ?? 0;
+        // 风控开启时:笔数/胜率必须从"风控重算后的 trades"重新统计,与 total_pnl 同口径。
+        // 否则会出现"胜率100%(原始 outcome) 但收益 -0.9%(风控重算后 pnl)"的矛盾展示
+        // (worklog 2026-08-31 红枣模拟案例)。outcome 已由 apply_risk 同步更新。
+        if (riskApplied && trades.length > 0) {
+          stTrades = trades.length;
+          stWR = trades.filter(t => t.outcome === 'win').length / trades.length;
+        }
         // Extract advanced metrics
         let stAdv = d.advanced_metrics ?? d.adaptive?.advanced_metrics ?? d.contrarian?.advanced_metrics ?? d.consensus?.advanced_metrics ?? d.stats?.weighted?.advanced_metrics ?? d.hybrid?.advanced_metrics ?? null;
         let totalPnl = 0;

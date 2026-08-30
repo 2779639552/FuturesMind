@@ -758,24 +758,13 @@ def run_contrarian_sentiment(
         if len(px) < trend_window + horizon + 10:
             continue
 
-        # Build forward-filled sentiment
-        # 情绪日期与价格日期不一定每天对齐,这里把情绪"向前填充"(forward-fill):
-        # 对每个价格日期 d,取"情绪日期 <= d 的最新一条"作为该日的情绪值。这模拟了
-        # 当日开盘前能看到的"最新已知情绪",而不是未来数据——避免未来函数。
-        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))  # 【变量】情绪每日序列(兼容两种数据结构)
-        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}  # 【变量】日期→情绪评分原始映射
-        sd_sorted = sorted(raw_sent.keys())  # 【变量】情绪日期升序列表(前向填充的扫描基准)
-        sent_map = {}  # 【变量】日期→前向填充情绪评分(当日能看到的最新情绪,防未来函数)
-        last_s = 0  # 【变量】最近一次有效情绪评分(双指针的"已推进值")
-        si = 0  # 【变量】情绪日期游标(单调递增,只前进不后退)
-        for d in sorted(str(x["date"])[:10] for x in px):
-            while si < len(sd_sorted) and sd_sorted[si] <= d:
-                last_s = raw_sent[sd_sorted[si]]
-                si += 1
-            sent_map[d] = last_s
-
+        # Build forward-filled sentiment (shared helper with staleness decay)
+        # 情绪日期与价格日期不一定每天对齐,用 _build_forward_filled_sent_map 把情绪
+        # 向前填充到每个价格日:取"情绪日期 <= d 的最新一条";超过 3 天无新数据时
+        # 该日情绪视为数据不足 → 0(中性),策略回退纯技术,避免沿用过期情绪。
         closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列(浮点)
         dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列(统一取 YYYY-MM-DD 前 10 位)
+        sent_map = _build_forward_filled_sent_map(sent_data, dates)  # 【调用函数】情绪前向填充(带时效衰减,超 3 天→0)
         n = len(closes)  # 【变量】K 线根数
 
         # Positions: 0=flat, 1=long, -1=short. Tracks last entry for both strategies
@@ -1000,20 +989,10 @@ def run_adaptive_sentiment(
         if len(px) < trend_window + horizon + 10:
             continue
 
-        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))  # 【变量】情绪每日序列(兼容两种结构)
-        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}  # 【变量】日期→情绪评分原始映射
-        sd_sorted = sorted(raw_sent.keys())  # 【变量】情绪日期升序列表
-        sent_map = {}  # 【变量】日期→前向填充情绪评分
-        last_s = 0  # 【变量】最近一次有效情绪评分
-        si = 0  # 【变量】情绪日期游标
-        for d in sorted(str(x["date"])[:10] for x in px):
-            while si < len(sd_sorted) and sd_sorted[si] <= d:
-                last_s = raw_sent[sd_sorted[si]]
-                si += 1
-            sent_map[d] = last_s
-
+        # 情绪前向填充(共享工具函数,带时效衰减):超 3 天无新数据视为数据不足 → 0(中性)
         closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列
         dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列(YYYY-MM-DD)
+        sent_map = _build_forward_filled_sent_map(sent_data, dates)  # 【调用函数】情绪前向填充(带时效衰减,超 3 天→0)
         n = len(closes)  # 【变量】K 线根数
 
         pos_a = 0  # 【变量】自适应路径仓位:0 空仓 / 1 持多 / -1 持空
@@ -2489,21 +2468,11 @@ def run_momentum_adaptive(
         if len(px) < max(lookback, trend_window) + hold + 10:
             continue
 
-        # Build forward-filled sentiment map
-        sent_series = sent_data.get("data", {}).get("daily_series", sent_data.get("series", []))  # 【变量】情绪每日序列(兼容两种结构)
-        raw_sent = {s.get("date", ""): s.get("avg_score", 0) for s in sent_series}  # 【变量】日期→情绪评分原始映射
-        sd_sorted = sorted(raw_sent.keys())  # 【变量】情绪日期升序列表
-        sent_map = {}  # 【变量】日期→前向填充情绪评分
-        last_s = 0  # 【变量】最近一次有效情绪评分
-        si = 0  # 【变量】情绪日期游标
-        for d in sorted(str(x["date"])[:10] for x in px):
-            while si < len(sd_sorted) and sd_sorted[si] <= d:
-                last_s = raw_sent[sd_sorted[si]]
-                si += 1
-            sent_map[d] = last_s
-
+        # Build forward-filled sentiment map (shared helper with staleness decay)
+        # 情绪前向填充(共享工具函数,带时效衰减):超 3 天无新数据视为数据不足 → 0(中性)
         closes = [float(x["close"]) for x in px]  # 【变量】收盘价序列
         dates = [str(x["date"])[:10] for x in px]  # 【变量】日期序列
+        sent_map = _build_forward_filled_sent_map(sent_data, dates)  # 【调用函数】情绪前向填充(带时效衰减,超 3 天→0)
         n = len(closes)  # 【变量】K 线根数
 
         pos_a = 0  # 【变量】自适应路径仓位:0 空仓 / 1 持多 / -1 持空
@@ -2851,23 +2820,29 @@ def apply_risk_management(
     if not stop_loss_pct and not trailing_stop_pct:
         return trades
 
-    # Build price timeline
-    price_map = {}  # 【变量】日期→收盘价查表(逐日止损检查用)
+    # Build price timeline (含 OHLC:止损用"盘中触发"判定 + 触发价成交近似,
+    # 替代原来的收盘价判定——收盘才确认止损会晚一天、且以远离触发线的收盘价成交,
+    # 导致"保本"止损实际按反弹收盘价成交变成亏损(worklog/2026-08-31 红枣案例)。
+    price_map = {}  # 【变量】日期→{open,high,low,close} 查表(逐日止损检查用)
     for p in prices:
-        price_map[str(p["date"])[:10]] = float(p["close"])
+        price_map[str(p["date"])[:10]] = {
+            "open": float(p.get("open", p["close"])),
+            "high": float(p.get("high", p["close"])),
+            "low": float(p.get("low", p["close"])),
+            "close": float(p["close"]),
+        }
 
     modified = []  # 【变量】风控处理后的交易列表(输出,被止损的单被改写)
     for t in trades:
         entry_d = t.get("entry", "")  # 【变量】该笔交易入场日期
         direction = t.get("direction", "long")  # 【变量】交易方向(long/short),决定止损判定上下
-        entry_px = price_map.get(entry_d, 0)  # 【变量】该笔交易入场价(从价格表反查)
+        entry_px = (price_map.get(entry_d) or {}).get("close", 0)  # 【变量】该笔交易入场价(入场日收盘价,从价格表反查)
         if not entry_px:
             modified.append(t)
             continue
 
         # Check if price hit stop-loss before original exit
         exit_d = t.get("exit", "")  # 【变量】原离场日期(止损若更早触发则改写它)
-        price_map.get(exit_d, entry_px)  # 遗留无效果行:取值后未使用,可忽略
         # 只看 (入场日, 原离场日] 之间的交易日,确认止损是否在原始离场前触发。
         # 左开右闭:跳过入场日。入场日收盘价 px == entry_px,若连同保本钳制
         # trail_level==entry_px 一起判定,px<=trail_level 恒真 → 任何带移动止损的
@@ -2878,39 +2853,43 @@ def apply_risk_management(
         stop_px = 0  # 【变量】触发止损那天的价格(重算 PnL 用)
 
         for d in dates:
-            px = price_map[d]
+            ohlc = price_map[d]  # 【变量】当日 OHLC(止损用盘中高低价判定触发)
+            hi, lo, op = ohlc["high"], ohlc["low"], ohlc["open"]  # 【变量】当日最高/最低/开盘价
             if direction == "long":
-                # Fixed stop: exit if price drops below entry * (1 - stop_loss%)
-                if stop_loss_pct and px <= entry_px * (1 - stop_loss_pct / 100):
+                # Fixed stop: exit if intraday low breaks stop line (close-confirm is too late)
+                stop_line = entry_px * (1 - stop_loss_pct / 100)  # 【变量】固定止损线
+                if stop_loss_pct and lo <= stop_line:
                     stopped_out = True
-                    stop_px = px
+                    # 成交价:开盘已破线(跳空低开)按开盘价,否则按触发线(触及即成交)
+                    stop_px = min(stop_line, op)  # 【变量】触发价成交近似
                     exit_d = d
                     break
-                # Trailing stop: update peak, exit if falls below peak * (1 - trailing%)
-                if px > peak_px:
-                    peak_px = px
+                # Trailing stop: update peak, exit if intraday low breaks trail level
+                if hi > peak_px:
+                    peak_px = hi
                 trail_level = peak_px * (1 - trailing_stop_pct / 100)  # 【变量】移动止损线 = 峰值回撤 trailing_stop_pct
                 # Never let trailing stop go below entry (protect breakeven)
                 trail_level = max(trail_level, entry_px)  # 【变量】止损线下沿不低于入场价(保本)
-                if trailing_stop_pct and px <= trail_level:
+                if trailing_stop_pct and lo <= trail_level:
                     stopped_out = True
-                    stop_px = px
+                    stop_px = min(trail_level, op)
                     exit_d = d
                     break
             else:  # short
-                if stop_loss_pct and px >= entry_px * (1 + stop_loss_pct / 100):
+                stop_line = entry_px * (1 + stop_loss_pct / 100)  # 【变量】固定止损线(空单方向)
+                if stop_loss_pct and hi >= stop_line:
                     stopped_out = True
-                    stop_px = px
+                    stop_px = max(stop_line, op)
                     exit_d = d
                     break
-                if px < peak_px:
-                    peak_px = px
+                if lo < peak_px:
+                    peak_px = lo
                 trail_level = peak_px * (1 + trailing_stop_pct / 100)  # 【变量】移动止损线 = 峰值回撤 trailing_stop_pct(空单方向)
                 # Never let trailing stop go above entry (protect breakeven)
                 trail_level = min(trail_level, entry_px)  # 【变量】止损线上沿不高于入场价(保本)
-                if trailing_stop_pct and px >= trail_level:
+                if trailing_stop_pct and hi >= trail_level:
                     stopped_out = True
-                    stop_px = px
+                    stop_px = max(trail_level, op)
                     exit_d = d
                     break
 
@@ -3866,14 +3845,21 @@ def run_trailing_strategy(
 
 
 def _build_forward_filled_sent_map(
-    sent_data: dict | None, price_dates: list[str]
+    sent_data: dict | None,
+    price_dates: list[str],
+    max_staleness_days: int = 3,
 ) -> dict[str, float]:
-    """按价格日期向前填充情绪评分(forward-fill)。
+    """按价格日期向前填充情绪评分(forward-fill),带"时效衰减"。
 
     镜像各回测函数(run_contrarian_sentiment / run_adaptive_sentiment /
     run_momentum_adaptive 中 "Build forward-filled sentiment" 段)的填充逻辑:
     取 <= 当日的最新情绪评分作为该日情绪。该工具函数把这段重复逻辑收敛到一处,
     供最新信号与回测共用,保证口径一致。
+
+    时效衰减(worklog/2026-08-31):低频品种(如红枣 3 个月仅 20 个情绪日)前向
+    填充会把过期情绪当持续情绪,放大噪声。当某价格日距最近一条情绪已超过
+    max_staleness_days 天(按自然日计)时,该日情绪视为"数据不足"→ 评分为 0.0
+    (中性),策略据此回退纯技术,而不是继续沿用过期评分。
     """
     if not sent_data:
         return {}
@@ -3884,12 +3870,19 @@ def _build_forward_filled_sent_map(
     # 双指针:sd_sorted 已升序,对每个价格日期 d 把 <=d 的最新情绪逐步推进给 last_s,
     # 得到"当日能看到的最近一次情绪",即前向填充(不偷看未来)。
     last_s = 0.0  # 【变量】当前已能看到的最新情绪评分(<= 当日,未命中时取 0)
+    last_d = ""  # 【变量】最近一条有效情绪的日期(时效判定基准;尚未见任何情绪时为空)
     si = 0  # 【变量】sd_sorted 游标(双指针中"已消费的情绪日期数")
     for d in price_dates:
         while si < len(sd_sorted) and sd_sorted[si] <= d:
             last_s = raw[sd_sorted[si]]
+            last_d = sd_sorted[si]
             si += 1
-        out[d] = last_s
+        # 自然日距最近情绪 > max_staleness_days → 数据不足,取 0(中性);否则沿用最近情绪
+        stale = bool(last_d) and (
+            datetime.strptime(d[:10], "%Y-%m-%d")
+            - datetime.strptime(last_d[:10], "%Y-%m-%d")
+        ).days > max_staleness_days
+        out[d] = 0.0 if stale else last_s
     return out
 
 

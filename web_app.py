@@ -833,11 +833,67 @@ def _build_sentiment_sankey(records, top_varieties=15):
     return {"nodes": nodes, "links": links}
 
 
+# 【功能】把实时主连 CSV 就地做后复权,消除换月跳空(与 price_fetcher 文件口径一致)。
+# 【关键】get_futures_price() 返回的原始主连(如 RB0)是简单拼接、未复权,换月点有假跳空;
+#   这里解析出 OHLC 后用同一套 _backward_adjust(最近 bar 因子=1)复权,最近 bar 因子=1。
+#   换月点优先用真实日历(_load_rollover_calendar 按品种名查证),品种不在日历时回退 8% 启发式。
+#   这样前端价格图与后端回测(读复权 *_price.json)口径一致,图上不再有伪缺口。
+# 【返回】(points, roll_dates):points=[{date, close}] 复权后收盘序列;roll_dates=检测到的换月日期。
+def _adjusted_price_points(result: str, variety_name: str | None = None) -> tuple[list[dict], list[str], str]:
+    from price_fetcher import (  # 【调用包】延迟导入(避免 web_app 顶部重依赖)
+        NAME_TO_CODE,
+        _backward_adjust,
+        _load_rollover_calendar,
+    )
+
+    raw = []
+    for line in result.strip().split("\n"):
+        if not line or line.startswith("#") or not line[0].isdigit():
+            continue
+        parts = line.split(",")
+        if len(parts) >= 5:
+            raw.append({
+                "date": parts[0].strip(),
+                "open": float(parts[1]),
+                "high": float(parts[2]),
+                "low": float(parts[3]),
+                "close": float(parts[4]),
+            })
+    if len(raw) < 2:
+        return raw, [], "heuristic"
+    # 真实日历优先:该品种查证的换月日集合;无日历/品种不在日历时为 None → 回退 8% 启发式
+    cal_dates = None
+    if variety_name:
+        cal = _load_rollover_calendar()  # 【调用函数】加载真实换月日历
+        # 日历 key 是价格文件名(混用代码 PP/PTA/PVC 与中文名 螺纹钢/热卷),而前端传的是代码(如 "HC")。
+        # 候选 key 依次尝试:①代码→中文名翻译(螺纹钢→RB) ②日历 main_contract 反查(HC0→热卷,兜底命名不一致)
+        # ③代码本身(PP→PP)。取第一个能在日历里命中的。
+        code_to_name = {v: k for k, v in NAME_TO_CODE.items()}  # 【变量】代码→中文名反向映射
+        main_index = {
+            (entry.get("main_contract") or "").rstrip("0"): key  # 【变量】主连代码(去尾部0)→日历 key,如 HC0→热卷
+            for key, entry in (cal or {}).items()
+            if entry and (entry.get("main_contract") or "").endswith("0")
+        }
+        cands = []  # 【变量】候选日历 key(保序去重)
+        for c in (code_to_name.get(variety_name, variety_name), main_index.get(variety_name), variety_name):
+            if c and c not in cands:
+                cands.append(c)
+        cal_key = next((c for c in cands if c in cal), None)  # 【变量】命中的日历 key
+        if cal_key:
+            ro = (cal.get(cal_key, {}) or {}).get("rollover_dates", []) or []  # 【变量】该品种换月日
+            if ro:
+                cal_dates = {r["date"] for r in ro}  # 【变量】日历换月日集合
+    method = "calendar" if cal_dates else "heuristic"  # 【变量】换月来源(calendar=真实日历 / heuristic=8%启发式)
+    adj, roll_idx = _backward_adjust(raw, calendar_dates=cal_dates)  # 【调用函数】后复权(原地修改 raw 的 OHLC)
+    roll_dates = [adj[i]["date"] for i in roll_idx]  # 【变量】换月日期清单
+    return [{"date": p["date"], "close": p["close"]} for p in adj], roll_dates, method
+
+
 # 【功能】获取品种日线价格,供前端画折线 / K 线。
 # 【参数】days=回看天数(默认 180,强制限制在 30~730)。
-# 【返回】{"_meta": {price_start, price_end, data_points}, "prices": [{date, close}, ...]}。
-# 【关键】get_futures_price() 返回 CSV 文本;这里逐行解析,只取日期与收盘价(第 5 列),
-#   并只返回最后 max(days,120) 个点。
+# 【返回】{"_meta": {price_start, price_end, data_points, adjusted, rollover_dates}, "prices": [{date, close}, ...]}。
+# 【关键】get_futures_price() 返回 CSV 文本;逐行解析 OHLC 后做后复权(_adjusted_price_points),
+#   消除主力连续换月假跳空;只返回最后 max(days,120) 个点。_meta.adjusted=True 表示已是复权价。
 @app.route("/api/price/<variety>")
 def api_price(variety):
     """Get price data for charts. Query param: days (default 180)."""
@@ -846,13 +902,7 @@ def api_price(variety):
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     result = get_futures_price(variety, start_date, end_date)  # 【调用函数】跨模块获取行情 CSV 文本
-    data = []
-    for line in result.strip().split("\n"):
-        if not line or line.startswith("#") or not line[0].isdigit():
-            continue
-        parts = line.split(",")
-        if len(parts) >= 5:
-            data.append({"date": parts[0].strip(), "close": float(parts[4])})
+    data, roll_dates, rollover_method = _adjusted_price_points(result, variety)  # 【调用函数】实时主连 → 后复权序列(消除换月跳空)
     # Return with meta
     meta = {}
     if data:
@@ -860,6 +910,10 @@ def api_price(variety):
             "price_start": data[0]["date"],
             "price_end": data[-1]["date"],
             "data_points": len(data),
+            "adjusted": True,  # 【变量】已后复权(消除主力连续换月假跳空)
+            "adjust_method": "backward",  # 【变量】复权方式:后复权(最近 bar 因子=1)
+            "rollover_dates": roll_dates,  # 【变量】换月日期(真实日历查证 or 8% 启发式)
+            "rollover_method": rollover_method,  # 【变量】换月来源(calendar=真实日历 / heuristic=8%启发式)
         }
     return jsonify({"_meta": meta, "prices": data[-max(days, 120) :]})
 
@@ -877,17 +931,12 @@ def api_overlay(variety):
     days = request.args.get("days", 180, type=int)
     days = max(30, min(days, 730))
 
-    # Price data
+    # Price data (后复权:消除主力连续换月假跳空,与回测口径一致)
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     price_result = get_futures_price(variety, start_date, end_date)  # 【调用函数】跨模块获取行情 CSV 文本
-    price_map = {}
-    for line in price_result.strip().split("\n"):
-        if not line or line.startswith("#") or not line[0].isdigit():
-            continue
-        parts = line.split(",")
-        if len(parts) >= 5:
-            price_map[parts[0].strip()] = float(parts[4])
+    price_points, overlay_roll_dates, overlay_method = _adjusted_price_points(price_result, variety)  # 【调用函数】实时主连 → 后复权序列
+    price_map = {p["date"]: p["close"] for p in price_points}  # 【变量】后复权收盘价映射(日期 → 收盘价)
 
     # Sentiment data
     sent_path = SENTIMENT_DIR / f"{variety}_sentiment.json"
@@ -928,6 +977,10 @@ def api_overlay(variety):
         "price_end": price_dates[-1] if price_dates else None,
         "data_points": len(overlay),
         "filter_start": start_date,
+        "adjusted": True,  # 【变量】价格轴已后复权(消除换月假跳空)
+        "adjust_method": "backward",  # 【变量】复权方式:后复权
+        "rollover_dates": overlay_roll_dates,  # 【变量】换月日期(真实日历查证 or 8% 启发式)
+        "rollover_method": overlay_method,  # 【变量】换月来源(calendar=真实日历 / heuristic=8%启发式)
         **sent_meta,
     }
 

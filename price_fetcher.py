@@ -196,6 +196,130 @@ def fetch_realtime_prices(varieties: list[str] | None = None) -> dict:
     return result
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 换月跳空处理(后复权)
+# ═══════════════════════════════════════════════════════════════════════
+# 新浪主力连续(如 RB0)是"简单拼接、未复权"的序列:当主力合约从 A 月切到
+# B 月时,序列会硬跳一段价差(换月跳空),这不是真实可交易的盈亏——若持仓恰好
+# 跨过换月日,回测会被虚构一段 PnL。后复权(backward adjustment)在换月点把
+# 历史价格按比例缩放,使序列连续、消除伪跳空。最近一根 bar 因子恒为 1(当前
+# 价格保持真实,今日信号/当前价不受影响),历史段为"复权价"(收益率真实,
+# 绝对价位不代表当时成交价)。
+# 【换月点来源】优先用"真实换月日历"(scripts/build_rollover_calendar.py 生成,
+# 逐合约日线逐日判主力切换,查证而非猜测),彻底消除 8% 启发式的两个盲区:
+#   漏检(小换月 <8%,如螺纹钢/PTA/鸡蛋)+ 误判(把真实大涨当换月,如原油外盘联动)。
+#   品种不在日历时,才回退到 8% 收盘缺口启发式(见 _detect_rollover_dates)。
+ROLLOVER_GAP_THRESHOLD_PCT = 8.0  # 【变量】换月跳空判定阈值(%):无真实日历回退时,收盘缺口超过它即视为换月
+
+# 真实换月日历(scripts/build_rollover_calendar.py 生成)。
+# 结构: {品种名: {"main_per_day": {date: "JD2607"}, "rollover_dates": [{date, from, to}, ...]}}
+# 换月日期是"查证"出来的(逐合约日线逐日判主力切换),不是启发式猜测;
+# 有日历的品种优先用日历,避免 8% 启发式漏检小换月 / 误判真实大涨。
+_rollover_calendar_cache: dict | None = None  # 【变量】换月日历内存缓存(懒加载,None=未加载)
+
+
+def _load_rollover_calendar() -> dict:
+    """加载真实换月日历(懒加载+缓存)。失败(无文件/解析错误)返回空 dict。
+
+    【返回】{品种名: {"rollover_dates": [{"date", "from", "to"}, ...], ...}}
+    """
+    global _rollover_calendar_cache  # 【变量】模块级缓存
+    if _rollover_calendar_cache is not None:
+        return _rollover_calendar_cache
+    cal_path = PRICE_DIR / "_rollover_calendar.json"  # 【变量】日历文件路径(与价格文件同目录)
+    try:
+        if cal_path.exists():
+            with open(cal_path, encoding="utf-8") as f:
+                _rollover_calendar_cache = json.load(f)  # 【调用函数】读取日历文件
+        else:
+            _rollover_calendar_cache = {}
+    except Exception as e:
+        logger.warning(f"加载换月日历失败({cal_path}): {e}")
+        _rollover_calendar_cache = {}
+    return _rollover_calendar_cache
+
+
+def _detect_rollover_dates(
+    prices: list[dict], threshold_pct: float = ROLLOVER_GAP_THRESHOLD_PCT
+) -> list[int]:
+    """识别主力连续序列中的换月点(返回 bar 下标列表)。
+
+    【功能】用"收盘到收盘缺口" |close_i / close_{i-1} - 1| 判定换月,超过
+    阈值(默认 8%)视为换月日。
+    【关键逻辑】为何用收盘缺口而非隔夜缺口:实测发现新浪主连的拼接除了"开盘
+    跳空"还有"盘中拼接"——换月当天 open 仍是旧合约价、close 已是新合约价,
+    伪跳空藏在日内(可超涨跌停)。回测结算用的是收盘价,收盘缺口才是虚构盈亏
+    的直接来源;且无论拼接发生在开盘还是盘中,收盘缺口都等于"新合约 vs 前日
+    旧合约"的水平差,检测最自洽。
+    阈值取 8%(超过绝大多数商品期货涨跌停幅度)的取舍:真实行情几乎不可能
+    收盘缺口超 8%,因此误判率极低;代价是会漏检 8% 以下的换月(如螺纹钢等
+    两月合约价差小的品种),但残留的伪缺口小、影响有限——宁漏勿误,误判会
+    主动扭曲历史价格,漏判只是没清理干净。检测点写入 rollover_dates 元数据,
+    可人工核对/调整阈值。
+    """
+    roll = []  # 【变量】换月点 bar 下标列表
+    for i in range(1, len(prices)):
+        prev_close = float(prices[i - 1]["close"])  # 【变量】前一日收盘价
+        if prev_close <= 0:
+            continue
+        gap = (float(prices[i]["close"]) / prev_close - 1.0) * 100.0  # 【变量】收盘到收盘缺口(%)
+        if abs(gap) >= threshold_pct:
+            roll.append(i)
+    return roll
+
+
+def _backward_adjust(
+    prices: list[dict],
+    threshold_pct: float = ROLLOVER_GAP_THRESHOLD_PCT,
+    calendar_dates: set[str] | None = None,
+) -> tuple[list[dict], list[int]]:
+    """对主力连续价格序列做后复权,消除换月跳空(原地修改 prices)。
+
+    【功能】在换月点 i 处,历史段(下标 < i)乘以因子 close_i / close_{i-1},
+    使前一日复权收盘 = 换月日复权收盘,序列连续无跳空。
+    【参数】prices: 价格 dict 列表(含 open/high/low/close/volume)。
+            calendar_dates: 真实换月日期集合(date 字符串);传入则**只用这些日期**
+            作为换月点(换月点已查证),不再依赖 8% 阈值。为 None 时回退到
+            8% 收盘缺口启发式(见 _detect_rollover_dates)。
+    【返回】(prices, roll_idx):复权后的列表与换月点下标列表。
+    【关键逻辑】累计因子从后往前递推 adj[i]=adj[i+1];当 i+1 是换月点时
+    adj[i]=adj[i+1]×(close_{i+1}/close_i)。最近 bar 因子=1 → 当前价不变,
+    历史价被缩放。OHLC 乘同一因子保持日内相对结构,volume 不变;change_pct
+    按复权后相邻收盘重算(消除伪跳空,第一根记 0)。
+    """
+    if calendar_dates is not None:
+        # 真实日历模式:只认日历里的换月日,不猜缺口。
+        roll_idx = {i for i, p in enumerate(prices) if p["date"] in calendar_dates}
+    else:
+        roll_idx = set(_detect_rollover_dates(prices, threshold_pct))  # 【变量】换月点集合(8% 启发式回退)
+    n = len(prices)  # 【变量】K 线根数
+    adj = [1.0] * n  # 【变量】每根 bar 的累计复权因子(最近一根恒 1)
+    for i in range(n - 2, -1, -1):
+        if (i + 1) in roll_idx:
+            prev_close = float(prices[i]["close"])  # 【变量】换月前一日收盘(旧合约)
+            cur_close = float(prices[i + 1]["close"])  # 【变量】换月日收盘(新合约)
+            adj[i] = adj[i + 1] * (cur_close / prev_close) if prev_close > 0 else adj[i + 1]
+        else:
+            adj[i] = adj[i + 1]
+
+    for i in range(n):
+        a = adj[i]  # 【变量】本 bar 复权因子
+        prices[i]["open"] = round(float(prices[i]["open"]) * a, 2)
+        prices[i]["high"] = round(float(prices[i]["high"]) * a, 2)
+        prices[i]["low"] = round(float(prices[i]["low"]) * a, 2)
+        prices[i]["close"] = round(float(prices[i]["close"]) * a, 2)
+        if i > 0:  # 【关键】change_pct 用复权后相邻收盘重算(跳空日不再显示伪涨跌)
+            prev_close = prices[i - 1]["close"]
+            prices[i]["change_pct"] = (
+                round((prices[i]["close"] / prev_close - 1.0) * 100.0, 2)
+                if prev_close
+                else 0
+            )
+        else:
+            prices[i]["change_pct"] = 0
+    return prices, sorted(roll_idx)
+
+
 def update_price_files(varieties: list[str] | None = None) -> dict:
     """拉取最新日线数据并增量更新价格 JSON 文件。
 
@@ -281,11 +405,27 @@ def _update_single_price(code: str, name: str) -> dict:
         # Sort by date
         existing_prices.sort(key=lambda x: x["date"])
 
+        # 换月跳空后复权(原地修改):消除主力连续序列的伪跳空。
+        # 最近一根 bar 因子=1 → 当前价不变;历史段为复权价,收益率真实。
+        # 优先用真实换月日历(查证的主力切换日);品种不在日历(或日历缺失)时
+        # 回退到 8% 收盘缺口启发式。
+        cal_dates = {r["date"] for r in _load_rollover_calendar().get(name, {}).get("rollover_dates", [])}  # 【变量】该品种真实换月日
+        _, roll_idx = _backward_adjust(existing_prices, calendar_dates=cal_dates or None)  # 【调用函数】后复权(就地修改价格并返回换月点)
+        roll_dates = [existing_prices[i]["date"] for i in roll_idx]  # 【变量】换月点日期(元数据,供人工核对)
+
         # Save
         existing["prices"] = existing_prices
         existing["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         existing["variety_code"] = code
         existing["variety_name"] = name
+        existing["adjusted"] = True  # 【变量】后复权标记(前端/上层可据此知道价格是复权价)
+        existing["adjust_method"] = "backward"  # 【变量】复权方式
+        existing["rollover_dates"] = roll_dates  # 【变量】换月日期清单(真实日历查证 or 8% 启发式)
+        if cal_dates:
+            existing["rollover_method"] = "calendar"  # 【变量】换月来源:真实日历查证
+        else:
+            existing["rollover_method"] = "heuristic"  # 【变量】换月来源:8% 收盘缺口启发式(回退)
+            existing["rollover_threshold_pct"] = ROLLOVER_GAP_THRESHOLD_PCT  # 【变量】换月判定阈值(仅启发式)
 
         PRICE_DIR.mkdir(parents=True, exist_ok=True)  # 【调用函数】确保价格目录存在(不存在则递归创建)
         with open(price_path, "w", encoding="utf-8") as f:
