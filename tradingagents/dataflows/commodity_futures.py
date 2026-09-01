@@ -60,6 +60,8 @@ Data sources (via akshare):
 #   具体格式与合并逻辑见 external_data.py。
 # ===========================================================================
 
+import contextlib  # 【调用包】suppress:交易所 .dat 数值解析容错(ruff BLE001 合规)
+import datetime  # 【调用包】日期对象(交易所仓单截止日探测/扫描窗口)
 import json  # 【调用包】JSON 序列化(品种元信息输出)
 import logging  # 【调用包】日志输出(拉取失败告警)
 import pickle  # 【调用包】基差缓存磁盘持久化(重启不丢,序列化 DataFrame)
@@ -182,6 +184,162 @@ def _basis_cache_merge_widest(code: str, new_df: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         logger.warning("Basis cache merge failed for %s: %s", code, e)
         return new_df
+
+
+# ---------------------------------------------------------------------------
+# 【库存缓存 + 交易所仓单日报回退源】(2026-09-01)
+# 背景: 东财 futures_inventory_em 对 50/52 品种有仓单库存,但 SC(原油)/WR(线材)
+#       在其 RPT_FUTU_POSITIONCODE 表内根本不存在 → 接口抛 TypeError → 看板库存空白。
+#       回退源:上期所/上期能源官网的 dailystock.dat(仓单日报,JSON),实测本机可达,
+#       且一个文件同时聚合 SHFE+INE 全品种(含 原油/线材/20号胶/低硫燃料油/氧化铝)。
+#       注意:该旧版 .dat 端点 2026 年起 404(两所迁移新站 tsite),本机拿不到当前数据;
+#       大陆服务器部署后把 _EXCHANGE_STOCK_BASE 换成 tsite 即可得实时仓单。
+# 设计: 库存结果整体做 6h 内存+磁盘缓存(回退源逐日扫描 ~20s,必须缓存),
+#       键 "inventory:{品种代码}",值 (时间戳, CSV 文本);None=无数据结论。
+#       .dat 行内 VARID 恰好等于 VARIETY_METADATA 的 inv_code 小写(sc/wr/ao/nr/lu…)。
+# ---------------------------------------------------------------------------
+_inventory_cache: dict[str, tuple[float, str | None]] = {}  # 【变量】库存内存缓存:键 "inventory:{品种}",值 (时间戳, CSV 文本);None=无数据结论
+_INVENTORY_CACHE_TTL = 6 * 3600  # 【变量】库存缓存有效期 6 小时(仓单为日频数据)
+_INVENTORY_CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "inventory"
+
+# 交易所仓单日报回退源:优先 shfe.com.cn(其 dailystock.dat 聚合 SHFE+INE 全品种)。
+#   ine.cn 备用。大陆部署可改为 "https://tsite.shfe.com.cn"(2026 起的新站,当前数据)。
+_EXCHANGE_STOCK_BASE = "https://www.shfe.com.cn"
+_EXCHANGE_STOCK_HOSTS = ["https://www.shfe.com.cn", "https://www.ine.cn"]
+# 【变量】回退源扫描窗口(日历天)。~90 个交易日,保证 ≥60 点(与东财 tail(60) 对齐)。
+_EXCHANGE_SCAN_DAYS = 130
+# 【变量】已探测到的 .dat 数据截止日(YYYY-MM-DD),进程内缓存,避免每次回退都重探。
+_exchange_cutoff_cache: dict[str, str] = {}
+
+
+def _inventory_cache_path(code: str) -> Path:
+    """库存缓存磁盘文件路径(每个品种一个 pickle 文件)。"""
+    return _INVENTORY_CACHE_DIR / f"inventory_{code}.pkl"
+
+
+def _inventory_cache_load(code: str):
+    """从磁盘加载 {code} 的库存缓存;文件缺失/损坏/过期/类型不符 → None(视为未命中重拉)。"""
+    p = _inventory_cache_path(code)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "rb") as f:
+            ts, text = pickle.load(f)
+        if text is not None and not isinstance(text, str):
+            return None
+        if time.time() - ts >= _INVENTORY_CACHE_TTL:
+            return None
+        return ts, text
+    except Exception:
+        return None  # 损坏 → 保守重拉
+
+
+def _inventory_cache_save(code: str, text: str | None) -> None:
+    """把 {code} 的库存结果写盘;text 可为 None(无数据结论);写失败只记日志不阻断。"""
+    try:
+        _INVENTORY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_inventory_cache_path(code), "wb") as f:
+            pickle.dump((time.time(), text), f, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as e:
+        logger.warning("Failed to persist inventory cache for %s: %s", code, e)
+
+
+def _fetch_exchange_dailystock(date: str) -> dict | None:
+    """抓某交易日上期所仓单日报 dailystock.dat(JSON)。
+
+    Args:
+        date: 交易日, "YYYY-MM-DD" 或 "YYYYMMDD"。
+
+    Returns:
+        原始 JSON dict({"o_cursor": [行,…]});404/网络/解析失败 → None。
+        顺次尝试 _EXCHANGE_STOCK_HOSTS(shfe 聚合 INE 全品种,通常一个文件就够)。
+    """
+    compact = date.replace("-", "")
+    for host in _EXCHANGE_STOCK_HOSTS:
+        url = f"{host}/data/tradedata/future/dailydata/{compact}dailystock.dat"
+        try:
+            r = requests.get(url, timeout=12)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            if isinstance(data, dict) and data.get("o_cursor"):
+                return data
+        except Exception as e:
+            logger.debug("dailystock %s via %s failed: %s", compact, host, e)
+    return None
+
+
+def _find_exchange_cutoff() -> str | None:
+    """探测 dailystock.dat 可用最晚交易日(YYYY-MM-DD),结果进程内缓存。
+
+    旧版 .dat 端点 2026 年起 404。先确认 ~2 年前锚点可用,再在 [锚点, 今天] 间二分
+    找最晚 200 日。周末/节假日 404 会使边界略推前几个交易日,误差 ≤ 一周,无碍。
+    全部失败 → None(回退源不可用)。
+    """
+    today = datetime.date.today()
+    # 先看今天是否可用(数据源迁移回滚/大陆部署切 tsite 时直接命中)
+    if _fetch_exchange_dailystock(today.strftime("%Y-%m-%d")):
+        _exchange_cutoff_cache[_EXCHANGE_STOCK_BASE] = today.strftime("%Y-%m-%d")
+        return today.strftime("%Y-%m-%d")
+    # 往回找锚点(保证有数据的旧日期)
+    lo = today - datetime.timedelta(days=730)
+    guard = 0
+    while not _fetch_exchange_dailystock(lo.strftime("%Y-%m-%d")):
+        lo -= datetime.timedelta(days=90)
+        guard += 1
+        if guard > 10:
+            return None
+    # 二分 [lo, today): 找最晚 200 日(单调:数据截止前的日期连续可用)
+    lo_ord, hi_ord = lo.toordinal(), today.toordinal() - 1
+    while lo_ord < hi_ord:
+        mid_ord = (lo_ord + hi_ord + 1) // 2
+        mid = datetime.date.fromordinal(mid_ord)
+        if _fetch_exchange_dailystock(mid.strftime("%Y-%m-%d")):
+            lo_ord = mid_ord
+        else:
+            hi_ord = mid_ord - 1
+    cutoff = datetime.date.fromordinal(lo_ord)
+    result = cutoff.strftime("%Y-%m-%d")
+    _exchange_cutoff_cache[_EXCHANGE_STOCK_BASE] = result
+    return result
+
+
+def _fetch_exchange_inventory(code: str, meta: dict) -> pd.DataFrame | None:
+    """回退源:从交易所 dailystock.dat 逐日扫描,构建 {code} 的仓单库存序列。
+
+    Args:
+        code: 品种大写代码(如 "SC")。
+        meta: VARIETY_METADATA[code](取其 inv_code 小写作 .dat 里的 VARID)。
+
+    Returns:
+        DataFrame(date, inventory, change) 升序;任何一步失败/无数据 → None。
+    """
+    varid = meta["inv_code"].lower()
+    cutoff_s = _find_exchange_cutoff()
+    if cutoff_s is None:
+        return None
+    cutoff = datetime.date.fromisoformat(cutoff_s)
+    start = cutoff - datetime.timedelta(days=_EXCHANGE_SCAN_DAYS)
+    rows: list[tuple[str, float]] = []
+    d = start
+    while d <= cutoff:
+        if d.weekday() < 5:  # 只扫工作日省一半请求;节假日 404 自然跳过
+            data = _fetch_exchange_dailystock(d.strftime("%Y-%m-%d"))
+            if data:
+                total = 0.0
+                for row in data["o_cursor"]:
+                    if str(row.get("VARID", "")).lower() == varid:
+                        with contextlib.suppress(TypeError, ValueError):
+                            total += float(row.get("WRTWGHTS") or 0.0)
+                rows.append((d.strftime("%Y-%m-%d"), total))
+        d += datetime.timedelta(days=1)
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["date", "inventory"])
+    df = df.sort_values("date").reset_index(drop=True)
+    df["inventory"] = df["inventory"].astype(float)
+    df["change"] = df["inventory"].diff().fillna(0.0)  # 变化=当日-前一日,与东财 ADDCHANGE 同语义
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -2006,7 +2164,13 @@ def get_futures_basis(
 #              最近5日均值 vs 更早期均值的百分比变化,>+3% 记为 BUILDING 累库,
 #              <-3% 记为 DRAINING 去库,否则 STABLE 平稳;
 #           3) 明确提示:这是"仓单库存",不等于 35 城社会库存;
-#           4) ★ Hybrid Mode:函数末尾调用 merge_inventory_data(code, api_output),
+#           4) ★ 回退链(2026-09-01):东财对 SC(原油)/WR(线材)无仓单数据(其
+#              POSITIONCODE 表内不存在 → 抛 TypeError),此时回退到交易所仓单日报
+#              _fetch_exchange_inventory(上期所/上期能源 dailystock.dat,聚合 SHFE+INE
+#              全品种;本机旧版 .dat 数据至 ~2025Q4,大陆部署切 tsite 可得当前);
+#           5) ★ 库存结果 6h 内存+磁盘缓存(_inventory_cache):回退源逐日扫描 ~20s,
+#              必须缓存,否则每次看板加载都重扫;无数据结论也缓存;
+#           6) ★ Hybrid Mode:函数末尾调用 merge_inventory_data(code, api_output),
 #              外部 JSON 里有社会库存/钢厂库存就合并成"Part1 仓单 + Part2 社会库存"
 #              两部分一并返回给大模型。
 def get_futures_inventory(
@@ -2036,6 +2200,26 @@ def get_futures_inventory(
     meta = VARIETY_METADATA[code]
     inv_code = meta["inv_code"]
 
+    # 【关键】库存结果缓存(6h 内存+磁盘):东财库存每次看板加载都重拉;而回退源(交易所
+    #   逐日扫描 ~20s)更不能每次重扫。无数据结论也缓存,避免反复扫 404。键不含日期,
+    #   仓单为日频数据,6h 内复用完全合理(与基差缓存同构)。
+    cache_key = f"inventory:{code}"
+    cached = _inventory_cache.get(cache_key)
+    if cached is None:
+        cached = _inventory_cache_load(code)
+        if cached is not None:
+            _inventory_cache[cache_key] = cached
+    if cached is not None:
+        cached_at, cached_text = cached
+        if time.time() - cached_at < _INVENTORY_CACHE_TTL:
+            if cached_text is None:
+                logger.info("inventory no-data cache hit for %s", code)
+                return f"NO_DATA_AVAILABLE: No inventory data for {meta['name']}({code})."
+            merged_hit, _used = merge_inventory_data(code, cached_text)  # 【调用函数】解包合并结果,仅返回文本
+            return merged_hit
+
+    # --- 主源:东财仓单库存 ---
+    df = None
     try:
         from akshare import futures_inventory_em  # 【调用包】AKShare 仓单库存接口(东方财富)
 
@@ -2044,10 +2228,28 @@ def get_futures_inventory(
     except ImportError:
         return "DATA_ERROR: akshare is required."
     except Exception as e:
-        logger.warning("Failed to fetch inventory for %s: %s", code, e)
-        return f"DATA_UNAVAILABLE: Could not fetch inventory for {meta['name']}({code}). Error: {e}"
+        # 【关键】东财失败(SC/WR 在其 POSITIONCODE 表内不存在 → TypeError)→ 走交易所回退源
+        logger.warning(
+            "Eastmoney inventory failed for %s (%s); falling back to exchange warehouse receipts.",
+            code, e,
+        )
 
-    if df.empty:
+    # --- 回退源:交易所仓单日报(dailystock.dat,SHFE/INE 官网) ---
+    used_exchange = False  # 【变量】本次结果是否来自交易所回退源(用于追加来源/截止标注)
+    if df is None or df.empty:
+        df = _fetch_exchange_inventory(code, meta)  # 【调用函数】回退源:逐日扫描交易所仓单
+        if df is not None and not df.empty:
+            used_exchange = True
+            logger.info(
+                "Inventory for %s via exchange warehouse receipts (%d pts).",
+                code, len(df),
+            )
+
+    if df is None or df.empty:
+        # 缓存"无数据"结论(避免回退源反复扫 404);已有数据缓存则保留(可能只是源站瞬时抖动)
+        if _inventory_cache.get(cache_key) is None:
+            _inventory_cache[cache_key] = (time.time(), None)
+            _inventory_cache_save(code, None)
         return f"NO_DATA_AVAILABLE: No inventory data for {meta['name']}({code})."
 
     # Normalize columns
@@ -2082,6 +2284,21 @@ def get_futures_inventory(
         trend_note = ""
 
     api_output = result.to_csv(index=False) + trend_note
+
+    if used_exchange:
+        # 【关键】诚实标注回退源覆盖范围:旧版 .dat 端点 2026 起 404(交易所迁移新站),
+        #   本机数据至 ~2025Q4;大陆服务器部署后可切 tsite 拿当前仓单。
+        _end = result["date"].iloc[-1].strftime("%Y-%m-%d")
+        api_output += (
+            f"# DATA_SOURCE: 交易所仓单日报(dailystock.dat,上期所/上期能源)\n"
+            f"# DATA_END: {_end}(旧版 .dat 端点截止;2026 年起交易所迁移新站,"
+            f"需大陆服务器访问 tsite 获取当前仓单)\n"
+        )
+
+    # 【关键】缓存本次结果(东财或交易所回退源皆缓存;hybrid 合并每次现读外部 JSON,故缓存的是
+    #   合并前的仓单 CSV——外部数据更新时仍能即时反映,不依赖缓存过期)。
+    _inventory_cache[cache_key] = (time.time(), api_output)
+    _inventory_cache_save(code, api_output)
 
     # --- Hybrid injection: merge with external social/mill inventory if available ---
     # 【Hybrid Mode 回退逻辑(库存)】
