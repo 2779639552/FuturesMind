@@ -44,7 +44,6 @@ PDF+MD export, LLM config panel, real-time token stats, dynamic paths.
 
 import glob  # 【调用包】批量路径匹配(如 batch_*.jsonl 文件列举)
 import io  # 【调用包】内存字节流(BytesIO,PDF 下载响应)
-from collections import defaultdict  # 【调用包】字典计数(缺失键自动给默认值,非标数据聚合用)
 import json  # 【调用包】JSON 序列化/反序列化(配置、行情缓存、批次文件)
 import logging  # 【调用包】日志记录(报告落盘异常等)
 import os  # 【调用包】路径/环境变量操作
@@ -53,10 +52,11 @@ import secrets  # 【调用包】生成安全 token 与 secret_key
 import sys  # 【调用包】模块搜索路径调整、解释器路径获取
 import threading  # 【调用包】后台线程与进度锁
 import time  # 【调用包】耗时统计与轮询间隔
+from collections import defaultdict  # 【调用包】字典计数(缺失键自动给默认值,非标数据聚合用)
 from datetime import datetime, timedelta  # 【调用包】日期解析与时间窗计算
 from functools import wraps  # 【调用包】保留被装饰函数元数据(鉴权装饰器)
-from urllib.parse import urlparse  # 【调用包】URL 域名解析(platform 缺失时按 url 推断平台)
 from pathlib import Path  # 【调用包】路径对象操作(目录扫描/文件拼接)
+from urllib.parse import urlparse  # 【调用包】URL 域名解析(platform 缺失时按 url 推断平台)
 
 from dotenv import load_dotenv  # 【调用包】加载 .env 环境变量
 from flask import (
@@ -77,8 +77,14 @@ load_dotenv()  # 【调用函数】读取 .env 中的环境变量(API key、LLM 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import contextlib  # noqa: E402  # 【调用包】上下文管理(异常抑制 suppress)
-from langchain_core.messages import HumanMessage  # noqa: E402  # 【调用包】LangChain 消息类型,构造 Agent 图初始对话
-from commodity_demo import build_commodity_graph  # noqa: E402  # 【调用包】构建 LangGraph 多分析师图
+
+from langchain_core.messages import (  # noqa: E402  # 【调用包】LangChain 消息类型,构造 Agent 图初始对话
+    HumanMessage,
+)
+
+from commodity_demo import (  # noqa: E402  # 【调用包】构建 LangGraph 多分析师图
+    build_commodity_graph,
+)
 
 # New imports for v2.6
 from database import get_db  # noqa: E402  # 【调用包】SQLite 存取(自选/交易信号/告警/用户)
@@ -118,11 +124,21 @@ from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调�
     VARIETY_METADATA,
     get_futures_price,
 )
-from tradingagents.dataflows.config import set_config  # noqa: E402  # 【调用包】把配置同步到全局(供 Agent 图/LLM 读取)
-from tradingagents.dataflows.evolution_memory import get_evolution_context  # noqa: E402  # 【调用包】读取进化记忆(历史学习上下文)
-from tradingagents.dataflows.sentiment_data import should_include_sentiment  # noqa: E402  # 【调用包】质量感知判定:自身质量合格或板块复合可用才启用情绪分析师
-from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402  # 【调用包】默认配置(LLM provider/模型名)
-from tradingagents.llm_clients import create_llm_client  # noqa: E402  # 【调用包】创建 LLM 客户端(辩论接口用)
+from tradingagents.dataflows.config import (  # noqa: E402  # 【调用包】把配置同步到全局(供 Agent 图/LLM 读取)
+    set_config,
+)
+from tradingagents.dataflows.evolution_memory import (  # noqa: E402  # 【调用包】读取进化记忆(历史学习上下文)
+    get_evolution_context,
+)
+from tradingagents.dataflows.sentiment_data import (  # noqa: E402  # 【调用包】质量感知判定:自身质量合格或板块复合可用才启用情绪分析师
+    should_include_sentiment,
+)
+from tradingagents.default_config import (  # noqa: E402  # 【调用包】默认配置(LLM provider/模型名)
+    DEFAULT_CONFIG,
+)
+from tradingagents.llm_clients import (  # noqa: E402  # 【调用包】创建 LLM 客户端(辩论接口用)
+    create_llm_client,
+)
 
 # ------------------------------------------------------------------
 # Flask 应用初始化
@@ -683,7 +699,7 @@ def _iter_batch_records():
     seen = set()  # 【变量】note_id 去重集合(同一帖在多个批次文件里只算一次)
     for fpath in sorted(glob.glob(str(THINK2_OUTPUT / "batch_*.jsonl"))):  # 【调用包】glob:批量匹配批次文件
         try:
-            f = open(fpath, encoding="utf-8")
+            f = open(fpath, encoding="utf-8")  # noqa: SIM115  # 单独 open 以便跳过打不开的文件; with f: 已保证关闭
         except Exception:
             continue
         with f:
@@ -1808,7 +1824,7 @@ def api_update_data():
                     holder = {}  # 【变量】跨线程容器:各平台子进程结果写 holder["res"],异常写 holder["err"]
 
                     # 【功能】在后台线程里顺序跑各平台采集子进程,结果/异常写入 holder 容器,避免阻塞 SSE 生成器。
-                    def _run_collect():
+                    def _run_collect(venv_py=venv_py, holder=holder):
                         results = []  # 【变量】各平台采集结果列表: [(platform, subprocess.CompletedProcess|None), ...]
                         for _p in platforms:  # 【关键逻辑】多平台顺序采集(原只采 platforms[0])
                             _cmd = [
@@ -1883,7 +1899,10 @@ def api_update_data():
                         for line in lines:
                             if any(
                                 kw in line.lower()
-                                for kw in ["complete", "total notes", "done", "error"]
+                                for kw in [
+                                    "complete", "total notes", "done", "error",
+                                    "采集失败", "凭证", "重新登录", "未采集到",
+                                ]
                             ):
                                 yield f"data: {json.dumps({'type': 'log', 'msg': line.strip()[:200]}, ensure_ascii=False)}\n\n"
 
@@ -1892,7 +1911,9 @@ def api_update_data():
                     if not THINK2_DIR or not THINK2_DIR.exists():
                         continue
                     sys.path.insert(0, str(THINK2_DIR))
-                    from platforms.weibo_adapter import _parse_fans_count  # 【调用包】微博适配器:粉丝数字符串解析
+                    from platforms.weibo_adapter import (
+                        _parse_fans_count,  # 【调用包】微博适配器:粉丝数字符串解析
+                    )
 
                     fixed_total = 0
                     for bf in sorted(THINK2_OUTPUT.glob("batch_*.jsonl")):
@@ -2476,7 +2497,10 @@ def api_apply_risk():
     if not trades_raw or (not stop_loss and not trail_stop):
         return jsonify({"trades": trades_raw})
 
-    from signal_analyzer import _load_price as _lpr, apply_risk_management as _arm  # 【调用包】价格加载与风控计算(信号分析器内部接口)
+    from signal_analyzer import (  # 【调用包】价格加载与风控计算(信号分析器内部接口)
+        _load_price as _lpr,
+        apply_risk_management as _arm,
+    )
 
     px_data = _lpr(variety)  # 【调用函数】加载真实价格数据(信号分析器内部接口)
     prices = px_data.get("prices", []) if px_data else []

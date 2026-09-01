@@ -339,6 +339,16 @@ DEFAULT_KEYWORDS = {  # 【变量】平台名→默认关键词列表映射 (按
     "eastmoney_guba": DEFAULT_KEYWORDS_EASTMONEY_GUBA,
 }
 
+# 凭证失效时的重登录指引 (2026-09-01): 采集失败诊断块按平台输出下一步操作。
+AUTH_GUIDANCE = {  # 【变量】平台名→重登录指引 (无对应登录脚本的平台给手动指引)
+    "_default": "查看该平台登录方式并重新登录后再采集",
+    "zhihu": "运行 python zhihu_login.py 重新登录(扫码/验证码)",
+    "weibo": "运行 python weibo_login.py 重新登录更新 Cookie",
+    "xueqiu": "更新 credentials/xueqiu_cookie.txt(需手动从浏览器复制新 Cookie)",
+    "eastmoney_guba": "重新登录东方财富股吧并更新会话凭证",
+    "xhs": "检查小红书登录状态并重新登录",
+}
+
 
 # ============================================================
 # 数据结构
@@ -366,6 +376,7 @@ class CollectStats:
     detail_fetched: int = 0
     detail_failed: int = 0
     rate_limits_hit: int = 0
+    auth_failures: int = 0  # 【变量】凭证类失败次数(登录态失效/过期), 用于结尾诊断提示
     errors: list = field(default_factory=list)
 
 
@@ -509,10 +520,11 @@ class MultiPlatformCollector:
             items = self.adapter.search(keyword, count)  # 【调用函数】平台适配器搜索接口 (发请求前已wait遵守延时)
         except Exception as e:
             logger.error(f"Search failed for '{keyword}': {e}")
-            # classify_error 把异常归类为 rate_limit 或其他, 决定退避策略
-            self.limiter.report_failure(
-                is_rate_limit=(self.adapter.classify_error(e) == "rate_limit")
-            )
+            # classify_error 把异常归类为 rate_limit/auth/other, 决定退避策略与结尾诊断
+            _cat = self.adapter.classify_error(e)  # 【变量】异常分类(rate_limit/auth/other)
+            self.limiter.report_failure(is_rate_limit=(_cat == "rate_limit"))
+            if _cat == "auth":
+                self.stats.auth_failures += 1  # 【变量】凭证类失败计数(结尾提示重新登录)
             return []
 
         if not items:
@@ -788,6 +800,20 @@ class MultiPlatformCollector:
         print(f"  Rate limits hit: {self.stats.rate_limits_hit}")
         print(f"  Output: {self.output_file}")
         print(f"{'=' * 60}")
+
+        # ══ 采集失败诊断与引导 (2026-09-01): 不静默跳过 ══
+        # 凭证失效或整平台零数据时, 给出原因与下一步, 便于用户自助修复;
+        # 诊断行以 ⚠️ 开头, web 端一键更新会据此透传到前端。
+        if self.stats.auth_failures:
+            print(f"\n⚠️  采集失败: 登录凭证失效/过期 ({self.adapter.display_name})")
+            print(f"    {self.stats.auth_failures} 个关键词请求被判定为凭证问题。")
+            print(f"    处理: {AUTH_GUIDANCE.get(self.platform_name, AUTH_GUIDANCE['_default'])}")
+        elif total_notes == 0:
+            print(f"\n⚠️  未采集到任何数据 ({self.adapter.display_name})")
+            print("    可能原因:")
+            print("    1) 登录凭证过期/失效 → 重新登录后重试")
+            print("    2) 网络/反爬限制 → 稍后重试或更换网络")
+            print("    3) 关键词在本平台确实无内容 → 换关键词试试")
 
         return []
 

@@ -81,7 +81,7 @@ class ZhihuAdapter(PlatformAdapter):
         - 依赖 playwright 包，未安装或登录态文件缺失时抛 CredentialError 并给出指引。
         """
         try:
-            from playwright.sync_api import sync_playwright  # 【调用包】Playwright 同步 API(驱动 Chromium)
+            from playwright.sync_api import sync_playwright  # noqa: I001  # 【调用包】Playwright 同步 API(驱动 Chromium)
         except ImportError:
             raise CredentialError(
                 "Playwright not installed.\n"
@@ -109,6 +109,23 @@ class ZhihuAdapter(PlatformAdapter):
             storage_state=storage_state,  # 注入登录态
         )
         self._page = self._context.new_page()  # 【调用函数】创建新页面(搜索/详情都在此执行)
+
+        # 登录有效性校验 (2026-09-01): 访问知乎首页, 若被重定向到 /signin 说明
+        # 登录态已失效(账号过期/Cookie 过期), 立即抛出 CredentialError 由
+        # batch_collect 提示用户重新登录, 而不是带着坏会话静默空采。
+        try:
+            self._page.goto("https://www.zhihu.com/", wait_until="domcontentloaded", timeout=20000)
+            if "/signin" in self._page.url:
+                raise CredentialError(
+                    "知乎登录态已失效(账号过期或 Cookie 过期).\n"
+                    "请重新登录: 在项目目录运行 python zhihu_login.py, "
+                    "完成登录后再采集。"
+                )
+        except CredentialError:
+            raise
+        except Exception as _probe_err:  # noqa: BLE001  网络抖动等不误判, 交给搜索阶段处理
+            logger.warning(f"Zhihu login probe failed (continue): {_probe_err}")
+
         logger.info("Zhihu browser started (headless)")
 
     def close(self) -> None:

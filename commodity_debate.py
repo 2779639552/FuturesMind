@@ -38,7 +38,9 @@ import logging  # 【调用包】日志记录(辩论进度/异常)
 
 from langchain_core.messages import HumanMessage  # 【调用包】LLM 消息对象(把提示词封装为人类消息)
 
-from tradingagents.agents.analysts.commodity_analysts import _run_tool_loop  # 【调用包】工具调用循环(LLM 可反复请求调用工具查证)
+from tradingagents.agents.analysts.commodity_analysts import (
+    _run_tool_loop,  # 【调用包】工具调用循环(LLM 可反复请求调用工具查证)
+)
 from tradingagents.agents.utils.commodity_futures_tools import (  # 【调用包】期货数据工具集(实时行情/核价/技术指标/情绪/品种信息)
     get_futures_indicators,
     get_futures_price,

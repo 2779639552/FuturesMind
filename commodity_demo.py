@@ -55,9 +55,10 @@ Examples:
 #     discussion_summary)也是 Web 端展示所需的关键数据结构。
 #
 # 关键设计点:
-#   - 双 LLM 分工(v2.4):分析师/辩论用 "quick_llm"(快而省),情景用
-#     "deep_llm"(质量更高);综合研判 2026-09-01 起改用 quick_llm(flash)提速
-#     (该节点单次调用占全流程约 40% 时长)。
+#   - 双 LLM 分工(v2.4):分析师/辩论/综合研判/情景用 "quick_llm"(快而省),
+#     deep_llm 现仅用于用户反馈节点。综合研判 2026-09-01 由 deep 改 quick;
+#     情景分析同日由 deep 改 quick(2026-09-01 实测:综合研判~15%、情景~18%,
+#     原"综合研判占 40%"判断有误,两节点均非唯一瓶颈)。
 # ===========================================================================
 
 import logging  # 【调用包】日志(进度/异常;basicConfig 控制输出级别)
@@ -75,8 +76,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 【调用函�
 
 import contextlib  # noqa: E402  # 【调用包】上下文管理(suppress 吞掉参数类型错误)
 
-from langchain_core.messages import HumanMessage  # noqa: E402  # 【调用包】LLM 消息对象(起始消息/历史消息)
-from langgraph.graph import END, START, StateGraph  # noqa: E402  # 【调用包】LangGraph 图构建(节点/边/起止标记)
+from langchain_core.messages import (  # noqa: E402  # 【调用包】LLM 消息对象(起始消息/历史消息)
+    HumanMessage,
+)
+from langgraph.graph import (  # noqa: E402  # 【调用包】LangGraph 图构建(节点/边/起止标记)
+    END,
+    START,
+    StateGraph,
+)
 
 from commodity_debate import (  # noqa: E402  # 【调用包】辩论节点工厂(多方/空方/主持人)
     create_bear_debater,
@@ -91,16 +98,28 @@ from tradingagents.agents.analysts.commodity_analysts import (  # noqa: E402  # 
 from tradingagents.agents.analysts.sentiment_analyst import (  # noqa: E402  # 【调用包】情绪分析师节点工厂
     create_commodity_sentiment_analyst,
 )
-from tradingagents.agents.utils.agent_states import AgentState  # noqa: E402  # 【调用包】图共享状态类型定义(状态字段契约)
-from tradingagents.agents.utils.user_feedback_agent import create_user_feedback_node  # noqa: E402  # 【调用包】用户反馈(自我进化)节点工厂
-from tradingagents.dataflows.commodity_futures import get_variety_info  # noqa: E402  # 【调用包】品种信息获取(规格/保证金/交易时段)
-from tradingagents.dataflows.config import set_config  # noqa: E402  # 【调用包】全局配置注入(供 tradingagents 各模块读取)
+from tradingagents.agents.utils.agent_states import (  # noqa: E402  # 【调用包】图共享状态类型定义(状态字段契约)
+    AgentState,
+)
+from tradingagents.agents.utils.user_feedback_agent import (  # noqa: E402  # 【调用包】用户反馈(自我进化)节点工厂
+    create_user_feedback_node,
+)
+from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】品种信息获取(规格/保证金/交易时段)
+    get_variety_info,
+)
+from tradingagents.dataflows.config import (  # noqa: E402  # 【调用包】全局配置注入(供 tradingagents 各模块读取)
+    set_config,
+)
 from tradingagents.dataflows.evolution_memory import (  # noqa: E402  # 【调用包】进化记忆(读取历史反馈/存储预测结果)
     get_evolution_context,
     store_prediction,
 )
-from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402  # 【调用包】默认配置字典(LLM 提供方/模型名等)
-from tradingagents.llm_clients import create_llm_client  # noqa: E402  # 【调用包】LLM 客户端工厂(按 provider 创建)
+from tradingagents.default_config import (  # noqa: E402  # 【调用包】默认配置字典(LLM 提供方/模型名等)
+    DEFAULT_CONFIG,
+)
+from tradingagents.llm_clients import (  # noqa: E402  # 【调用包】LLM 客户端工厂(按 provider 创建)
+    create_llm_client,
+)
 
 logging.basicConfig(level=logging.WARNING)  # Keep logger quiet; use progress_callback for output  # 【调用函数】设置根日志级别为 WARNING(保持输出安静,进度走回调)
 logger = logging.getLogger(__name__)  # 【变量】模块日志器
@@ -275,7 +294,7 @@ def create_synthesis_node(llm):
     # 【功能】创建"综合研判"图节点:把四份分析师报告 + 圆桌/辩论纪要综合成最终推荐。
     #          核心产出是首行机器可解析的评级头: RATING: [强烈看多/偏多/中性/偏空/强烈看空]
     #          | CONFIDENCE: [高/中/低] | SCORE: [0-10],同时要求模型按"证据强度"动态加权。
-    # 【参数】llm: 语言模型客户端(通常是 deep_llm,质量优先)。
+    # 【参数】llm: 语言模型客户端(2026-09-01 起为 quick_llm/flash,原 deep_llm)。
     # 【返回】node: 符合 LangGraph 节点签名的闭包函数 node(state) -> dict。
     # 【关键逻辑】提示词要求模型用 Evidence Strength = 信号清晰度×数据具体性×共识度×时效性
     #           给四维度打分并归一化为权重(总和=10),还内置多种特殊规则(如情绪与价格背离
@@ -311,19 +330,19 @@ def create_synthesis_node(llm):
 ---
 
 **TECHNICAL ANALYSIS**:
-{technical[:3000] if technical else "Not available."}
+{technical[:1500] if technical else "Not available."}
 
 **FUNDAMENTAL ANALYSIS (Supply/Demand/Basis/Inventory)**:
-{fundamental[:3000] if fundamental else "Not available."}
+{fundamental[:1500] if fundamental else "Not available."}
 
 **MACRO & POLICY ANALYSIS**:
-{macro[:3000] if macro else "Not available."}
+{macro[:1500] if macro else "Not available."}
 
 **SENTIMENT ANALYSIS (Social Media / Market Psychology)**:
-{sentiment[:2000] if sentiment else "Not available."}
+{sentiment[:1000] if sentiment else "Not available."}
 
 **ROUNDTABLE DISCUSSION SUMMARY**:
-{discussion[:2000] if discussion else "Not available."}
+{discussion[:1000] if discussion else "Not available."}
 
 ---
 
@@ -461,7 +480,7 @@ def create_scenario_node(llm):
     # 【功能】创建"情景分析"图节点:在综合研判给出基准结论之后,用"牛市/基准/熊市"
     #          三种情景对其进行压力测试,要求模型给每个情景分配概率(总和必须为 100%),
     #          并说明触发条件、目标价位、证伪条件与概率分配理由。
-    # 【参数】llm: 语言模型客户端(通常是 deep_llm,质量优先)。
+    # 【参数】llm: 语言模型客户端(2026-09-01 起为 quick_llm/flash,原 deep_llm)。
     # 【返回】node: 符合 LangGraph 节点签名的闭包函数 node(state) -> dict。
     # 【关键逻辑】对应 TradingAgents 原始框架中 "研究→交易员→风控→PM" 的多层决策思想:
     #           综合研判产出的是"基准情景",本节点负责校验该基准是否经得起牛熊两端的考验。
@@ -579,16 +598,18 @@ def build_commodity_graph(
     #                 -> bull_rebuttal(多方再反驳,拥有最后发言权)
     #                 -> debate_moderator(主持人裁决)
     #                 -> synthesis(综合研判) -> scenario_analysis(三情景) -> END
-    #           其中分析师/辩论/综合研判用 quick_llm(快而省),情景用 deep_llm(质量更高),
-    #           这是 v2.4 引入的"双 LLM 分工";综合研判 2026-09-01 起由 deep 改 quick 提速。
+    #           其中分析师/辩论/综合研判/情景分析用 quick_llm(快而省),
+    #           deep_llm 仅剩"用户反馈(自我进化)"节点使用;
+    #           这是 v2.4 引入的"双 LLM 分工";综合研判 2026-09-01 由 deep 改 quick,
+    #           情景分析同日由 deep 改 quick(实测显示情景才是占 ~18% 的慢节点之一)。
 
-    # Dual LLM: quick for analysts/debate/synthesis, deep for scenario (synthesis switched to quick 2026-09-01)
-    # quick_llm —— 快而省,用于分析师与辩论(高频、量大,不需要最高质量)
-    quick_llm = create_llm_client(  # 【调用函数】创建 quick_llm(分析师/辩论用,快而省)
+    # Dual LLM: quick for analysts/debate/synthesis/scenario, deep only for feedback
+    # quick_llm —— 快而省,用于分析师/辩论/综合研判/情景(高频、量大,不需要最高质量)
+    quick_llm = create_llm_client(  # 【调用函数】创建 quick_llm(分析师/辩论/综合/情景用,快而省)
         config["llm_provider"],
         config.get("quick_think_llm", config["deep_think_llm"]),  # 若未配置 quick 模型则回退到 deep 模型
     ).get_llm()
-    deep_llm = create_llm_client(  # deep_llm —— 质量优先,用于关键决策(综合研判/情景分析)  # 【调用函数】创建 deep_llm(综合研判/情景用,质量优先)
+    deep_llm = create_llm_client(  # deep_llm —— 质量优先,现仅用于用户反馈(自我进化)节点  # 【调用函数】创建 deep_llm(反馈节点用,质量优先)
         config["llm_provider"],
         config["deep_think_llm"],
     ).get_llm()
@@ -620,10 +641,11 @@ def build_commodity_graph(
     moderator_node = create_debate_moderator(quick_llm)  # Judge —— 主持人裁决  # 【调用函数】创建主持人裁决节点
 
     # Key decision nodes
-    # 综合研判改为 quick_llm(flash):该节点单次调用占全流程约 40% 时长,降为 flash 显著提速;
-    # 情景分析仍用 deep_llm(pro)保证压力测试质量。
+    # 综合研判/情景分析均用 quick_llm(flash):2026-09-01 实测(measure_stage_timing)
+    # 显示综合研判自身仅占 ~15%、情景分析(v4-pro)占 ~18%,两节点各约 74s/92s;
+    # 此前"综合研判占 40%"判断有误。故情景分析 2026-09-01 同步由 deep 改 quick 提速。
     synthesis_node = create_synthesis_node(quick_llm)  # 【调用函数】创建综合研判节点(quick_llm 提速)
-    scenario_node = create_scenario_node(deep_llm)  # 【调用函数】创建三情景分析节点(deep_llm 质量优先)
+    scenario_node = create_scenario_node(quick_llm)  # 【调用函数】创建三情景分析节点(quick_llm 提速,原 deep)
     # 用户反馈(自我进化)节点:在分析结束后与用户讨论,并把心得写入进化记忆
     feedback_node = create_user_feedback_node(  # 【调用函数】创建用户反馈(自我进化)节点
         deep_llm,
