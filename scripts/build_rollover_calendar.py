@@ -20,7 +20,7 @@
 
 数据源说明:
     新浪逐合约日线 futures_zh_daily_sina(symbol="JD2607") 返回 date/OHLCV/hold/settle。
-    逐合约拉取约 7~8 分钟(53 品种 × 24 合约)。单品种拉取失败只跳过该合约,不中断整体。
+    逐合约拉取约 7~8 分钟(52 品种 × 24 合约)。单品种拉取失败只跳过该合约,不中断整体。
 
 关键实现细节(幽灵数据过滤):
     新浪对部分品种(郑商所 TA/MA/PF 等、上海国际能源 SC/INE)存在"合约代码复用":
@@ -56,7 +56,7 @@ sys.path.insert(0, r"C:/Users/19168/Desktop/思路2/validate")  # 【调用函�
 from path_utils import (  # noqa: E402  # 【调用包】跨模块路径解析(定位 trends 目录)
     resolve_think2_dir,
 )
-from price_fetcher import (  # noqa: E402  # 【调用包】品种中文名 → 主连代码(53 品种)
+from price_fetcher import (  # noqa: E402  # 【调用包】品种中文名 → 主连代码(52 品种)
     VARIETY_SYMBOLS,
 )
 

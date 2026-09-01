@@ -13,18 +13,19 @@
 # 【路由分组】(按文件中出现顺序)
 #   1) 实时行情:   /api/live-prices、/api/price/update、/api/price/<品种>
 #   2) 情绪数据:   /api/sentiment/<品种>、/api/sentiment_posts、/api/overlay/<品种>
-#   3) 主页面:     / 、/test
-#   4) 分析工具:   /api/run_analysis(SSE 流式) + /api/progress 轮询 +
+#   3) 数据看板:   /api/dashboard/<品种>、/api/dashboard/sector/<板块>(仓单/库存/价格/基差 + 关联分析)
+#   4) 主页面:     / 、/test
+#   5) 分析工具:   /api/run_analysis(SSE 流式) + /api/progress 轮询 +
 #                  /api/pause /api/resume /api/stop /api/feedback,
 #                  /api/analysis_results、/api/backtest、/api/history、/api/compare
-#   5) 报告导出:   /api/report/<文件>/pdf、/api/report/<文件>/md
-#   6) 配置:       /api/config
-#   7) 数据更新:   /api/update_data(SSE 流水线)
-#   8) 数据库 / 调度器 / 鉴权: /api/db/*、/api/scheduler/*、/api/auth/*
-#   9) 分析接口:   /api/analysis/*(异常、背离、领先滞后、作者、事件、排名、跨平台)
-#   10) 自选:      /api/watchlist
-#   11) 模拟交易:  /api/trading/*(20+ 条策略路由,含风控与多策略对比)
-#   12) Agent 验证: /api/batch_backtest/*、/api/agent_validation/*
+#   6) 报告导出:   /api/report/<文件>/pdf、/api/report/<文件>/md
+#   7) 配置:       /api/config
+#   8) 数据更新:   /api/update_data(SSE 流水线)
+#   9) 数据库 / 调度器 / 鉴权: /api/db/*、/api/scheduler/*、/api/auth/*
+#   10) 分析接口:  /api/analysis/*(异常、背离、领先滞后、作者、事件、排名、跨平台)
+#   11) 自选:      /api/watchlist
+#   12) 模拟交易:  /api/trading/*(20+ 条策略路由,含风控与多策略对比)
+#   13) Agent 验证: /api/batch_backtest/*、/api/agent_validation/*
 #
 # 【与其它模块的协同】
 #   · signal_analyzer.py —— 情绪/价格信号与各类模拟交易策略的实现,被本文件直接调用。
@@ -122,6 +123,8 @@ from signal_analyzer import (  # noqa: E402  # 【调用包】情绪/价格信�
 )
 from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】品种元数据与 AKShare 行情获取
     VARIETY_METADATA,
+    get_futures_basis,
+    get_futures_inventory,
     get_futures_price,
 )
 from tradingagents.dataflows.config import (  # noqa: E402  # 【调用包】把配置同步到全局(供 Agent 图/LLM 读取)
@@ -199,10 +202,15 @@ def get_page_template():
 # 【功能】根据品种代码从 VARIETY_METADATA 取中文板块名(如"黑色系")。
 # 【参数】code: 品种代码(如 "RB")。
 # 【返回】板块中文名;查不到时返回 "其他"。
+# 【关键】与 build_sector_to_varieties 同口径:剥括号子板块("有色(贵金属)"→"有色"),
+#   保证 /api/dashboard/sector/<sector> 的板块 key 与前端 meta.sector 一致。
 def _get_sector(code: str) -> str:
     """Get sector name dynamically from VARIETY_METADATA."""
     meta = VARIETY_METADATA.get(code, {})
-    return meta.get("sector_cn", "其他")
+    sector_cn = (meta.get("sector_cn") or "").strip()
+    if not sector_cn:
+        return "其他"
+    return re.sub(r"[（(].*?[)）]", "", sector_cn).strip()
 
 
 # ── Progress Tracker (thread-safe, adapted from astock-ref) ────────────────────
@@ -905,6 +913,184 @@ def _adjusted_price_points(result: str, variety_name: str | None = None) -> tupl
     return [{"date": p["date"], "close": p["close"]} for p in adj], roll_dates, method
 
 
+# 【功能】解析 get_futures_inventory() 返回的仓单库存 CSV 文本 → [{date, inventory, change}]。
+# 【关键】CSV 三列 date,inventory,change(东财 futures_inventory_em 输出);行首可能带 '#' 的趋势/合并注释,
+#   与英文表头逐行跳过;inventory 列非数值的行丢弃。合并后的 Hybrid 结果若列数更多,只取前三列。
+# 【返回】解析出的仓单序列(可能为空列表)。
+def _inventory_points(csv_text: str) -> list[dict]:
+    points = []
+    for line in csv_text.strip().split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3 or parts[0].lower() == "date":  # 跳过英文表头(Column: date,inventory,change)
+            continue
+        try:
+            inventory = float(parts[1])
+        except ValueError:
+            continue  # 【关键】数值列非法 → 跳过该行(合并文本/说明行)
+        points.append({
+            "date": parts[0],
+            "inventory": inventory,
+            "change": parts[2],
+        })
+    return points
+
+
+# 【功能】解析 get_futures_basis() 返回的基差 CSV 文本 → [{date, spot_price, near_basis, near_basis_rate}]。
+# 【关键】CSV 表头是英文列名(akshare futures_spot_price_daily 经 col_map 重命名后 to_csv),列集随品种变化
+#   (主力/近月列在品种无对应合约时缺失);按表头列名定位,缺列与空值统一为 None,避免列序漂移。
+# 【返回】解析出的基差序列(可能为空列表)。
+def _basis_points(csv_text: str) -> list[dict]:
+    lines = [ln for ln in csv_text.strip().split("\n") if ln.strip() and not ln.lstrip().startswith("#")]
+    if not lines:
+        return []
+    header = [h.strip() for h in lines[0].split(",")]
+    idx = {name: i for i, name in enumerate(header)}
+
+    def _col(row, name):  # 【变量】取列值(缺列/越界/空 → None)
+        i = idx.get(name)
+        if i is None or i >= len(row):
+            return None
+        v = row[i].strip()
+        return v or None
+
+    points = []
+    for ln in lines[1:]:
+        row = [c.strip() for c in ln.split(",")]
+        date = _col(row, "date")
+        if not date:
+            continue
+        point = {"date": date}
+        for key in ("spot_price", "near_basis", "near_basis_rate"):
+            v = _col(row, key)
+            try:
+                point[key] = float(v) if v is not None else None
+            except ValueError:
+                point[key] = None
+        points.append(point)
+    return points
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    """【功能】两等长序列的 Pearson 相关系数(长度<2 或方差为 0 时返回 None)。"""
+    n = len(xs)
+    if n < 2 or len(ys) != n:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
+    vx = sum((x - mx) ** 2 for x in xs)
+    vy = sum((y - my) ** 2 for y in ys)
+    if vx == 0 or vy == 0:
+        return None
+    return cov / (vx * vy) ** 0.5
+
+
+def _pct(a: float, b: float) -> float | None:
+    """【功能】百分比变化(b 为基准;基准为 0 或 None 时返回 None)。"""
+    if b is None or b == 0:
+        return None
+    return (a - b) / b * 100
+
+
+# 【功能】数据看板关联分析(纯函数):价格-库存 R / 库存趋势 / 基差 / 近 5 日背离检测。
+# 【参数】price=[{date, close}],inventory=[{date, inventory}],basis=[{date, near_basis, near_basis_rate}](均按日期升序)。
+# 【返回】dict:has_* 数据可用标记;price_inventory_r(日期内连接后的 Pearson R)+ret_inventory_r(变化率 R);
+#   inventory_trend(BUILDING/DRAINING/STABLE)+pct;basis_latest/basis_rate_latest;
+#   divergence={label, desc, price_chg_pct, inventory_chg_pct}。
+def _dashboard_relationships(
+    price: list[dict],
+    inventory: list[dict],
+    basis: list[dict],
+) -> dict:
+    result = {
+        "has_price": bool(price),
+        "has_inventory": bool(inventory),
+        "has_basis": bool(basis),
+    }
+
+    # 1) 价格-库存 Pearson R(按日期内连接;另给变化率 R 以去量纲)
+    result["price_inventory_r"] = None
+    result["price_inventory_n"] = 0
+    result["ret_inventory_r"] = None
+    if price and inventory:
+        inv_by_date = {p["date"]: p["inventory"] for p in inventory}
+        px, iv = [], []
+        for p in price:
+            inv = inv_by_date.get(p["date"])
+            if inv is not None:
+                px.append(p["close"])
+                iv.append(inv)
+        if len(px) >= 5:
+            result["price_inventory_r"] = round(_pearson(px, iv), 4)
+            result["price_inventory_n"] = len(px)
+        if len(px) >= 6:  # 【关键】变化率 R:close 日环比 vs 库存日环比,去掉量纲差异
+            px_chg = [_pct(a, b) for a, b in zip(px[1:], px[:-1], strict=True)]
+            iv_chg = [_pct(a, b) for a, b in zip(iv[1:], iv[:-1], strict=True)]
+            valid = [(a, b) for a, b in zip(px_chg, iv_chg, strict=True) if a is not None and b is not None]
+            if len(valid) >= 5:
+                result["ret_inventory_r"] = round(_pearson([a for a, _ in valid], [b for _, b in valid]), 4)
+
+    # 2) 库存趋势:近 5 日均 vs 更早 5 日均 → BUILDING/DRAINING/STABLE + %
+    result["inventory_trend"] = None
+    result["inventory_trend_pct"] = None
+    result["inventory_recent_avg"] = None
+    result["inventory_earlier_avg"] = None
+    if len(inventory) >= 10:
+        vals = [p["inventory"] for p in inventory]
+        recent = sum(vals[-5:]) / 5  # 【变量】近 5 日库存均值
+        earlier = sum(vals[-10:-5]) / 5  # 【变量】更早 5 日库存均值
+        if earlier > 0:
+            pct = _pct(recent, earlier)
+            trend = "BUILDING" if pct > 3 else ("DRAINING" if pct < -3 else "STABLE")
+            result["inventory_trend"] = trend
+            result["inventory_trend_pct"] = round(pct, 2)
+            result["inventory_recent_avg"] = round(recent, 0)
+            result["inventory_earlier_avg"] = round(earlier, 0)
+
+    # 3) 基差:最新基差率/基差;基差-价格 R(近 60 交易日,按日期内连接)
+    result["basis_latest"] = None
+    result["basis_rate_latest"] = None
+    result["basis_price_r"] = None
+    if basis:
+        last = basis[-1]
+        result["basis_latest"] = last.get("near_basis")
+        result["basis_rate_latest"] = last.get("near_basis_rate")
+        px_by_date = {p["date"]: p["close"] for p in price}
+        pairs = []
+        for b in basis[-60:]:
+            px = px_by_date.get(b["date"])
+            bs = b.get("near_basis")
+            if px is not None and bs is not None:
+                pairs.append((px, bs))
+        if len(pairs) >= 5:
+            result["basis_price_r"] = round(_pearson([a for a, _ in pairs], [b for _, b in pairs]), 4)
+
+    # 4) 近 5 交易日背离检测:价格方向 vs 库存方向
+    result["divergence"] = None
+    if len(price) >= 6 and len(inventory) >= 6:
+        px0, px1 = price[-5]["close"], price[-1]["close"]
+        iv0, iv1 = inventory[-5]["inventory"], inventory[-1]["inventory"]
+        price_up = px1 >= px0  # 【变量】近 5 日价格是否上涨
+        inv_up = iv1 >= iv0  # 【变量】近 5 日库存是否累加
+        if price_up and not inv_up:
+            label, desc = "健康上涨", "去库 + 上涨:供需偏紧,涨势有基本面支撑,持仓可继续持有。"
+        elif inv_up and not price_up:
+            label, desc = "健康下跌", "累库 + 下跌:供过于求,跌势与累库相互印证,空头逻辑成立。"
+        elif price_up and inv_up:
+            label, desc = "背离-虚涨", "累库 + 上涨:库存上升而价格不跌,警惕反弹的可持续性(虚涨),宜减仓观察。"
+        else:
+            label, desc = "背离-超跌", "去库 + 下跌:库存下降而价格走弱,或已超跌,注意抄底与需求崩塌的分野。"
+        result["divergence"] = {
+            "label": label,
+            "desc": desc,
+            "price_chg_pct": round(_pct(px1, px0) or 0.0, 2),
+            "inventory_chg_pct": round(_pct(iv1, iv0) or 0.0, 2),
+        }
+    return result
+
+
 # 【功能】获取品种日线价格,供前端画折线 / K 线。
 # 【参数】days=回看天数(默认 180,强制限制在 30~730)。
 # 【返回】{"_meta": {price_start, price_end, data_points, adjusted, rollover_dates}, "prices": [{date, close}, ...]}。
@@ -1001,6 +1187,122 @@ def api_overlay(variety):
     }
 
     return jsonify({"_meta": meta, "overlay": overlay})
+
+
+# 【功能】数据看板:一次返回品种的价格/仓单库存/基差 + 关联分析,供 tab-dashboard 渲染。
+# 【参数】days=回看天数(默认 180,范围 30~365)。
+# 【返回】{"_meta": {variety, name, sector, price_points, inventory_available, basis_available, ...},
+#           "price": [{date, close}], "inventory": {available, points, note},
+#           "basis": {available, points, note}, "analysis": {关联分析结果}}。
+# 【关键】价格走 _adjusted_price_points 后复权(与 /api/price、/api/overlay 口径一致);
+#   仓单库存/基差分别经 _inventory_points/_basis_points 解析,数据源不可用(DATA_*/NO_DATA_*)时优雅降级为
+#   available=false + note,不抛错。无仓单品种(SH/WR)、无基差品种(AO/CS/LC/SI)由此自然呈现空态。
+@app.route("/api/dashboard/<variety>")
+def api_dashboard(variety):
+    """Return price / inventory / basis series + relationship analysis for the dashboard tab."""
+    code = variety.upper()
+    days = request.args.get("days", 180, type=int)
+    days = max(30, min(days, 365))  # 【变量】回看天数钳制 30~365
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    # 价格:后复权收盘序列(换月口径与 /api/price 一致)
+    price_result = get_futures_price(code, start_date, end_date)  # 【调用函数】跨模块获取行情 CSV 文本
+    price, _, _ = _adjusted_price_points(price_result, code)  # 【调用函数】实时主连 → 后复权序列
+
+    # 仓单库存(东财 futures_inventory_em;SH/WR 等品种无数据 → 优雅降级)
+    inv = {"available": False, "points": [], "note": ""}
+    try:
+        inv_result = get_futures_inventory(code)  # 【调用函数】跨模块获取仓单库存 CSV 文本
+        if inv_result.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+            inv["note"] = inv_result
+        else:
+            inv_points = _inventory_points(inv_result)  # 【调用函数】解析仓单 CSV → 序列
+            if inv_points:
+                inv["available"] = True
+                inv["points"] = inv_points
+            else:
+                inv["note"] = "NO_DATA_AVAILABLE: 仓单库存无数据(该品种此接口不覆盖)"
+    except Exception as e:  # 【关键】网络/数据源异常不拖垮看板
+        logger.warning("dashboard inventory %s: %s", code, e)
+        inv["note"] = f"DATA_ERROR: {e}"
+
+    # 基差(akshare futures_spot_price_daily;AO/CS/LC/SI 等品种无数据 → 优雅降级)
+    basis = {"available": False, "points": [], "note": ""}
+    try:
+        basis_result = get_futures_basis(code, start_date, end_date)  # 【调用函数】跨模块获取基差 CSV 文本
+        if basis_result.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+            basis["note"] = basis_result
+        else:
+            basis_points = _basis_points(basis_result)  # 【调用函数】解析基差 CSV → 序列
+            if basis_points:
+                basis["available"] = True
+                basis["points"] = basis_points
+            else:
+                basis["note"] = "NO_DATA_AVAILABLE: 基差无数据(该品种此接口不覆盖)"
+    except Exception as e:
+        logger.warning("dashboard basis %s: %s", code, e)
+        basis["note"] = f"DATA_ERROR: {e}"
+
+    analysis = _dashboard_relationships(  # 【调用函数】纯函数关联分析(价格-库存 R/趋势/基差/背离)
+        price,
+        inv["points"] if inv["available"] else [],
+        basis["points"] if basis["available"] else [],
+    )
+    meta = {
+        "variety": code,
+        "name": VARIETY_METADATA.get(code, {}).get("name", code),
+        "sector": _get_sector(code),  # 【调用函数】板块归并(剥括号子板块)
+        "days": days,
+        "price_points": len(price),
+        "inventory_available": inv["available"],
+        "basis_available": basis["available"],
+        "inventory_note": inv["note"],
+        "basis_note": basis["note"],
+    }
+    return jsonify({"_meta": meta, "price": price, "inventory": inv, "basis": basis, "analysis": analysis})
+
+
+# 【功能】板块相关性总览:板块内各品种的价格-库存 Pearson R 汇总(前端按钮触发,不自动加载)。
+# 【返回】{"sector": 板块名, "count": 有效品种数, "rows": [{code, name, r, n, trend}, ...]}。
+# 【关键】循环板块内品种逐次拉价格+仓单库存(各 1 次网络请求),单品种数据不足 5 个点或仓库接口不可用时跳过;
+#   耗时与板块规模成正比(能化 19 品种 ≈ 38 次请求),前端需给加载态。
+@app.route("/api/dashboard/sector/<sector>")
+def api_dashboard_sector(sector):
+    from tradingagents.dataflows.sentiment_data import (
+        build_sector_to_varieties,  # 【调用包】板块→品种反向映射(延迟导入,避免循环依赖)
+    )
+
+    sector_map = build_sector_to_varieties()  # 【调用函数】构建板块归并映射
+    codes = sector_map.get(sector, [])
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+    rows = []
+    for code in codes:
+        try:
+            pr = get_futures_price(code, start_date, end_date)  # 【调用函数】获取行情 CSV
+            price, _, _ = _adjusted_price_points(pr, code)  # 【调用函数】后复权序列
+            ir = get_futures_inventory(code)  # 【调用函数】获取仓单库存 CSV
+            if ir.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                continue  # 【关键】无仓库数据的品种跳过(不记入汇总)
+            inv_points = _inventory_points(ir)  # 【调用函数】解析仓单序列
+            if len(inv_points) < 5:
+                continue  # 【关键】数据点不足 5 个 → R 无意义,跳过
+            rel = _dashboard_relationships(price, inv_points, [])  # 【调用函数】只取价格-库存 R 与趋势
+            r = rel.get("price_inventory_r")
+            if r is not None:
+                rows.append({
+                    "code": code,
+                    "name": VARIETY_METADATA.get(code, {}).get("name", code),
+                    "r": r,
+                    "n": rel["price_inventory_n"],
+                    "trend": rel.get("inventory_trend"),
+                })
+        except Exception as e:  # 【关键】单品种失败不拖垮整个板块
+            logger.warning("dashboard sector %s / %s: %s", sector, code, e)
+            continue
+    rows.sort(key=lambda row: row["r"] or 0)  # 【变量】按 R 升序(负相关在前)
+    return jsonify({"sector": sector, "count": len(rows), "rows": rows})
 
 
 # 【功能】读取思路2项目生成的回测结果(全局权重 + 各品种方向准确率)。

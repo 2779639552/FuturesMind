@@ -7,13 +7,13 @@
         本页只是 1 个 HTML 文件, 用 CSS 变量实现暗/亮主题, 用 ECharts 画图。
      8 个标签页 (由顶部导航 <nav id="nav"> 的 8 个按钮切换, 见 App.switchTab):
          tab-run       运行分析   —— 10 节点多智能体分析管线
-         tab-sentiment 情绪数据   —— 情绪得分/价格走势叠加图 + 采集帖子
+         tab-sentiment 情绪数据   —— 情绪得分/价格走势叠加图 + 采集帖子 + 情绪信号回测(并入)
          tab-analysis  分析工具   —— 异常检测/分歧度/领先滞后/作者/事件/Agent验证等
-         tab-backtest  回测       —— 平台预测力与品种方向准确率
          tab-trading   模拟交易   —— 各种策略的单卡回测 + 多策略对比
          tab-update    数据更新   —— 一键触发多平台采集更新
          tab-history   历史报告   —— 历史分析报告列表与查看/下载
          tab-system    系统       —— 定时调度/数据概览/告警/采集历史
+         tab-dashboard 数据看板   —— 仓单/库存/价格/基差展示与关联分析(2026-09-01 新增)
      图表库: ECharts (/static/echarts.min.js), 所有图表容器见 _initChart。
      Markdown 渲染: marked.js (/static/marked.min.js), 用于展示报告正文。
      主题: 暗色为主, 品牌色 #ff5a1f (橙色), 支持亮/暗切换 (localStorage 记忆)。
@@ -579,16 +579,17 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <span class="header-badge">v2.5</span>
   </div>
   <!-- 顶部导航: 8 个按钮对应 8 个标签页, data-tab 值 = 各 <div id="tab-xxx"> 的 xxx。
-       App._bindNav 会给每个按钮绑定点击事件 → App.switchTab(t) 完成切换(含懒加载)。 -->
+       App._bindNav 会给每个按钮绑定点击事件 → App.switchTab(t) 完成切换(含懒加载)。
+       2026-09-01: 回测并入情绪数据页, 新增数据看板(仓单/库存/价格关联分析)。 -->
   <nav id="nav">
     <button class="active" data-tab="run">运行分析</button>
     <button data-tab="sentiment">情绪数据</button>
     <button data-tab="analysis">分析工具</button>
-    <button data-tab="backtest">回测</button>
     <button data-tab="trading">模拟交易</button>
     <button data-tab="update">数据更新</button>
     <button data-tab="history">历史报告</button>
     <button data-tab="system">系统</button>
+    <button data-tab="dashboard">数据看板</button>
   </nav>
   <button class="theme-toggle" onclick="App.toggleTheme()" title="切换主题">
     <span id="theme-icon">🌙</span> <span id="theme-label">暗色</span>
@@ -751,15 +752,14 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     </h3>
     <div id="sentiment-posts">加载中...</div>
   </div>
-</div>
 
-<!-- ================================================================
-     TAB: Backtest
-     ================================================================ -->
-<!-- ============ 标签页 4: 回测 ============
-     做什么: 展示情绪信号的方向预测力回测结果 —— 各平台预测力(柱状图)、
-     品种级方向准确率(柱状图, 绿≥55%)与三个统计卡片(作者加权/简单平均/加权来源)。 -->
-<div id="tab-backtest" class="tab">
+  <!-- ============ 情绪信号回测 (2026-09-01 由独立 tab-backtest 并入本页) ============
+       做什么: 展示情绪信号的方向预测力回测结果 —— 各平台预测力(柱状图)、
+       品种级方向准确率(柱状图, 绿≥55%)与三个统计卡片(作者加权/简单平均/加权来源)。 -->
+  <div style="display:flex;align-items:center;gap:10px;margin:26px 0 12px">
+    <h2 style="margin:0">📊 情绪信号回测</h2>
+    <span style="font-size:0.75rem;color:var(--text-muted)">情绪方向预测力</span>
+  </div>
   <div class="expander" style="margin-bottom:14px">
     <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
       📖 指标说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
@@ -1244,6 +1244,63 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
   <div class="card"><h3>采集历史</h3><div id="collection-history" style="overflow-x:auto"></div></div>
 </div>
 
+<!-- ============ 标签页 8: 数据看板 (2026-09-01 新增) ============
+     做什么: 集中展示品种的 价格/仓单库存/基差 三类基本面数据, 并自动计算它们之间的关联
+     (价格-库存 Pearson R / 库存趋势 / 最新基差率 / 近 5 日背离检测);
+     「板块相关性总览」一键拉取板块内各品种的价格-库存 R 做横向对比。 -->
+<div id="tab-dashboard" class="tab">
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 指标说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>仓单库存</b>：交易所公布的仓单数量(东财 futures_inventory_em)。库存上升=供过于求压力, 下降=供需偏紧。<br>
+      <b>基差</b>：现货价 − 近月合约价。正基差(现货升水)通常偏多, 负基差(贴水)偏空。<br>
+      <b>Pearson R</b>：价格与库存的相关系数(日期内连接)。R&gt;0=价格随库存同向(库存/供给驱动); R&lt;0=价格与库存负相关(需求驱动)。<br>
+      <b>背离检测</b>：近 5 日价格方向 vs 库存方向。累库+上涨=虚涨警惕; 去库+下跌=可能超跌。<br>
+      <span style="color:var(--amber)">注: 部分品种接口不覆盖仓单(SH/WR)或基差(AO/CS/LC/SI), 对应卡片会提示而非报错。</span>
+    </div>
+  </div>
+
+  <!-- 品种与回看选择 -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+      <div style="flex:1;min-width:150px">
+        <label>品种</label>
+        <select id="dash-variety" onchange="App.loadDashboard()"></select>
+      </div>
+      <div style="flex:1;min-width:140px">
+        <label>回看天数</label>
+        <select id="dash-days" onchange="App.loadDashboard()">
+          <option value="60">60 天</option>
+          <option value="120">120 天</option>
+          <option value="180" selected>180 天</option>
+          <option value="365">1 年</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="App.loadDashboard()">刷新看板</button>
+      <button class="btn btn-green" id="btn-dash-sector" onclick="App.loadDashSector()">板块相关性总览</button>
+      <span style="font-size:0.78rem;color:var(--text-muted);padding-bottom:8px" id="dash-sector-label"></span>
+    </div>
+  </div>
+
+  <!-- 关联分析卡 -->
+  <div class="card" style="margin-bottom:16px" id="dash-analysis">
+    <h3>关联分析 <span class="badge badge-info" id="dash-badge"></span></h3>
+    <div style="font-size:0.86rem;color:var(--text-secondary);line-height:1.8" id="dash-analysis-body">加载中...</div>
+  </div>
+
+  <!-- 三张图 -->
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card"><h3>价格 vs 仓单库存</h3><div class="chart-container" id="chart-dash-pi" style="height:360px"></div></div>
+    <div class="card"><h3>基差 / 基差率</h3><div class="chart-container" id="chart-dash-basis" style="height:360px"></div></div>
+  </div>
+  <div class="card"><h3>仓单库存日变化</h3><div class="chart-container" id="chart-dash-inv-chg" style="height:300px"></div></div>
+
+  <!-- 板块相关性结果(按钮触发后显示) -->
+  <div class="card" style="margin-top:16px;display:none" id="dash-sector-panel"></div>
+</div>
+
 </main>
 
 <!-- ================================================================
@@ -1299,7 +1356,7 @@ const App = {
     document.addEventListener('keydown', (e) => {
       if (e.ctrlKey && e.key >= '1' && e.key <= '8') {
         e.preventDefault();
-        const tabs = ['run', 'sentiment', 'analysis', 'backtest', 'trading', 'update', 'history', 'system'];  // 【变量】Ctrl+1~8 快捷键对应的标签页顺序
+        const tabs = ['run', 'sentiment', 'analysis', 'trading', 'update', 'history', 'system', 'dashboard'];  // 【变量】Ctrl+1~8 快捷键对应的标签页顺序(回测并入情绪数据, 新增数据看板)
         this.switchTab(tabs[parseInt(e.key) - 1]);
       }
     });
@@ -1330,10 +1387,10 @@ const App = {
     if (navBtn) navBtn.classList.add('active');
 
     // Lazy load
-    if (t === 'sentiment') { this.loadOverlayChart(); this.loadSentimentPosts(); }
+    if (t === 'sentiment') { this.loadOverlayChart(); this.loadSentimentPosts(); this.loadBacktest(); }
     if (t === 'analysis') this.initAnalysisTab();
-    if (t === 'backtest') this.loadBacktest();
     if (t === 'trading') this.initTradingTab();
+    if (t === 'dashboard') this.loadDashboard();
     if (t === 'update') this.loadUpdateStats();
     if (t === 'history') this.loadHistory();
     if (t === 'system') this.loadSystemTab();
@@ -2127,7 +2184,8 @@ const App = {
     } catch (e) { /* ignore */ }
   },
 
-  // 【功能】「回测」标签页数据加载: 两幅柱状图(平台预测力 + 品种方向准确率)与三个统计卡片
+  // 【功能】情绪信号回测数据加载(2026-09-01 由独立 tab-backtest 并入情绪数据页):
+  //         两幅柱状图(平台预测力 + 品种方向准确率)与三个统计卡片
   // 【输入】无
   // 【渲染】#chart-platforms、#chart-varieties(绿≥55%红<55%)、#backtest-stats(作者加权/简单平均/加权来源)
   // 【后端】GET /api/backtest
@@ -2174,6 +2232,214 @@ const App = {
         <div class="card"><h3>简单平均</h3><div style="font-size:2rem;color:var(--text-secondary)">${((cmp.simple_avg?.direction_accuracy || 0) * 100).toFixed(1)}%</div><div style="font-size:0.78rem;color:var(--text-muted)">对照基准 (n=${cmp.simple_avg?.data_points || 0})</div></div>
         <div class="card"><h3>加权来源</h3><div style="font-size:1.1rem;color:var(--brand)">${d.weight_source || 'N/A'}</div><div style="font-size:0.78rem;color:var(--text-muted)">平台权重优化方法</div></div>`;
     } catch (e) { console.error(e); }
+  },
+
+  // ── Dashboard (数据看板) ──
+  // 【功能】加载品种级数据看板: 价格/仓单库存/基差三序列 + 关联分析(Pearson R/库存趋势/基差率/背离检测)
+  // 【输入】无 (读取 #dash-variety 品种与 #dash-days 回看天数)
+  // 【渲染】#dash-analysis 关联分析卡; #chart-dash-pi 价格-库存双轴图;
+  //         #chart-dash-basis 基差图; #chart-dash-inv-chg 库存变化柱状图
+  // 【后端】GET /api/dashboard/{variety}?days={days}
+  async loadDashboard() {
+    this._populateVarietySelects(['dash-variety']);  // 【关键】首次进入本页才填充下拉(懒加载); 后续只读不重填
+    const sym = (document.getElementById('dash-variety')?.value || 'RB').toUpperCase();
+    const days = document.getElementById('dash-days')?.value || 180;  // 【变量】回看天数(默认 180)
+    const body = document.getElementById('dash-analysis-body');
+    const badge = document.getElementById('dash-badge');
+    if (body) body.innerHTML = '加载中...';
+    try {
+      const r = await fetch(`/api/dashboard/${sym}?days=${days}`);  // 【调用函数】后端接口: 品种级看板(价格+仓单+基差+关联分析)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const meta = d._meta || {};
+      const an = d.analysis || {};
+
+      // ── 关联分析卡 ──
+      const trendHtml = an.inventory_trend
+        ? (an.inventory_trend === 'BUILDING'
+            ? `<span style="color:var(--red);font-weight:700">累库 ${an.inventory_trend_pct > 0 ? '+' : ''}${an.inventory_trend_pct}%</span>`
+            : an.inventory_trend === 'DRAINING'
+              ? `<span style="color:var(--green);font-weight:700">去库 ${an.inventory_trend_pct > 0 ? '+' : ''}${an.inventory_trend_pct}%</span>`
+              : `<span style="color:var(--amber);font-weight:700">库存平稳 ${an.inventory_trend_pct > 0 ? '+' : ''}${an.inventory_trend_pct}%</span>`)
+        : '—';
+      const rHtml = an.price_inventory_r == null ? '—' : an.price_inventory_r.toFixed(3);
+      const rColor = an.price_inventory_r == null ? 'var(--text-muted)'
+        : (an.price_inventory_r > 0.3 ? 'var(--red)' : an.price_inventory_r < -0.3 ? 'var(--green)' : 'var(--amber)');
+      const div = an.divergence;
+      const divColor = div ? (div.label.startsWith('健康') ? 'var(--green)' : 'var(--red)') : 'var(--text-muted)';
+      const divHtml = div
+        ? `<span style="color:${divColor};font-weight:700">${div.label}</span>` +
+          ` <span style="color:var(--text-muted);font-size:0.78rem">(近5日价格 ${div.price_chg_pct > 0 ? '+' : ''}${div.price_chg_pct}% / 库存 ${div.inventory_chg_pct > 0 ? '+' : ''}${div.inventory_chg_pct}%)</span>` +
+          `<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:4px">${div.desc}</div>`
+        : '数据不足(需价格与库存各 ≥6 个点)';
+      const basisHtml = an.basis_rate_latest == null ? '—' : `${an.basis_rate_latest > 0 ? '+' : ''}${an.basis_rate_latest.toFixed(2)}%`;
+
+      // 【关键】数据源不覆盖该品种时的优雅降级提示(不报错)
+      const notes = [];
+      if (meta.inventory_available === false && meta.inventory_note) notes.push(`仓单: ${meta.inventory_note}`);
+      if (meta.basis_available === false && meta.basis_note) notes.push(`基差: ${meta.basis_note}`);
+
+      if (body) {
+        body.innerHTML = `
+          <div class="grid grid-3" style="margin-bottom:10px">
+            <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="color:${rColor}">${rHtml}</div><div class="stat-lbl">价格-库存 Pearson R <span style="font-size:0.68rem">(n=${an.price_inventory_n || 0})</span></div></div>
+            <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem">${trendHtml}</div><div class="stat-lbl">库存趋势(近5日均 vs 更早5日均)</div></div>
+            <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem">${basisHtml}</div><div class="stat-lbl">最新基差率 <span style="font-size:0.68rem">R=${an.basis_price_r == null ? '—' : an.basis_price_r.toFixed(3)}</span></div></div>
+          </div>
+          <div style="font-size:0.88rem;line-height:1.7">
+            <b>背离检测</b>: ${divHtml}
+          </div>
+          ${notes.length ? `<div style="margin-top:8px;font-size:0.8rem;color:var(--amber)">${notes.map(n => `<span style="background:var(--bg-input);padding:2px 8px;border-radius:6px;margin-right:6px">${n}</span>`).join('')}</div>` : ''}`;
+      }
+      if (badge) badge.textContent = `${meta.name || sym} (${meta.sector || '其他'}) · 价格 ${meta.price_points} 点`;
+
+      this._renderDashCharts(d);
+    } catch (e) {
+      console.error('Dashboard load error:', e);
+      if (body) body.innerHTML = `<span style="color:var(--red)">加载失败: ${e.message}</span>`;
+    }
+  },
+
+  // 【功能】渲染数据看板三张图(价格-库存双轴 / 基差 / 库存变化)
+  // 【输入】d: GET /api/dashboard/{variety} 的完整响应
+  // 【渲染】#chart-dash-pi / #chart-dash-basis / #chart-dash-inv-chg
+  // 【后端】无(数据由 loadDashboard 传入)
+  _renderDashCharts(d) {
+    const price = d.price || [];
+    const inv = (d.inventory && d.inventory.available) ? d.inventory.points : [];
+    const basis = (d.basis && d.basis.available) ? d.basis.points : [];
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? '#888' : '#666';
+    const gridColor = isDark ? '#1a1a1a' : '#eee';
+
+    // 1) 价格 vs 仓单库存(双轴, 橙色价格 / 绿色库存)
+    const invByDate = {};
+    inv.forEach(p => { invByDate[p.date] = p.inventory; });
+    const piDates = price.map(p => p.date);
+    const chart1 = this._initChart('chart-dash-pi');
+    if (chart1) {
+      chart1.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross', crossStyle: { color: '#999' } } },
+        legend: { data: ['收盘价', '仓单库存'], bottom: 0, textStyle: { color: textColor, fontSize: 11 } },
+        grid: { left: 65, right: 65, top: 15, bottom: 35 },
+        xAxis: { type: 'category', data: piDates, axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: '#888', fontSize: 10, rotate: piDates.length > 60 ? 45 : 0 }, splitLine: { show: false } },
+        yAxis: [
+          { type: 'value', name: '价格', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: '#ff5a1f' } }, axisLabel: { color: '#ff5a1f', fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
+          { type: 'value', name: '仓单库存', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: '#22c55e' } }, axisLabel: { color: '#22c55e', fontSize: 10 }, splitLine: { show: false } }
+        ],
+        series: [
+          { name: '收盘价', type: 'line', yAxisIndex: 0, data: price.map(p => p.close), smooth: true, showSymbol: false, lineStyle: { color: '#ff5a1f', width: 2.5 }, itemStyle: { color: '#ff5a1f' } },
+          { name: '仓单库存', type: 'line', yAxisIndex: 1, data: price.map(p => invByDate[p.date] != null ? invByDate[p.date] : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: '#22c55e', width: 2 }, itemStyle: { color: '#22c55e' } }
+        ]
+      });
+    }
+
+    // 2) 基差 / 基差率(品种无基差时为空图, 降级提示在分析卡中)
+    const chart2 = this._initChart('chart-dash-basis');
+    if (chart2) {
+      const hasBasis = basis.some(p => p.near_basis != null);
+      const hasRate = basis.some(p => p.near_basis_rate != null);
+      const series = [];
+      if (hasBasis) series.push({ name: '基差', type: 'line', data: basis.map(p => p.near_basis != null ? p.near_basis : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: '#ff5a1f', width: 2 }, itemStyle: { color: '#ff5a1f' } });
+      if (hasRate) series.push({ name: '基差率 (%)', type: 'line', data: basis.map(p => p.near_basis_rate != null ? p.near_basis_rate : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: '#fbbf24', width: 2 }, itemStyle: { color: '#fbbf24' } });
+      chart2.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis' },
+        legend: { data: series.map(s => s.name), bottom: 0, textStyle: { color: textColor, fontSize: 11 } },
+        grid: { left: 65, right: 65, top: 15, bottom: 35 },
+        xAxis: { type: 'category', data: basis.map(p => p.date), axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: '#888', fontSize: 10, rotate: basis.length > 60 ? 45 : 0 }, splitLine: { show: false } },
+        yAxis: [
+          { type: 'value', name: '基差', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: '#ff5a1f' } }, axisLabel: { color: '#ff5a1f', fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
+          { type: 'value', name: '基差率 %', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: '#fbbf24' } }, axisLabel: { color: '#fbbf24', fontSize: 10 }, splitLine: { show: false } }
+        ],
+        series
+      });
+    }
+
+    // 3) 仓单库存日变化(柱状: 红=增仓 / 绿=减仓)
+    const chart3 = this._initChart('chart-dash-inv-chg');
+    if (chart3) {
+      const changeVals = inv.map(p => {
+        if (p.change == null || p.change === '') return null;
+        const v = parseFloat(p.change);
+        return isNaN(v) ? null : v;
+      });
+      chart3.setOption({
+        ...this._baseChartOptions('仓单库存日变化'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: inv.map(p => p.date), axisLabel: { rotate: inv.length > 60 ? 45 : 0, fontSize: 9 } },
+        yAxis: { ...this._baseChartOptions('').yAxis, axisLabel: { formatter: v => v.toLocaleString() } },
+        series: [{
+          type: 'bar',
+          data: changeVals.map(v => v != null ? v : null),
+          itemStyle: { color: p => p.value >= 0 ? '#ef4444' : '#22c55e' }
+        }]
+      });
+    }
+  },
+
+  // 【功能】板块相关性总览: 拉取板块内各品种的价格-库存 Pearson R, 渲染横向条形图 + 表格
+  // 【输入】无 (由当前 #dash-variety 反查所属板块)
+  // 【渲染】#dash-sector-panel 条形图 + 表格; #dash-sector-label 板块提示
+  // 【后端】GET /api/dashboard/{variety}(反查板块) → GET /api/dashboard/sector/{sector}
+  async loadDashSector() {
+    const sym = (document.getElementById('dash-variety')?.value || 'RB').toUpperCase();
+    const panel = document.getElementById('dash-sector-panel');
+    const label = document.getElementById('dash-sector-label');
+    let sector = null;
+    try {
+      const metaR = await fetch(`/api/dashboard/${sym}?days=60`);  // 【调用函数】先取 1 次品种级数据反查板块
+      const metaD = await metaR.json();
+      sector = (metaD._meta && metaD._meta.sector) || null;
+    } catch (e) { /* ignore */ }
+    if (!sector) { this.toast('无法确定该品种的板块', 'error'); return; }
+    if (label) label.textContent = `· ${sector} 板块`;
+    if (panel) {
+      panel.style.display = 'block';
+      panel.innerHTML = `<h3>${sector} 板块 · 价格-库存相关性</h3><div style="color:var(--text-muted);font-size:0.82rem;padding:10px 0">正在逐品种拉取价格与仓单数据(约 2×N 次请求), 请稍候…</div>`;
+    }
+    try {
+      const r = await fetch(`/api/dashboard/sector/${encodeURIComponent(sector)}`);  // 【调用函数】后端接口: 板块内各品种价格-库存 R
+      const d = await r.json();
+      const rows = d.rows || [];
+      if (!panel) return;
+      panel.innerHTML = `
+        <h3>${d.sector} 板块 · 价格-库存相关性 <span class="badge badge-info">${d.count} 品种有效</span></h3>
+        ${rows.length === 0
+          ? '<div style="color:var(--text-muted);padding:10px">板块内暂无同时具备价格与仓单库存数据的品种</div>'
+          : `
+        <div class="chart-container" id="chart-dash-sector" style="height:${Math.max(240, rows.length * 30 + 40)}px"></div>
+        <table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:0.82rem">
+          <thead><tr style="color:var(--text-muted);text-align:left">
+            <th style="padding:6px">品种</th><th>Pearson R</th><th>库存趋势</th><th>样本数</th>
+          </tr></thead>
+          <tbody>${rows.map(rr => `
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:6px"><b>${rr.code}</b> ${rr.name}</td>
+              <td style="color:${rr.r > 0.3 ? 'var(--red)' : rr.r < -0.3 ? 'var(--green)' : 'var(--amber)'}">${rr.r.toFixed(3)}</td>
+              <td>${rr.trend ? (rr.trend === 'BUILDING' ? '累库' : rr.trend === 'DRAINING' ? '去库' : '平稳') : '—'}</td>
+              <td>${rr.n}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`}`;
+      const chart = this._initChart('chart-dash-sector');
+      if (chart) {
+        chart.setOption({
+          ...this._baseChartOptions(`${d.sector} 价格-库存 Pearson R`),
+          grid: { left: 90, right: 30, top: 50, bottom: 30 },
+          xAxis: { ...this._baseChartOptions('').xAxis, axisLabel: { formatter: v => v.toFixed(2) } },
+          yAxis: { type: 'category', data: rows.map(rr => rr.code), axisLabel: { color: '#888', fontSize: 10 } },
+          series: [{
+            type: 'bar', data: rows.map(rr => rr.r),
+            itemStyle: { color: p => p.value >= 0 ? '#ef4444' : '#22c55e' },
+            label: { show: true, position: 'right', formatter: p => p.value.toFixed(3), color: '#888', fontSize: 9 }
+          }]
+        });
+      }
+    } catch (e) {
+      console.error('Sector dashboard error:', e);
+      if (panel) panel.innerHTML = `<h3>板块相关性</h3><div style="color:var(--red)">加载失败: ${e.message}</div>`;
+    }
   },
 
   // ── History ──
