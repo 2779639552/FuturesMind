@@ -129,10 +129,14 @@ from signal_analyzer import (  # noqa: E402  # 【调用包】情绪/价格信�
 from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】品种元数据与 AKShare 行情获取
     VARIETY_METADATA,
     get_futures_basis,
+    get_futures_indicators,  # 【调用包】技术指标(MA/MACD/RSI/BOLL/ATR,CSV)供小看板技术面块
     get_futures_inventory,
     get_futures_macro,  # 【调用包】中国宏观指标(GDP/PMI/固投/地产/工业增加值/建筑业,格式化文本)
     get_futures_news,  # 【调用包】商品+宏观新闻(格式化文本,经 route_to_vendor 供分析师工具使用)
     get_futures_price,
+    get_futures_supply_demand,  # 【调用包】供需指标(外部JSON+免费API,格式化文本)供小看板基本面块
+    get_variety_info,  # 【调用包】品种元数据(JSON 字符串)供小看板品种信息块
+    get_verified_quote,  # 【调用包】目标日校验行情快照(VERIFIED_SNAPSHOT,分析师数值单一事实来源)
 )
 from tradingagents.dataflows.config import (  # noqa: E402  # 【调用包】把配置同步到全局(供 Agent 图/LLM 读取)
     set_config,
@@ -1454,6 +1458,70 @@ def _parse_macro_text(text: str) -> tuple[list[dict], str]:
     return items, ""
 
 
+# 【功能】解析 get_futures_indicators 的 CSV → (最新一行指标 dict, 最近 N 行指标 dict 列表)。
+# 【关键】指标列多(sma/ema/macd/rsi/boll/atr/volume/oi),保留全部列;latest 供顶部摘要,rows 供下拉表。
+def _parse_indicators_csv(csv_text: str, rows: int = 5) -> tuple[dict | None, list[dict]]:
+    lines = [ln.rstrip() for ln in csv_text.strip().split("\n") if ln.strip() and not ln.lstrip().startswith("#")]
+    if len(lines) < 2:
+        return None, []
+    header = [h.strip() for h in lines[0].split(",")]
+    out = []
+    for ln in lines[1:]:
+        cells = [c.strip() for c in ln.split(",")]
+        if len(cells) < len(header):
+            continue
+        out.append(dict(zip(header, cells, strict=False)))  # 已保证 cells 不缺列,zip 无截断
+    if not out:
+        return None, []
+    return out[-1], out[-rows:]
+
+
+# 【功能】解析 get_verified_quote 的 VERIFIED_SNAPSHOT 文本 → 结构化 dict。
+# 【返回】{name, date, exchange, unit, price_limit, margin, ohlcv:{...}, levels:{...}, raw}
+def _parse_verified_quote(text: str) -> dict:
+    snap: dict = {"ohlcv": {}, "levels": {}, "raw": text}
+    for ln in text.split("\n"):
+        ln = ln.strip()
+        if ln.startswith("VERIFIED_SNAPSHOT |"):
+            head = ln.split("|")
+            if len(head) > 1:
+                snap["name"] = head[1].strip()
+            if len(head) > 2:
+                snap["date"] = head[2].strip()
+        elif ln.startswith(("Exchange:", "Price Limit:")):
+            for part in ln.split("|"):
+                part = part.strip()
+                if part.startswith("Exchange:"):
+                    snap["exchange"] = part.split(":", 1)[1].strip()
+                elif part.startswith("Unit:"):
+                    snap["unit"] = part.split(":", 1)[1].strip()
+                elif part.startswith("Price Limit:"):
+                    snap["price_limit"] = part.split(":", 1)[1].strip()
+                elif part.startswith("Margin:"):
+                    snap["margin"] = part.split(":", 1)[1].strip()
+        elif ln.startswith(("Open:", "High:", "Low:", "Close:", "Volume:", "Open Int:", "Day Change:")):
+            k, _, v = ln.partition(":")
+            snap["ohlcv"][k.strip()] = v.strip()
+        elif ln.startswith("SMA(") or ln.startswith("Price vs SMA20:"):
+            k, _, v = ln.partition(":")
+            snap["levels"][k.strip()] = v.strip()
+    return snap
+
+
+# 【功能】解析 get_futures_supply_demand 的格式化文本 → [{title, lines}] 顶层 '## ' 节。
+# 【关键】'### ' 与两空格缩进行并入所属节的 lines;无 '## ' 时返回 []。
+def _parse_supply_demand(text: str) -> list[dict]:
+    sections, cur = [], None
+    for ln in text.strip().split("\n"):
+        ln = ln.rstrip()
+        if ln.startswith("## "):
+            cur = {"title": ln[3:].strip(), "lines": []}
+            sections.append(cur)
+        elif cur and ln.strip():
+            cur["lines"].append(ln)
+    return sections
+
+
 # 【功能】运行分析输入数据小看板:返回所选品种"接下来分析将用到的真实数据"的最新可用快照。
 # 【参数】URL 路径 <variety>: 品种代码(如 rb)。
 # 【返回】_meta + price/basis/inventory/sentiment/news/macro 六块;各块 available=false + note 优雅降级。
@@ -1469,14 +1537,21 @@ def api_run_input_data(variety):
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-    price = {"available": False, "note": "", "date": None, "latest_close": None, "change_pct": None}
+    price = {"available": False, "note": "", "date": None, "latest_close": None,
+             "change_pct": None, "series": []}
     basis = {"available": False, "note": "", "date": None, "near_basis": None,
-             "near_basis_rate": None, "dom_basis": None, "dom_basis_rate": None, "structure": None}
-    inv = {"available": False, "note": "", "date": None, "inventory": None, "change": None, "trend": None}
+             "near_basis_rate": None, "dom_basis": None, "dom_basis_rate": None,
+             "structure": None, "series": []}
+    inv = {"available": False, "note": "", "date": None, "inventory": None,
+           "change": None, "trend": None, "series": []}
     news = {"available": False, "note": "", "items": [], "raw": ""}
     macro = {"available": False, "note": "", "items": [], "raw": ""}
     sentiment = {"available": False, "note": "", "label": None, "score": None,
                  "bullish_ratio": None, "bearish_ratio": None, "trend_label": None, "data_end": None}
+    variety_info = {"available": False, "note": "", "data": None}
+    indicators = {"available": False, "note": "", "latest": None, "rows": []}
+    verified_quote = {"available": False, "note": "", "snapshot": None}
+    supply_demand = {"available": False, "note": "", "text": "", "sections": []}
 
     def _load_price():
         try:
@@ -1489,6 +1564,7 @@ def api_run_input_data(variety):
                 price["available"] = True
                 price["latest_close"] = pts[-1]["close"]
                 price["date"] = pts[-1]["date"]
+                price["series"] = pts[-10:]  # 【关键】近10日序列(下拉表展示完整走势)
                 if len(pts) >= 2 and pts[-2]["close"]:
                     price["change_pct"] = (pts[-1]["close"] - pts[-2]["close"]) / pts[-2]["close"] * 100
             else:
@@ -1512,6 +1588,7 @@ def api_run_input_data(variety):
                 basis["dom_basis"] = pts[-1]["dom_basis"]
                 basis["dom_basis_rate"] = pts[-1]["dom_basis_rate"]
                 basis["structure"] = structure or _structure_from_basis(pts[-1])
+                basis["series"] = pts[-10:]  # 【关键】近10日基差序列(下拉表)
             else:
                 basis["note"] = "NO_DATA_AVAILABLE: 基差无数据(该品种此接口不覆盖)"
         except Exception as e:
@@ -1531,6 +1608,7 @@ def api_run_input_data(variety):
                 inv["inventory"] = pts[-1]["inventory"]
                 inv["change"] = pts[-1]["change"]
                 inv["trend"] = _inventory_trend(raw)  # 【调用函数】趋势尾注 → BUILDING/DRAINING/STABLE
+                inv["series"] = pts[-10:]  # 【关键】近10日仓单序列(下拉表)
             else:
                 inv["note"] = "NO_DATA_AVAILABLE: 仓单库存无数据(该品种此接口不覆盖)"
         except Exception as e:
@@ -1554,6 +1632,63 @@ def api_run_input_data(variety):
             logger.warning("run-input news %s: %s", code, e)
             news["note"] = f"DATA_ERROR: {e}"
 
+    def _load_variety_info():
+        try:
+            raw = get_variety_info(code)  # 【调用函数】品种元数据 JSON 字符串(交易所/合约单位/涨跌停/保证金)
+            data = json.loads(raw)
+            variety_info["available"] = True
+            variety_info["data"] = data
+        except Exception as e:
+            logger.warning("run-input variety_info %s: %s", code, e)
+            variety_info["note"] = f"DATA_ERROR: {e}"
+
+    def _load_indicators():
+        try:
+            raw = get_futures_indicators(code, start_date, end_date)  # 【调用函数】技术指标 CSV(内部复用价格缓存)
+            if raw.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                indicators["note"] = raw
+                return
+            latest, rows = _parse_indicators_csv(raw)  # 【调用函数】CSV → 最新行 + 近5行
+            if latest:
+                indicators["available"] = True
+                indicators["latest"] = latest
+                indicators["rows"] = rows
+            else:
+                indicators["note"] = "NO_DATA_AVAILABLE: 技术指标无数据"
+        except Exception as e:
+            logger.warning("run-input indicators %s: %s", code, e)
+            indicators["note"] = f"DATA_ERROR: {e}"
+
+    def _load_verified_quote():
+        try:
+            raw = get_verified_quote(code, date=end_date)  # 【调用函数】目标日(今日)校验快照;非交易日自动取最近
+            if raw.startswith(("VERIFIED_SNAPSHOT_ERROR", "VERIFIED_SNAPSHOT_UNAVAILABLE")):
+                verified_quote["note"] = raw
+                return
+            snap = _parse_verified_quote(raw)  # 【调用函数】文本 → OHLCV + 关键位
+            verified_quote["available"] = True
+            verified_quote["snapshot"] = snap
+        except Exception as e:
+            logger.warning("run-input verified_quote %s: %s", code, e)
+            verified_quote["note"] = f"DATA_ERROR: {e}"
+
+    def _load_supply_demand():
+        try:
+            raw = get_futures_supply_demand(code)  # 【调用函数】供需文本(外部 JSON + 免费 API)
+            if raw.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                supply_demand["note"] = raw
+                return
+            sections = _parse_supply_demand(raw)  # 【调用函数】文本 → 顶层节
+            if sections:
+                supply_demand["available"] = True
+                supply_demand["text"] = raw
+                supply_demand["sections"] = sections
+            else:
+                supply_demand["note"] = "NO_DATA_AVAILABLE: 供需数据为空"
+        except Exception as e:
+            logger.warning("run-input supply_demand %s: %s", code, e)
+            supply_demand["note"] = f"DATA_ERROR: {e}"
+
     def _load_macro():
         try:
             raw = get_futures_macro()  # 【调用函数】宏观文本(内部 6 指标各自 try/except)
@@ -1571,20 +1706,29 @@ def api_run_input_data(variety):
             logger.warning("run-input macro: %s", e)
             macro["note"] = f"DATA_ERROR: {e}"
 
-    # 【关键】价格/基差/库存/新闻并行(每任务内部已 catch,result 不抛);与 api_dashboard 同款。
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = [ex.submit(fn) for fn in (_load_price, _load_basis, _load_inventory, _load_news)]
+    # 【关键】价格/基差/库存/新闻/品种信息/技术指标/校验报价并行(每任务内部已 catch,result 不抛)。
+    #         指标与校验报价内部复用价格缓存(5min),品种信息纯本地,不显著增延迟。
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = [ex.submit(fn) for fn in (
+            _load_price, _load_basis, _load_inventory, _load_news,
+            _load_variety_info, _load_indicators, _load_verified_quote,
+        )]
         for f in futs:
             f.result()
 
-    # 【关键】宏观另起单线程 + 20s 超时;超时只降级宏观块。shutdown(wait=False) 让后台线程跑完再返回,
-    #        避免 with 块退出时阻塞等待宏观(否则超时形同虚设)。
-    mex = ThreadPoolExecutor(max_workers=1)
+    # 【关键】宏观 + 供需另起双线程,各 20s 超时;超时只降级对应块。shutdown(wait=False) 让后台线程
+    #        跑完再返回,避免 with 块退出时阻塞等待(否则超时形同虚设)。
+    mex = ThreadPoolExecutor(max_workers=2)
     mf = mex.submit(_load_macro)
+    sf = mex.submit(_load_supply_demand)
     try:
         mf.result(timeout=20)
     except concurrent.futures.TimeoutError:
         macro["note"] = "MACRO_TIMEOUT: 宏观数据抓取超时(20s),可稍后刷新重试"
+    try:
+        sf.result(timeout=20)
+    except concurrent.futures.TimeoutError:
+        supply_demand["note"] = "SUPPLY_DEMAND_TIMEOUT: 供需数据抓取超时(20s),可稍后刷新重试"
     mex.shutdown(wait=False)
 
     # 情绪:本地 JSON 同步读(与 api_sentiment 同口径)
@@ -1624,6 +1768,8 @@ def api_run_input_data(variety):
     return jsonify({
         "_meta": meta, "price": price, "basis": basis, "inventory": inv,
         "sentiment": sentiment, "news": news, "macro": macro,
+        "variety_info": variety_info, "indicators": indicators,
+        "verified_quote": verified_quote, "supply_demand": supply_demand,
     })
 
 

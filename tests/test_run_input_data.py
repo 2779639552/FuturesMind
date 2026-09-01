@@ -43,6 +43,54 @@ _MACRO_TEXT = """## GDP (季度)
 ## Real Estate: UNAVAILABLE (akshare says no data)
 """
 
+_INDICATORS_CSV = """date,close,sma_5,sma_20,rsi_14,macd
+2026-08-29,3250,3200,3100,55.0,12.3
+2026-08-30,3300,3250,3150,58.5,14.1
+"""
+
+_VERIFIED_QUOTE_TEXT = """==================================================
+VERIFIED_SNAPSHOT | 螺纹钢(RB) | 2026-08-30 (target date 2026-08-30 is non-trading, using latest: 2026-08-29)
+Source: AKShare / Sina Finance | Status: TRUSTED
+==================================================
+
+Exchange: 上海期货交易所 | Unit: 元/吨
+Price Limit: 8% | Margin: 10%
+
+--- Exact OHLCV ---
+Open:       3200.00
+High:       3300.00
+Low:        3190.00
+Close:      3300.00
+Volume:     123456
+Open Int:   2000000
+Day Change: +1.54%
+
+--- Key Levels ---
+SMA(5):     3250.00  (short-term trend)
+SMA(20):    3150.00  (medium-term trend)
+Price vs SMA20: ABOVE by 150.00
+
+--- Guidelines ---
+1. Use ONLY the values above.
+"""
+
+_VARIETY_INFO_JSON = json.dumps({
+    "name": "螺纹钢", "sector": "黑色系", "exchange_cn": "上海期货交易所",
+    "unit": "元/吨", "main_contract": "RB0", "price_limit": "8%", "margin_rate": "10%",
+}, ensure_ascii=False)
+
+_SUPPLY_DEMAND_TEXT = """# SUPPLY-DEMAND INDICATORS for RB
+# Combines external data (Mysteel, Wind, etc.) with free API data
+
+## External Data (来源: 外部JSON)
+### 螺纹钢周度产量
+  产量: 300 万吨
+  环比: -2 万吨 (-0.7%)
+## Construction Industry Index (FREE API)
+  最新日期: 2026-08-30
+  指数值: 95.0
+"""
+
 
 # ---------------------------------------------------------------------------
 # 纯解析函数
@@ -122,6 +170,52 @@ def test_inventory_trend_word():
     assert web_app._inventory_trend("date,inventory,change\n2026-08-29,1,0") is None
 
 
+# 技术指标 / 校验报价 / 供需文本解析
+@pytest.mark.unit
+def test_parse_indicators_csv_latest_and_rows():
+    latest, rows = web_app._parse_indicators_csv(_INDICATORS_CSV)
+    assert latest["date"] == "2026-08-30"
+    assert latest["close"] == "3300"  # CSV 原值(字符串)
+    assert latest["rsi_14"] == "58.5"
+    assert len(rows) == 2  # 行数少于 N 时全量返回
+    assert rows[0]["date"] == "2026-08-29"
+
+
+@pytest.mark.unit
+def test_parse_indicators_csv_empty():
+    assert web_app._parse_indicators_csv("") == (None, [])
+    assert web_app._parse_indicators_csv("date,close\n") == (None, [])
+
+
+@pytest.mark.unit
+def test_parse_verified_quote():
+    snap = web_app._parse_verified_quote(_VERIFIED_QUOTE_TEXT)
+    assert snap["name"] == "螺纹钢(RB)"
+    assert snap["exchange"] == "上海期货交易所"
+    assert snap["unit"] == "元/吨"
+    assert snap["price_limit"] == "8%"
+    assert snap["margin"] == "10%"
+    assert snap["ohlcv"]["Close"] == "3300.00"
+    assert snap["ohlcv"]["Day Change"] == "+1.54%"
+    assert snap["levels"]["SMA(5)"].startswith("3250.00")
+    assert snap["levels"]["Price vs SMA20"] == "ABOVE by 150.00"
+
+
+@pytest.mark.unit
+def test_parse_supply_demand_sections():
+    sections = web_app._parse_supply_demand(_SUPPLY_DEMAND_TEXT)
+    assert [s["title"] for s in sections] == [
+        "External Data (来源: 外部JSON)",
+        "Construction Industry Index (FREE API)",
+    ]
+    assert sections[0]["lines"][0].startswith("### 螺纹钢周度产量")  # ### 行并入所属节
+
+
+@pytest.mark.unit
+def test_parse_supply_demand_no_sections():
+    assert web_app._parse_supply_demand("no ## headers\nplain") == []
+
+
 # ---------------------------------------------------------------------------
 # 路由聚合:六块全 available + 精确值 + data_as_of
 # ---------------------------------------------------------------------------
@@ -140,8 +234,10 @@ def _write_sentiment(tmp_path, code="RB"):
 
 
 def _mock_all_sources(monkeypatch, tmp_path, *, price_fail=False, basis_note=None,
-                      news_text=_NEWS_TEXT, macro_text=_MACRO_TEXT, inv_text=_INV_TEXT):
-    """把数据源 mock 掉;基差/新闻/宏观传真实文本,走真实解析函数。"""
+                      news_text=_NEWS_TEXT, macro_text=_MACRO_TEXT, inv_text=_INV_TEXT,
+                      variety_raw=_VARIETY_INFO_JSON, indicators_raw=_INDICATORS_CSV,
+                      verified_raw=_VERIFIED_QUOTE_TEXT, supply_raw=_SUPPLY_DEMAND_TEXT):
+    """把数据源 mock 掉;基差/新闻/宏观/指标/供需/校验/品种传真实文本,走真实解析函数。"""
 
     def _price(*_a, **_k):
         if price_fail:
@@ -160,6 +256,10 @@ def _mock_all_sources(monkeypatch, tmp_path, *, price_fail=False, basis_note=Non
                         lambda *_a, **_k: [{"date": "2026-08-29", "inventory": 850000.0, "change": -12000.0}])
     monkeypatch.setattr(web_app, "get_futures_news", lambda *_a, **_k: news_text)
     monkeypatch.setattr(web_app, "get_futures_macro", lambda *_a, **_k: macro_text)
+    monkeypatch.setattr(web_app, "get_variety_info", lambda *_a, **_k: variety_raw)
+    monkeypatch.setattr(web_app, "get_futures_indicators", lambda *_a, **_k: indicators_raw)
+    monkeypatch.setattr(web_app, "get_verified_quote", lambda *_a, **_k: verified_raw)
+    monkeypatch.setattr(web_app, "get_futures_supply_demand", lambda *_a, **_k: supply_raw)
     monkeypatch.setattr(web_app, "SENTIMENT_DIR", tmp_path)
     _write_sentiment(tmp_path)
 
@@ -171,19 +271,24 @@ def test_route_all_blocks_available(monkeypatch, tmp_path):
     r = c.get("/api/run_input_data/RB")
     assert r.status_code == 200
     d = r.get_json()
-    # 六块全 available
-    for k in ("price", "basis", "inventory", "sentiment", "news", "macro"):
+    # 十块全 available
+    for k in ("price", "basis", "inventory", "sentiment", "news", "macro",
+              "variety_info", "indicators", "verified_quote", "supply_demand"):
         assert d[k]["available"] is True, k
-    # 价格:最新收盘 3300 + 涨跌%(较前值 +1.54%)
+    # 价格:最新收盘 3300 + 涨跌%(较前值 +1.54%) + 近10日序列
     assert d["price"]["latest_close"] == 3300.0
     assert d["price"]["date"] == "2026-08-30"
     assert abs(d["price"]["change_pct"] - 1.53846) < 1e-3
-    # 基差:真实解析函数 → 近月率/结构
+    assert len(d["price"]["series"]) == 2
+    assert d["price"]["series"][-1]["close"] == 3300.0
+    # 基差:真实解析函数 → 近月率/结构 + 序列
     assert d["basis"]["near_basis_rate"] == 0.77
     assert d["basis"]["structure"] == "BACKWARDATION"
+    assert len(d["basis"]["series"]) == 1
     # 库存:真实趋势解析 + mock 序列
     assert d["inventory"]["inventory"] == 850000.0
     assert d["inventory"]["trend"] == "DRAINING"
+    assert d["inventory"]["series"][0]["inventory"] == 850000.0
     # 情绪:本地 JSON 读入
     assert d["sentiment"]["label"] == "中性"
     assert d["sentiment"]["score"] == 0.042
@@ -194,6 +299,19 @@ def test_route_all_blocks_available(monkeypatch, tmp_path):
     # 宏观:真实解析 → 4 节(2 有值 + 1 空 + 1 UNAVAILABLE)
     assert len(d["macro"]["items"]) == 4
     assert d["macro"]["items"][0]["value"] == "4.7%"
+    # 品种信息:get_variety_info JSON → dict
+    assert d["variety_info"]["data"]["name"] == "螺纹钢"
+    assert d["variety_info"]["data"]["exchange_cn"] == "上海期货交易所"
+    # 技术指标:CSV → 最新行 + 近5行
+    assert d["indicators"]["latest"]["close"] == "3300"
+    assert d["indicators"]["latest"]["rsi_14"] == "58.5"
+    assert len(d["indicators"]["rows"]) == 2
+    # 实时校验报价:VERIFIED_SNAPSHOT → OHLCV + 关键位
+    assert d["verified_quote"]["snapshot"]["ohlcv"]["Close"] == "3300.00"
+    assert d["verified_quote"]["snapshot"]["levels"]["Price vs SMA20"] == "ABOVE by 150.00"
+    # 供需:格式化文本 → 顶层节
+    assert len(d["supply_demand"]["sections"]) == 2
+    assert d["supply_demand"]["sections"][0]["title"].startswith("External Data")
     # data_as_of = 各来源最新日期 max(价格 08-30)
     assert d["_meta"]["data_as_of"] == "2026-08-30"
 
@@ -267,3 +385,42 @@ def test_route_inventory_no_data_degrades_only_inventory(monkeypatch, tmp_path):
     assert d["inventory"]["available"] is False
     assert "NO_DATA_AVAILABLE" in d["inventory"]["note"]
     assert d["basis"]["available"] is True
+
+
+# ---- 新增四块(品种信息/指标/校验报价/供需)的逐项降级 ----
+@pytest.mark.unit
+def test_route_indicators_fail_degrades_only_indicators(monkeypatch, tmp_path):
+    _mock_all_sources(monkeypatch, tmp_path, indicators_raw="DATA_ERROR: indicator source down")
+    c = web_app.app.test_client()
+    d = c.get("/api/run_input_data/RB").get_json()
+    assert d["indicators"]["available"] is False
+    assert d["indicators"]["note"].startswith("DATA_ERROR")
+    assert d["price"]["available"] is True
+    assert d["verified_quote"]["available"] is True
+
+
+@pytest.mark.unit
+def test_route_supply_demand_unavailable(monkeypatch, tmp_path):
+    _mock_all_sources(monkeypatch, tmp_path, supply_raw="NO_DATA_AVAILABLE: no supply data")
+    c = web_app.app.test_client()
+    d = c.get("/api/run_input_data/RB").get_json()
+    assert d["supply_demand"]["available"] is False
+    assert "NO_DATA_AVAILABLE" in d["supply_demand"]["note"]
+
+
+@pytest.mark.unit
+def test_route_variety_info_bad_json(monkeypatch, tmp_path):
+    _mock_all_sources(monkeypatch, tmp_path, variety_raw="NOT VALID JSON")
+    c = web_app.app.test_client()
+    d = c.get("/api/run_input_data/RB").get_json()
+    assert d["variety_info"]["available"] is False
+    assert d["variety_info"]["note"].startswith("DATA_ERROR")
+
+
+@pytest.mark.unit
+def test_route_verified_quote_unavailable(monkeypatch, tmp_path):
+    _mock_all_sources(monkeypatch, tmp_path, verified_raw="VERIFIED_SNAPSHOT_UNAVAILABLE: no data near date")
+    c = web_app.app.test_client()
+    d = c.get("/api/run_input_data/RB").get_json()
+    assert d["verified_quote"]["available"] is False
+    assert "VERIFIED_SNAPSHOT_UNAVAILABLE" in d["verified_quote"]["note"]

@@ -1527,12 +1527,14 @@ const App = {
 
   // 【功能】渲染输入数据小看板内容(纯字符串拼接,复用 _escHtml)
   // 【输入】d: GET /api/run_input_data/{sym} 返回 {price,basis,inventory,sentiment,news,macro,_meta}
-  // 【渲染】四张统计卡 + 新闻滚动列表(前8条) + 宏观chips + 各块降级note(琥珀) + raw 原文透传
+  // 【渲染】顶部四张统计卡 + 下拉式表折叠区(品种信息/校验报价/技术指标/价格基差库存序列/供需/情绪详情)
+  //           + 新闻滚动列表(前8条) + 宏观chips + 各块降级note(琥珀) + raw 原文透传
   // 【后端】无(纯前端渲染)
   _renderRunInput(d) {
     const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
     const f2 = v => (v == null ? '-' : Number(v).toFixed(2));
     const p = d.price || {}, b = d.basis || {}, i = d.inventory || {}, s = d.sentiment || {};
+    const vi = d.variety_info || {}, ind = d.indicators || {}, vq = d.verified_quote || {}, sd = d.supply_demand || {};
     const cards = [];
     // 1) 最新价卡
     if (p.available && p.latest_close != null) {
@@ -1573,7 +1575,81 @@ const App = {
     }
     let html = `<div class="grid grid-4" style="gap:8px">${cards.join('')}</div>`;
 
-    // 5) 新闻滚动列表(前 8 条)
+    // ---- 下拉式表:放不下的详细数据收进 <details> 折叠区(默认收起) ----
+    const sections = [];
+
+    // 5) 品种信息(元数据 KV 表)
+    if (vi.available && vi.data) {
+      const kvRows = Object.entries(vi.data)
+        .filter(([k, v]) => v != null && v !== '')
+        .map(([k, v]) => `<tr><td style="padding:2px 8px;color:var(--text-muted)">${esc(k)}</td><td style="padding:2px 8px">${esc(v)}</td></tr>`)
+        .join('');
+      sections.push({ title: '📋 品种信息', html: `<table style="border-collapse:collapse;font-size:0.78rem;width:100%"><tbody>${kvRows}</tbody></table>` });
+    }
+
+    // 6) 实时校验报价(VERIFIED_SNAPSHOT:分析师数值单一事实来源)
+    if (vq.available && vq.snapshot) {
+      const sn = vq.snapshot;
+      const ohlcv = Object.entries(sn.ohlcv || {}).map(([k, v]) => `<span class="badge badge-info" style="margin:2px">${esc(k)}: ${esc(v)}</span>`).join(' ');
+      const lvls = Object.entries(sn.levels || {}).map(([k, v]) => `<div style="padding:1px 0">${esc(k)}: <b>${esc(v)}</b></div>`).join('');
+      sections.push({ title: `✅ 实时校验报价 ${esc(sn.date || '')}`, html: `<div style="margin-bottom:4px">${ohlcv}</div><div style="font-size:0.8rem">${lvls}</div>` });
+    }
+
+    // 7) 技术指标(最新摘要 + 近5日全列表)
+    if (ind.available && ind.latest) {
+      const L = ind.latest;
+      const labels = { close:'收盘', sma_5:'MA5', sma_10:'MA10', sma_20:'MA20', sma_50:'MA50',
+        ema_12:'EMA12', ema_26:'EMA26', macd:'MACD', macd_signal:'信号', macd_histogram:'柱',
+        rsi_14:'RSI14', boll_upper:'BOLL上', boll_mid:'BOLL中', boll_lower:'BOLL下', atr_14:'ATR14',
+        volume_ratio:'量比', pct_from_sma_20:'距MA20%', oi_change_pct:'持仓增%' };
+      const kvRows = Object.entries(labels)
+        .filter(([k]) => L[k] != null && L[k] !== '')
+        .map(([k, lbl]) => `<tr><td style="padding:2px 8px;color:var(--text-muted)">${esc(lbl)}</td><td style="padding:2px 8px;text-align:right">${esc(L[k])}</td></tr>`)
+        .join('');
+      let inner = `<table style="border-collapse:collapse;font-size:0.78rem;width:100%"><tbody>${kvRows}</tbody></table>`;
+      if (ind.rows && ind.rows.length) {
+        inner += `<div style="margin-top:6px;color:var(--text-muted)">近${ind.rows.length}日明细</div><div style="max-height:200px;overflow-y:auto">${this._tableHtml(Object.keys(ind.rows[0]), ind.rows)}</div>`;
+      }
+      sections.push({ title: `📊 技术指标 ${esc(L.date || '')}`, html: `<div style="max-height:240px;overflow-y:auto">${inner}</div>` });
+    }
+
+    // 8) 价格序列(近10日)
+    if (p.available && p.series && p.series.length) {
+      sections.push({ title: '📈 价格序列', html: `<div style="max-height:200px;overflow-y:auto">${this._tableHtml(['date','open','high','low','close'], p.series)}</div>` });
+    }
+
+    // 9) 基差序列(近10日)
+    if (b.available && b.series && b.series.length) {
+      sections.push({ title: '📐 基差序列', html: `<div style="max-height:200px;overflow-y:auto">${this._tableHtml(['date','spot_price','dom_basis','dom_basis_rate','near_basis','near_basis_rate'], b.series)}</div>` });
+    }
+
+    // 10) 库存序列(近10日)
+    if (i.available && i.series && i.series.length) {
+      sections.push({ title: '📦 库存序列', html: `<div style="max-height:200px;overflow-y:auto">${this._tableHtml(['date','inventory','change'], i.series)}</div>` });
+    }
+
+    // 11) 供需数据(格式化文本,可滚动)
+    if (sd.available && sd.text) {
+      sections.push({ title: '🏭 供需数据', html: `<pre style="max-height:260px;overflow:auto;font-size:0.75rem;white-space:pre-wrap;margin:4px 0">${esc(sd.text)}</pre>` });
+    }
+
+    // 12) 情绪详情(得分/多空比/趋势/数据范围)
+    if (s.available && s.label) {
+      const bull = s.bullish_ratio != null ? Math.round(s.bullish_ratio * 100) : '-';
+      const bear = s.bearish_ratio != null ? Math.round(s.bearish_ratio * 100) : '-';
+      const kvRows = [
+        ['标签', s.label], ['得分', f2(s.score)], ['多空比', `${bull}:${bear}`],
+        ['趋势', s.trend_label], ['数据截止', s.data_end],
+      ].map(([k, v]) => `<tr><td style="padding:2px 8px;color:var(--text-muted)">${esc(k)}</td><td style="padding:2px 8px">${esc(v)}</td></tr>`).join('');
+      sections.push({ title: '💬 情绪详情', html: `<table style="border-collapse:collapse;font-size:0.78rem;width:100%"><tbody>${kvRows}</tbody></table>` });
+    }
+
+    // 渲染折叠区(全部默认收起)
+    for (const sec of sections) {
+      html += `<details style="margin-top:8px;border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:0 10px"><summary style="cursor:pointer;font-size:0.85rem;font-weight:600;padding:6px 0">${sec.title}</summary><div style="padding-bottom:8px">${sec.html}</div></details>`;
+    }
+
+    // 13) 新闻滚动列表(前 8 条)
     if (d.news && d.news.available && d.news.items && d.news.items.length) {
       const items = d.news.items.slice(0, 8).map(n =>
         `<div style="padding:3px 0;border-bottom:1px solid var(--border-light)">
@@ -1583,7 +1659,7 @@ const App = {
       html += `<div style="margin-top:10px"><b>新闻</b> (前${Math.min(8, d.news.items.length)}条)<div style="max-height:180px;overflow-y:auto;margin-top:4px">${items}</div></div>`;
     }
 
-    // 6) 宏观摘要 chips
+    // 14) 宏观摘要 chips
     if (d.macro && d.macro.available && d.macro.items && d.macro.items.length) {
       const chips = d.macro.items.map(m =>
         m.value != null
@@ -1593,9 +1669,10 @@ const App = {
       html += `<div style="margin-top:10px"><b>宏观</b> <div style="margin-top:4px">${chips}</div></div>`;
     }
 
-    // 7) 各块降级 note(琥珀) + raw 原文透传
+    // 15) 各块降级 note(琥珀) + raw 原文透传
     const notes = [];
-    for (const key of ['price', 'basis', 'inventory', 'sentiment', 'news', 'macro']) {
+    for (const key of ['price', 'basis', 'inventory', 'sentiment', 'news', 'macro',
+                       'variety_info', 'indicators', 'verified_quote', 'supply_demand']) {
       const blk = d[key];
       if (blk && !blk.available && blk.note) notes.push(`[${key}] ${blk.note}`);
       if (blk && blk.raw) {
@@ -1606,6 +1683,24 @@ const App = {
       html += `<div style="margin-top:10px">${notes.map(n => `<span class="badge badge-neutral" style="margin-right:4px">${esc(n)}</span>`).join('')}</div>`;
     }
     return html;
+  },
+
+  // 【功能】通用表渲染:headers 列名数组 + rows 对象数组 → HTML <table>
+  // 【关键】数值单元格右对齐;日期/文本左对齐;数字为空显 '-'
+  _tableHtml(headers, rows) {
+    const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
+    const fmt = v => {
+      const n = Number(v);
+      if (Number.isInteger(n)) return String(n);
+      return n.toFixed(2);
+    };
+    const th = headers.map(h => `<th style="padding:3px 8px;text-align:left;border-bottom:1px solid var(--border-light);white-space:nowrap">${esc(h)}</th>`).join('');
+    const trs = rows.map(r => `<tr>${headers.map(h => {
+      const v = r[h];
+      const isNum = v != null && v !== '' && (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))));
+      return `<td style="padding:2px 8px;${isNum ? 'text-align:right' : ''}">${isNum ? fmt(v) : esc(v)}</td>`;
+    }).join('')}</tr>`).join('');
+    return `<table style="border-collapse:collapse;font-size:0.78rem;width:100%"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`;
   },
 
   // 【功能】基差结构英文 → 中文(小看板展示用)
