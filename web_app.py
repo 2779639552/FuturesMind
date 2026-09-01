@@ -18,7 +18,7 @@
 #   5) 分析工具:   /api/run_analysis(SSE 流式) + /api/progress 轮询 +
 #                  /api/pause /api/resume /api/stop /api/feedback,
 #                  /api/analysis_results、/api/backtest、/api/history、/api/compare
-#   6) 报告导出:   /api/report/<文件>/pdf、/api/report/<文件>/md
+#   6) 报告导出:   /api/report/<文件>/html(网页版)、/api/report/<文件>/pdf、/api/report/<文件>/md
 #   7) 配置:       /api/config
 #   8) 数据更新:   /api/update_data(SSE 流水线)
 #   9) 数据库 / 调度器 / 鉴权: /api/db/*、/api/scheduler/*、/api/auth/*
@@ -44,6 +44,7 @@ PDF+MD export, LLM config panel, real-time token stats, dynamic paths.
 """
 
 import glob  # 【调用包】批量路径匹配(如 batch_*.jsonl 文件列举)
+import html  # 【调用包】HTML 转义(网页版报告标题/文件名安全显示)
 import io  # 【调用包】内存字节流(BytesIO,PDF 下载响应)
 import json  # 【调用包】JSON 序列化/反序列化(配置、行情缓存、批次文件)
 import logging  # 【调用包】日志记录(报告落盘异常等)
@@ -51,6 +52,7 @@ import os  # 【调用包】路径/环境变量操作
 import re  # 【调用包】正则提取报告章节与评级字段
 import secrets  # 【调用包】生成安全 token 与 secret_key
 import sys  # 【调用包】模块搜索路径调整、解释器路径获取
+import tempfile  # 【调用包】临时文件(Playwright 打印 PDF 的中转文件)
 import threading  # 【调用包】后台线程与进度锁
 import time  # 【调用包】耗时统计与轮询间隔
 from collections import defaultdict  # 【调用包】字典计数(缺失键自动给默认值,非标数据聚合用)
@@ -1542,16 +1544,7 @@ def api_report(filename):
         if m:
             sections[sec] = m.group(1).strip()[:5000]
 
-    rating_match = re.search(
-        r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", content
-    )
-    rating = None
-    if rating_match:
-        rating = {
-            "rating": rating_match.group(1).strip(),
-            "confidence": rating_match.group(2).strip(),
-            "score": int(rating_match.group(3)),
-        }
+    rating = _parse_rating(content)
 
     return jsonify(
         {"content": content[:50000], "sections": sections, "rating": rating, "filename": safe_name}
@@ -1932,13 +1925,281 @@ def api_analysis_results():
 # ── PDF / Markdown Export ──────────────────────────────────────────────────
 
 
-# 【功能】用 fpdf2 把 Markdown 报告渲染成 PDF(内存字节流,不落盘)。
+# ── Report rendering: HTML page + PDF(与 Web 前端同风格)─────────────────────
+
+
+# 【功能】从报告 markdown 中提取 RATING 评级头(api_report / api_report_pdf / 网页版 HTML 共用)。
+# 【参数】content: 报告 markdown 文本。
+# 【返回】{rating, confidence, score} dict;未命中返回 None。
+def _parse_rating(content):
+    """Extract {rating, confidence, score} from a report's RATING header."""
+    m = re.search(
+        r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", content
+    )
+    if not m:
+        return None
+    return {
+        "rating": m.group(1).strip(),
+        "confidence": m.group(2).strip(),
+        "score": int(m.group(3)),
+    }
+
+
+# 【功能】报告网页版/PDF 的深色主题 CSS——显式写死 Web 前端 :root 的深色变量值,
+#   并复制 web_template.html 的 .report-content(报告正文)与 .signal-banner(RATING 横幅)
+#   全套规则,保证网页版与 PDF 的外观和 Web 前端一致。
+_REPORT_CSS = """
+:root {
+  --brand: #ff5a1f;
+  --bg: #0a0a0a;
+  --bg-elevated: #0f0f0f;
+  --bg-input: #1a1a1a;
+  --border: #2a2a2a;
+  --border-light: #333;
+  --text: #f5f1eb;
+  --text-secondary: #a0a0a0;
+  --text-muted: #666;
+  --green: #22c55e;
+  --red: #ef4444;
+  --amber: #fbbf24;
+  --blue: #60a5fa;
+  --radius-sm: 6px;
+  --radius-lg: 16px;
+}
+@page { size: A4; margin: 14mm 16mm; }
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "WenQuanYi Zen Hei", -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+  margin: 0;
+  padding: 24px;
+}
+.report-header {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 24px;
+  margin-bottom: 18px;
+}
+.report-header .report-symbol { font-size: 1.5rem; font-weight: 900; color: var(--brand); }
+.report-header .report-file, .report-header .report-time { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
+.signal-banner {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 24px 32px;
+  text-align: center;
+  margin-bottom: 20px;
+}
+.signal-banner .signal-label {
+  font-size: 0.75rem;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.signal-banner .signal-rating {
+  font-size: 2.4rem;
+  font-weight: 900;
+  margin: 4px 0;
+}
+.signal-banner .signal-meta {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+.report-content {
+  line-height: 1.7;
+  font-size: 0.88rem;
+}
+.report-content h1, .report-content h2, .report-content h3 {
+  color: var(--brand);
+  margin: 16px 0 8px;
+}
+.report-content h1 { font-size: 1.4rem; }
+.report-content h2 { font-size: 1.2rem; }
+.report-content h3 { font-size: 1rem; }
+.report-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin: 8px 0;
+}
+.report-content th {
+  background: var(--bg-input);
+  color: var(--brand);
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 2px solid var(--border);
+}
+.report-content td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.report-content ul, .report-content ol { margin: 8px 0; padding-left: 20px; }
+.report-content li { margin: 2px 0; }
+.report-content code {
+  background: var(--bg-input);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.report-content pre {
+  background: var(--bg-input);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 0.82em;
+}
+.report-content blockquote {
+  border-left: 3px solid var(--brand);
+  padding: 8px 14px;
+  margin: 8px 0;
+  background: var(--bg-input);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.report-content a { color: var(--blue); text-decoration: none; }
+.report-content a:hover { text-decoration: underline; }
+.report-content hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+"""
+
+# 【功能】报告网页版的 HTML 骨架模板(占位符由 _report_to_html 逐个替换)。
+#   · __CSS__     —— 内嵌深色主题 CSS(_REPORT_CSS);
+#   · __MARKED__  —— 内嵌前端同款 marked.min.js(markdown 解析器,与前端一致);
+#   · __CONTENT__ —— markdown 正文的 JSON 字符串(json.dumps 转义,防 </script> 截断);
+#   · __BANNER__  —— RATING 横幅(可空)。
+_REPORT_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>__CSS__</style>
+</head>
+<body>
+<div class="report-header">
+  <div class="report-symbol">__HEADER__</div>
+  <div class="report-file">__FILENAME__</div>
+  <div class="report-time">__GENERATED__</div>
+</div>
+__BANNER__
+<div class="report-content" id="report-content"></div>
+<script>__MARKED__</script>
+<script>
+  document.getElementById('report-content').innerHTML = marked.parse(__CONTENT__);
+</script>
+</body>
+</html>
+"""
+
+
+# 【功能】把报告 markdown 渲染成自包含 HTML 网页(深色主题,与 Web 前端同款外观)。
+# 【参数】content: 报告 markdown; filename: 报告文件名(commodity_{品种}_{时间戳}.md);
+#   rating: 评级 dict(可空,自动用 _parse_rating 从正文提取)。
+# 【返回】完整 HTML 文档字符串。
+# 【关键逻辑】用 json.dumps 把 markdown 正文注入 JS 字符串,并额外转义 "</" 为 "<\/",
+#   保证正文里的 </script>、引号、换行都不会截断脚本;marked.min.js 与 CSS 均内嵌,
+#   页面可独立打开/打印(浏览器 Ctrl+P 也能得到同款排版)。
+def _report_to_html(content, filename, rating=None):
+    """Render a markdown report into a standalone dark-theme HTML page."""
+    if rating is None:
+        rating = _parse_rating(content)
+
+    sym = "?"
+    if filename.startswith("commodity_"):
+        parts = filename[len("commodity_"):].split("_", 1)
+        sym = parts[0] if parts else "?"
+    gen_match = re.search(r"\*\*Generated\*\*:\s*(.+)", content)
+    generated = gen_match.group(1).strip() if gen_match else ""
+
+    header = "Commodity Futures Analysis"
+    if sym != "?":
+        header += f" — {html.escape(sym)}"
+
+    banner_html = ""
+    if rating:
+        score = rating.get("score")
+        color = (
+            "var(--green)"
+            if (score is not None and score >= 6)
+            else ("var(--red)" if (score is not None and score <= 4) else "var(--amber)")
+        )
+        banner_html = (
+            '<div class="signal-banner">'
+            '<div class="signal-label">RATING</div>'
+            f'<div class="signal-rating" style="color:{color}">{html.escape(rating.get("rating", "?"))}</div>'
+            f'<div class="signal-meta">CONFIDENCE: {html.escape(rating.get("confidence", "?"))} | SCORE: {score if score is not None else "?"}/10</div>'
+            "</div>"
+        )
+
+    marked_path = Path(__file__).resolve().parent / "static" / "marked.min.js"
+    marked_js = marked_path.read_text(encoding="utf-8") if marked_path.exists() else ""
+    content_json = json.dumps(content, ensure_ascii=False).replace("</", "<\\/")
+
+    title = html.escape(f"{header} — {filename}")
+    return (
+        _REPORT_PAGE.replace("__TITLE__", title)
+        .replace("__CSS__", _REPORT_CSS)
+        .replace("__MARKED__", marked_js)
+        .replace("__CONTENT__", content_json)
+        .replace("__HEADER__", header)
+        .replace("__FILENAME__", html.escape(filename))
+        .replace("__GENERATED__", html.escape(generated))
+        .replace("__BANNER__", banner_html)
+    )
+
+
+# 【功能】用 headless Chromium(Playwright)把报告网页版打印成 PDF(内存字节流,不落盘)。
+# 【参数】content: Markdown 文本; filename: 文件名(仅用于页眉显示);
+#   rating: 评级 dict(可选,非空则打印在标题下方)。
+# 【关键逻辑】先 _report_to_html 生成与 Web 前端同风格的深色主题 HTML,再用 Playwright
+#   的 chromium 打开并 page.pdf() 导出;与前端同渲染引擎,PDF 外观与网页天然一致。
+#   任何一步失败(Playwright 未装/浏览器缺失/渲染异常)都回退到 fpdf2 纯文本版
+#   _generate_pdf_fpdf,保证 PDF 导出永不 500。
+def _generate_pdf(content, filename, rating=None):
+    """Generate a PDF from a markdown report — styled like the web frontend."""
+    try:
+        from playwright.sync_api import sync_playwright  # 【调用包】浏览器自动化(PDF 打印引擎)
+    except Exception:
+        return _generate_pdf_fpdf(content, filename, rating)
+
+    tmp = None
+    try:
+        html = _report_to_html(content, filename, rating)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            tmp = f.name
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.set_content(html, wait_until="load")
+                page.wait_for_selector("#report-content", timeout=15000)  # 【关键】等 marked 渲染完成
+                page.pdf(
+                    path=tmp,
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "14mm", "bottom": "14mm", "left": "16mm", "right": "16mm"},
+                )
+            finally:
+                browser.close()
+        with open(tmp, "rb") as f:
+            return f.read()
+    except Exception:
+        return _generate_pdf_fpdf(content, filename, rating)
+    finally:
+        if tmp and os.path.exists(tmp):
+            with contextlib.suppress(Exception):
+                os.remove(tmp)
+
+
+# 【功能】fpdf2 纯文本版 PDF 渲染(Playwright 不可用时的兜底路径)。
 # 【参数】content: Markdown 文本; filename: 文件名(仅用于页眉显示);
 #   rating: 评级 dict(可选,非空则打印在标题下方)。
 # 【关键逻辑】中文字体需手动注册,按 Windows/Linux/Mac 常见路径逐一探测 CJK 字体;
 #   找不到则退回 Helvetica(只能渲染 ASCII,中文会乱码)。正文只取前 500 行、每行截 200 字符。
-def _generate_pdf(content, filename, rating=None):
-    """Generate a PDF from markdown report using fpdf2."""
+def _generate_pdf_fpdf(content, filename, rating=None):
+    """Generate a PDF from markdown report using fpdf2 (fallback renderer)."""
     from fpdf import FPDF  # 【调用包】PDF 生成库(fpdf2)
 
     pdf = FPDF()
@@ -2011,7 +2272,7 @@ def _generate_pdf(content, filename, rating=None):
 # 【返回】application/pdf 附件流;生成失败返回 500。
 @app.route("/api/report/<path:filename>/pdf")
 def api_report_pdf(filename):
-    """Download a report as PDF."""
+    """View a report as PDF in-browser (styled like the web frontend)."""
     safe_name = os.path.basename(filename)
     fpath = REPORT_DIR / safe_name
     if not fpath.exists():
@@ -2020,24 +2281,12 @@ def api_report_pdf(filename):
     with open(fpath, encoding="utf-8") as f:
         content = f.read()
 
-    # Extract rating
-    rating_match = re.search(
-        r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", content
-    )
-    rating = None
-    if rating_match:
-        rating = {
-            "rating": rating_match.group(1).strip(),
-            "confidence": rating_match.group(2).strip(),
-            "score": int(rating_match.group(3)),
-        }
-
     try:
-        pdf_data = _generate_pdf(content, safe_name, rating)
+        pdf_data = _generate_pdf(content, safe_name, _parse_rating(content))
         return send_file(
             io.BytesIO(pdf_data),
             mimetype="application/pdf",
-            as_attachment=True,
+            as_attachment=False,  # 【关键】inline:浏览器新标签直接打开 PDF 查看,而非强制下载
             download_name=f"{safe_name.replace('.md', '')}.pdf",
         )
     except Exception as e:
@@ -2055,6 +2304,24 @@ def api_report_md(filename):
         return jsonify({"error": "Not found"}), 404
 
     return send_file(fpath, mimetype="text/markdown", as_attachment=True, download_name=safe_name)
+
+
+# 【功能】网页版查看历史报告:把 markdown 渲染成独立深色主题 HTML 页面(与前端同风格,
+#   含 RATING 横幅与卡式章节),可直接在浏览器打开/打印,也可右键另存为网页。
+# 【安全】os.path.basename 防路径穿越;文件不存在返回 404。
+# 【返回】text/html 页面。
+@app.route("/api/report/<path:filename>/html")
+def api_report_html(filename):
+    """Open a saved report as a standalone web-styled HTML page."""
+    safe_name = os.path.basename(filename)
+    fpath = REPORT_DIR / safe_name
+    if not fpath.exists():
+        return jsonify({"error": "Not found"}), 404
+
+    with open(fpath, encoding="utf-8") as f:
+        content = f.read()
+
+    return Response(_report_to_html(content, safe_name), mimetype="text/html")
 
 
 # ── Config endpoint ───────────────────────────────────────────────────────

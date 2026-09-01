@@ -837,6 +837,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <h3>
       报告内容
       <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="App.openReportHtml()">↗ 网页版</button>
         <button class="btn btn-outline btn-sm" id="btn-download-md" onclick="App.downloadReport('md')">📥 MD</button>
         <button class="btn btn-outline btn-sm" id="btn-download-pdf" onclick="App.downloadReport('pdf')">📄 PDF</button>
       </span>
@@ -2495,6 +2496,13 @@ const App = {
     if (!this._currentReportFile) return;
     const url = `/api/report/${encodeURIComponent(this._currentReportFile)}/${format}`;
     window.open(url, '_blank');
+  },
+
+  // 【功能】在新标签打开历史报告的"网页版"(独立深色主题报告页,与前端同风格)。
+  // 【后端】GET /api/report/{file}/html —— 后端把 markdown 渲染成自包含 HTML 页面。
+  openReportHtml() {
+    if (!this._currentReportFile) return;
+    window.open(`/api/report/${encodeURIComponent(this._currentReportFile)}/html`, '_blank');
   },
 
   // ── Data Update ──
