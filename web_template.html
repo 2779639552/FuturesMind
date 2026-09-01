@@ -632,7 +632,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
         <div style="flex:1;min-width:140px">
           <label>品种</label>
-          <select id="sym" onchange="App.updateSentimentStats(); App._resetFeedback()"></select>
+          <select id="sym" onchange="App.updateSentimentStats(); App.loadRunInputDash(); App._resetFeedback()"></select>
         </div>
         <div style="flex:1;min-width:140px">
           <label>日期</label>
@@ -656,6 +656,12 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       <h3>品种信息 <span class="badge badge-info" id="sentiment-badge"></span></h3>
       <div id="variety-info" style="font-size:0.84rem;color:var(--text-secondary)">选择品种查看详情</div>
     </div>
+  </div>
+
+  <!-- 分析输入数据小看板: 展示接下来运行分析将用到的真实数据快照(最新可用) -->
+  <div class="card" id="run-input-card" style="margin-bottom:16px">
+    <h3>分析输入数据 <span class="badge badge-info" id="run-input-asof">数据截至: -</span></h3>
+    <div id="run-input-body" style="font-size:0.85rem;color:var(--text-secondary)">加载中...</div>
   </div>
 
   <!-- Pipeline Progress -->
@@ -1470,6 +1476,7 @@ const App = {
       if (elVC) elVC.textContent = vn;
       if (elVA) elVA.textContent = `全部${vn}个`;
       this.updateSentimentStats();
+      this.loadRunInputDash();
     } catch (e) { console.error('Failed to load varieties', e); }
   },
 
@@ -1495,6 +1502,128 @@ const App = {
         }
       }
     } catch (e) { /* ignore */ }
+  },
+
+  // ── Run Input Data Dashboard (分析输入数据小看板) ──
+  // 【功能】加载"运行分析输入数据"小看板: 展示接下来运行分析将用到的真实数据快照(最新可用,口径与数据看板一致)
+  // 【输入】读取 #sym 当前值
+  // 【渲染】#run-input-asof "数据截至"标注 + #run-input-body(价格/基差/库存/情绪四卡 + 新闻列表 + 宏观chips + 降级提示)
+  // 【后端】GET /api/run_input_data/{sym}
+  async loadRunInputDash() {
+    const sym = document.getElementById('sym').value;
+    const body = document.getElementById('run-input-body');
+    const asof = document.getElementById('run-input-asof');
+    if (!body) return;
+    try {
+      const r = await fetch(`/api/run_input_data/${sym}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (asof && d._meta && d._meta.data_as_of) asof.textContent = `数据截至: ${d._meta.data_as_of}`;
+      body.innerHTML = this._renderRunInput(d);
+    } catch (e) {
+      body.innerHTML = `<span class="badge badge-neutral">输入数据加载失败: ${this._escHtml(String(e.message || e))}</span>`;
+    }
+  },
+
+  // 【功能】渲染输入数据小看板内容(纯字符串拼接,复用 _escHtml)
+  // 【输入】d: GET /api/run_input_data/{sym} 返回 {price,basis,inventory,sentiment,news,macro,_meta}
+  // 【渲染】四张统计卡 + 新闻滚动列表(前8条) + 宏观chips + 各块降级note(琥珀) + raw 原文透传
+  // 【后端】无(纯前端渲染)
+  _renderRunInput(d) {
+    const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
+    const f2 = v => (v == null ? '-' : Number(v).toFixed(2));
+    const p = d.price || {}, b = d.basis || {}, i = d.inventory || {}, s = d.sentiment || {};
+    const cards = [];
+    // 1) 最新价卡
+    if (p.available && p.latest_close != null) {
+      let chg = '';
+      if (p.change_pct != null) {
+        const up = p.change_pct >= 0;
+        chg = `<div style="font-size:0.8rem;color:${up ? 'var(--red)' : 'var(--green)'}">${up ? '+' : ''}${p.change_pct.toFixed(2)}%</div>`;
+      }
+      cards.push(`<div class="stat-card"><div class="stat-val">${esc(p.latest_close)}</div><div class="stat-lbl">最新价 ${esc(p.date || '')}${chg}</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:0.9rem">无数据</div><div class="stat-lbl">最新价</div></div>`);
+    }
+    // 2) 近月基差率卡
+    if (b.available && b.near_basis_rate != null) {
+      const st = this._structureCN(b.structure);
+      cards.push(`<div class="stat-card"><div class="stat-val">${f2(b.near_basis_rate)}%</div><div class="stat-lbl">近月基差率 ${esc(b.date || '')} · ${esc(st)}</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:0.9rem">无数据</div><div class="stat-lbl">近月基差率</div></div>`);
+    }
+    // 3) 仓单库存卡
+    if (i.available && i.inventory != null) {
+      let chg = '';
+      if (i.change != null) {
+        const up = i.change >= 0;
+        chg = `<div style="font-size:0.8rem;color:${up ? 'var(--red)' : 'var(--green)'}">${up ? '+' : ''}${f2(i.change)}</div>`;
+      }
+      cards.push(`<div class="stat-card"><div class="stat-val">${f2(i.inventory)}</div><div class="stat-lbl">仓单库存 ${esc(i.date || '')} · ${esc(this._trendCN(i.trend))}${chg}</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:0.9rem">无数据</div><div class="stat-lbl">仓单库存</div></div>`);
+    }
+    // 4) 情绪卡
+    if (s.available && s.label) {
+      const bull = s.bullish_ratio != null ? Math.round(s.bullish_ratio * 100) : '-';
+      const bear = s.bearish_ratio != null ? Math.round(s.bearish_ratio * 100) : '-';
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:1.2rem">${esc(s.label)}</div><div class="stat-lbl">情绪 ${esc(s.data_end || '')} · ${f2(s.score)} · 多空 ${esc(bull)}:${esc(bear)} ${esc(s.trend_label || '')}</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:0.9rem">无数据</div><div class="stat-lbl">情绪</div></div>`);
+    }
+    let html = `<div class="grid grid-4" style="gap:8px">${cards.join('')}</div>`;
+
+    // 5) 新闻滚动列表(前 8 条)
+    if (d.news && d.news.available && d.news.items && d.news.items.length) {
+      const items = d.news.items.slice(0, 8).map(n =>
+        `<div style="padding:3px 0;border-bottom:1px solid var(--border-light)">
+           <span class="badge badge-info">${esc(n.time)}</span> <b>${esc(n.source)}</b> ${esc(n.title)}
+           ${n.summary ? `<div style="color:var(--text-muted);margin:2px 0 0 12px">${esc(n.summary)}</div>` : ''}
+         </div>`).join('');
+      html += `<div style="margin-top:10px"><b>新闻</b> (前${Math.min(8, d.news.items.length)}条)<div style="max-height:180px;overflow-y:auto;margin-top:4px">${items}</div></div>`;
+    }
+
+    // 6) 宏观摘要 chips
+    if (d.macro && d.macro.available && d.macro.items && d.macro.items.length) {
+      const chips = d.macro.items.map(m =>
+        m.value != null
+          ? `<span class="badge badge-info" title="${esc(m.note)}">${esc(m.name)}: ${esc(m.value)}</span>`
+          : `<span class="badge badge-neutral" title="不可用">${esc(m.name)}: 不可用</span>`
+      ).join(' ');
+      html += `<div style="margin-top:10px"><b>宏观</b> <div style="margin-top:4px">${chips}</div></div>`;
+    }
+
+    // 7) 各块降级 note(琥珀) + raw 原文透传
+    const notes = [];
+    for (const key of ['price', 'basis', 'inventory', 'sentiment', 'news', 'macro']) {
+      const blk = d[key];
+      if (blk && !blk.available && blk.note) notes.push(`[${key}] ${blk.note}`);
+      if (blk && blk.raw) {
+        html += `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted)">${key} 原文透传</summary><pre style="max-height:180px;overflow:auto;font-size:0.75rem;white-space:pre-wrap">${esc(blk.raw)}</pre></details>`;
+      }
+    }
+    if (notes.length) {
+      html += `<div style="margin-top:10px">${notes.map(n => `<span class="badge badge-neutral" style="margin-right:4px">${esc(n)}</span>`).join('')}</div>`;
+    }
+    return html;
+  },
+
+  // 【功能】基差结构英文 → 中文(小看板展示用)
+  _structureCN(st) {
+    if (!st) return '结构未知';
+    if (st === 'BACKWARDATION') return '现货升水(Back)';
+    if (st === 'CONTANGO') return '现货贴水(Cont)';
+    if (st === 'FLAT') return '平水';
+    return st;
+  },
+
+  // 【功能】库存趋势英文 → 中文(小看板展示用)
+  _trendCN(tr) {
+    if (!tr) return '趋势未知';
+    if (tr === 'BUILDING') return '累库';
+    if (tr === 'DRAINING') return '去库';
+    if (tr === 'STABLE') return '平稳';
+    return tr;
   },
 
   // ── SSE Reader (shared) ──
@@ -1534,6 +1663,7 @@ const App = {
   // 【后端】POST /api/run_analysis → 轮询 GET /api/progress → 完成时 GET /api/analysis_results
   async runAnalysis() {
     if (this._isAnalysisRunning) return;
+    this.loadRunInputDash();  // 【关键】点开始分析前刷新一次输入数据小看板(不 await, fire-and-forget)
     this._isAnalysisRunning = true;
 
     const btnRun = document.getElementById('btn-run');

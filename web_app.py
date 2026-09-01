@@ -14,6 +14,7 @@
 #   1) 实时行情:   /api/live-prices、/api/price/update、/api/price/<品种>
 #   2) 情绪数据:   /api/sentiment/<品种>、/api/sentiment_posts、/api/overlay/<品种>
 #   3) 数据看板:   /api/dashboard/<品种>、/api/dashboard/sector/<板块>(仓单/库存/价格/基差 + 关联分析)
+#   3.5) 运行分析输入数据: /api/run_input_data/<品种>(价格/基差/库存/情绪/新闻/宏观最新快照,供运行分析页小看板)
 #   4) 主页面:     / 、/test
 #   5) 分析工具:   /api/run_analysis(SSE 流式) + /api/progress 轮询 +
 #                  /api/pause /api/resume /api/stop /api/feedback,
@@ -43,6 +44,7 @@ Enhanced v2.5: ProgressTracker (thread-safe), pause/resume/stop,
 PDF+MD export, LLM config panel, real-time token stats, dynamic paths.
 """
 
+import concurrent.futures  # 【调用包】线程池超时异常(宏观块 20s 超时降级用)
 import glob  # 【调用包】批量路径匹配(如 batch_*.jsonl 文件列举)
 import html  # 【调用包】HTML 转义(网页版报告标题/文件名安全显示)
 import io  # 【调用包】内存字节流(BytesIO,PDF 下载响应)
@@ -128,6 +130,8 @@ from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调�
     VARIETY_METADATA,
     get_futures_basis,
     get_futures_inventory,
+    get_futures_macro,  # 【调用包】中国宏观指标(GDP/PMI/固投/地产/工业增加值/建筑业,格式化文本)
+    get_futures_news,  # 【调用包】商品+宏观新闻(格式化文本,经 route_to_vendor 供分析师工具使用)
     get_futures_price,
 )
 from tradingagents.dataflows.config import (  # noqa: E402  # 【调用包】把配置同步到全局(供 Agent 图/LLM 读取)
@@ -1287,6 +1291,340 @@ def api_dashboard(variety):
         "basis_note": basis["note"],
     }
     return jsonify({"_meta": meta, "price": price, "inventory": inv, "basis": basis, "analysis": analysis})
+
+
+# ---------------------------------------------------------------------------
+# 运行分析输入数据小看板:纯解析函数 + 聚合接口
+# ---------------------------------------------------------------------------
+
+
+# 【功能】解析 get_futures_basis CSV(含 # 尾注)→ (points, structure|None)。
+# 【返回】points: [{date, spot_price, dom_basis, dom_basis_rate, near_basis, near_basis_rate}, ...];
+#        structure 取自 '# Latest basis: x.xx — BACKWARDATION (...)' 尾注,无尾注返回 None。
+def _run_input_basis_points(csv_text: str) -> tuple[list[dict], str | None]:
+    structure = None
+    lines = []
+    for ln in csv_text.strip().split("\n"):
+        ln = ln.rstrip()
+        if ln.lstrip().startswith("#"):
+            if "Latest basis" in ln:
+                m = re.search(r"—\s*([A-Za-z]+)", ln)
+                if m:
+                    structure = m.group(1)
+            continue
+        lines.append(ln)
+    if not lines:
+        return [], structure
+    header = [h.strip() for h in lines[0].split(",")]
+    idx = {h: i for i, h in enumerate(header)}
+
+    def _col(row, name):
+        i = idx.get(name)
+        if i is None or i >= len(row):
+            return None
+        v = row[i].strip()
+        return v or None
+
+    def _f(v):
+        try:
+            return float(v) if v is not None else None
+        except ValueError:
+            return None
+
+    points = []
+    for ln in lines[1:]:
+        row = [c.strip() for c in ln.split(",")]
+        date = _col(row, "date")
+        if not date:
+            continue
+        points.append({
+            "date": date,
+            "spot_price": _f(_col(row, "spot_price")),
+            "dom_basis": _f(_col(row, "dom_basis")),
+            "dom_basis_rate": _f(_col(row, "dom_basis_rate")),
+            "near_basis": _f(_col(row, "near_basis")),
+            "near_basis_rate": _f(_col(row, "near_basis_rate")),
+        })
+    return points, structure
+
+
+# 【功能】基差结构兜底:优先 dom_basis,无则 near_basis;正=BACKWARDATION 负=CONTANGO 零=FLAT。
+def _structure_from_basis(point: dict) -> str | None:
+    b = point.get("dom_basis") if point.get("dom_basis") is not None else point.get("near_basis")
+    if b is None:
+        return None
+    return "BACKWARDATION" if b > 0 else ("CONTANGO" if b < 0 else "FLAT")
+
+
+# 【功能】从 get_futures_inventory 的 '# Warehouse receipt trend: BUILDING (...)' 尾注取趋势词。
+def _inventory_trend(csv_text: str) -> str | None:
+    for ln in csv_text.split("\n"):
+        if ln.lstrip().startswith("#") and "Warehouse receipt trend" in ln:
+            m = re.search(r"trend:\s*(\w+)", ln)
+            if m:
+                return m.group(1)
+    return None
+
+
+# 【功能】解析 get_futures_news 文本 → [{time, source, title, summary}]。
+# 【关键】行格式: '<time> [<source>] <title>',可选下一行 '  <summary>'。
+#        '# ' 注释行与空行跳过;解析不出任何条目返回 []。
+_NEWS_ITEM_RE = re.compile(r"^(.+?)\s+\[([^\]]+)\]\s*(.*)$")
+
+
+def _parse_news_text(text: str) -> list[dict]:
+    lines = [ln.rstrip() for ln in text.strip().split("\n")]
+    items, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if not line or line.lstrip().startswith("#"):
+            i += 1
+            continue
+        m = _NEWS_ITEM_RE.match(line)
+        if not m:
+            i += 1
+            continue
+        item = {
+            "time": m.group(1).strip(),
+            "source": m.group(2).strip(),
+            "title": m.group(3).strip(),
+            "summary": "",
+        }
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if nxt.startswith("  ") and nxt.strip() and not nxt.lstrip().startswith("#"):
+            item["summary"] = nxt.strip()
+            i += 2
+        else:
+            i += 1
+        items.append(item)
+    return items
+
+
+# 【功能】解析 get_futures_macro 文本 → (items, raw)。
+# 【返回】items: [{name, value, note}];value=None+note 表示该指标不可用。
+# 【关键】'## 节' + 两空格缩进键值;失败节 '## X: UNAVAILABLE (err)' → value None + note;
+#        没有任何 '## ' 节(格式完全不符)→ 返回 ([], 原文),前端透传原文。
+_MACRO_VALUE_LABELS = [
+    ("GDP", "GDP 同比"),
+    ("PMI", "制造业PMI"),
+    ("固定资产投资", "同比增长"),
+    ("房地产", "指数值"),
+    ("工业增加值", "同比增长"),
+    ("建筑业", "指数值"),
+]
+
+
+def _pick_macro_value(name: str, kv: list[tuple[str, str]]) -> str | None:
+    """按优先级标签挑该节最有信息量的值;节名子串匹配,避免 '建筑业指数' vs '建筑业' 差异。"""
+    for key, want in _MACRO_VALUE_LABELS:
+        if name.startswith(key) or key.startswith(name):
+            for k, v in kv:
+                if want in k:
+                    return v
+    for _k, v in kv:  # 兜底:第一个非空值
+        if v:
+            return v
+    return None
+
+
+def _parse_macro_text(text: str) -> tuple[list[dict], str]:
+    sections, cur = [], None
+    for ln in text.strip().split("\n"):
+        ln = ln.rstrip()
+        if ln.startswith("## "):
+            header = ln[3:].strip()
+            if "UNAVAILABLE" in header:
+                name, _, err = header.partition(":")
+                cur = {"name": name.strip(), "available": False, "err": err.strip(), "kv": []}
+            else:
+                cur = {"name": header.split("(")[0].strip(), "available": True, "err": "", "kv": []}
+            sections.append(cur)
+        elif cur and cur["available"] and ln.startswith("  ") and ":" in ln:
+            k, _, v = ln.strip().partition(":")
+            cur["kv"].append((k.strip(), v.strip()))
+    if not sections:
+        return [], text
+    items = []
+    for s in sections:
+        items.append({
+            "name": s["name"],
+            "value": _pick_macro_value(s["name"], s["kv"]) if s["available"] else None,
+            "note": s["err"] if not s["available"] else "",
+        })
+    return items, ""
+
+
+# 【功能】运行分析输入数据小看板:返回所选品种"接下来分析将用到的真实数据"的最新可用快照。
+# 【参数】URL 路径 <variety>: 品种代码(如 rb)。
+# 【返回】_meta + price/basis/inventory/sentiment/news/macro 六块;各块 available=false + note 优雅降级。
+# 【关键】1) 时间口径与数据看板一致(end_date=datetime.now(),meta.data_as_of 标注最新数据日);
+#        2) 价格/基差/库存/新闻走 ThreadPoolExecutor(max_workers=4) 并行(api_dashboard 同款);
+#        3) 宏观(6 个 akshare 子指标,最慢)另起单线程带 20s 超时,超时只降级该项不拖垮首拉;
+#        4) 情绪直接读 {code}_sentiment.json(本地毫秒级);
+#        5) 新闻/宏观为格式化文本,经 _parse_news_text/_parse_macro_text 结构化;解析失败 raw 透传。
+@app.route("/api/run_input_data/<variety>")
+def api_run_input_data(variety):
+    """Return latest-available snapshot of the data the run-analysis will consume."""
+    code = variety.upper()
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    price = {"available": False, "note": "", "date": None, "latest_close": None, "change_pct": None}
+    basis = {"available": False, "note": "", "date": None, "near_basis": None,
+             "near_basis_rate": None, "dom_basis": None, "dom_basis_rate": None, "structure": None}
+    inv = {"available": False, "note": "", "date": None, "inventory": None, "change": None, "trend": None}
+    news = {"available": False, "note": "", "items": [], "raw": ""}
+    macro = {"available": False, "note": "", "items": [], "raw": ""}
+    sentiment = {"available": False, "note": "", "label": None, "score": None,
+                 "bullish_ratio": None, "bearish_ratio": None, "trend_label": None, "data_end": None}
+
+    def _load_price():
+        try:
+            raw = get_futures_price(code, start_date, end_date)  # 【调用函数】跨模块获取行情 CSV 文本
+            if raw.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                price["note"] = raw
+                return
+            pts, _, _ = _adjusted_price_points(raw, code)  # 【调用函数】实时主连 → 后复权序列
+            if pts:
+                price["available"] = True
+                price["latest_close"] = pts[-1]["close"]
+                price["date"] = pts[-1]["date"]
+                if len(pts) >= 2 and pts[-2]["close"]:
+                    price["change_pct"] = (pts[-1]["close"] - pts[-2]["close"]) / pts[-2]["close"] * 100
+            else:
+                price["note"] = "NO_DATA_AVAILABLE: 价格数据不足"
+        except Exception as e:  # 【关键】单项异常不 500,降级为 note
+            logger.warning("run-input price %s: %s", code, e)
+            price["note"] = f"DATA_ERROR: {e}"
+
+    def _load_basis():
+        try:
+            raw = get_futures_basis(code, start_date, end_date)  # 【调用函数】跨模块获取基差 CSV 文本
+            if raw.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                basis["note"] = raw
+                return
+            pts, structure = _run_input_basis_points(raw)  # 【调用函数】基差全列 + 结构尾注
+            if pts:
+                basis["available"] = True
+                basis["date"] = pts[-1]["date"]
+                basis["near_basis"] = pts[-1]["near_basis"]
+                basis["near_basis_rate"] = pts[-1]["near_basis_rate"]
+                basis["dom_basis"] = pts[-1]["dom_basis"]
+                basis["dom_basis_rate"] = pts[-1]["dom_basis_rate"]
+                basis["structure"] = structure or _structure_from_basis(pts[-1])
+            else:
+                basis["note"] = "NO_DATA_AVAILABLE: 基差无数据(该品种此接口不覆盖)"
+        except Exception as e:
+            logger.warning("run-input basis %s: %s", code, e)
+            basis["note"] = f"DATA_ERROR: {e}"
+
+    def _load_inventory():
+        try:
+            raw = get_futures_inventory(code)  # 【调用函数】跨模块获取仓单库存 CSV 文本
+            if raw.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                inv["note"] = raw
+                return
+            pts = _inventory_points(raw)  # 【调用函数】解析仓单 CSV → 序列
+            if pts:
+                inv["available"] = True
+                inv["date"] = pts[-1]["date"]
+                inv["inventory"] = pts[-1]["inventory"]
+                inv["change"] = pts[-1]["change"]
+                inv["trend"] = _inventory_trend(raw)  # 【调用函数】趋势尾注 → BUILDING/DRAINING/STABLE
+            else:
+                inv["note"] = "NO_DATA_AVAILABLE: 仓单库存无数据(该品种此接口不覆盖)"
+        except Exception as e:
+            logger.warning("run-input inventory %s: %s", code, e)
+            inv["note"] = f"DATA_ERROR: {e}"
+
+    def _load_news():
+        try:
+            raw = get_futures_news(code)  # 【调用函数】新闻格式化文本(1 次网络)
+            if raw.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                news["note"] = raw
+                return
+            items = _parse_news_text(raw)  # 【调用函数】文本 → items
+            if items:
+                news["available"] = True
+                news["items"] = items
+            else:
+                news["note"] = "NEWS_PARSE_ERROR: 新闻文本解析失败,已透传原文"
+                news["raw"] = raw
+        except Exception as e:
+            logger.warning("run-input news %s: %s", code, e)
+            news["note"] = f"DATA_ERROR: {e}"
+
+    def _load_macro():
+        try:
+            raw = get_futures_macro()  # 【调用函数】宏观文本(内部 6 指标各自 try/except)
+            items, raw_err = _parse_macro_text(raw)  # 【调用函数】文本 → items
+            if items and any(it["value"] is not None for it in items):
+                macro["available"] = True
+                macro["items"] = items
+            elif items and not raw_err:
+                macro["note"] = "NO_DATA_AVAILABLE: 宏观指标全部不可用"
+                macro["items"] = items
+            else:
+                macro["note"] = "MACRO_PARSE_ERROR: 宏观文本解析失败,已透传原文"
+                macro["raw"] = raw
+        except Exception as e:
+            logger.warning("run-input macro: %s", e)
+            macro["note"] = f"DATA_ERROR: {e}"
+
+    # 【关键】价格/基差/库存/新闻并行(每任务内部已 catch,result 不抛);与 api_dashboard 同款。
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = [ex.submit(fn) for fn in (_load_price, _load_basis, _load_inventory, _load_news)]
+        for f in futs:
+            f.result()
+
+    # 【关键】宏观另起单线程 + 20s 超时;超时只降级宏观块。shutdown(wait=False) 让后台线程跑完再返回,
+    #        避免 with 块退出时阻塞等待宏观(否则超时形同虚设)。
+    mex = ThreadPoolExecutor(max_workers=1)
+    mf = mex.submit(_load_macro)
+    try:
+        mf.result(timeout=20)
+    except concurrent.futures.TimeoutError:
+        macro["note"] = "MACRO_TIMEOUT: 宏观数据抓取超时(20s),可稍后刷新重试"
+    mex.shutdown(wait=False)
+
+    # 情绪:本地 JSON 同步读(与 api_sentiment 同口径)
+    sent_path = SENTIMENT_DIR / f"{code}_sentiment.json"
+    if sent_path.exists():
+        try:
+            with open(sent_path, encoding="utf-8") as f:
+                sd = json.load(f)
+            ss = sd.get("data", {}).get("social_sentiment", {})
+            ds = sd.get("data", {}).get("daily_series", [])
+            sentiment["available"] = True
+            sentiment["label"] = ss.get("overall_sentiment_label")
+            sentiment["score"] = ss.get("avg_score")
+            sentiment["bullish_ratio"] = ss.get("bullish_ratio")
+            sentiment["bearish_ratio"] = ss.get("bearish_ratio")
+            sentiment["trend_label"] = ss.get("trend_label")
+            if ds:
+                sentiment["data_end"] = ds[-1].get("date")
+            elif ss.get("date_range"):
+                sentiment["data_end"] = str(ss["date_range"]).split("~")[-1].strip()
+        except Exception as e:
+            logger.warning("run-input sentiment %s: %s", code, e)
+            sentiment["note"] = f"DATA_ERROR: {e}"
+    else:
+        sentiment["note"] = f"无情绪数据({code})"
+
+    # 数据截至:取各可用来源最新日期,无则用请求日
+    dates = [d for d in (price["date"], basis["date"], inv["date"], sentiment["data_end"]) if d]
+    data_as_of = max(dates) if dates else datetime.now().strftime("%Y-%m-%d")
+    meta = {
+        "variety": code,
+        "name": VARIETY_METADATA.get(code, {}).get("name", code),
+        "sector": _get_sector(code),
+        "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "data_as_of": data_as_of,
+    }
+    return jsonify({
+        "_meta": meta, "price": price, "basis": basis, "inventory": inv,
+        "sentiment": sentiment, "news": news, "macro": macro,
+    })
 
 
 # 【功能】板块相关性总览:板块内各品种的价格-库存 Pearson R 汇总(前端按钮触发,不自动加载)。
