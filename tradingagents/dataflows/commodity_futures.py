@@ -101,6 +101,12 @@ warnings.filterwarnings("ignore", message=r".*非交易日.*", category=UserWarn
 _response_cache: dict[str, tuple[float, pd.DataFrame]] = {}  # 【变量】内存缓存:键 "price:{品种代码}",值 (拉取时间戳, DataFrame)
 _CACHE_TTL = 300  # 5 minutes
 
+# _basis_cache: 基差/现货价内存缓存(键 "basis:{品种代码}")。基差接口 futures_spot_price_daily 是
+#   东财网页爬取,实测单次 13~175s(2026-09-01 实测 175s),是数据看板刷新慢的根因。现货/基差为
+#   日频数据,当天多次刷新无需重爬 → TTL 取 6 小时(价格缓存 5 分钟,基差例外放宽到 6h)。
+_basis_cache: dict[str, tuple[float, pd.DataFrame]] = {}  # 【变量】基差内存缓存:键 "basis:{品种代码}",值 (拉取时间戳, 归一化 DataFrame)
+_BASIS_CACHE_TTL = 6 * 3600  # 【变量】基差缓存有效期 6 小时(日频数据,容忍当天迟滞)
+
 
 # ---------------------------------------------------------------------------
 # Variety metadata & symbol mapping
@@ -1451,6 +1457,32 @@ def _cached_covers_end(cached_df, end_date) -> bool:
         return False  # 解析失败 → 保守重拉,绝不静默返回旧数据
 
 
+def _cached_covers_range(cached_df, start_date: str, end_date: str, tolerance_days: int = 7) -> bool:
+    """缓存是否覆盖请求的窗口(防静默截断),用 `_BASIS_CACHE_TTL` 管新鲜度。
+
+    【背景】基差缓存键 "basis:{品种代码}" 不含起止日期,同一品种一次拉取要能服务
+           days=60/120/180/365 全部回看档位。若缓存是窄窗口(如 30 天)而请求更宽,
+           直接复用会静默返回被截断的数据。
+    【关键】两端都不严格判覆盖(容差 7 天):①终点——现货价是日频、收盘后才发布,
+           请求 end_date=today 时源里往往只有昨天,严格 max>=end_date 永远不满足;
+           ②起点——start_date 常落在非交易日,源返回下一个交易日 → 首行日期会略晚于
+           start_date,严格 min<=start_date 同样永远不满足。两个"差一天"都会让缓存
+           形同虚设、每次刷新白爬一次(基差接口实测 13~175s)。容差 7 天覆盖周末/节假日,
+           新鲜度交给 6h TTL 兜底;宽窗口请求(如 365 天对 60 天缓存)仍会正确判不覆盖重拉。
+    【逻辑】非空 且 min<=start+7天 且 max>=end-7天 → 覆盖充分;否则视为未命中重拉。
+    """
+    date_col = "日期" if "日期" in cached_df.columns else "date"
+    if date_col not in cached_df.columns or cached_df[date_col].empty:
+        return False
+    dts = pd.to_datetime(cached_df[date_col])
+    try:
+        start_ceil = pd.to_datetime(start_date) + timedelta(days=tolerance_days)
+        end_floor = pd.to_datetime(end_date) - timedelta(days=tolerance_days)
+        return bool(dts.min() <= start_ceil and dts.max() >= end_floor)
+    except (ValueError, TypeError):
+        return False  # 解析失败 → 保守重拉,绝不静默返回旧数据
+
+
 def get_futures_price(
     symbol: str,
     start_date: str,
@@ -1731,6 +1763,44 @@ def get_futures_indicators(
 #           3) ★ Hybrid Mode:函数末尾调用 merge_basis_data(code, api_output),
 #              即"外部 JSON 里有现货价就追加一条外部数据说明;没有则原样返回"。
 #              这是本文件"外部数据优先、免费接口兜底"机制的一部分。
+def _build_basis_output(code: str, result: pd.DataFrame) -> str:
+    """【功能】把归一化后的基差 DataFrame 构建为最终输出(四舍五入 + 解读注释 + 外部现货价合并)。
+
+    【关键】缓存命中也走这里重建输出——round/注释/merge_basis_data 全部幂等,缓存里只存 DataFrame,
+          避免把可变的字符串输出放进缓存。
+    """
+    out = result.copy()
+    float_cols = out.select_dtypes(include=["float64"]).columns
+    out[float_cols] = out[float_cols].round(4)
+
+    # Add interpretation hints
+    if "dom_basis" in out.columns:
+        latest_basis = out["dom_basis"].iloc[-1]
+        if latest_basis > 0:
+            structure = "BACKWARDATION (现货升水：期货贴水，近强远弱，通常反映现货紧张)"
+        elif latest_basis < 0:
+            structure = "CONTANGO (期货升水：现货贴水，近弱远强，通常反映远期乐观预期)"
+        else:
+            structure = "FLAT (基差为零)"
+        basis_note = (
+            f"\n# Latest basis: {latest_basis:.2f} — {structure}\n"
+            f"# Interpretation: positive basis = spot premium (tight supply); "
+            f"negative basis = futures premium (carry/expectation driven)\n"
+        )
+    else:
+        basis_note = ""
+
+    api_output = out.to_csv(index=False) + basis_note
+
+    # --- Hybrid injection: merge with external spot price if available ---
+    # 【Hybrid Mode 回退逻辑(基差)】
+    # merge_basis_data 会先尝试读取 ~/.tradingagents/external_data/{code}.json:
+    #   有外部现货价且未过期 -> 在结果前追加一行外部现货价说明(视为更可信);
+    #   没有/过期              -> 原样返回免费接口的 CSV,并打上 FREE_API 来源标记。
+    merged, _used_external = merge_basis_data(code, api_output)  # 【调用函数】合并外部现货价(无外部数据则原样返回并标注 FREE_API)
+    return merged
+
+
 def get_futures_basis(
     symbol: str,
     start_date: str,
@@ -1756,6 +1826,20 @@ def get_futures_basis(
 
     meta = VARIETY_METADATA[code]
     spot_code = meta["spot_code"]
+
+    # 【关键】缓存命中(6h TTL 且已覆盖请求起止区间)→ 直接复用,避免每次刷新都爬东财。
+    #   背景: futures_spot_price_daily 是东财网页爬取接口,实测单次 13~175s(2026-09-01 实测 175s),
+    #   是数据看板刷新慢的根因;现货/基差为日频数据,6h 内复用完全合理。
+    cache_key = f"basis:{code}"
+    cached = _basis_cache.get(cache_key)
+    if cached is not None:
+        cached_at, cached_df = cached
+        if (
+            time.time() - cached_at < _BASIS_CACHE_TTL
+            and _cached_covers_range(cached_df, start_date, end_date)
+        ):
+            logger.info("basis cache hit for %s", code)
+            return _build_basis_output(code, cached_df)
 
     try:
         from akshare import futures_spot_price_daily  # 【调用包】AKShare 现货+基差接口(东方财富)
@@ -1812,38 +1896,10 @@ def get_futures_basis(
     ]
     result = df[keep_cols].copy()
 
-    # Round numeric cols
-    float_cols = result.select_dtypes(include=["float64"]).columns
-    result[float_cols] = result[float_cols].round(4)
-
-    # Add interpretation hints
-    if "dom_basis" in result.columns:
-        latest_basis = result["dom_basis"].iloc[-1]
-        if latest_basis > 0:
-            structure = "BACKWARDATION (现货升水：期货贴水，近强远弱，通常反映现货紧张)"
-        elif latest_basis < 0:
-            structure = "CONTANGO (期货升水：现货贴水，近弱远强，通常反映远期乐观预期)"
-        else:
-            structure = "FLAT (基差为零)"
-        basis_note = (
-            f"\n# Latest basis: {latest_basis:.2f} — {structure}\n"
-            f"# Interpretation: positive basis = spot premium (tight supply); "
-            f"negative basis = futures premium (carry/expectation driven)\n"
-        )
-    else:
-        basis_note = ""
-
-    csv_out = result.to_csv(index=False)
-    api_output = csv_out + basis_note
-
-    # --- Hybrid injection: merge with external spot price if available ---
-    # 【Hybrid Mode 回退逻辑(基差)】
-    # merge_basis_data 会先尝试读取 ~/.tradingagents/external_data/{code}.json:
-    #   有外部现货价且未过期 -> 在结果前追加一行外部现货价说明(视为更可信);
-    #   没有/过期              -> 原样返回免费接口的 CSV,并打上 FREE_API 来源标记。
-    # 返回元组第二项 used_external 标记是否用到了外部数据(当前调用方未使用)。
-    merged, used_external = merge_basis_data(code, api_output)  # 【调用函数】合并外部现货价(无外部数据则原样返回并标注 FREE_API)
-    return merged
+    # 【关键】只缓存成功拉取、已归一化的 DataFrame;键不含起止日期,靠 _cached_covers_range
+    #   判覆盖,同品种一次拉取即可服务 days=60/120/180/365 全部回看档位。
+    _basis_cache[cache_key] = (time.time(), result.copy())
+    return _build_basis_output(code, result)
 
 
 # 【功能】获取商品期货的库存数据(交易所仓单库存)。

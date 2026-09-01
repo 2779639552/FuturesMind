@@ -54,6 +54,7 @@ import sys  # 【调用包】模块搜索路径调整、解释器路径获取
 import threading  # 【调用包】后台线程与进度锁
 import time  # 【调用包】耗时统计与轮询间隔
 from collections import defaultdict  # 【调用包】字典计数(缺失键自动给默认值,非标数据聚合用)
+from concurrent.futures import ThreadPoolExecutor  # 【调用包】线程池(数据看板三数据源并行拉取)
 from datetime import datetime, timedelta  # 【调用包】日期解析与时间窗计算
 from functools import wraps  # 【调用包】保留被装饰函数元数据(鉴权装饰器)
 from pathlib import Path  # 【调用包】路径对象操作(目录扫描/文件拼接)
@@ -1023,14 +1024,17 @@ def _dashboard_relationships(
                 px.append(p["close"])
                 iv.append(inv)
         if len(px) >= 5:
-            result["price_inventory_r"] = round(_pearson(px, iv), 4)
+            # 【关键】_pearson 在序列方差为 0(恒定值)时返回 None,直接 round 会 TypeError → 先判空
+            _r = _pearson(px, iv)
+            result["price_inventory_r"] = round(_r, 4) if _r is not None else None
             result["price_inventory_n"] = len(px)
         if len(px) >= 6:  # 【关键】变化率 R:close 日环比 vs 库存日环比,去掉量纲差异
             px_chg = [_pct(a, b) for a, b in zip(px[1:], px[:-1], strict=True)]
             iv_chg = [_pct(a, b) for a, b in zip(iv[1:], iv[:-1], strict=True)]
             valid = [(a, b) for a, b in zip(px_chg, iv_chg, strict=True) if a is not None and b is not None]
             if len(valid) >= 5:
-                result["ret_inventory_r"] = round(_pearson([a for a, _ in valid], [b for _, b in valid]), 4)
+                _r2 = _pearson([a for a, _ in valid], [b for _, b in valid])
+                result["ret_inventory_r"] = round(_r2, 4) if _r2 is not None else None
 
     # 2) 库存趋势:近 5 日均 vs 更早 5 日均 → BUILDING/DRAINING/STABLE + %
     result["inventory_trend"] = None
@@ -1065,7 +1069,8 @@ def _dashboard_relationships(
             if px is not None and bs is not None:
                 pairs.append((px, bs))
         if len(pairs) >= 5:
-            result["basis_price_r"] = round(_pearson([a for a, _ in pairs], [b for _, b in pairs]), 4)
+            _rb = _pearson([a for a, _ in pairs], [b for _, b in pairs])
+            result["basis_price_r"] = round(_rb, 4) if _rb is not None else None
 
     # 4) 近 5 交易日背离检测:价格方向 vs 库存方向
     result["divergence"] = None
@@ -1206,43 +1211,61 @@ def api_dashboard(variety):
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    # 价格:后复权收盘序列(换月口径与 /api/price 一致)
-    price_result = get_futures_price(code, start_date, end_date)  # 【调用函数】跨模块获取行情 CSV 文本
-    price, _, _ = _adjusted_price_points(price_result, code)  # 【调用函数】实时主连 → 后复权序列
-
-    # 仓单库存(东财 futures_inventory_em;SH/WR 等品种无数据 → 优雅降级)
+    # 【关键】三数据源用线程池并行拉取:基差最慢(futures_spot_price_daily 实测 13~175s,现已 6h TTL
+    #   缓存),并行后首拉约等于最慢一项、刷新则全部命中缓存毫秒级返回;三项各自 try/except,
+    #   任一失败只降级该项(price→price_note / inventory、basis→available=false),不拖垮整个看板。
+    price: list[dict] = []
+    price_note = ""
     inv = {"available": False, "points": [], "note": ""}
-    try:
-        inv_result = get_futures_inventory(code)  # 【调用函数】跨模块获取仓单库存 CSV 文本
-        if inv_result.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
-            inv["note"] = inv_result
-        else:
-            inv_points = _inventory_points(inv_result)  # 【调用函数】解析仓单 CSV → 序列
-            if inv_points:
-                inv["available"] = True
-                inv["points"] = inv_points
-            else:
-                inv["note"] = "NO_DATA_AVAILABLE: 仓单库存无数据(该品种此接口不覆盖)"
-    except Exception as e:  # 【关键】网络/数据源异常不拖垮看板
-        logger.warning("dashboard inventory %s: %s", code, e)
-        inv["note"] = f"DATA_ERROR: {e}"
-
-    # 基差(akshare futures_spot_price_daily;AO/CS/LC/SI 等品种无数据 → 优雅降级)
     basis = {"available": False, "points": [], "note": ""}
-    try:
-        basis_result = get_futures_basis(code, start_date, end_date)  # 【调用函数】跨模块获取基差 CSV 文本
-        if basis_result.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
-            basis["note"] = basis_result
-        else:
-            basis_points = _basis_points(basis_result)  # 【调用函数】解析基差 CSV → 序列
-            if basis_points:
-                basis["available"] = True
-                basis["points"] = basis_points
+
+    def _load_price():
+        nonlocal price, price_note
+        try:
+            price_result = get_futures_price(code, start_date, end_date)  # 【调用函数】跨模块获取行情 CSV 文本
+            price, _, _ = _adjusted_price_points(price_result, code)  # 【调用函数】实时主连 → 后复权序列
+        except Exception as e:  # 【关键】价格异常不 500:降级为空序列 + note,前端显示失败提示
+            logger.warning("dashboard price %s: %s", code, e)
+            price_note = f"DATA_ERROR: {e}"
+
+    def _load_inventory():
+        # 仓单库存(东财 futures_inventory_em;SH/WR 等品种无数据 → 优雅降级)
+        try:
+            inv_result = get_futures_inventory(code)  # 【调用函数】跨模块获取仓单库存 CSV 文本
+            if inv_result.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                inv["note"] = inv_result
             else:
-                basis["note"] = "NO_DATA_AVAILABLE: 基差无数据(该品种此接口不覆盖)"
-    except Exception as e:
-        logger.warning("dashboard basis %s: %s", code, e)
-        basis["note"] = f"DATA_ERROR: {e}"
+                inv_points = _inventory_points(inv_result)  # 【调用函数】解析仓单 CSV → 序列
+                if inv_points:
+                    inv["available"] = True
+                    inv["points"] = inv_points
+                else:
+                    inv["note"] = "NO_DATA_AVAILABLE: 仓单库存无数据(该品种此接口不覆盖)"
+        except Exception as e:  # 【关键】网络/数据源异常不拖垮看板
+            logger.warning("dashboard inventory %s: %s", code, e)
+            inv["note"] = f"DATA_ERROR: {e}"
+
+    def _load_basis():
+        # 基差(akshare futures_spot_price_daily;AO/CS/LC/SI 等品种无数据 → 优雅降级)
+        try:
+            basis_result = get_futures_basis(code, start_date, end_date)  # 【调用函数】跨模块获取基差 CSV 文本
+            if basis_result.startswith(("DATA_ERROR", "DATA_UNAVAILABLE", "NO_DATA_AVAILABLE")):
+                basis["note"] = basis_result
+            else:
+                basis_points = _basis_points(basis_result)  # 【调用函数】解析基差 CSV → 序列
+                if basis_points:
+                    basis["available"] = True
+                    basis["points"] = basis_points
+                else:
+                    basis["note"] = "NO_DATA_AVAILABLE: 基差无数据(该品种此接口不覆盖)"
+        except Exception as e:
+            logger.warning("dashboard basis %s: %s", code, e)
+            basis["note"] = f"DATA_ERROR: {e}"
+
+    with ThreadPoolExecutor(max_workers=3) as ex:  # 【变量】并行池:价格/库存/基差 3 个任务
+        futures = [ex.submit(fn) for fn in (_load_price, _load_inventory, _load_basis)]
+        for fut in futures:  # 【关键】任务内部已 catch 全部异常,result() 不会抛,等三项都完成
+            fut.result()
 
     analysis = _dashboard_relationships(  # 【调用函数】纯函数关联分析(价格-库存 R/趋势/基差/背离)
         price,
@@ -1255,6 +1278,7 @@ def api_dashboard(variety):
         "sector": _get_sector(code),  # 【调用函数】板块归并(剥括号子板块)
         "days": days,
         "price_points": len(price),
+        "price_note": price_note,
         "inventory_available": inv["available"],
         "basis_available": basis["available"],
         "inventory_note": inv["note"],

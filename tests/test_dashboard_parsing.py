@@ -261,3 +261,21 @@ def test_basis_latest_and_basis_price_r():
     assert rel["basis_rate_latest"] == pytest.approx(0.34, abs=1e-4)
     # 基差与价格完全线性正相关
     assert rel["basis_price_r"] == pytest.approx(1.0, abs=1e-4)
+
+
+@pytest.mark.unit
+def test_constant_series_r_is_none_not_crash():
+    # 回归:2026-09-01 发现 round(_pearson(...)) 在序列方差为 0(恒定值)时对 None 调 round 抛
+    #   TypeError。恒定基差/恒定价格都必须返回 None,而不是崩溃。
+    price = _prices([100 + i for i in range(30)])
+    const_basis = [
+        {"date": price[i]["date"], "spot_price": 100, "near_basis": 5.0, "near_basis_rate": 0.05}
+        for i in range(30)
+    ]
+    rel = _dashboard_relationships(price, [], const_basis)
+    assert rel["basis_price_r"] is None  # 基差恒定 → R 无意义 → None
+
+    const_price = _prices([100] * 8)
+    inv_pts = _inv([1000, 990, 980, 970, 960, 950, 940, 930])
+    rel2 = _dashboard_relationships(const_price, inv_pts, [])
+    assert rel2["price_inventory_r"] is None  # 价格恒定 → R 无意义 → None,且不抛错
