@@ -31,10 +31,18 @@ a tool → node executes it → LLM processes the result → repeat until report
 
 import logging  # 【调用包】标准库日志;记录工具调用信息与分析失败异常
 
-from langchain_core.messages import HumanMessage, ToolMessage  # 【调用包】LangChain 消息类型;HumanMessage 承载最终报告、ToolMessage 回填工具结果给 LLM
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # 【调用包】构建带历史占位符的提示模板;让 LLM 依据对话历史决策
+from langchain_core.messages import (  # 【调用包】LangChain 消息类型;HumanMessage 承载最终报告、ToolMessage 回填工具结果给 LLM
+    HumanMessage,
+    ToolMessage,
+)
+from langchain_core.prompts import (  # 【调用包】构建带历史占位符的提示模板;让 LLM 依据对话历史决策
+    ChatPromptTemplate,
+    MessagesPlaceholder,
+)
 
-from tradingagents.agents.utils.agent_utils import get_language_instruction  # 【调用包】语言指令;在系统提示末尾追加"用中文输出"约束
+from tradingagents.agents.utils.agent_utils import (
+    get_language_instruction,  # 【调用包】语言指令;在系统提示末尾追加"用中文输出"约束
+)
 from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_basis,
     get_futures_indicators,
@@ -544,6 +552,11 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
 
 **Analysis Framework**:
 
+**Data Availability (MUST follow — never fabricate data)**:
+- `get_futures_macro` returns ONLY Chinese domestic indicators: GDP, PMI, FAI, Real Estate Climate Index, Industrial Production, Construction Index.
+- Foreign/global data — USD index, Fed rate decisions, US nonfarm payrolls, EIA/API inventories, BDI shipping index, Singapore/Fujairah prices — has NO quantitative tool. Only mention such factors if they appear in the `get_futures_news` feed; otherwise state explicitly "该数据本项目无法获取" rather than guessing numbers.
+- If a variety's key_factors reference a data source you cannot call, flag the limitation in your report instead of estimating.
+
 1. **Macroeconomic Data** (call `get_futures_macro` — CRITICAL, your primary quantitative data):
    - **GDP**: Current growth rate and recent trend. Below-expected GDP is bearish for industrial commodities.
    - **PMI**: Manufacturing PMI value and trend. Below 50 = economic contraction = bearish for steel demand.
@@ -574,10 +587,10 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
 
 4. **Inter-Market Analysis**:
    - Related commodity price movements (from variety info's related_varieties)
-   - Currency impact (USD/CNY on imported commodities)
-   - Equity/bond market signals relevant to this commodity
+   - Currency impact (USD/CNY on imported commodities) — 仅当新闻明确提及时分析,系统无外汇定量数据
+   - Equity/bond market signals relevant to this commodity — 仅当新闻明确提及时分析
 
-5. **Geopolitical Factors**:
+5. **Geopolitical Factors** (仅依据 `get_futures_news` 新闻报道,无独立数据源):
    - Trade tensions and sanctions affecting commodity flows
    - Supply disruptions (weather, conflict, logistics)
    - Global commodity cycle coordination
