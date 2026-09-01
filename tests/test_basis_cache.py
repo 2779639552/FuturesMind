@@ -154,6 +154,29 @@ def test_basis_cache_disk_corrupt_refetches_without_crash(tmp_path, monkeypatch)
 
 
 @pytest.mark.unit
+def test_basis_no_data_cached_avoids_refetch():
+    """生意社无此品种现货价时,逐日扫全区间实测 ~200s → 无数据结论必须缓存。"""
+    with mock.patch("akshare.futures_spot_price_daily", return_value=pd.DataFrame()) as m:
+        r1 = get_futures_basis("AP", "2026-08-25", "2026-08-27")
+        assert r1.startswith("NO_DATA_AVAILABLE")
+        assert m.call_count == 1
+        r2 = get_futures_basis("AP", "2026-08-25", "2026-08-27")
+        assert m.call_count == 1  # 【关键】无数据结论已缓存,不再重扫
+        assert r2 == r1
+
+
+@pytest.mark.unit
+def test_basis_no_data_persists_to_disk_across_restart():
+    """无数据结论也落盘,服务重启后同样秒回 NO_DATA,不再 200s 探测。"""
+    with mock.patch("akshare.futures_spot_price_daily", return_value=pd.DataFrame()) as m:
+        get_futures_basis("AP", "2026-08-25", "2026-08-27")
+        _basis_cache.clear()  # 模拟进程重启:内存清空
+        r = get_futures_basis("AP", "2026-08-25", "2026-08-27")
+        assert r.startswith("NO_DATA_AVAILABLE")
+        assert m.call_count == 1  # 磁盘上的无数据结论命中
+
+
+@pytest.mark.unit
 def test_cached_covers_range_edges():
     df = _fake_df()  # 覆盖 2026-08-25~08-27
     assert _cached_covers_range(df, "2026-08-25", "2026-08-27") is True

@@ -129,7 +129,11 @@ def _basis_cache_load(code: str):
     try:
         with open(p, "rb") as f:
             ts, df = pickle.load(f)
-        if not isinstance(df, pd.DataFrame) or "date" not in df.columns or df.empty:
+        if not isinstance(df, pd.DataFrame):
+            if df is None and time.time() - ts < _BASIS_CACHE_TTL:
+                return ts, None  # 【无数据结论缓存】该品种基差无数据,TTL 内直接复用
+            return None
+        if "date" not in df.columns or df.empty:
             return None
         if time.time() - ts >= _BASIS_CACHE_TTL:
             return None
@@ -138,8 +142,8 @@ def _basis_cache_load(code: str):
         return None  # 损坏文件 → 保守重拉,下次成功覆盖
 
 
-def _basis_cache_save(code: str, df: pd.DataFrame) -> None:
-    """把 {code} 的基差缓存写盘;写失败只记日志,不阻断主流程。"""
+def _basis_cache_save(code: str, df) -> None:
+    """把 {code} 的基差缓存写盘;df 可为 None(无数据结论标记);写失败只记日志,不阻断主流程。"""
     try:
         _BASIS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         with open(_basis_cache_path(code), "wb") as f:
@@ -194,7 +198,8 @@ def _basis_cache_merge_widest(code: str, new_df: pd.DataFrame) -> pd.DataFrame:
 #   exchange_cn       交易所中文全称
 #   main_contract     主力连续合约代码(用于 futures_main_sina,如 "RB0")
 #   spot_code         现货报价代码(用于 futures_spot_price_daily,如 "RB")
-#   inv_code          库存接口代码(用于 futures_inventory_em,如 "rb")
+#   inv_code          库存接口代码(用于 futures_inventory_em;非 ZCE 用小写如 "rb",
+#                       ZCE 品种用大写如 "TA" —— akshare 表内 ZCE 仅大写,2026-09-01 修)
 #   unit              合约单位(如 "10吨/手")
 #   price_limit       涨跌停幅度
 #   margin_rate       保证金比例
@@ -355,7 +360,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "TA0",
         "spot_code": "TA",
-        "inv_code": "ta",
+        "inv_code": "TA",
         "unit": "5吨/手",
         "price_limit": "±5%",
         "margin_rate": "6%",
@@ -378,7 +383,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "MA0",
         "spot_code": "MA",
-        "inv_code": "ma",
+        "inv_code": "MA",
         "unit": "10吨/手",
         "price_limit": "±5%",
         "margin_rate": "6%",
@@ -401,7 +406,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "FG0",
         "spot_code": "FG",
-        "inv_code": "fg",
+        "inv_code": "FG",
         "unit": "20吨/手",
         "price_limit": "±8%",
         "margin_rate": "9%",
@@ -425,7 +430,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "SA0",
         "spot_code": "SA",
-        "inv_code": "sa",
+        "inv_code": "SA",
         "unit": "20吨/手",
         "price_limit": "±8%",
         "margin_rate": "9%",
@@ -449,7 +454,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "UR0",
         "spot_code": "UR",
-        "inv_code": "ur",
+        "inv_code": "UR",
         "unit": "20吨/手",
         "price_limit": "±6%",
         "margin_rate": "7%",
@@ -473,7 +478,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "PF0",
         "spot_code": "PF",
-        "inv_code": "pf",
+        "inv_code": "PF",
         "unit": "5吨/手",
         "price_limit": "±5%",
         "margin_rate": "6%",
@@ -497,7 +502,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "CF0",
         "spot_code": "CF",
-        "inv_code": "cf",
+        "inv_code": "CF",
         "unit": "5吨/手",
         "price_limit": "±6%",
         "margin_rate": "7%",
@@ -521,7 +526,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "SR0",
         "spot_code": "SR",
-        "inv_code": "sr",
+        "inv_code": "SR",
         "unit": "10吨/手",
         "price_limit": "±5%",
         "margin_rate": "6%",
@@ -545,7 +550,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "OI0",
         "spot_code": "OI",
-        "inv_code": "oi",
+        "inv_code": "OI",
         "unit": "10吨/手",
         "price_limit": "±5%",
         "margin_rate": "6%",
@@ -569,7 +574,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "RM0",
         "spot_code": "RM",
-        "inv_code": "rm",
+        "inv_code": "RM",
         "unit": "10吨/手",
         "price_limit": "±5%",
         "margin_rate": "6%",
@@ -593,7 +598,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "AP0",
         "spot_code": "AP",
-        "inv_code": "ap",
+        "inv_code": "AP",
         "unit": "10吨/手",
         "price_limit": "±6%",
         "margin_rate": "7%",
@@ -617,7 +622,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "CJ0",
         "spot_code": "CJ",
-        "inv_code": "cj",
+        "inv_code": "CJ",
         "unit": "5吨/手",
         "price_limit": "±6%",
         "margin_rate": "7%",
@@ -641,7 +646,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "PK0",
         "spot_code": "PK",
-        "inv_code": "pk",
+        "inv_code": "PK",
         "unit": "5吨/手",
         "price_limit": "±5%",
         "margin_rate": "6%",
@@ -665,7 +670,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "SM0",
         "spot_code": "SM",
-        "inv_code": "sm",
+        "inv_code": "SM",
         "unit": "5吨/手",
         "price_limit": "±8%",
         "margin_rate": "9%",
@@ -689,7 +694,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "SF0",
         "spot_code": "SF",
-        "inv_code": "sf",
+        "inv_code": "SF",
         "unit": "5吨/手",
         "price_limit": "±8%",
         "margin_rate": "9%",
@@ -978,7 +983,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "郑州商品交易所",
         "main_contract": "PX0",
         "spot_code": "PX",
-        "inv_code": "px",
+        "inv_code": "PX",
         "unit": "5吨/手",
         "price_limit": "±10%",
         "margin_rate": "15%",
@@ -1374,7 +1379,7 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         "exchange_cn": "大连商品交易所",
         "main_contract": "SH0",
         "spot_code": "SH",
-        "inv_code": "sh",
+        "inv_code": "SH",
         "unit": "30吨/手",
         "price_limit": "±7%",
         "margin_rate": "9%",
@@ -1911,12 +1916,15 @@ def get_futures_basis(
             _basis_cache[cache_key] = cached
     if cached is not None:
         cached_at, cached_df = cached
-        if (
-            time.time() - cached_at < _BASIS_CACHE_TTL
-            and _cached_covers_range(cached_df, start_date, end_date)
-        ):
-            logger.info("basis cache hit for %s", code)
-            return _build_basis_output(code, cached_df)
+        if time.time() - cached_at < _BASIS_CACHE_TTL:
+            if cached_df is None:
+                # 【关键】缓存"该品种基差无数据"结论:生意社 100ppi 无此品种数据时,单次探测
+                #   要逐日扫完全区间(实测 AP ~200s),必须缓存,否则每次看板加载都重付。
+                logger.info("basis no-data cache hit for %s", code)
+                return f"NO_DATA_AVAILABLE: No basis data for {meta['name']}({code})."
+            if _cached_covers_range(cached_df, start_date, end_date):
+                logger.info("basis cache hit for %s", code)
+                return _build_basis_output(code, cached_df)
 
     try:
         from akshare import futures_spot_price_daily  # 【调用包】AKShare 现货+基差接口(东方财富)
@@ -1936,6 +1944,11 @@ def get_futures_basis(
         )
 
     if df.empty:
+        # 【关键】缓存"无数据"结论:生意社无此品种现货价时逐日扫全区间实测 ~200s,
+        #   不缓存则每次看板都重付;已有数据缓存则保留(可能只是源站瞬时抖动)。
+        if _basis_cache.get(cache_key) is None:
+            _basis_cache[cache_key] = (time.time(), None)
+            _basis_cache_save(code, None)
         return f"NO_DATA_AVAILABLE: No basis data for {meta['name']}({code})."
 
     # Normalize column names (akshare returns Chinese columns)
