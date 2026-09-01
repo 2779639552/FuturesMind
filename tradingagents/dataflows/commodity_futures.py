@@ -62,10 +62,12 @@ Data sources (via akshare):
 
 import json  # 【调用包】JSON 序列化(品种元信息输出)
 import logging  # 【调用包】日志输出(拉取失败告警)
+import pickle  # 【调用包】基差缓存磁盘持久化(重启不丢,序列化 DataFrame)
 import random  # 【调用包】随机延时(降低免费接口请求频率)
 import time  # 【调用包】缓存时间戳与 TTL 过期判断
 import warnings  # 【调用包】过滤 AKShare "非交易日" 信息性警告
 from datetime import timedelta  # 【调用包】日期加减(get_verified_quote 拉取窗口推算)
+from pathlib import Path  # 【调用包】缓存目录路径(磁盘持久化)
 
 import pandas as pd  # 【调用包】行情 DataFrame 处理/指标计算/CSV 输出
 import requests  # 【调用包】HTTP 请求(东方财富 7x24 快讯接口)
@@ -106,6 +108,76 @@ _CACHE_TTL = 300  # 5 minutes
 #   日频数据,当天多次刷新无需重爬 → TTL 取 6 小时(价格缓存 5 分钟,基差例外放宽到 6h)。
 _basis_cache: dict[str, tuple[float, pd.DataFrame]] = {}  # 【变量】基差内存缓存:键 "basis:{品种代码}",值 (拉取时间戳, 归一化 DataFrame)
 _BASIS_CACHE_TTL = 6 * 3600  # 【变量】基差缓存有效期 6 小时(日频数据,容忍当天迟滞)
+
+# 【变量】基差缓存磁盘持久化目录 ~/.tradingagents/cache/basis。东财基差接口单次 13~175s,
+#   若只存内存,服务每次重启缓存即清空 → 重启后首个看板请求仍要冷拉(2026-09-01 实测两次
+#   重启后用户反馈"提速没生效")。落到磁盘后,同一品种 6h 内跨重启也直接命中;
+#   pickle 损坏/过期一律视为未命中重拉,绝不阻断主流程。
+_BASIS_CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "basis"
+
+
+def _basis_cache_path(code: str) -> Path:
+    """基差缓存磁盘文件路径(每个品种一个 pickle 文件)。"""
+    return _BASIS_CACHE_DIR / f"basis_{code}.pkl"
+
+
+def _basis_cache_load(code: str):
+    """从磁盘加载 {code} 的基差缓存;文件缺失/损坏/过期/非表 → None(视为未命中重拉)。"""
+    p = _basis_cache_path(code)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "rb") as f:
+            ts, df = pickle.load(f)
+        if not isinstance(df, pd.DataFrame) or "date" not in df.columns or df.empty:
+            return None
+        if time.time() - ts >= _BASIS_CACHE_TTL:
+            return None
+        return ts, df
+    except Exception:
+        return None  # 损坏文件 → 保守重拉,下次成功覆盖
+
+
+def _basis_cache_save(code: str, df: pd.DataFrame) -> None:
+    """把 {code} 的基差缓存写盘;写失败只记日志,不阻断主流程。"""
+    try:
+        _BASIS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_basis_cache_path(code), "wb") as f:
+            pickle.dump((time.time(), df), f, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as e:
+        logger.warning("Failed to persist basis cache for %s: %s", code, e)
+
+
+def _basis_cache_merge_widest(code: str, new_df: pd.DataFrame) -> pd.DataFrame:
+    """把新拉取的基差 DataFrame 与内存旧缓存合并,取【最宽】日期覆盖。
+
+    【背景】数据看板有 60/120/180/365 四个回看档位。若缓存只有窄窗口,切到更宽档位
+      必然冷拉;反过来先把缓存做宽,再切窄档位则全部命中。合并规则:新旧拼接、按日期
+      去重(新数据在前 → 重叠日期以新为准)、按日期升序,最终覆盖 = 两者日期并集。
+      这样同一品种通常只需一次冷拉(首次最宽档位),此后任意档位都命中缓存。
+    【安全】旧缓存缺失/列不一致/合并异常 → 直接返回新拉数据,绝不用脏数据。
+    """
+    cached = _basis_cache.get(f"basis:{code}")
+    if cached is None:
+        return new_df
+    _, old_df = cached
+    if old_df is None or old_df.empty or "date" not in old_df.columns:
+        return new_df
+    try:
+        new = new_df.copy()
+        new["date"] = new["date"].astype(str)
+        old = old_df.copy()
+        old["date"] = old["date"].astype(str)
+        common_cols = [c for c in new.columns if c in old.columns]
+        combined = (
+            pd.concat([new[common_cols], old[common_cols]])
+            .drop_duplicates(subset=["date"], keep="first")
+            .sort_values("date")
+        )
+        return combined if not combined.empty else new_df
+    except Exception as e:
+        logger.warning("Basis cache merge failed for %s: %s", code, e)
+        return new_df
 
 
 # ---------------------------------------------------------------------------
@@ -1830,8 +1902,13 @@ def get_futures_basis(
     # 【关键】缓存命中(6h TTL 且已覆盖请求起止区间)→ 直接复用,避免每次刷新都爬东财。
     #   背景: futures_spot_price_daily 是东财网页爬取接口,实测单次 13~175s(2026-09-01 实测 175s),
     #   是数据看板刷新慢的根因;现货/基差为日频数据,6h 内复用完全合理。
+    #   内存没有时回落磁盘(服务重启后内存缓存清空,靠磁盘续命)。
     cache_key = f"basis:{code}"
     cached = _basis_cache.get(cache_key)
+    if cached is None:
+        cached = _basis_cache_load(code)
+        if cached is not None:
+            _basis_cache[cache_key] = cached
     if cached is not None:
         cached_at, cached_df = cached
         if (
@@ -1896,9 +1973,13 @@ def get_futures_basis(
     ]
     result = df[keep_cols].copy()
 
-    # 【关键】只缓存成功拉取、已归一化的 DataFrame;键不含起止日期,靠 _cached_covers_range
-    #   判覆盖,同品种一次拉取即可服务 days=60/120/180/365 全部回看档位。
+    # 【关键】缓存成功拉取、已归一化的 DataFrame,并【合并到最宽覆盖】:老缓存可能更宽
+    #   (如先拉 180 天),新拉可能更窄(如切回 60 天)——拼接去重保住最宽窗口,使后续任意
+    #   ≤ 该宽度的档位请求都命中(切档位不再冷拉)。键不含起止日期,靠 _cached_covers_range
+    #   判覆盖;同时写磁盘,服务重启后 6h 内仍可命中。
+    result = _basis_cache_merge_widest(code, result)
     _basis_cache[cache_key] = (time.time(), result.copy())
+    _basis_cache_save(code, result)
     return _build_basis_output(code, result)
 
 
