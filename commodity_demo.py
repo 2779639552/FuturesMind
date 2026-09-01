@@ -55,8 +55,9 @@ Examples:
 #     discussion_summary)也是 Web 端展示所需的关键数据结构。
 #
 # 关键设计点:
-#   - 双 LLM 分工(v2.4):分析师/辩论用 "quick_llm"(快而省),综合研判/情景用
-#     "deep_llm"(质量更高),兼顾速度与关键决策的质量。
+#   - 双 LLM 分工(v2.4):分析师/辩论用 "quick_llm"(快而省),情景用
+#     "deep_llm"(质量更高);综合研判 2026-09-01 起改用 quick_llm(flash)提速
+#     (该节点单次调用占全流程约 40% 时长)。
 # ===========================================================================
 
 import logging  # 【调用包】日志(进度/异常;basicConfig 控制输出级别)
@@ -578,10 +579,10 @@ def build_commodity_graph(
     #                 -> bull_rebuttal(多方再反驳,拥有最后发言权)
     #                 -> debate_moderator(主持人裁决)
     #                 -> synthesis(综合研判) -> scenario_analysis(三情景) -> END
-    #           其中分析师与辩论用 quick_llm(快而省),综合研判与情景用 deep_llm(质量更高),
-    #           这是 v2.4 引入的"双 LLM 分工"。
+    #           其中分析师/辩论/综合研判用 quick_llm(快而省),情景用 deep_llm(质量更高),
+    #           这是 v2.4 引入的"双 LLM 分工";综合研判 2026-09-01 起由 deep 改 quick 提速。
 
-    # Dual LLM: quick for analysts/debate, deep for synthesis/scenario (v2.4)
+    # Dual LLM: quick for analysts/debate/synthesis, deep for scenario (synthesis switched to quick 2026-09-01)
     # quick_llm —— 快而省,用于分析师与辩论(高频、量大,不需要最高质量)
     quick_llm = create_llm_client(  # 【调用函数】创建 quick_llm(分析师/辩论用,快而省)
         config["llm_provider"],
@@ -618,9 +619,10 @@ def build_commodity_graph(
     bull_rebuttal_node = create_bull_debater(quick_llm)  # R2: rebuttal (LAST WORD) —— 多方再反驳(最后发言)  # 【调用函数】创建多方再反驳节点(R2,最后发言)
     moderator_node = create_debate_moderator(quick_llm)  # Judge —— 主持人裁决  # 【调用函数】创建主持人裁决节点
 
-    # Key decision nodes (deep_llm — higher quality for critical decisions)
-    # 关键决策节点统一用 deep_llm,保证综合研判与情景分析的输出质量。
-    synthesis_node = create_synthesis_node(deep_llm)  # 【调用函数】创建综合研判节点(deep_llm 质量优先)
+    # Key decision nodes
+    # 综合研判改为 quick_llm(flash):该节点单次调用占全流程约 40% 时长,降为 flash 显著提速;
+    # 情景分析仍用 deep_llm(pro)保证压力测试质量。
+    synthesis_node = create_synthesis_node(quick_llm)  # 【调用函数】创建综合研判节点(quick_llm 提速)
     scenario_node = create_scenario_node(deep_llm)  # 【调用函数】创建三情景分析节点(deep_llm 质量优先)
     # 用户反馈(自我进化)节点:在分析结束后与用户讨论,并把心得写入进化记忆
     feedback_node = create_user_feedback_node(  # 【调用函数】创建用户反馈(自我进化)节点

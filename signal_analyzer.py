@@ -189,6 +189,41 @@ def _load_price(variety: str) -> dict | None:
     return None
 
 
+def _win_rate(trades) -> float:
+    """胜率:盈利笔数 / (盈利+亏损)笔数,打平(breakeven)不计入分子也不计入分母。
+
+    【功能】统一"胜率"口径,兼容 dict 与 dataclass 交易记录。
+    【参数】trades:交易列表(元素为 dict 或 TradeRecord 等含 outcome 字段的对象)。
+    【返回】胜率 ∈ [0,1];无胜负样本(全打平或空列表)返回 0.0。
+    【关键逻辑】业界标准口径。旧实现用 win/全部交易(含打平),大量保本止损
+    打平交易会稀释胜率,出现"胜率0%但收益0.00%"的矛盾展示
+    (worklog/2026-09-01-纯碱). 前端据此把全打平场景显示为"无有效胜负样本"。
+    """
+    wins = 0  # 【变量】盈利笔数
+    losses = 0  # 【变量】亏损笔数
+    for t in trades:
+        outcome = t.get("outcome") if hasattr(t, "get") else getattr(t, "outcome", "")
+        if outcome == "win":
+            wins += 1
+        elif outcome == "loss":
+            losses += 1
+    denom = wins + losses  # 【变量】有效胜负样本数(打平不计入)
+    return round(wins / denom, 3) if denom else 0.0
+
+
+def _breakeven_count(trades) -> int:
+    """【功能】统计打平(breakeven)交易笔数,供前端单独展示。
+    【参数】trades:交易列表(dict 或 dataclass 均可)。
+    【返回】打平笔数。
+    """
+    n = 0
+    for t in trades:
+        outcome = t.get("outcome") if hasattr(t, "get") else getattr(t, "outcome", "")
+        if outcome == "breakeven":
+            n += 1
+    return n
+
+
 def pearson_r(x, y):
     """【功能】计算两组序列的皮尔逊相关系数(衡量线性相关程度与方向)。
 
@@ -893,8 +928,8 @@ def run_contrarian_sentiment(
         m_curve.append(round(cum_m, 2))
 
     def wr(ts):
-        """胜率:win 笔数 / 总笔数;空列表返回 0。"""
-        return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
+        """胜率:盈利笔数 / (盈利+亏损)笔数,排除打平;无胜负样本返回 0。"""
+        return _win_rate(ts)
 
     # Compute advanced metrics per sub-strategy
     c_pnls = [t["pnl"] for t in all_contrarian]
@@ -1159,8 +1194,8 @@ def run_adaptive_sentiment(
         m_curve.append(round(cum_m, 2))
 
     def wr(ts):
-        """胜率:win 笔数 / 总笔数;空列表返回 0。"""
-        return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
+        """胜率:盈利笔数 / (盈利+亏损)笔数,排除打平;无胜负样本返回 0。"""
+        return _win_rate(ts)
 
     # Compute advanced metrics per sub-strategy
     a_pnls = [t["pnl"] for t in all_adaptive]  # 【变量】自适应路径每笔盈亏列表
@@ -1323,6 +1358,8 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01", end_da
     if not all_trades:
         return {"total_trades": 0}
     wins = [t for t in all_trades if t["outcome"] == "win"]  # 【变量】盈利交易列表
+    losses = [t for t in all_trades if t["outcome"] == "loss"]  # 【变量】亏损交易列表
+    breakevens = [t for t in all_trades if t["outcome"] == "breakeven"]  # 【变量】打平交易列表
     pnls = [t["pnl"] for t in all_trades]  # 【变量】每笔盈亏列表
     avg = sum(pnls) / len(pnls)  # 【变量】平均单笔盈亏
     (sum((x - avg) ** 2 for x in pnls) / len(pnls)) ** 0.5 if len(pnls) > 1 else 1
@@ -1353,8 +1390,9 @@ def run_donchian_strategy(variety="", period=20, start_date="2025-01-01", end_da
         "strategy": "donchian",
         "total_trades": len(all_trades),
         "win_count": len(wins),
-        "loss_count": len(all_trades) - len(wins),
-        "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
+        "loss_count": len(losses),
+        "breakeven_count": len(breakevens),
+        "win_rate": _win_rate(all_trades),
         "avg_pnl_pct": round(avg, 2),
         "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
@@ -1831,6 +1869,8 @@ def _run_technical_backtest(
     if not all_trades:
         return {"total_trades": 0}
     wins = [t for t in all_trades if t["outcome"] == "win"]  # 【变量】盈利交易列表
+    losses = [t for t in all_trades if t["outcome"] == "loss"]  # 【变量】亏损交易列表
+    breakevens = [t for t in all_trades if t["outcome"] == "breakeven"]  # 【变量】打平交易列表
     pnls = [t["pnl"] for t in all_trades]  # 【变量】每笔盈亏列表
     avg = sum(pnls) / len(pnls)  # 【变量】平均单笔盈亏
     # 手算最大回撤:沿累计 PnL 走,peak 记历史最高,dd = peak - 当前累计,取最大
@@ -1862,8 +1902,9 @@ def _run_technical_backtest(
         "strategy": f"{indicator}{'_sent' if sent_mode else ''}",
         "total_trades": len(all_trades),
         "win_count": len(wins),
-        "loss_count": len(all_trades) - len(wins),
-        "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
+        "loss_count": len(losses),
+        "breakeven_count": len(breakevens),
+        "win_rate": _win_rate(all_trades),
         "avg_pnl_pct": round(avg, 2),
         "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
@@ -2361,6 +2402,8 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
     if not all_trades:
         return {"total_trades": 0}
     wins = [t for t in all_trades if t["outcome"] == "win"]  # 【变量】盈利交易列表
+    losses = [t for t in all_trades if t["outcome"] == "loss"]  # 【变量】亏损交易列表
+    breakevens = [t for t in all_trades if t["outcome"] == "breakeven"]  # 【变量】打平交易列表
     pnls = [t["pnl"] for t in all_trades]  # 【变量】每笔盈亏列表
     avg = sum(pnls) / len(pnls)  # 【变量】平均单笔盈亏
     # 这行是遗留代码:计算了标准差但结果被丢弃(未赋值给任何变量),可视为冗余。
@@ -2391,8 +2434,9 @@ def run_momentum_strategy(variety="", lookback=5, hold=3, start_date="2025-01-01
         "strategy": "momentum",
         "total_trades": len(all_trades),
         "win_count": len(wins),
-        "loss_count": len(all_trades) - len(wins),
-        "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
+        "loss_count": len(losses),
+        "breakeven_count": len(breakevens),
+        "win_rate": _win_rate(all_trades),
         "avg_pnl_pct": round(avg, 2),
         "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
@@ -2729,8 +2773,8 @@ def run_momentum_adaptive(
         b_curve.append(round(cum_b, 2))
 
     def wr(ts):
-        """胜率:win 笔数 / 总笔数;空列表返回 0。"""
-        return round(sum(1 for t in ts if t["outcome"] == "win") / len(ts), 3) if ts else 0
+        """胜率:盈利笔数 / (盈利+亏损)笔数,排除打平;无胜负样本返回 0。"""
+        return _win_rate(ts)
 
     # Compute advanced metrics per sub-strategy
     a_pnls = [t["pnl"] for t in all_adaptive]  # 【变量】自适应路径每笔盈亏列表
@@ -3210,6 +3254,7 @@ def run_simulated_trading(
     # Compute statistics
     wins = [t for t in all_trades if t.outcome == "win"]  # 【变量】盈利交易列表
     losses = [t for t in all_trades if t.outcome == "loss"]  # 【变量】亏损交易列表
+    breakevens = [t for t in all_trades if t.outcome == "breakeven"]  # 【变量】打平交易列表
     long_trades = [t for t in all_trades if t.direction == "long"]  # 【变量】做多交易列表
     short_trades = [t for t in all_trades if t.direction == "short"]  # 【变量】做空交易列表
 
@@ -3231,39 +3276,31 @@ def run_simulated_trading(
     avg_pnl = sum(pnls) / len(pnls) if pnls else 0  # 【变量】平均单笔盈亏
 
     # By variety
-    by_variety = defaultdict(lambda: {"trades": 0, "wins": 0, "avg_pnl": 0})  # 【变量】按品种聚合的统计 dict(键默认全 0)
+    by_variety = defaultdict(lambda: {"trades": 0, "wins": 0, "losses": 0, "avg_pnl": 0})  # 【变量】按品种聚合的统计 dict(键默认全 0)
     for t in all_trades:
         by_variety[t.variety]["trades"] += 1
         if t.outcome == "win":
             by_variety[t.variety]["wins"] += 1
+        elif t.outcome == "loss":
+            by_variety[t.variety]["losses"] += 1
     for v in by_variety:
-        by_variety[v]["win_rate"] = (
-            round(by_variety[v]["wins"] / by_variety[v]["trades"], 3)
-            if by_variety[v]["trades"]
-            else 0
-        )
+        denom = by_variety[v]["wins"] + by_variety[v]["losses"]  # 【变量】该品种有效胜负样本数(打平不计入)
+        by_variety[v]["win_rate"] = round(by_variety[v]["wins"] / denom, 3) if denom else 0
 
     return {
         "total_trades": len(all_trades),
         "win_count": len(wins),
         "loss_count": len(losses),
-        "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
+        "breakeven_count": len(breakevens),
+        "win_rate": _win_rate(all_trades),
         "avg_pnl_pct": round(avg_pnl, 2),
         "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
         "max_drawdown_pct": advanced["max_drawdown_pct"],
         "long_trades": len(long_trades),
         "short_trades": len(short_trades),
-        "long_win_rate": round(
-            len([t for t in long_trades if t.outcome == "win"]) / len(long_trades), 3
-        )
-        if long_trades
-        else 0,
-        "short_win_rate": round(
-            len([t for t in short_trades if t.outcome == "win"]) / len(short_trades), 3
-        )
-        if short_trades
-        else 0,
+        "long_win_rate": _win_rate(long_trades),
+        "short_win_rate": _win_rate(short_trades),
         "horizon": horizon,
         "signal_threshold": signal_threshold,
         "by_variety": dict(by_variety),
@@ -3569,10 +3606,8 @@ def run_strategy_comparison(
 
     # Statistics
     def win_rate(trades):
-        """计算某策略交易列表的胜率;空列表返回 0。"""
-        if not trades:
-            return 0
-        return round(sum(1 for t in trades if t["outcome"] == "win") / len(trades), 3)
+        """计算某策略交易列表的胜率(排除打平);空列表返回 0。"""
+        return _win_rate(trades)
 
     # Compute advanced metrics per strategy
     sc_td = max(len(dates) * 252 // 365, 30) if dates else 252  # 【变量】估算交易日数(年化分母,至少 30 天)
@@ -3759,6 +3794,7 @@ def run_trailing_strategy(
     # Compute statistics
     wins = [t for t in all_trades if t.outcome == "win"]  # 【变量】盈利交易列表
     losses = [t for t in all_trades if t.outcome == "loss"]  # 【变量】亏损交易列表
+    breakevens = [t for t in all_trades if t.outcome == "breakeven"]  # 【变量】打平交易列表
     long_trades = [t for t in all_trades if t.direction == "long"]  # 【变量】做多交易列表
     short_trades = [t for t in all_trades if t.direction == "short"]  # 【变量】做空交易列表
 
@@ -3783,14 +3819,16 @@ def run_trailing_strategy(
     flip_count = len(flip_exits)
 
     # By variety
-    by_variety = defaultdict(lambda: {"trades": 0, "wins": 0})
+    by_variety = defaultdict(lambda: {"trades": 0, "wins": 0, "losses": 0})
     for t in all_trades:
         by_variety[t.variety]["trades"] += 1
         if t.outcome == "win":
             by_variety[t.variety]["wins"] += 1
+        elif t.outcome == "loss":
+            by_variety[t.variety]["losses"] += 1
     for v in by_variety:
-        n = by_variety[v]["trades"]
-        by_variety[v]["win_rate"] = round(by_variety[v]["wins"] / n, 3) if n else 0
+        denom = by_variety[v]["wins"] + by_variety[v]["losses"]  # 【变量】该品种有效胜负样本数(打平不计入)
+        by_variety[v]["win_rate"] = round(by_variety[v]["wins"] / denom, 3) if denom else 0
 
     # Avg holding period
     avg_holding = (
@@ -3802,23 +3840,16 @@ def run_trailing_strategy(
         "total_trades": len(all_trades),
         "win_count": len(wins),
         "loss_count": len(losses),
-        "win_rate": round(len(wins) / len(all_trades), 3) if all_trades else 0,
+        "breakeven_count": len(breakevens),
+        "win_rate": _win_rate(all_trades),
         "avg_pnl_pct": round(avg_pnl, 2),
         "total_pnl": round(sum(pnls), 2) if pnls else 0,
         "sharpe_like": advanced["sharpe_like"],
         "max_drawdown_pct": advanced["max_drawdown_pct"],
         "long_trades": len(long_trades),
         "short_trades": len(short_trades),
-        "long_win_rate": round(
-            len([t for t in long_trades if t.outcome == "win"]) / len(long_trades), 3
-        )
-        if long_trades
-        else 0,
-        "short_win_rate": round(
-            len([t for t in short_trades if t.outcome == "win"]) / len(short_trades), 3
-        )
-        if short_trades
-        else 0,
+        "long_win_rate": _win_rate(long_trades),
+        "short_win_rate": _win_rate(short_trades),
         "signal_threshold": signal_threshold,
         "max_holding": max_holding,
         "avg_holding_days": avg_holding,

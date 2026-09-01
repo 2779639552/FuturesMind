@@ -11,15 +11,17 @@ Hybrid Mode: Supports external data injection for higher-quality sources.
 Supported varieties:
     ZCE (郑州): TA(PTA), MA(甲醇), FG(玻璃), SA(纯碱), UR(尿素),
                 PF(短纤), CF(棉花), SR(白糖), OI(菜油), RM(菜粕),
-                AP(苹果), CJ(红枣), PK(花生), SM(锰硅), SF(硅铁)
-    SHFE (上期): RB(螺纹钢), HC(热卷)
-    DCE (大商): I(铁矿石), JM(焦煤), J(焦炭), M(豆粕)
-    (共21品种,与 VARIETY_METADATA 一致;此前误列 CU/AU/AG/RU/SC 已删除)
+                AP(苹果), CJ(红枣), PK(花生), SM(锰硅), SF(硅铁), PX(对二甲苯)
+    SHFE (上期): RB(螺纹钢), HC(热卷), FU(燃料油), BU(沥青), RU(橡胶)
+    INE (上期能源): SC(原油), LU(低硫燃料油), NR(20号胶)
+    DCE (大商): I(铁矿石), JM(焦煤), J(焦炭), M(豆粕),
+                EB(苯乙烯), V(PVC), PP(聚丙烯), L(塑料), EG(乙二醇)
+    (共33品种,与 VARIETY_METADATA 一致;2026-09-01 扩充能化整组 12 品种)
 
 Note on variety scopes:
-    - 21 池 = 完整分析池: 价格/指标/基差/库存/新闻/供需/情绪全部可用。
+    - 33 池 = 完整分析池: 价格/指标/基差/库存/新闻/供需/情绪全部可用。
     - 思路2 采集池(57 品种映射, generate_tradingagents_sentiment.py)仅提供
-      情绪数据;21 之外品种(如 CU/AU/AG/RU/SC)请求价格/供需等会经
+      情绪数据;33 池之外品种(如 CU/AU/AG 等)请求价格/供需等会经
       _validate_symbol 显式拒绝,不会静默降级。
     - 详见 worklog/2026-08-21: 分裂不是病,静默才是。
 
@@ -99,9 +101,9 @@ _CACHE_TTL = 300  # 5 minutes
 # Variety metadata & symbol mapping
 # ---------------------------------------------------------------------------
 # 【VARIETY_METADATA——品种元信息字典】
-# 这是本文件的数据"字典"。顶部英文文档写的是 20 品种,但字典里实际收录 21 个
-# 品种键:AP/CF/CJ/FG/HC/I/J/JM/M/MA/OI/PF/PK/RB/RM/SA/SF/SM/SR/TA/UR
-# (文档里的"共20品种"与字典略有出入,以字典实际键数为准)。
+# 这是本文件的数据"字典"。当前收录 33 个品种键:RB/HC/I/JM/J/M/TA/MA/FG/SA/UR/PF/
+# CF/SR/OI/RM/AP/CJ/PK/SM/SF(原21)+ SC/LU/FU/BU/RU/NR/EB/V/PP/L/EG/PX
+# (2026-09-01 扩充能化整组 12 品种)。
 # 每个品种的键是大写代码(如 "RB" 螺纹钢),值是一个小字典,包含:
 #   name              中文名称
 #   name_en           英文名称
@@ -121,7 +123,7 @@ _CACHE_TTL = 300  # 5 minutes
 # 作用:把"不同接口各自不同的品种代码"统一成一份映射,让后面的行情/基差/库存
 # 等函数都能通过同一个 symbol 找到各自需要的接口代码,实现"一处配置、处处使用"。
 
-VARIETY_METADATA = {  # 【变量】21个商品期货品种的元信息字典(接口代码/合约规格/板块/关键因素)
+VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(接口代码/合约规格/板块/关键因素)
     "RB": {
         "name": "螺纹钢",
         "name_en": "Rebar",
@@ -620,6 +622,295 @@ VARIETY_METADATA = {  # 【变量】21个商品期货品种的元信息字典(�
             "出口关税政策",
         ],
         "related_varieties": ["SM", "RB"],
+    },
+    # ---- 2026-09-01 扩充:能化整组 12 品种(SC/LU/FU/BU/RU/NR/EB/V/PP/L/EG/PX) ----
+    "SC": {
+        "name": "原油",
+        "name_en": "Crude Oil",
+        "exchange": "INE",
+        "exchange_cn": "上海国际能源交易中心",
+        "main_contract": "SC0",
+        "spot_code": "SC",
+        "inv_code": "sc",
+        "unit": "1000桶/手",
+        "price_limit": "±8%",
+        "margin_rate": "15%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-02:30",
+        "sector_cn": "能化(能源)",
+        "description": "上海国际能源交易中心中质含硫原油，国产+进口(中东为主)定价锚，全能化产业链成本源头",
+        "key_factors": [
+            "OPEC+产量政策",
+            "EIA/API库存数据",
+            "中东地缘局势(霍尔木兹海峡)",
+            "美元指数/美联储利率",
+            "全球炼厂开工率",
+            "国产原油产量/进口到港",
+        ],
+        "related_varieties": ["LU", "FU", "BU", "TA"],
+    },
+    "LU": {
+        "name": "低硫燃料油",
+        "name_en": "Low-sulphur Fuel Oil",
+        "exchange": "INE",
+        "exchange_cn": "上海国际能源交易中心",
+        "main_contract": "LU0",
+        "spot_code": "LU",
+        "inv_code": "lu",
+        "unit": "10吨/手",
+        "price_limit": "±10%",
+        "margin_rate": "15%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-02:30",
+        "sector_cn": "能化(燃料)",
+        "description": "船用低硫燃料油(IMO 2020 硫限催生的主力船燃)，与SC原油/高硫燃料油联动的能源系品种",
+        "key_factors": [
+            "原油(SC/Brent)成本",
+            "IMO 2020 硫含量新规",
+            "新加坡高/低硫价差",
+            "航运BDI运价",
+            "船燃加注需求",
+            "高硫-低硫转换溢价",
+        ],
+        "related_varieties": ["SC", "FU", "BU"],
+    },
+    "FU": {
+        "name": "燃料油",
+        "name_en": "Fuel Oil",
+        "exchange": "SHFE",
+        "exchange_cn": "上海期货交易所",
+        "main_contract": "FU0",
+        "spot_code": "FU",
+        "inv_code": "fu",
+        "unit": "10吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(燃料)",
+        "description": "高硫燃料油，原油下游馏分，电厂/船燃/炼厂原料，与SC原油和低硫燃料油联动",
+        "key_factors": [
+            "原油成本传导",
+            "新加坡/中东高硫供需",
+            "电力/船燃/炼厂需求",
+            "高硫-低硫价差",
+            "库存(新加坡/富查伊拉)",
+            "季节性(取暖/发电旺季)",
+        ],
+        "related_varieties": ["SC", "LU", "BU"],
+    },
+    "BU": {
+        "name": "沥青",
+        "name_en": "Bitumen",
+        "exchange": "SHFE",
+        "exchange_cn": "上海期货交易所",
+        "main_contract": "BU0",
+        "spot_code": "BU",
+        "inv_code": "bu",
+        "unit": "10吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(建材)",
+        "description": "道路沥青，原油蒸馏减压渣油，下游为公路基建和防水卷材，季节性与基建强相关",
+        "key_factors": [
+            "原油成本传导",
+            "公路基建投资",
+            "防水卷材需求",
+            "沥青厂开工率",
+            "社会库存(华东/山东)",
+            "季节规律(春冬淡季/夏秋旺季)",
+        ],
+        "related_varieties": ["SC", "FU"],
+    },
+    "RU": {
+        "name": "橡胶",
+        "name_en": "Natural Rubber",
+        "exchange": "SHFE",
+        "exchange_cn": "上海期货交易所",
+        "main_contract": "RU0",
+        "spot_code": "RU",
+        "inv_code": "ru",
+        "unit": "10吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(橡胶)",
+        "description": "天然橡胶，东南亚主产，下游为轮胎和汽车产业链，天气(割胶季)与库存主导",
+        "key_factors": [
+            "东南亚割胶季/天气(厄尔尼诺)",
+            "泰/马/印尼产胶量",
+            "轮胎/汽车产销",
+            "青岛保税区/交易所库存",
+            "RU-NR价差",
+            "合成橡胶替代",
+        ],
+        "related_varieties": ["NR", "V"],
+    },
+    "NR": {
+        "name": "20号胶",
+        "name_en": "No.20 Rubber",
+        "exchange": "INE",
+        "exchange_cn": "上海国际能源交易中心",
+        "main_contract": "NR0",
+        "spot_code": "NR",
+        "inv_code": "nr",
+        "unit": "10吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-02:30",
+        "sector_cn": "能化(橡胶)",
+        "description": "20号标准胶，进口依赖度高的轮胎核心原料，与沪胶RU同属天然橡胶链、互为定价锚",
+        "key_factors": [
+            "东南亚产胶量(印尼/泰国)",
+            "轮胎出口与汽车产销",
+            "青岛保税区库存",
+            "RU-NR价差",
+            "进口船期/到港",
+            "升贴水与交割品级",
+        ],
+        "related_varieties": ["RU"],
+    },
+    "EB": {
+        "name": "苯乙烯",
+        "name_en": "Styrene",
+        "exchange": "DCE",
+        "exchange_cn": "大连商品交易所",
+        "main_contract": "EB0",
+        "spot_code": "EB",
+        "inv_code": "eb",
+        "unit": "5吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(化工)",
+        "description": "苯乙烯(EB)，苯+乙烯为原料，下游EPS/PS/ABS，受原油与纯苯价差和家电汽车需求影响",
+        "key_factors": [
+            "原油/纯苯/乙烯成本",
+            "非一体化装置利润",
+            "华东港口库存",
+            "家电/汽车(ABS/PS)需求",
+            "EPS开工率",
+            "进口量(韩国/中东)",
+        ],
+        "related_varieties": ["SC", "TA", "PP"],
+    },
+    "V": {
+        "name": "PVC",
+        "name_en": "Polyvinyl Chloride",
+        "exchange": "DCE",
+        "exchange_cn": "大连商品交易所",
+        "main_contract": "V0",
+        "spot_code": "V",
+        "inv_code": "v",
+        "unit": "5吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(化工)",
+        "description": "聚氯乙烯(PVC)，电石/乙烯双工艺，下游为管材型材和房地产竣工，地产链化工品种",
+        "key_factors": [
+            "电石/乙烯成本",
+            "房地产竣工与基建",
+            "PVC企业开工率",
+            "华东/华南社会库存",
+            "出口量(印度/东南亚)",
+            "烧碱-氯平衡",
+        ],
+        "related_varieties": ["L", "PP", "EG", "RB"],
+    },
+    "PP": {
+        "name": "聚丙烯",
+        "name_en": "Polypropylene",
+        "exchange": "DCE",
+        "exchange_cn": "大连商品交易所",
+        "main_contract": "PP0",
+        "spot_code": "PP",
+        "inv_code": "pp",
+        "unit": "5吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(化工)",
+        "description": "聚丙烯(PP)，丙烯聚合，下游为塑编袋/汽车改性/家电，与聚乙烯L构成通用塑料双雄",
+        "key_factors": [
+            "原油/丙烷/丙烯成本",
+            "煤制/油制/PDH开工率",
+            "塑编/汽车/家电需求",
+            "PP-L价差",
+            "社会库存",
+            "新产能投放节奏",
+        ],
+        "related_varieties": ["L", "V", "EG"],
+    },
+    "L": {
+        "name": "塑料",
+        "name_en": "Linear Low-density Polyethylene",
+        "exchange": "DCE",
+        "exchange_cn": "大连商品交易所",
+        "main_contract": "L0",
+        "spot_code": "L",
+        "inv_code": "l",
+        "unit": "5吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(化工)",
+        "description": "线型低密度聚乙烯(LLDPE)，乙烯聚合，下游为农膜/包装膜，与PP同为通用塑料",
+        "key_factors": [
+            "原油/乙烯成本",
+            "农膜/包装膜需求(春耕)",
+            "LLDPE-PP价差",
+            "石化库存/港口库存",
+            "进口量(中东/北美)",
+            "新产能投放",
+        ],
+        "related_varieties": ["PP", "V"],
+    },
+    "EG": {
+        "name": "乙二醇",
+        "name_en": "Ethylene Glycol",
+        "exchange": "DCE",
+        "exchange_cn": "大连商品交易所",
+        "main_contract": "EG0",
+        "spot_code": "EG",
+        "inv_code": "eg",
+        "unit": "10吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "10%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(化工)",
+        "description": "乙二醇(MEG)，煤制/油制双路线，与PTA并列为聚酯双原料，下游涤纶长丝",
+        "key_factors": [
+            "原油/煤/乙烯成本",
+            "港口库存(华东主港)",
+            "聚酯开工率",
+            "煤制装置利润/开工",
+            "进口量(沙特/韩国)",
+            "TA-EG价差",
+        ],
+        "related_varieties": ["TA", "PF"],
+    },
+    "PX": {
+        "name": "对二甲苯",
+        "name_en": "Paraxylene",
+        "exchange": "ZCE",
+        "exchange_cn": "郑州商品交易所",
+        "main_contract": "PX0",
+        "spot_code": "PX",
+        "inv_code": "px",
+        "unit": "5吨/手",
+        "price_limit": "±10%",
+        "margin_rate": "15%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(化工)",
+        "description": "对二甲苯(PX)，芳烃链中间品，PTA直接原料，被原油-石脑油-重整成本与聚酯需求双重驱动",
+        "key_factors": [
+            "原油/石脑油成本",
+            "PX-石脑油价差",
+            "PTA装置开工率",
+            "亚洲PX检修/投产",
+            "芳烃调油(汽油旺季)",
+            "港口库存",
+        ],
+        "related_varieties": ["TA", "SC", "EG"],
     },
 }
 
@@ -1362,6 +1653,25 @@ def get_futures_news(
         "短纤",
         "涤纶",
         "涤短",
+        # Energy-chemicals expanded (2026-09-01, 12 能化品种)
+        "燃料油",
+        "低硫燃料油",
+        "低硫",
+        "高硫",
+        "沥青",
+        "橡胶",
+        "天然橡胶",
+        "天胶",
+        "20号胶",
+        "苯乙烯",
+        "乙二醇",
+        "PVC",
+        "聚丙烯",
+        "聚乙烯",
+        "对二甲苯",
+        "芳烃",
+        "石脑油",
+        "聚氯乙烯",
         # Agriculture
         "豆粕",
         "大豆",
@@ -1462,6 +1772,19 @@ def get_futures_news(
         "PK": ["花生", "油料米", "通货米", "花生粕", "筛选厂", "进口米"],
         "SM": ["锰硅", "硅锰", "锰矿"],
         "SF": ["硅铁", "硅石"],
+        # 2026-09-01 扩充:能化整组 12 品种(与 VARIETY_METADATA 同步)
+        "SC": ["原油", "OPEC", "OPEC+", "EIA", "页岩油", "布伦特", "WTI", "上海原油", "炼厂", "浮仓"],
+        "LU": ["低硫燃料油", "低硫油", "低硫", "船燃", "LSFO", "舟山"],
+        "FU": ["燃料油", "燃油", "高硫燃料油", "高硫", "船用油"],
+        "BU": ["沥青", "道路沥青", "防水卷材", "炼厂"],
+        "RU": ["橡胶", "天然橡胶", "天胶", "割胶", "胶水", "轮胎"],
+        "NR": ["20号胶", "20号橡胶", "印尼胶", "泰标", "烟片胶"],
+        "EB": ["苯乙烯", "EPS", "PS", "ABS"],
+        "V": ["PVC", "电石", "聚氯乙烯", "烧碱"],
+        "PP": ["聚丙烯", "PP", "塑编", "改性"],
+        "L": ["塑料", "聚乙烯", "LLDPE", "农膜", "包装膜"],
+        "EG": ["乙二醇", "MEG", "聚酯", "煤制乙二醇"],
+        "PX": ["对二甲苯", "PX", "芳烃", "石脑油"],
     }
     extra_kw = symbol_specific.get(symbol.upper(), [])
     all_kw = commodity_kw + extra_kw
@@ -2041,7 +2364,9 @@ def get_futures_sentiment(symbol: str, start_date: str = "", end_date: str = "")
     Returns:
         Formatted sentiment report text or "no data" message.
     """
-    from tradingagents.dataflows.sentiment_data import get_futures_sentiment as _impl  # 【调用包】情绪数据模块(读 *_sentiment.json 并格式化)
+    from tradingagents.dataflows.sentiment_data import (
+        get_futures_sentiment as _impl,  # 【调用包】情绪数据模块(读 *_sentiment.json 并格式化)
+    )
 
     return _impl(symbol)  # 【调用函数】转发给 sentiment_data 模块的同名实现
 

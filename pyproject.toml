@@ -36,6 +36,7 @@ dependencies = [
     "akshare>=1.18",
     "apscheduler>=3.10,<4",
     "playwright>=1.61,<2",
+    "fpdf2>=2.7",
 ]
 
 [project.optional-dependencies]

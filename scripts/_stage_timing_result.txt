@@ -1,0 +1,12 @@
+symbol=RB date=2026-07-14 include_sentiment=True
+build=1.6s total_stream=696.4s
+technical_analyst	技术分析	53.5	53.5
+sentiment_analyst	情绪分析	54.0	54.0
+macro_analyst	宏观/新闻	60.4	60.4
+fundamental_analyst	基本面	97.9	97.9
+bull_opening	多方立论	22.2	120.2
+bear_refute	空方反驳	27.8	148.0
+bull_rebuttal	多方反驳	50.0	198.0
+debate_moderator	辩论裁决	87.4	285.4
+synthesis	综合研判	299.1	584.5
+scenario_analysis	情景分析	112.0	696.4

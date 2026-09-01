@@ -983,14 +983,14 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
         <b>目的</b>：验证完整10节点Agent管线在方向预测上的有效性。<br>
         <b>方法</b>：对每个品种运行完整分析 → 提取RATING/SCORE/CONFIDENCE → 对比5天后实际价格方向。<br>
         <b>指标</b>：方向准确率、SCORE与涨幅相关性、置信度校准（高/中/低分别的准确率）。<br>
-        <b>耗时</b>：每品种约3-5分钟，12品种约40-60分钟。
+        <b>耗时</b>：每品种约3-5分钟，<span id="val-variety-count">12</span>品种约<span id="val-variety-minutes">40-60</span>分钟。
       </div>
     </div>
     <div class="card" style="margin-bottom:14px">
       <h3>验证配置</h3>
       <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
         <div><label>分析日期</label><input type="date" id="val-date" value="2026-07-10"></div>
-        <div><label>品种 (逗号分隔，空=全部12个)</label><input type="text" id="val-varieties" placeholder="RB,I,J" style="width:180px"></div>
+        <div><label>品种 (逗号分隔，空=<span id="val-variety-all-hint">全部12个</span>)</label><input type="text" id="val-varieties" placeholder="RB,I,J" style="width:180px"></div>
         <button class="btn btn-primary" id="btn-val-start" onclick="App.startAgentValidation()">开始验证</button>
       </div>
     </div>
@@ -1405,6 +1405,12 @@ const App = {
         sel.appendChild(o);
       });
       document.getElementById('stat-varieties').textContent = this._varieties.length;
+      // 2026-09-01 扩 33 品种:验证模块品种数提示改动态(不再硬编码"12品种")
+      const vn = this._varieties.length;
+      const elVC = document.getElementById('val-variety-count');
+      const elVA = document.getElementById('val-variety-all-hint');
+      if (elVC) elVC.textContent = vn;
+      if (elVA) elVA.textContent = `全部${vn}个`;
       this.updateSentimentStats();
     } catch (e) { console.error('Failed to load varieties', e); }
   },
@@ -2934,17 +2940,23 @@ const App = {
         if (d[k] && d[k].trades !== undefined) {
           // 子策略总收益同样按"每笔交易×cpt"扣成本, 与主曲线口径一致
           const subPnl = (d[k].total_pnl||0) - (cpt > 0 ? cpt * (d[k].trades||0) : 0);
-          subs.push({key:k, label:d[k].label||k, trades:d[k].trades, win_rate:d[k].win_rate, total_pnl:subPnl, advanced_metrics:d[k].advanced_metrics});
+          subs.push({key:k, label:d[k].label||k, trades:d[k].trades, win_rate:d[k].win_rate, breakeven:d[k].breakeven_count||0, total_pnl:subPnl, advanced_metrics:d[k].advanced_metrics});
         }
       }
       if (subs.length===0 && d.win_rate!==undefined) {
         // 风控重算后:主卡笔数/胜率从 tradesAdj 重新统计,与 totalAdj 同口径
         // (避免"胜率100% 但收益-0.9%"这类原始 outcome 与风控后 pnl 的矛盾展示)。
         const mainTrades = riskApplied ? tradesAdj.length : (d.total_trades||0);
-        const mainWR = riskApplied && tradesAdj.length > 0
-          ? tradesAdj.filter(t=>t.outcome==='win').length / tradesAdj.length
-          : (d.win_rate||0);
-        subs.push({key:"main", label:d.strategy||strat, trades:mainTrades, win_rate:mainWR, total_pnl:totalAdj, advanced_metrics:d.advanced_metrics});
+        let mainWR = (d.win_rate||0), mainBE = (d.breakeven_count||0);  // 【变量】主卡胜率/打平笔数
+        if (riskApplied && tradesAdj.length > 0) {
+          // 胜率排除打平: 盈利/(盈利+亏损)。打平(breakeven)交易不计入分子也不计入分母,
+          // 避免"胜率0%但收益0.00%"的矛盾展示(worklog/2026-09-01-纯碱全打平场景)。
+          const mWins = tradesAdj.filter(t=>t.outcome==='win').length;   // 【变量】盈利笔数
+          const mLosses = tradesAdj.filter(t=>t.outcome==='loss').length;  // 【变量】亏损笔数
+          mainBE = tradesAdj.filter(t=>t.outcome==='breakeven').length;  // 【变量】打平笔数
+          mainWR = (mWins + mLosses) > 0 ? mWins / (mWins + mLosses) : 0;
+        }
+        subs.push({key:"main", label:d.strategy||strat, trades:mainTrades, win_rate:mainWR, breakeven:mainBE, total_pnl:totalAdj, advanced_metrics:d.advanced_metrics});
       }
       if (subs.length===0 && d.stats) {
         for (const [k,v] of Object.entries(d.stats)) {
@@ -2967,10 +2979,14 @@ const App = {
       let cards = "";
       for (const s of subs) {
         const am = s.advanced_metrics || {};
+        // 胜率展示: 全打平(有效胜负=0)时显示 "—" 而非误导性 0%; 打平笔数单独标注
+        const effN = (s.trades||0) - (s.breakeven||0);  // 【变量】有效胜负样本数(打平不计入)
+        const wrText = (s.trades && effN <= 0) ? "—" : ((s.win_rate||0)*100).toFixed(0);  // 【变量】胜率文本(全打平→无有效胜负)
+        const beTxt = (s.breakeven||0) ? " | 打平 "+(s.breakeven||0)+" 笔" : "";  // 【变量】打平笔数标注
         // 子策略今日操作行(仅具体品种且该子键存在信号时显示)
         const subTs = (v && d.today_signals && d.today_signals[s.key]) || null;
         const subLine = subTs ? "<div style='font-size:0.7rem;color:var(--text-muted);margin-top:3px'>今日:"+(subTs.action==='buy'?'买入':subTs.action==='sell'?'卖出':'不动')+" @ "+subTs.date+(subTs.strength_pct!=null?" 强度 "+this.fmtStrengthPct(subTs):"")+"</div>" : "";
-        cards += "<div class='card' style='border-left:3px solid var(--brand)'><h3>"+(s.label||s.key)+"</h3>"+(s.trades?"<div style='font-size:1.5rem;font-weight:700;color:"+((s.total_pnl||0)>=0?"var(--green)":"var(--red)")+"'>"+((s.total_pnl||0)>0?"+":"")+(s.total_pnl||0)+"%</div>":"<div style='font-size:1.5rem;font-weight:700;color:var(--text-muted)'>无数据</div>")+"<div style='font-size:0.78rem;color:var(--text-secondary)'>"+(s.trades||0)+" trades | WR "+((s.win_rate||0)*100).toFixed(0)+"%</div><div style='font-size:0.72rem;color:var(--text-muted)'>Sharpe "+(am.sharpe_ratio||"?")+" | PF "+(am.profit_factor||"?")+" | MaxDD "+(am.max_drawdown_pct||"?")+"%</div>"+subLine+"</div>";
+        cards += "<div class='card' style='border-left:3px solid var(--brand)'><h3>"+(s.label||s.key)+"</h3>"+(s.trades?"<div style='font-size:1.5rem;font-weight:700;color:"+((s.total_pnl||0)>=0?"var(--green)":"var(--red)")+"'>"+((s.total_pnl||0)>0?"+":"")+(s.total_pnl||0)+"%</div>":"<div style='font-size:1.5rem;font-weight:700;color:var(--text-muted)'>无数据</div>")+"<div style='font-size:0.78rem;color:var(--text-secondary)'>"+(s.trades||0)+" trades | WR "+wrText+"%"+beTxt+"</div><div style='font-size:0.72rem;color:var(--text-muted)'>Sharpe "+(am.sharpe_ratio||"?")+" | PF "+(am.profit_factor||"?")+" | MaxDD "+(am.max_drawdown_pct||"?")+"%</div>"+subLine+"</div>";
       }
       if (d.decisions) {
         cards += "<div class='card' style='border-left:3px solid var(--amber)'><h3>Decisions</h3><div style='font-size:0.82rem'>"+Object.entries(d.decisions).map(([k,v])=>k+": "+v).join(" | ")+"</div></div>";
@@ -3403,19 +3419,25 @@ const App = {
         // Extract stats from API response
         let stTrades = d.total_trades ?? d.adaptive?.trades ?? d.contrarian?.trades ?? d.consensus?.trades ?? d.stats?.weighted?.trades ?? d.hybrid?.trades ?? trades.length;
         let stWR = d.win_rate ?? d.adaptive?.win_rate ?? d.contrarian?.win_rate ?? d.consensus?.win_rate ?? d.stats?.weighted?.win_rate ?? d.hybrid?.win_rate ?? 0;
+        let stBE = d.breakeven_count ?? d.adaptive?.breakeven_count ?? 0;  // 【变量】打平笔数(后端统计,风控重算后覆盖)
         // 风控开启时:笔数/胜率必须从"风控重算后的 trades"重新统计,与 total_pnl 同口径。
         // 否则会出现"胜率100%(原始 outcome) 但收益 -0.9%(风控重算后 pnl)"的矛盾展示
         // (worklog 2026-08-31 红枣模拟案例)。outcome 已由 apply_risk 同步更新。
         if (riskApplied && trades.length > 0) {
           stTrades = trades.length;
-          stWR = trades.filter(t => t.outcome === 'win').length / trades.length;
+          // 胜率排除打平: 盈利/(盈利+亏损)。打平(breakeven)不计入分子也不计入分母,
+          // 避免"胜率0%但收益0.00%"的矛盾展示(worklog/2026-09-01-纯碱全打平场景)。
+          const stWins = trades.filter(t => t.outcome === 'win').length;   // 【变量】盈利笔数
+          const stLosses = trades.filter(t => t.outcome === 'loss').length;  // 【变量】亏损笔数
+          stBE = trades.filter(t => t.outcome === 'breakeven').length;  // 【变量】打平笔数
+          stWR = (stWins + stLosses) > 0 ? stWins / (stWins + stLosses) : 0;
         }
         // Extract advanced metrics
         let stAdv = d.advanced_metrics ?? d.adaptive?.advanced_metrics ?? d.contrarian?.advanced_metrics ?? d.consensus?.advanced_metrics ?? d.stats?.weighted?.advanced_metrics ?? d.hybrid?.advanced_metrics ?? null;
         let totalPnl = 0;
         for (const v of Object.values(pnlMap||{})) { totalPnl += (v||0); }
         const stopped = stopLoss||trailStop ? trades.filter(t=>t.stopped_out).length : 0;
-        allStats[s] = {trades: stTrades, win_rate: stWR, total_pnl: parseFloat(totalPnl.toFixed(2)), stopped: stopped, advanced: stAdv};
+        allStats[s] = {trades: stTrades, win_rate: stWR, breakeven: stBE, total_pnl: parseFloat(totalPnl.toFixed(2)), stopped: stopped, advanced: stAdv};
         const loaded = Object.keys(allPnlMaps).length;
         document.getElementById('trading-summary').innerHTML =
           `<span class="node">Loaded ${loaded}/${strategies.length}...</span>`;
@@ -3428,9 +3450,12 @@ const App = {
       </div>
       ` + strategies.map(s => {
       const st = allStats[s]||{};
-      const wr = ((st.win_rate||0)*100).toFixed(0);
       const pnl = (st.total_pnl||0);
       const noTrades = !st.trades;   // 0 笔交易 → 无数据,避免误导性「0.0%」
+      // 胜率展示: 全打平(有效胜负=0)时显示 "—" 而非误导性 0%; 打平笔数单独标注
+      const effN = (st.trades||0) - (st.breakeven||0);  // 【变量】有效胜负样本数(打平不计入)
+      const wrText = (st.trades && effN <= 0) ? '—' : ((st.win_rate||0)*100).toFixed(0);  // 【变量】胜率文本(全打平→无有效胜负)
+      const beText = (st.breakeven||0) ? ` | 打平 ${st.breakeven} 笔` : '';  // 【变量】打平笔数标注
       const adv = st.advanced || {};
       const sharpeColor = (adv.sharpe_ratio||0) >= 1 ? 'var(--green)' : (adv.sharpe_ratio||0) >= 0 ? 'var(--amber)' : 'var(--red)';
       const pf = adv.profit_factor != null ? adv.profit_factor : '—';
@@ -3441,7 +3466,7 @@ const App = {
         ${noTrades ? `<div style="font-size:1.6rem;font-weight:700;color:var(--text-muted)">无数据</div>`
                    : `<div style="font-size:1.6rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>0?'+':''}${pnl.toFixed(1)}%</div>`}
         <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px">
-          ${st.trades||0}笔 | 胜率 ${wr}% | 夏普 <span style="color:${sharpeColor}">${adv.sharpe_ratio||'—'}</span>
+          ${st.trades||0}笔 | 胜率 ${wrText}%${beText} | 夏普 <span style="color:${sharpeColor}">${adv.sharpe_ratio||'—'}</span>
         </div>
         <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">
           盈亏比${pf} | 回撤${adv.max_drawdown_pct!=null?adv.max_drawdown_pct+'%':'—'}

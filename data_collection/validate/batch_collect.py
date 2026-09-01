@@ -47,8 +47,14 @@ from pathlib import Path  # 【调用包】路径操作 (输出目录)
 from ner import FuturesNER  # 【调用包】期货品种NER识别 (品种/合约/交易所)
 
 # 平台适配器
-from platforms import get_adapter, list_platforms  # 【调用包】平台适配器工厂: 按平台名获取采集适配器
-from platforms.base import CredentialError, PlatformAdapter  # 【调用包】平台适配器基类接口 + 凭证异常
+from platforms import (  # 【调用包】平台适配器工厂: 按平台名获取采集适配器
+    get_adapter,
+    list_platforms,
+)
+from platforms.base import (  # 【调用包】平台适配器基类接口 + 凭证异常
+    CredentialError,
+    PlatformAdapter,
+)
 from sentiment import SentimentAnalyzer  # 【调用包】规则情感分析器 (7级分类)
 
 logger = logging.getLogger("batch.collect")
@@ -109,6 +115,14 @@ DEFAULT_KEYWORDS_XHS = [  # 【变量】小红书平台默认关键词列表 (�
     "尿素期货",
     "橡胶期货",
     "沥青期货",
+    "燃料油期货",
+    "低硫燃料油期货",
+    "20号胶期货",
+    "苯乙烯期货",
+    "乙二醇期货",
+    "塑料期货",
+    "PP期货",
+    "对二甲苯期货",
     # 农产品
     "豆粕期货",
     "豆油期货",
@@ -153,6 +167,14 @@ DEFAULT_KEYWORDS_WEIBO = [  # 【变量】微博平台默认关键词列表 (品
     "玻璃",
     "尿素",
     "橡胶",
+    "沥青",
+    "燃料油",
+    "低硫燃料油",
+    "20号胶",
+    "苯乙烯",
+    "乙二醇",
+    "聚丙烯",
+    "对二甲苯",
     "豆粕",
     "豆油",
     "棕榈油",
@@ -180,6 +202,14 @@ DEFAULT_KEYWORDS_ZHIHU = [  # 【变量】知乎平台默认关键词列表 (偏
     "黄金",
     "白银",
     "原油",
+    "沥青",
+    "橡胶",
+    "燃料油",
+    "低硫燃料油",
+    "20号胶",
+    "苯乙烯",
+    "乙二醇",
+    "对二甲苯",
     "豆粕",
     "棕榈油",
     "白糖",
@@ -209,6 +239,14 @@ DEFAULT_KEYWORDS_XUEQIU = [  # 【变量】雪球平台默认关键词列表
     "玻璃",
     "尿素",
     "橡胶",
+    "沥青",
+    "燃料油",
+    "低硫燃料油",
+    "20号胶",
+    "苯乙烯",
+    "乙二醇",
+    "聚丙烯",
+    "对二甲苯",
     "豆粕",
     "豆油",
     "棕榈油",
@@ -224,7 +262,7 @@ DEFAULT_KEYWORDS_XUEQIU = [  # 【变量】雪球平台默认关键词列表
     "期货基本面",
 ]
 
-DEFAULT_KEYWORDS_EASTMONEY_GUBA = [  # 【变量】东财股吧平台默认关键词列表(带"期货"后缀, 覆盖21品种池+稀疏品种长尾扩充)
+DEFAULT_KEYWORDS_EASTMONEY_GUBA = [  # 【变量】东财股吧平台默认关键词列表(带"期货"后缀, 覆盖33品种池+稀疏品种长尾扩充)
     # 黑色系
     "螺纹钢期货",
     "铁矿石期货",
@@ -242,7 +280,7 @@ DEFAULT_KEYWORDS_EASTMONEY_GUBA = [  # 【变量】东财股吧平台默认关�
     "白银期货",
     "碳酸锂期货",
     "工业硅期货",
-    # 能化
+    # 能化 (覆盖 33 品种池; 2026-09-01 扩能化整组 12 品种)
     "原油期货",
     "PTA期货",
     "甲醇期货",
@@ -252,6 +290,14 @@ DEFAULT_KEYWORDS_EASTMONEY_GUBA = [  # 【变量】东财股吧平台默认关�
     "尿素期货",
     "橡胶期货",
     "沥青期货",
+    "燃料油期货",
+    "低硫燃料油期货",
+    "20号胶期货",
+    "苯乙烯期货",
+    "乙二醇期货",
+    "塑料期货",
+    "PP期货",
+    "对二甲苯期货",
     "短纤期货",
     # 农产品
     "豆粕期货",
@@ -273,11 +319,16 @@ DEFAULT_KEYWORDS_EASTMONEY_GUBA = [  # 【变量】东财股吧平台默认关�
     "浮法玻璃",
     "尿素出口",
     "涤纶短纤",
+    "短纤报价",
+    "红枣库存",
+    "花生库存",
     # 主题词
     "期货实盘",
     "期货技术分析",
     "期货基本面",
     "商品期货",
+    "期货实战",
+    "期货交易心得",
 ]
 
 DEFAULT_KEYWORDS = {  # 【变量】平台名→默认关键词列表映射 (按--platform选择)

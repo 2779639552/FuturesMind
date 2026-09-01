@@ -282,6 +282,27 @@ VARIETY_KB = {
         "contract_pattern": r"[Bb][Uu]\d{2,4}",
         "price_unit": "元/吨",
     },
+    "燃料油": {
+        "aliases": ["燃料油", "FU", "燃油", "高硫燃料油", "船用油"],
+        "exchange": "上期所",
+        "sector": "能源化工",
+        "contract_pattern": r"[Ff][Uu]\d{2,4}",
+        "price_unit": "元/吨",
+    },
+    "低硫燃料油": {
+        "aliases": ["低硫燃料油", "LU", "低硫油", "船用低硫燃料油", "LSFO"],
+        "exchange": "上期能源",
+        "sector": "能源化工",
+        "contract_pattern": r"[Ll][Uu]\d{2,4}",
+        "price_unit": "元/吨",
+    },
+    "20号胶": {
+        "aliases": ["20号胶", "NR", "20号橡胶", "20号标准胶", "泰标"],
+        "exchange": "上期能源",
+        "sector": "能源化工",
+        "contract_pattern": r"[Nn][Rr]\d{2,4}",
+        "price_unit": "元/吨",
+    },
     "尿素": {
         "aliases": ["尿素", "UR", "化肥"],
         "exchange": "郑商所",

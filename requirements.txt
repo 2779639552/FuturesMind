@@ -15,3 +15,6 @@ akshare>=1.18
 
 # Eastmoney Guba / xueqiu / zhihu collection (Playwright APIRequestContext, WAF TLS bypass)
 playwright>=1.61
+
+# Markdown report → PDF export (/api/report/<file>/pdf, web_app.py uses fpdf2)
+fpdf2>=2.7
