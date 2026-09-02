@@ -11,9 +11,12 @@
     2. web_app /api/research/collect 手动触发(daemon 线程)。
 
 【采集方式】
-  发现报告是 Next.js SSR:机构页 `/archives/organization/<机构名>?page=N` 的
-  列表项是 `<a title="标题" href="/detail/{id}">`,requests 直爬即可;详情页
-  正文在 HTML 里可读(免登录),PDF 下载才要 VIP(不影响文本提取)。
+  发现报告是 Next.js:机构页 `/archives/organization/<机构名>?page=N` 的报告
+  列表首选从 `/_next/data/<buildId>/...json` 的 dataList 解析(字段 docId/
+  title/pubTime,对所有机构统一;中信期货等机构页不走 SSR 卡片,<a> 正则抓
+  不到,JSON 不受影响);详情页正文在 HTML 里可读(免登录),PDF 下载才要 VIP
+  (不影响文本提取)。列表 JSON 失败时退回 SSR `<a title href="/detail/{id}">`
+  正则(东证/华泰等走服务端卡片的机构)。
 
 【增量去重】
   报告 id 随新报告递增(同标题如"铁合金早报"每天重复,不能按标题去重),所以
@@ -87,19 +90,86 @@ def _get(url: str) -> str | None:
     return None
 
 
+def _find_data_list(obj) -> list | None:
+    """递归查找首个名为 dataList 的数组(fxbaogao _next/data JSON 的报告列表)。
+
+    【关键逻辑】页面属性树可能多层嵌套(pageProps.*),逐层下钻找到 dataList 即停。
+    """
+    if isinstance(obj, dict):
+        dl = obj.get("dataList")
+        if isinstance(dl, list):
+            return dl
+        for v in obj.values():
+            found = _find_data_list(v)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _find_data_list(v)
+            if found is not None:
+                return found
+    return None
+
+
+def _org_archive_json(org: str, page: int) -> list | None:
+    """从机构页 __NEXT_DATA__ 拿 buildId,再请求 _next/data JSON,返回 dataList。
+
+    【返回】dataList 报告数组;机构页/JSON 任一失败或无 dataList 返回 None。
+    【关键逻辑】fxbaogao 是 Next.js:机构页对部分机构(如中信期货)报告区不走
+              服务端卡片(SSR <a> 抓不到),但所有机构的数据都在
+              /_next/data/{buildId}/archives/organization/<org>.json 的 dataList,
+              字段含 docId/title/pubTime/orgName —— JSON 端点对所有机构统一可用。
+    """
+    archive = f"{BASE_URL}/archives/organization/{quote(org)}?page={page}"
+    html = _get(archive)
+    if not html:
+        return None
+    m = re.search(r'"buildId":"([^"]+)"', html)
+    if not m:
+        return None
+    data_url = f"{BASE_URL}/_next/data/{m.group(1)}/archives/organization/{quote(org)}.json?page={page}"
+    raw = _get(data_url)
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return _find_data_list(payload)
+
+
 def fetch_org_listing(org: str, page: int = 1) -> list[dict]:
     """抓取机构页第 page 页的报告列表。
 
     【参数】org: 机构名(如"永安期货");page: 页码(1 起)。
     【返回】[{id, title, url}] 按页面顺序(最新在前);失败返回空列表。
-    【关键逻辑】列表项是 `<a title="标题" href="/detail/{id}">` 的锚点,
-              正则提取 title 与 id;页尾有"下一页"等导航需排除。
+    【关键逻辑】首选解析 Next.js 数据 JSON(_next/data ... dataList,含 docId;
+              中信期货等机构页不走 SSR 卡片时 <a> 正则抓不到,JSON 对所有机构
+              统一可用);JSON 无数据/失败时退回 SSR <a title href="/detail/{id}">
+              正则(东证/华泰/永安等走服务端卡片的机构)。docId 即详情页 id。
     """
+    # 首选:Next.js 数据 JSON(所有机构统一,SSR 无关)
+    data_list = _org_archive_json(org, page)
+    if data_list is not None:
+        items: list[dict] = []
+        for it in data_list:
+            try:
+                doc_id = int(it["docId"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            title = (it.get("title") or "").strip()
+            if not title:
+                continue
+            items.append({"id": doc_id, "title": title, "url": f"{BASE_URL}/detail/{doc_id}"})
+        if items:
+            return items
+
+    # 兜底:SSR <a title="标题" href="/detail/{id}"> 卡片正则
     url = f"{BASE_URL}/archives/organization/{quote(org)}?page={page}"
     html = _get(url)
     if not html:
         return []
-    items: list[dict] = []
+    items = []
     # 只匹配真实报告条目:title 非空、href 指向 /detail/{id}
     for m in re.finditer(r'<a\s+[^>]*title="([^"]+)"[^>]*href="/detail/(\d+)"', html):
         title = m.group(1).strip()
