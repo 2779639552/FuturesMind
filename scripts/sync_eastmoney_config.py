@@ -1,6 +1,6 @@
-"""把 PLATFORM_KEYWORDS[eastmoney_guba] 同步到桌面思路2 运行目录的 config.py（2026-08-26）。
+"""把 PLATFORM_KEYWORDS[eastmoney_guba] 同步到项目内思路2 运行目录的 config.py（2026-08-26）。
 
-桌面 config.py 的 PLATFORM_KEYWORDS 只有 xhs/weibo/zhihu,缺东财股吧关键词 → 前端更新
+运行目录 config.py 的 PLATFORM_KEYWORDS 只有 xhs/weibo/zhihu,缺东财股吧关键词 → 前端更新
 勾选东财时 config 里无关键词兜底。补上与仓库副本一致的 eastmoney_guba 键。
 """
 import pathlib

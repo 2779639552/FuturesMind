@@ -1,6 +1,7 @@
-"""把东财相关改动同步到桌面思路2 运行目录的 batch_collect.py（2026-08-26）。
+"""把东财相关改动同步到项目内思路2 运行目录的 batch_collect.py（2026-08-26）。
 
-web_app/scheduler 在桌面 THINK2_DIR 跑 batch_collect.py，桌面副本缺三处东财改造：
+web_app/scheduler 以 cwd=THINK2_DIR 跑 batch_collect.py（思路2 validate，2026-09-02
+随迁移入驻 project4/思路2/validate），运行副本缺三处东财改造：
   1) GBK reconfigure guard —— 子进程 GBK 控制台打印 emoji 崩溃会掩盖真实错误；
   2) DEFAULT_KEYWORDS_EASTMONEY_GUBA 字典 —— 东财平台关键词(47 词)；
   3) DEFAULT_KEYWORDS 分发字典补 "eastmoney_guba" 项。

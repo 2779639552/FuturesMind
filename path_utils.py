@@ -36,12 +36,14 @@ import os  # 【调用包】环境变量/用户主目录操作
 from pathlib import Path  # 【调用包】跨平台路径对象(候选目录/返回值)
 
 # 候选路径元组:按优先级从上到下探测,存在即用。
-# 前 3 个指向用户本地的思路2 项目(不同命名/位置的兼容写法);
+# 第 1 个是项目自带的思路2 目录(与本仓库同根,迁移后应命中的位置);
+# 随后是历史遗留的桌面位置(老安装/旧布局的兼容写法);
 # 最后 1 个是仓库自带的样例数据目录 data/think2_validate,兜底使用。
 _THINK2_CANDIDATES = (  # 【变量】候选数据目录元组(按优先级探测,存在即用)
-    Path(os.path.expanduser("~/Desktop/思路2/validate")),
-    Path(os.path.expanduser("~/Desktop/silu2/validate")),
-    Path(os.path.expanduser("~/projects/silu2/validate")),
+    Path(__file__).resolve().parents[1] / "思路2" / "validate",  # 项目内自带(迁移新布局,最高优先)
+    Path(os.path.expanduser("~/Desktop/思路2/validate")),  # 遗留:桌面 思路2 项目
+    Path(os.path.expanduser("~/Desktop/silu2/validate")),  # 遗留:桌面 silu2 项目
+    Path(os.path.expanduser("~/projects/silu2/validate")),  # 遗留:~/projects 布局
     Path(__file__).parent / "data" / "think2_validate",  # bundled sample
 )
 

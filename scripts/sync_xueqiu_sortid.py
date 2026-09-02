@@ -1,9 +1,8 @@
-"""把 xueqiu search sortId=1 → sortId=2 同步到桌面思路2 运行目录（2026-08-26）。
+"""把 xueqiu search sortId=1 → sortId=2 同步到项目内思路2 运行目录（2026-08-26）。
 
-桌面 C:\\Users\\19168\\Desktop\\思路2\\validate\\platforms\\xueqiu_adapter.py 的 search URL
-仍硬编码 sortId=1(相关性排序),实测返回 2021-2023 旧帖 → 每日管道 --since 7天 窗口
-过滤成 0 条 → xueqiu 每日恒 0。仓库副本已修(sortId=2 时间排序返回当天帖),这里给
-桌面运行目录打同样的最小补丁。
+运行目录 platforms/xueqiu_adapter.py 的 search URL 曾硬编码 sortId=1(相关性排序)，
+实测返回 2021-2023 旧帖 → 每日管道 --since 7天 窗口过滤成 0 条 → xueqiu 每日恒 0。
+仓库副本已修(sortId=2 时间排序返回当天帖),这里给运行目录打同样的最小补丁。
 """
 import pathlib
 import sys
@@ -30,7 +29,7 @@ if old_line in txt:
     )
     txt = txt.replace(old_line, new_line, 1)
     target.write_text(txt, encoding="utf-8")
-    print(f"OK: search URL sortId=1 → sortId=2 (含注释)")
+    print("OK: search URL sortId=1 → sortId=2 (含注释)")
 else:
     # 退路:整体替换 sortId=1 → sortId=2
     txt = txt.replace(old_url, "sortId=2")

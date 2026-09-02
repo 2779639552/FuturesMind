@@ -51,11 +51,13 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(errors="replace")  # 【调用函数】改用替换字符编码,打印安全
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 【调用函数】AgentSense 根目录加入 import 路径
-sys.path.insert(0, r"C:/Users/19168/Desktop/思路2/validate")  # 【调用函数】思路2 validate 目录(读 VARIETY_SYMBOLS)
 
 from path_utils import (  # noqa: E402  # 【调用包】跨模块路径解析(定位 trends 目录)
     resolve_think2_dir,
 )
+
+sys.path.insert(0, str(resolve_think2_dir()))  # 【调用函数】思路2 validate 目录(读 VARIETY_SYMBOLS)
+
 from price_fetcher import (  # noqa: E402  # 【调用包】品种中文名 → 主连代码(52 品种)
     VARIETY_SYMBOLS,
 )
