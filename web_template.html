@@ -578,11 +578,13 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <h1><span class="brand-orange">Agent</span><span class="brand-white">Sense</span></h1>
     <span class="header-badge">v2.5</span>
   </div>
-  <!-- 顶部导航: 8 个按钮对应 8 个标签页, data-tab 值 = 各 <div id="tab-xxx"> 的 xxx。
+  <!-- 顶部导航: 9 个按钮对应 9 个标签页, data-tab 值 = 各 <div id="tab-xxx"> 的 xxx。
        App._bindNav 会给每个按钮绑定点击事件 → App.switchTab(t) 完成切换(含懒加载)。
-       2026-09-01: 回测并入情绪数据页, 新增数据看板(仓单/库存/价格关联分析)。 -->
+       2026-09-01: 回测并入情绪数据页, 新增数据看板(仓单/库存/价格关联分析)。
+       2026-09-02: 新增研报页(上传 PDF/图片/MD 研报 → LLM 结构化, 最高优先级数据源)。 -->
   <nav id="nav">
     <button class="active" data-tab="run">运行分析</button>
+    <button data-tab="research">研报</button>
     <button data-tab="sentiment">情绪数据</button>
     <button data-tab="analysis">分析工具</button>
     <button data-tab="trading">模拟交易</button>
@@ -1308,6 +1310,68 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
   <div class="card" style="margin-top:16px;display:none" id="dash-sector-panel"></div>
 </div>
 
+<!-- ================================================================
+     TAB: Research (研报上传)
+     ================================================================ -->
+<!-- ============ 标签页: 研报 ============
+     做什么: 上传机构/产业研报(PDF/图片/Markdown/TXT) → 后台线程提取文本(文字层/
+     扫描件 Ollama OCR)→ LLM 结构化提取(现货价/库存/供需/方向/置信度)+ 观点结论。
+     分析时作为最高优先级数据源: 优先级 研报 RESEARCH > 外部 EXTERNAL > 免费 FREE_API;
+     基本面/宏观分析师可调 get_research_report 工具, 基差/库存/供需自动并入研报数据点。 -->
+<div id="tab-research" class="tab">
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 研报上传说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>作用</b>：把人工上传的机构/产业研报(一手材料)注入分析管线, 优先级最高(RESEARCH &gt; 外部 EXTERNAL &gt; 免费 FREE_API)。<br>
+      <b>支持格式</b>：PDF / PNG / JPG / Markdown / TXT, 单文件 ≤ 20MB。<br>
+      <b>处理流程</b>：上传后后台自动提取文本(PDF 文字层; 扫描件/图片走本地 Ollama OCR)→ LLM 结构化提取(现货价/库存/供需/方向/置信度)→ 生成观点结论。<br>
+      <b>消费方式</b>：运行分析时基本面/宏观分析师通过 <code>get_research_report</code> 工具读取; 基差/库存/供需数据自动并入研报数据点。<br>
+      <span style="color:var(--amber)">注: 需本地 LLM 服务可用(Ollama/API 配置); OCR 不可用时图片研报会提示处理失败。</span>
+    </div>
+  </div>
+
+  <!-- 上传卡片 -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>上传研报</h3>
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+      <div style="flex:1;min-width:130px">
+        <label>品种</label>
+        <select id="res-upload-variety"></select>
+      </div>
+      <div style="flex:1;min-width:160px">
+        <label>标题(可选)</label>
+        <input id="res-upload-title" placeholder="如: 华泰黑色月报" style="width:100%">
+      </div>
+      <div style="flex:1;min-width:130px">
+        <label>来源(可选)</label>
+        <input id="res-upload-source" placeholder="如: 华泰期货" style="width:100%">
+      </div>
+      <div style="flex:1;min-width:170px">
+        <label>文件(PDF/图片/MD/TXT, ≤20MB)</label>
+        <input type="file" id="res-upload-file" accept=".pdf,.png,.jpg,.jpeg,.md,.txt" style="width:100%">
+      </div>
+      <button class="btn btn-primary" onclick="App.uploadResearch()">上传</button>
+    </div>
+  </div>
+
+  <!-- 列表卡片 -->
+  <div class="card">
+    <h3>已上传研报 <span class="badge badge-info" id="res-count"></span></h3>
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:12px">
+      <div style="flex:1;min-width:150px">
+        <label>按品种筛选</label>
+        <select id="res-filter-variety" onchange="App.loadResearch()">
+          <option value="">全部品种</option>
+        </select>
+      </div>
+      <button class="btn btn-outline btn-sm" onclick="App.loadResearch()">刷新</button>
+    </div>
+    <div style="font-size:0.86rem;color:var(--text-secondary);line-height:1.8" id="res-list">加载中...</div>
+  </div>
+</div>
+
 </main>
 
 <!-- ================================================================
@@ -1401,6 +1465,7 @@ const App = {
     if (t === 'update') this.loadUpdateStats();
     if (t === 'history') this.loadHistory();
     if (t === 'system') this.loadSystemTab();
+    if (t === 'research') this.loadResearch();
     this._resizeAllCharts();
   },
 
@@ -2458,6 +2523,175 @@ const App = {
         <div class="card"><h3>简单平均</h3><div style="font-size:2rem;color:var(--text-secondary)">${((cmp.simple_avg?.direction_accuracy || 0) * 100).toFixed(1)}%</div><div style="font-size:0.78rem;color:var(--text-muted)">对照基准 (n=${cmp.simple_avg?.data_points || 0})</div></div>
         <div class="card"><h3>加权来源</h3><div style="font-size:1.1rem;color:var(--brand)">${d.weight_source || 'N/A'}</div><div style="font-size:0.78rem;color:var(--text-muted)">平台权重优化方法</div></div>`;
     } catch (e) { console.error(e); }
+  },
+
+  // ── Research (研报上传) ──
+  // 【功能】进入「研报」页时懒加载: 填充上传/筛选两个品种下拉 + 拉取研报列表
+  // 【输入】无 【渲染】#res-list 研报列表; 上传/筛选下拉框
+  // 【后端】GET /api/research
+  async loadResearch() {
+    this._populateVarietySelects(['res-upload-variety', 'res-filter-variety']);  // 首次进入才填充; 重复进入只读不重填
+    await this._refreshResearch();
+  },
+
+  // 【功能】按筛选品种拉取研报列表并渲染(含状态徽标/方向/置信度/查看/删除按钮)
+  // 【输入】无 (读取 #res-filter-variety 筛选值)
+  // 【渲染】#res-count 计数 + #res-list 列表(处理中/已处理/失败三种状态)
+  // 【后端】GET /api/research?variety={variety}
+  async _refreshResearch() {
+    const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
+    const v = document.getElementById('res-filter-variety')?.value || '';
+    const listEl = document.getElementById('res-list');
+    listEl.innerHTML = '加载中...';
+    try {
+      const r = await fetch(`/api/research?variety=${encodeURIComponent(v)}`);
+      const d = await r.json();
+      const rows = d.reports || [];
+      document.getElementById('res-count').textContent = `${rows.length} 份`;
+      if (!rows.length) { listEl.innerHTML = '<span style="color:var(--text-muted)">暂无研报, 请上传。</span>'; return; }
+      listEl.innerHTML = rows.map(rp => {
+        const statusBadge = rp.status === 'done'
+          ? '<span class="badge" style="background:rgba(34,197,94,.15);color:var(--green)">已处理</span>'
+          : rp.status === 'error'
+            ? '<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">失败</span>'
+            : '<span class="badge" style="background:rgba(245,158,11,.15);color:var(--amber)">处理中</span>';
+        const dirColor = rp.direction === '看多' ? 'var(--green)' : rp.direction === '看空' ? 'var(--red)' : 'var(--text-muted)';
+        const conf = rp.confidence != null ? ` · 置信度 ${rp.confidence}` : '';
+        return `<div class="debate-round">
+          <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
+            <div>
+              <b>${esc(rp.title || '(未命名)')}</b>
+              <span style="color:var(--text-muted);font-size:0.8rem"> — ${esc(rp.variety)} · ${esc(rp.source || '')} · ${esc(String(rp.uploaded_at || '').slice(0, 10))}</span>
+              <span style="color:${dirColor};font-weight:700">${esc(rp.direction || '中性')}</span>${conf}
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              ${statusBadge}
+              <button class="btn btn-outline btn-sm" onclick="App.viewResearch(${rp.id})">查看</button>
+              <button class="btn btn-red btn-sm" onclick="App.deleteResearch(${rp.id})">删除</button>
+            </div>
+          </div>
+          ${rp.status === 'error' ? `<div style="color:var(--red);font-size:0.8rem;margin-top:4px">${esc(rp.error || '')}</div>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) { listEl.innerHTML = '<span style="color:var(--red)">加载失败</span>'; }
+  },
+
+  // 【功能】上传研报: FormData(multipart) 提交 → 后台线程处理, 立即返回 {id}
+  // 【输入】从 4 个表单元素读取 (品种/标题/来源/文件)
+  // 【渲染】toast 提示 + 成功后刷新列表
+  // 【后端】POST /api/research/upload
+  async uploadResearch() {
+    const variety = document.getElementById('res-upload-variety')?.value;
+    const title = document.getElementById('res-upload-title')?.value.trim() || '';
+    const source = document.getElementById('res-upload-source')?.value.trim() || '';
+    const file = document.getElementById('res-upload-file')?.files[0];
+    if (!variety) { this.toast('请选择品种', 'error'); return; }
+    if (!file) { this.toast('请选择研报文件', 'error'); return; }
+    const fd = new FormData();
+    fd.append('variety', variety);
+    if (title) fd.append('title', title);
+    if (source) fd.append('source', source);
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/research/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '上传失败', 'error'); return; }
+      this.toast('研报已接收, 后台处理中', 'success');
+      const fileEl = document.getElementById('res-upload-file');
+      if (fileEl) fileEl.value = '';
+      document.getElementById('res-upload-title').value = '';
+      document.getElementById('res-upload-source').value = '';
+      await this._refreshResearch();
+    } catch (e) { this.toast('上传失败', 'error'); }
+  },
+
+  // 【功能】查看研报详情: 结构化 JSON 渲染为表格 + 结论 markdown, 用 marked 渲染后展示
+  // 【输入】id: 研报主键 【渲染】#modal 弹层 (结构化数据/关键事件/观点结论)
+  // 【后端】GET /api/research/<id>
+  async viewResearch(id) {
+    try {
+      const r = await fetch(`/api/research/${id}`);
+      if (!r.ok) { this.toast('研报不存在', 'error'); return; }
+      const d = await r.json();
+      const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+      const sd = d.structured_data || {};
+      const num = x => (x && x.value != null) ? `${x.value} ${esc(x.unit || '')} (${esc(x.date || '')})` : '—';
+      const rows = [
+        ['现货价', num(sd.spot_price)],
+        ['社会库存', num(sd.social_inventory)],
+        ['厂库', num(sd.mill_inventory)],
+        ['供给', esc(sd.supply && sd.supply.note)],
+        ['需求', esc(sd.demand && sd.demand.note)],
+        ['成本', esc(sd.costs && sd.costs.note)],
+        ['目标价', sd.target_price != null ? esc(sd.target_price) : '—'],
+      ].map(([k, v]) => `<tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">${k}</td><td>${v}</td></tr>`).join('');
+      const evs = sd.key_events || [];
+      const evHtml = evs.length
+        ? evs.map(e => {
+            const imp = String(e.impact || 'neutral').toLowerCase();
+            const c = imp === 'bullish' ? 'var(--green)' : imp === 'bearish' ? 'var(--red)' : 'var(--text-muted)';
+            return `<li style="margin:2px 0">${esc(e.event || '')} — ${esc(e.detail || '')} <span style="color:${c}">[${esc(e.impact || 'neutral')}]</span></li>`;
+          }).join('')
+        : '<li>无</li>';
+      const dirColor = d.direction === '看多' ? 'var(--green)' : d.direction === '看空' ? 'var(--red)' : 'var(--text-muted)';
+      const html = `
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+          <div><b style="font-size:1.15rem">${esc(d.title || '(未命名)')}</b>
+            <div style="color:var(--text-muted);font-size:0.82rem">${esc(d.variety)} · ${esc(d.source || '')} · ${esc(d.filename || '')} · 上传 ${esc(String(d.uploaded_at || '').slice(0, 10))}</div>
+          </div>
+          <div style="text-align:right">
+            <span style="color:${dirColor};font-weight:900;font-size:1.2rem">${esc(d.direction || '中性')}</span>
+            ${d.confidence != null ? `<div style="color:var(--text-muted);font-size:0.82rem">置信度 ${d.confidence}</div>` : ''}
+          </div>
+        </div>
+        <div class="card" style="padding:12px;margin-bottom:12px">
+          <h4 style="margin:0 0 8px">结构化数据</h4>
+          <table style="font-size:0.86rem;border-collapse:collapse">${rows}</table>
+        </div>
+        <div class="card" style="padding:12px;margin-bottom:12px">
+          <h4 style="margin:0 0 8px">关键事件</h4>
+          <ul style="margin:0;padding-left:18px;font-size:0.86rem">${evHtml}</ul>
+        </div>
+        <div class="card" style="padding:12px">
+          <h4 style="margin:0 0 8px">观点结论</h4>
+          <div class="report-content">${marked.parse(d.conclusion_md || '_暂无结论_')}</div>
+        </div>`;
+      this.openResearchModal(html, esc(d.title || '研报详情'));
+    } catch (e) { this.toast('查看失败', 'error'); }
+  },
+
+  // 【功能】渲染研报详情弹层(极简: 半透明遮罩 + 居中卡片, 点遮罩关闭)
+  // 【输入】html: 弹层内容; title: 弹层标题
+  // 【渲染】动态创建/复用 #research-modal 【后端】无
+  openResearchModal(html, title) {
+    let m = document.getElementById('research-modal');
+    if (!m) {
+      m = document.createElement('div');
+      m.id = 'research-modal';
+      m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:40px 16px';
+      m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+      document.body.appendChild(m);
+    }
+    m.innerHTML = `<div class="card" style="max-width:720px;width:100%;padding:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0">${title}</h3>
+        <button class="btn btn-outline btn-sm" onclick="this.closest('#research-modal').remove()">✕ 关闭</button>
+      </div>
+      ${html}
+    </div>`;
+  },
+
+  // 【功能】删除研报: confirm 后调 DELETE, 同步清理聚合 JSON 与原始文件
+  // 【输入】id: 研报主键 【渲染】toast + 刷新列表 【后端】DELETE /api/research/<id>
+  async deleteResearch(id) {
+    if (!confirm('确定删除这份研报? 将同时移除聚合数据源中的对应记录。')) return;
+    try {
+      const r = await fetch(`/api/research/${id}`, { method: 'DELETE' });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '删除失败', 'error'); return; }
+      this.toast('已删除', 'success');
+      await this._refreshResearch();
+    } catch (e) { this.toast('删除失败', 'error'); }
   },
 
   // ── Dashboard (数据看板) ──

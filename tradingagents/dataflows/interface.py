@@ -20,6 +20,7 @@ from .commodity_futures import (  # 【调用包】商品期货供应商(行情/
     get_futures_price,
     get_futures_sentiment,
     get_futures_supply_demand,
+    get_research_report,
     get_variety_info,
     get_verified_quote,
 )
@@ -112,6 +113,12 @@ TOOLS_CATEGORIES = {  # 【变量】工具分类注册表:分类→(描述, 工�
         "description": "Supply-demand indicators (production, transaction volume, inventory)",
         "tools": [
             "get_futures_supply_demand",
+        ],
+    },
+    "futures_research": {
+        "description": "Manually-uploaded research reports — highest-trust data source (priority: RESEARCH > EXTERNAL > FREE_API)",
+        "tools": [
+            "get_research_report",
         ],
     },
     "futures_sentiment": {
@@ -217,6 +224,9 @@ VENDOR_METHODS = {  # 【变量】方法→各供应商实现函数映射表(路
     },
     "get_futures_supply_demand": {
         "commodity_futures": get_futures_supply_demand,
+    },
+    "get_research_report": {
+        "commodity_futures": get_research_report,
     },
     "get_futures_sentiment": {
         "commodity_futures": get_futures_sentiment,

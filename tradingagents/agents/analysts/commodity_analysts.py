@@ -50,10 +50,11 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_macro,
     get_futures_news,
     get_futures_price,
+    get_research_report,
     get_futures_supply_demand,
     get_variety_info,
     get_verified_quote,
-)  # 【调用包】商品期货行情/指标/库存/基差/宏观/新闻/供需/品种信息/核验报价工具;由 LLM 通过 _run_tool_loop 调度取数
+)  # 【调用包】商品期货行情/指标/库存/基差/宏观/新闻/供需/研报/品种信息/核验报价工具;由 LLM 通过 _run_tool_loop 调度取数
 
 logger = logging.getLogger(__name__)
 
@@ -376,6 +377,7 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
             get_futures_basis,
             get_futures_inventory,
             get_futures_supply_demand,
+            get_research_report,  # 【工具】人工上传研报摘要(最高优先级数据源)
             get_verified_quote,
         ]
 
@@ -543,6 +545,7 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
             get_futures_news,
             get_futures_price,
             get_futures_macro,
+            get_research_report,  # 【工具】人工上传研报摘要(最高优先级数据源)
             get_verified_quote,
         ]
 

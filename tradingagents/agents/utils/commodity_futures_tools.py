@@ -218,6 +218,39 @@ def get_futures_supply_demand(
     return route_to_vendor("get_futures_supply_demand", symbol, "", "")  # 【调用函数】跨模块路由:取供需两侧指标(产量/开工率/利润/库存)
 
 
+# 【功能】获取该品种"人工上传研报"的结构化摘要(方向/置信度/观点/关键数据点)。
+# 【参数】symbol: 品种代码。
+# 【返回】格式化研报摘要文本;无研报返回 RESEARCH_NO_DATA 哨兵(确定性结论,不允许编造)。
+# 【关键逻辑】转发给 route_to_vendor("get_research_report", symbol, "", "");
+#           底层读 research_data.get_research_report_text(~/.tradingagents/external_data
+#           {品种}_research.json)。研报是人工上传的一手材料,可信优先级最高
+#           (RESEARCH > 外部 EXTERNAL > 免费 FREE_API),基本面/宏观分析师应优先采信。
+@tool
+def get_research_report(
+    symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
+) -> str:
+    """
+    Get manually-uploaded institutional/industry research reports for a commodity variety.
+
+    Research reports are HUMAN-UPLOADED first-hand materials (institutional views,
+    industry field surveys), the HIGHEST-trust data source in the system
+    (priority: RESEARCH > external EXTERNAL > free FREE_API).
+
+    Includes for each report: direction (看多/看空/中性), confidence, conclusion
+    summary, and key data points (spot price, social/mill inventory, supply/demand).
+
+    Use this for fundamental/macro analysis to incorporate professional views
+    and resolve disagreements between other data sources. If the response is
+    "RESEARCH_NO_DATA: ...", report honestly that no research has been uploaded
+    rather than inventing data.
+    Args:
+        symbol: Variety code like RB, I, HC
+    Returns:
+        Formatted text summary of uploaded research reports (or RESEARCH_NO_DATA sentinel).
+    """
+    return route_to_vendor("get_research_report", symbol, "", "")  # 【调用函数】跨模块路由:取人工上传研报摘要(最高优先级数据源)
+
+
 # 【功能】获取品种的社交媒体情绪数据(微博/知乎/小红书)。
 # 【参数】symbol: 品种代码。
 # 【返回】格式化情绪报告文本。

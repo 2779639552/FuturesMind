@@ -85,6 +85,13 @@ from tradingagents.dataflows.external_data import (  # 【调用包】外部数�
     merge_basis_data,
     merge_inventory_data,
 )
+# 从 research_data.py(研报注入层)导入人工上传研报的读取接口:
+#   get_research_report_text  格式化研报摘要(供 get_research_report 工具与供需函数并入)
+#   load_research_data        读研报聚合 dict(供基差/库存函数在 merge 时取研报数据点)
+from tradingagents.dataflows.research_data import (  # 【调用包】研报注入层(人工上传研报,可信优先级最高)
+    get_research_report_text,
+    load_research_data,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2898,9 +2905,20 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
     """
     parts = [
         f"# SUPPLY-DEMAND INDICATORS for {variety}",
-        "# Combines external data (Mysteel, Wind, etc.) with free API data",
+        "# Priority: RESEARCH (人工上传研报) > EXTERNAL (外部 JSON) > FREE_API",
         "",
     ]
+
+    # --- Research Report Section (最高优先级: 人工上传研报) ---
+    # get_research_report_text 无研报时返回 RESEARCH_NO_DATA 哨兵(确定性结论),
+    # 以 startswith 判断避免把"暂无研报"也当成研报内容拼进去。
+    res_text = get_research_report_text(variety)  # 【调用函数】人工上传研报摘要(可信优先级最高)
+    if not res_text.startswith("RESEARCH_NO_DATA"):
+        parts.append("## Research Reports (人工上传研报, 可信优先级最高)")
+        parts.append("# 研报优先于下方 EXTERNAL 与 FREE_API;若与免费数据分歧,优先采信研报。")
+        parts.append("")
+        parts.append(res_text)
+        parts.append("")
 
     # --- External Data Section ---
     ext = load_external_data(variety)  # 【调用函数】读外部 JSON 供需数据(无/过期返回 None)
@@ -3051,6 +3069,17 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
     parts.append("")
 
     return "\n".join(parts)
+
+
+# 【功能】获取该品种"人工上传研报"的结构化摘要(方向/置信度/观点/关键数据点)。
+# 【参数】variety: 品种代码;start_date/end_date: 形参保留(与其它 get_futures_* 签名一致)。
+# 【返回】格式化研报摘要文本;无研报返回 RESEARCH_NO_DATA 哨兵(确定性结论,不允许编造)。
+# 【关键逻辑】薄封装 research_data.get_research_report_text。研报是人工上传的
+#           一手材料(机构观点/产业调研),可信优先级最高(RESEARCH > EXTERNAL >
+#           FREE_API)。本函数是 get_research_report 工具的底层实现。
+def get_research_report(variety: str, start_date: str = "", end_date: str = "") -> str:
+    """Fetch manually-uploaded research report summaries for a variety (HIGHEST priority)."""
+    return get_research_report_text(variety)  # 【调用函数】读研报聚合 JSON 并格式化为文本(无研报返回 RESEARCH_NO_DATA 哨兵)
 
 
 # ---------------------------------------------------------------------------

@@ -95,6 +95,11 @@ from datetime import datetime, timedelta, timezone  # 【调用包】时间戳�
 from pathlib import Path  # 【调用包】路径对象与文件操作
 from typing import Any  # 【调用包】任意类型注解(外部数据字典)
 
+# 从 research_data.py(研报注入层)导入研报聚合读取接口,供 merge_basis_data /
+# merge_inventory_data 把"人工上传研报"作为最高优先级数据源并入(优先级链
+# RESEARCH > EXTERNAL > FREE_API)。research_data 不反向依赖本模块,无循环导入。
+from tradingagents.dataflows.research_data import load_research_data  # 【调用包】研报注入层(人工上传研报,可信优先级最高)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -317,6 +322,79 @@ def annotate_with_source(variety: str, content: str, is_external: bool = False) 
 # ---------------------------------------------------------------------------
 
 
+# 【功能】从研报聚合 dict 中查找最新一份含指定数据点字段的研报,返回该数据点。
+# 【参数】research: load_research_data 返回的聚合 dict 或 None;key: 数据点键
+#           (如 "spot_price" / "social_inventory" / "mill_inventory")。
+# 【返回】dict | None:数据点 {value, unit, date, ...};无研报或该字段为空返回 None。
+# 【关键逻辑】reports 列表最新在前;逐份找第一个 value 不为空的数据点即返回,
+#           保证"最新研报优先"。这是研报(最高优先级)并入 merge_* 的统一入口。
+def _research_point(research, key):
+    """Find the newest research report's data point for `key`, or None."""
+    if not research or not research.get("reports"):
+        return None
+    for r in research["reports"]:
+        dps = r.get("data_points") or {}
+        if isinstance(dps, dict):
+            pt = dps.get(key)
+            if isinstance(pt, dict) and pt.get("value") is not None:
+                return pt
+    return None
+
+
+# 【功能】构造"研报库存"区块文本行(Part 0),供 merge_inventory_data 并入。
+# 【参数】res_social/res_mill: 研报社会库存/厂库数据点(dict 或 None)。
+# 【返回】list[str]:研报库存区块的文本行(含来源标注),无任何研报库存时返回空列表。
+def _research_inventory_section(res_social, res_mill) -> list:
+    """Build the RESEARCH inventory section lines (Part 0) for the merged output."""
+    lines = [
+        "## Part 0: Research Report Inventory (研报库存, 可信优先级最高)",
+        "# 研报为人工上传的一手材料,优先于 EXTERNAL 与 FREE_API;若与免费数据分歧,优先采信研报。",
+        "# ---",
+    ]
+    if res_social:
+        lines += [
+            "Research Social Inventory (研报社会库存):",
+            f"  Value: {res_social.get('value')} {res_social.get('unit', '万吨')}",
+            f"  Date: {res_social.get('date', 'N/A')}",
+            "",
+        ]
+    if res_mill:
+        lines += [
+            "Research Mill Inventory (研报厂库):",
+            f"  Value: {res_mill.get('value')} {res_mill.get('unit', '万吨')}",
+            f"  Date: {res_mill.get('date', 'N/A')}",
+            "",
+        ]
+    return lines
+
+
+# 【功能】研报库存存在、外部库存不存在时:研报 Part 0 + 免费 API 仓单 + 解读指引。
+# 【参数】variety: 品种代码;api_csv: 免费 API 仓单 CSV;res_social/res_mill: 研报库存数据点。
+# 【返回】str:合并后的库存报告文本(used 标记由调用方置 True)。
+def _research_only_inventory(variety, api_csv, res_social, res_mill) -> str:
+    parts = [
+        "# ============================================================",
+        f"# COMBINED INVENTORY DATA for {variety}",
+        "# ============================================================",
+        "",
+    ]
+    parts.extend(_research_inventory_section(res_social, res_mill))  # 【调用函数】研报库存区块(Part 0,最高优先级)
+    parts += [
+        "## Part 1: Warehouse Receipts (仓单库存) — FREE API",
+        "# Source: SHFE via AKShare (daily, exchange-registered warrants)",
+        "# This reflects deliverable supply only, NOT total market inventory.",
+        "# ---",
+        api_csv,
+        "",
+        "# ============================================================",
+        "# INTERPRETATION GUIDE for the LLM:",
+        "# - 研报库存(社会/厂库)为全市场口径, 交易所仓单仅代表可交割供给;",
+        "# - 研报方向与库存同向 → 观点有数据支撑; 反向 → 谨慎并说明分歧。",
+        "# ============================================================",
+    ]
+    return "\n".join(parts)
+
+
 # 【功能】把免费 API 的"仓单库存"与外部 JSON 的"社会库存/钢厂库存"合并成一份报告。
 # 【参数】variety: 品种代码;api_csv: 免费接口返回的仓单 CSV 字符串。
 # 【返回】元组 (merged_content, used_external):
@@ -329,22 +407,32 @@ def annotate_with_source(variety: str, content: str, is_external: bool = False) 
 #           3) 额外附上铁矿港口库存、开工率、吨钢利润等补充数据;
 #           4) 末尾给大模型一段"解读指引":仓单与社会库存同向/反向的含义。
 def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
-    """Merge warehouse receipt data (API) with social inventory data (external).
+    """Merge warehouse receipt data (API) with research/external inventory data.
 
-    If external social inventory is available, append it as a separate
-    clearly-labeled section. The LLM gets both data sources and can
-    reason about their differences.
+    Priority chain: RESEARCH (人工上传研报, Part 0) > EXTERNAL (Part 2) > FREE_API.
+    Research social/mill inventory is prepended as the highest-trust section;
+    external social inventory is appended for comparison; the free API warehouse
+    receipts always serve as the exchange-registered baseline.
 
     Args:
         variety: Variety code
         api_csv: CSV string from free API (warehouse receipts)
 
     Returns:
-        (merged_content, used_external) tuple.
+        (merged_content, used_external) tuple. used_external=True when research
+        OR external inventory was actually merged.
     """
+    # 研报(最高优先级)先读:社会库存/厂库数据点。研报聚合 JSON 里 reports 最新在前,
+    # _research_point 取最新一份含该字段的研报。
+    res_social = _research_point(load_research_data(variety), "social_inventory")  # 【调用函数】研报社会库存数据点(最高优先级源)
+    res_mill = _research_point(load_research_data(variety), "mill_inventory")  # 【调用函数】研报厂库数据点(最高优先级源)
+    has_research = res_social is not None or res_mill is not None
+
     external = load_external_data(variety)  # 【调用函数】读外部数据(无/过期返回 None)
     if external is None:
-        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】打 FREE_API 来源标注头并原样返回
+        if not has_research:
+            return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】打 FREE_API 来源标注头并原样返回
+        return _research_only_inventory(variety, api_csv, res_social, res_mill), True  # 【调用函数】研报+API 组合输出
 
     data = external.get("data", {})
     social_inv = data.get("social_inventory")
@@ -352,7 +440,9 @@ def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
 
     has_external = social_inv is not None or mill_inv is not None
     if not has_external:
-        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】无外部库存字段→打 FREE_API 标注原样返回
+        if not has_research:
+            return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】无外部/研报库存→打 FREE_API 标注原样返回
+        return _research_only_inventory(variety, api_csv, res_social, res_mill), True  # 【调用函数】研报+API 组合输出
 
     source_label = get_external_source_label(variety)  # 【调用函数】生成外部来源标签(供标注头/标题使用)
 
@@ -362,6 +452,10 @@ def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
         f"# COMBINED INVENTORY DATA for {variety}",
         "# ============================================================",
         "",
+    ]
+    # 研报库存作为 Part 0 前置(最高优先级)
+    parts.extend(_research_inventory_section(res_social, res_mill))  # 【调用函数】研报库存区块(Part 0)
+    parts += [
         "## Part 1: Warehouse Receipts (仓单库存) — FREE API",
         "# Source: SHFE via AKShare (daily, exchange-registered warrants)",
         "# This reflects deliverable supply only, NOT total market inventory.",
@@ -445,27 +539,42 @@ def merge_inventory_data(variety: str, api_csv: str) -> tuple[str, bool]:
 #              (值/单位/日期/来源标签),提示大模型:若与接口现货价分歧较大,
 #              优先采信外部源;used_external=True。
 def merge_basis_data(variety: str, api_csv: str) -> tuple[str, bool]:
-    """Merge basis data from API with external spot price if available.
+    """Merge basis data from API with research/external spot price if available.
+
+    Priority chain: RESEARCH (人工上传研报) > EXTERNAL > FREE_API. Research spot
+    price is used first; external spot price is the fallback; otherwise the free
+    API data is annotated and returned unchanged.
 
     Args:
         variety: Variety code
         api_csv: CSV string from free API
 
     Returns:
-        (merged_content, used_external) tuple.
+        (merged_content, used_external) tuple. used_external=True when research
+        OR external spot was merged.
     """
+    # 研报现货价(最高优先级)优先;无研报现货价再回退外部现货价。
+    res_spot = _research_point(load_research_data(variety), "spot_price")  # 【调用函数】研报现货价数据点(最高优先级源)
     external = load_external_data(variety)  # 【调用函数】读外部数据(无/过期返回 None)
-    if external is None:
-        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】打 FREE_API 来源标注头并原样返回
+    ext_spot = external.get("data", {}).get("spot_price") if external else None
 
-    spot = external.get("data", {}).get("spot_price")
-    if spot is None:
-        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】外部无现货价→打 FREE_API 标注原样返回
+    if res_spot:
+        note = (
+            f"# RESEARCH SPOT PRICE: {res_spot.get('value')} {res_spot.get('unit', '元/吨')} "
+            f"as of {res_spot.get('date', 'N/A')} (人工上传研报, 可信优先级最高)\n"
+            f"# Compare with the API-derived spot prices below. "
+            f"If they diverge significantly, prefer the research report value.\n"
+            f"# ---\n"
+        )
+        return note + annotate_with_source(variety, api_csv, is_external=False), True  # 【调用函数】研报现货价说明拼接在 API 数据前(标注 FREE_API)
+
+    if ext_spot is None:
+        return annotate_with_source(variety, api_csv, is_external=False), False  # 【调用函数】无研报/外部现货价→打 FREE_API 标注原样返回
 
     source_label = get_external_source_label(variety)  # 【调用函数】生成外部来源标签(追加到现货价说明)
     note = (
-        f"# EXTERNAL SPOT PRICE: {spot.get('value')} {spot.get('unit', '元/吨')} "
-        f"as of {spot.get('date', 'N/A')} ({source_label})\n"
+        f"# EXTERNAL SPOT PRICE: {ext_spot.get('value')} {ext_spot.get('unit', '元/吨')} "
+        f"as of {ext_spot.get('date', 'N/A')} ({source_label})\n"
         f"# Compare with the API-derived spot prices below. "
         f"If they diverge significantly, prefer the external source.\n"
         f"# ---\n"

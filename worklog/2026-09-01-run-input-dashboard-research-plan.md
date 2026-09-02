@@ -195,3 +195,19 @@ CREATE TABLE IF NOT EXISTS research_reports (
 - `annotate_with_source` / `merge_basis_data` / `merge_inventory_data` / `load_external_data`(external_data.py:278/447/331/138)。
 - `_run_tool_loop` / 分析师工厂(commodity_analysts.py:65/214/348/516)。
 - `marked.parse`、`App.toast`、`_populateVarietySelects`、`switchTab`(web_template.html:1321/1406/2245/1381)。
+
+## 后续优化(已完成讨论,等待研报模块收尾后实施)—— 并行提速 2026-09-02
+
+背景:BU 分析 672s 中 4 分析师并行块 97.9s(14%)、辩论 187s(27%)、综合+情景 411s(59%)。
+链条本身(分析师→辩论→裁决→综合→情景)是硬数据依赖,无法改并行;可挖的是"链内每次 LLM 往返的内部并行"。
+
+- [ ] **优化A:工具调用并行** —— `_run_tool_loop`(commodity_analysts.py:144)每轮内多个 tool_calls 串行执行;
+      分析师与三个辩论节点(commodity_debate.py:191)共用此循环。同一轮内 get_futures_price/basis/inventory
+      互无依赖 → ThreadPoolExecutor 并发(结果按 tool_call id 键控,不影响"单卡==多策略"一致性)。
+      收益:省掉数据获取延迟(大多有 5min/6h 磁盘缓存,收益有限但零风险)。
+- [ ] **优化B:情景三路并行** —— create_scenario_node(commodity_demo.py:473)把牛市/基准/熊市三情景塞进
+      一次 llm.invoke 串行生成,这是 411s 大头的来源(输出 token 主导延迟)。三情景互不依赖 →
+      拆成 3 次 llm.invoke 并发再按序拼回,墙钟从"三份输出之和"降到"三份输出之 max"。
+      收益最大,优先级最高。
+
+实施顺序建议:B 先(A 顺带)。两处都不改图结构,只改节点内部,回归面小。

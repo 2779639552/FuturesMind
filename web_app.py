@@ -19,6 +19,9 @@
 #   5) 分析工具:   /api/run_analysis(SSE 流式) + /api/progress 轮询 +
 #                  /api/pause /api/resume /api/stop /api/feedback,
 #                  /api/analysis_results、/api/backtest、/api/history、/api/compare
+#   5.5) 研报管理: /api/research/upload(上传)、/api/research(列表)、
+#                  /api/research/<id>(详情)、/api/research/<id> DELETE(删除);
+#                  上传后后台线程提取文本(PDF/图片 OCR)→ LLM 结构化 → 落库 + 写聚合 JSON
 #   6) 报告导出:   /api/report/<文件>/html(网页版)、/api/report/<文件>/pdf、/api/report/<文件>/md
 #   7) 配置:       /api/config
 #   8) 数据更新:   /api/update_data(SSE 流水线)
@@ -2404,6 +2407,390 @@ def api_analysis_results():
             "predicted_magnitude": predicted_magnitude,
         }
     )
+
+
+# ── Research Report upload module ───────────────────────────────────────────
+
+
+# 研报上传模块:用户在运行分析页上传 PDF / 图片 / Markdown 研报,后台线程
+# 提取文本(PDF 用 PyMuPDF,扫描件/图片用仓库自带 Ollama OCR 管线,均优雅
+# 降级)→ LLM 结构化提取 + 观点结论 → 落库 research_reports 表 + 写聚合
+# JSON(research_data.py)。聚合数据是 run_analysis 中 get_research_report
+# 工具与 merge_basis_data / merge_inventory_data / get_futures_supply_demand
+# 并入的最高优先级数据源(RESEARCH > EXTERNAL > FREE_API)。
+
+RESEARCH_UPLOAD_DIR = Path.home() / ".tradingagents" / "research_reports"  # 【变量】研报原始文件存储目录(按品种分子目录)
+RESEARCH_ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".md", ".txt"}  # 【变量】研报允许的扩展名白名单
+RESEARCH_MAX_SIZE = 20 * 1024 * 1024  # 【变量】研报最大上传体积(20MB)
+
+
+# 【功能】按需加载仓库自带 Ollama OCR 管线(data_collection/validate/image_pipeline_v2.py)。
+# 【返回】module | None:加载成功返回模块对象;文件缺失/执行异常返回 None(调用方优雅降级)。
+# 【关键逻辑】该目录没有 __init__.py,不是包,不能用普通 import;必须用
+#           importlib.util 从文件路径直载。加载失败只记 warning,不抛错,
+#           保证 Ollama 未安装时上传流程照常走"纯文本/报错"路径。
+def _load_ocr_pipeline():
+    import importlib.util  # 【调用包】从文件路径加载非包模块(OCR 管线直载)
+
+    target = Path(__file__).parent / "data_collection" / "validate" / "image_pipeline_v2.py"
+    if not target.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("image_pipeline_v2", target)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        logger.warning("Failed to load OCR pipeline %s", target, exc_info=True)
+        return None
+
+
+# 【功能】以常见编码读取纯文本文件(优先 utf-8,失败回退 gbk,再失败按替换符读取)。
+# 【参数】path: 文件路径。
+# 【返回】str:文件文本内容。
+def _read_text_file(path: Path) -> str:
+    for enc in ("utf-8", "gbk"):
+        try:
+            return path.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+# 【功能】用 PyMuPDF(fitz)提取 PDF 文本层。
+# 【参数】path: PDF 文件路径。
+# 【返回】str:拼接后的全文;PyMuPDF 未安装或读取失败返回空串(走 OCR 降级)。
+def _extract_pdf_text(path: Path) -> str:
+    try:
+        import pymupdf  # 【调用包】PyMuPDF(≥1.24 推荐入口):PDF 文本层提取 / 扫描页渲染
+    except ImportError:
+        try:
+            import fitz as pymupdf  # 【调用包】旧版 PyMuPDF 兼容名(fitz,未来将移除)
+        except ImportError:
+            return ""
+    try:
+        doc = pymupdf.open(str(path))
+        parts = [page.get_text() for page in doc]
+        doc.close()
+        return "\n".join(parts)
+    except Exception:
+        logger.warning("Failed to read PDF text %s", path, exc_info=True)
+        return ""
+
+
+# 【功能】用 Ollama OCR 管线识别单张图片。
+# 【参数】path: 图片文件路径。
+# 【返回】str:OCR 文本;管线缺失 / OCR 失败返回空串(不抛错)。
+def _ocr_image(path: Path) -> str:
+    pipe = _load_ocr_pipeline()
+    if pipe is None:
+        return ""
+    try:
+        res = pipe.stage1_classify_and_ocr(str(path))
+        return (res.get("ocr_text") or "") if isinstance(res, dict) else ""
+    except Exception:
+        logger.warning("OCR failed for image %s", path, exc_info=True)
+        return ""
+
+
+# 【功能】扫描版 PDF 逐页渲染成 PNG 后走 Ollama OCR。
+# 【参数】path: PDF 文件路径。
+# 【返回】str:各页 OCR 文本拼接;任一步骤失败返回空串。
+# 【关键逻辑】文本层 <200 字符才判定为扫描件调用本函数;每页以 dpi=150
+#           get_pixmap 渲染,临时 PNG 用后即删。Ollama 不可用 → 返回空串,
+#           由调用方降级为保留 PDF 自身文本(可能为空)。
+def _ocr_pdf(path: Path) -> str:
+    try:
+        import pymupdf  # 【调用包】PyMuPDF(≥1.24 推荐入口):扫描页渲染成位图
+    except ImportError:
+        try:
+            import fitz as pymupdf  # 【调用包】旧版 PyMuPDF 兼容名(fitz,未来将移除)
+        except ImportError:
+            return ""
+    pipe = _load_ocr_pipeline()
+    if pipe is None:
+        return ""
+    texts: list[str] = []
+    try:
+        doc = pymupdf.open(str(path))
+        for page in doc:
+            pix = page.get_pixmap(dpi=150)
+            fd, tmp_path = tempfile.mkstemp(suffix=".png")  # 【调用包】临时 PNG 中转文件
+            os.close(fd)
+            try:
+                pix.save(tmp_path)
+                res = pipe.stage1_classify_and_ocr(tmp_path)
+                if isinstance(res, dict) and res.get("ocr_text"):
+                    texts.append(res["ocr_text"])
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+        doc.close()
+    except Exception:
+        logger.warning("OCR failed for scanned PDF %s", path, exc_info=True)
+    return "\n\n".join(texts)
+
+
+# 【功能】从上传文件提取研报文本。
+# 【参数】file_path: 已落盘文件路径。
+# 【返回】(text, used_ocr):(提取出的文本, 是否走了 OCR)。
+# 【关键逻辑】md/txt 直读;PDF 先取文本层,不足 200 字符判定为扫描件 → 逐页
+#           OCR;图片直接 OCR。OCR 不可用时不中断——PDF 保留已提取文本,图片
+#           得到空串(由上层转成错误提示)。
+def _extract_report_text(file_path: str) -> tuple[str, bool]:
+    path = Path(file_path)
+    ext = path.suffix.lower()
+    if ext in (".md", ".txt"):
+        return _read_text_file(path), False
+    if ext == ".pdf":
+        text = _extract_pdf_text(path)
+        if len(text.strip()) >= 200:
+            return text, False
+        ocr_text = _ocr_pdf(path)
+        if ocr_text:
+            return ocr_text, True
+        return text, False
+    if ext in (".png", ".jpg", ".jpeg"):
+        ocr_text = _ocr_image(path)
+        return ocr_text, bool(ocr_text)
+    return "", False
+
+
+# 【功能】从 LLM 回复文本中提取 JSON 对象(与 image_pipeline_v2.parse_json_response 同逻辑)。
+# 【参数】text: LLM 原始回复。
+# 【返回】dict | None:解析成功返回 dict;无 JSON / 解析失败返回 None。
+# 【关键逻辑】1) 剥离 ```json 代码围栏;2) 取第一个 { 到最后一个 } 的子串;
+#           3) json.loads,失败返回 None(由调用方兜底)。
+def _extract_json_object(text: str) -> dict | None:
+    if not text:
+        return None
+    cleaned = text.strip()
+    if "```" in cleaned:
+        parts = cleaned.split("```")
+        cleaned = parts[1] if len(parts) > 1 else cleaned
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}") + 1
+    if start >= 0 and end > start:
+        try:
+            return json.loads(cleaned[start:end])
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+# 【功能】LLM 第一步:把研报文本提取成结构化 JSON(现货价/库存/供需/成本/目标价/关键事件/方向/置信度)。
+# 【参数】llm: 已创建的大模型客户端;variety: 品种代码;text: 研报文本。
+# 【返回】dict:结构化字段;提取失败时返回空 dict(不抛错)。
+# 【关键逻辑】1) prompt 明确"只输出一个 JSON 对象",提取不到的字段留空不编造;
+#           2) 方向做归一化(看多/看空/中性),置信度转 float 默认 0.5;
+#           3) 文本截前 8000 字符控制 token。
+def _llm_extract_structured(llm, variety: str, text: str) -> dict:
+    prompt = (
+        "你是中国商品期货基本面分析师。请从下面这份研报文本中提取结构化数据。\n"
+        "只输出一个 JSON 对象(不要输出任何其他文字、不要用代码围栏),字段如下:\n"
+        '{"spot_price":{"value":number,"unit":"元/吨","date":"YYYY-MM-DD"},\n'
+        ' "social_inventory":{"value":number,"unit":"万吨","date":"YYYY-MM-DD"},\n'
+        ' "mill_inventory":{"value":number,"unit":"万吨","date":"YYYY-MM-DD"},\n'
+        ' "supply":{"note":"...","date":"..."},\n'
+        ' "demand":{"note":"...","date":"..."},\n'
+        ' "costs":{"note":"...","date":"..."},\n'
+        ' "target_price":number,\n'
+        ' "key_events":[{"event":"...","detail":"...","impact":"bullish/bearish/neutral","source":"..."}],\n'
+        ' "direction":"看多/看空/中性",\n'
+        ' "confidence":0.0,\n'
+        ' "rating":"买入/增持/中性/减持/卖出"}\n'
+        "研报中没有出现的字段留空字符串或 null,绝对不要编造。\n"
+        f"品种:{variety}\n---\n研报文本:\n{text[:8000]}"
+    )
+    try:
+        result = llm.invoke(prompt)
+        content = result.content if hasattr(result, "content") else str(result)
+        data = _extract_json_object(str(content)) or {}
+    except Exception:
+        logger.warning("LLM structured extraction failed for %s", variety, exc_info=True)
+        data = {}
+    # 方向归一化:统一成 看多/看空/中性
+    dir_map = {
+        "看多": "看多", "多头": "看多", "利好": "看多", "bullish": "看多", "BUY": "看多",
+        "看空": "看空", "空头": "看空", "利空": "看空", "bearish": "看空", "SELL": "看空",
+    }
+    raw_dir = str(data.get("direction", "中性")).strip()
+    data["direction"] = dir_map.get(raw_dir.lower(), "中性")
+    try:
+        data["confidence"] = float(data.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        data["confidence"] = 0.5
+    return data
+
+
+# 【功能】LLM 第二步:基于研报文本 + 已提取结构,生成观点分析结论(markdown)。
+# 【参数】llm: 大模型客户端;variety: 品种代码;text: 研报文本;structured: 第一步结果。
+# 【返回】str:markdown 结论(截 4000 字符);失败返回降级提示。
+def _llm_opinion_conclusion(llm, variety: str, text: str, structured: dict) -> str:
+    prompt = (
+        f"你是中国商品期货基本面分析师。请基于这份研报,对品种 {variety} 输出一份"
+        "观点分析结论,格式为 markdown:\n"
+        "## 核心观点\n## 数据支撑\n## 与系统自动分析的潜在分歧\n## 建议权重\n"
+        "控制在 400 字以内,数据必须引用研报原文。\n"
+        f"已提取结构:{json.dumps(structured, ensure_ascii=False)}\n---\n研报文本:\n{text[:8000]}"
+    )
+    try:
+        result = llm.invoke(prompt)
+        content = result.content if hasattr(result, "content") else str(result)
+        return str(content)[:4000]
+    except Exception:
+        logger.warning("LLM conclusion failed for %s", variety, exc_info=True)
+        return "## 核心观点\n(LLM 观点生成失败,请人工阅读研报原文。)"
+
+
+# 【功能】后台线程:处理一份已入库的研报(提取文本 → LLM 两步 → 落库 + 写聚合)。
+# 【参数】report_id: research_reports 表主键。
+# 【返回】无。过程状态推进:processing → done / error。
+# 【关键逻辑】1) 镜像 run_analysis 的 daemon 线程模式,不阻塞上传响应;
+#           2) LLM 复用 create_llm_client(quick_think 优先),结构化失败不中断
+#              (空 dict 也能继续生成结论);
+#           3) 成功 → status=done + 写聚合 JSON(upsert_research_report),供
+#              get_research_report / merge_* 消费;异常 → status=error + error 前 2000 字符。
+def _process_research_report(report_id: int):
+    db = get_db()
+    report = db.get_research_report(report_id)
+    if not report:
+        logger.warning("Research report %s not found, skip processing", report_id)
+        return
+    variety = (report.get("variety") or "").upper().strip()
+    try:
+        text, _used_ocr = _extract_report_text(report.get("file_path") or "")
+        db.update_research_report(report_id, status="processing", extracted_text=text[:20000])
+
+        client = create_llm_client(
+            config["llm_provider"],
+            config.get("quick_think_llm", config["deep_think_llm"]),
+        )
+        llm = client.get_llm()
+        structured = _llm_extract_structured(llm, variety, text)
+        conclusion = _llm_opinion_conclusion(llm, variety, text, structured)
+        direction = structured.get("direction", "中性")
+        confidence = structured.get("confidence", 0.5)
+
+        db.update_research_report(
+            report_id,
+            status="done",
+            structured_data=json.dumps(structured, ensure_ascii=False),
+            conclusion_md=conclusion,
+            direction=direction,
+            confidence=confidence,
+        )
+        # 写聚合 JSON(面向分析的最高优先级数据源)
+        from tradingagents.dataflows.research_data import upsert_research_report  # 【调用包】研报聚合 JSON 写入
+
+        upsert_research_report(
+            variety,
+            {
+                "id": report_id,
+                "title": report.get("title") or Path(report.get("filename") or "研报").stem,
+                "source": report.get("source") or "上传",
+                "uploaded_at": report.get("uploaded_at") or "",
+                "direction": direction,
+                "confidence": confidence,
+                "conclusion": conclusion,
+                "data_points": structured,
+            },
+        )
+        logger.info("Research report %s (%s) processed OK", report_id, variety)
+    except Exception as e:
+        logger.exception("Research processing failed for report %s", report_id)
+        try:
+            db.update_research_report(report_id, status="error", error=str(e)[:2000])
+        except Exception:
+            pass
+
+
+@app.route("/api/research/upload", methods=["POST"])
+def api_research_upload():
+    """上传研报(PDF/图片/MD/TXT):校验 → 落盘 → 入库 processing → 后台处理,立即返回 {id}。"""
+    variety = (request.form.get("variety") or "").strip().upper()
+    title = (request.form.get("title") or "").strip()
+    source = (request.form.get("source") or "").strip()
+    f = request.files.get("file")
+    if not variety:
+        return jsonify({"error": "缺少品种参数 variety"}), 400
+    if not f or not f.filename:
+        return jsonify({"error": "缺少上传文件"}), 400
+
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in RESEARCH_ALLOWED_EXTS:
+        return jsonify({"error": f"不支持的文件类型 {ext},仅支持 PDF/图片/Markdown/TXT"}), 400
+
+    f.stream.seek(0, os.SEEK_END)
+    size = f.stream.tell()
+    f.stream.seek(0)
+    if size > RESEARCH_MAX_SIZE:
+        return jsonify({"error": "文件超过 20MB 上限"}), 400
+
+    from werkzeug.utils import secure_filename  # 【调用包】文件名安全化(防路径穿越)
+
+    safe = secure_filename(f.filename) or "report"
+    upload_dir = RESEARCH_UPLOAD_DIR / variety
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = upload_dir / f"{ts}_{safe}"
+    f.save(str(file_path))
+
+    report_id = get_db().insert_research_report(
+        variety=variety, title=title, source=source, filename=f.filename, file_path=str(file_path)
+    )
+    threading.Thread(target=_process_research_report, args=(report_id,), daemon=True).start()
+    return jsonify({"id": report_id, "status": "processing", "message": "研报已接收,后台处理中"})
+
+
+@app.route("/api/research")
+def api_research():
+    """研报列表:按品种过滤;剔除超长字段(原文/结构化/结论/路径)只给列表元数据。"""
+    variety = (request.args.get("variety") or "").strip().upper()
+    rows = get_db().list_research_reports(variety or None)
+    for r in rows:
+        r.pop("extracted_text", None)
+        r.pop("structured_data", None)
+        r.pop("conclusion_md", None)
+        r.pop("file_path", None)
+    return jsonify({"reports": rows})
+
+
+@app.route("/api/research/<int:report_id>")
+def api_research_detail(report_id):
+    """研报详情:含结构化 JSON(转回 dict)与结论 markdown,供前端查看弹层。"""
+    r = get_db().get_research_report(report_id)
+    if not r:
+        return jsonify({"error": "研报不存在"}), 404
+    try:
+        r["structured_data"] = json.loads(r.get("structured_data") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        r["structured_data"] = {}
+    return jsonify(r)
+
+
+@app.route("/api/research/<int:report_id>", methods=["DELETE"])
+def api_research_delete(report_id):
+    """删除研报:同步删聚合 JSON 记录 + 原始文件,再删数据库行。"""
+    db = get_db()
+    r = db.get_research_report(report_id)
+    if not r:
+        return jsonify({"error": "研报不存在"}), 404
+    try:
+        from tradingagents.dataflows.research_data import remove_research_report  # 【调用包】聚合 JSON 记录删除
+
+        remove_research_report(r["variety"], report_id)
+    except Exception as e:
+        logger.warning("Failed to update research aggregate on delete %s: %s", report_id, e)
+    fp = r.get("file_path")
+    if fp:
+        try:
+            Path(fp).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Failed to delete research file %s: %s", fp, e)
+    db.delete_research_report(report_id)
+    return jsonify({"ok": True})
 
 
 # ── PDF / Markdown Export ──────────────────────────────────────────────────

@@ -17,7 +17,7 @@ Usage:
 #   ~/.tradingagents/agentsense.db。全项目其他模块(采集器、调度器、Web 前端、
 #   情感分析、回测)都通过 get_db() 拿到同一个 AgentSenseDB 实例来操作数据。
 #
-#  本文件定义了一张"表清单"与对应操作函数,共 7 张表:
+#  本文件定义了一张"表清单"与对应操作函数,共 8 张表:
 #     1. posts            采集到的帖子(微博/知乎原文、作者、情感、点赞等)
 #     2. sentiment_daily  每个品种每日的情感统计汇总(多空比例、平均分等)
 #     3. alerts           告警/消息中心(采集失败、管道事件、健康检查警告)
@@ -25,6 +25,7 @@ Usage:
 #     5. users            登录用户(用户名 + SHA256 密码哈希 + 是否管理员)
 #     6. watchlist        用户自选品种清单(关注哪些品种的行情/情感)
 #     7. trade_signals    交易信号及其回测结果(信号方向、入场/出场价、盈亏)
+#     8. research_reports 研报上传与 LLM 提取结果(方向/置信度/结构化数据,运行分析高优先级数据源)
 #
 # 【工程实践】
 #   - 线程局部单例(get_db):SQLite 连接不能跨线程共享,这里按线程各持一个实例。
@@ -69,8 +70,8 @@ class AgentSenseDB:
     """AgentSense 数据库封装类。
 
     【功能】集中封装对 SQLite 数据库的全部读写操作:建表、帖子写入、情感统计、
-            告警、采集日志、用户认证、自选列表、交易信号等。
-    【关键逻辑】实例化时自动确保数据库目录存在并初始化 7 张表(_init_tables);
+            告警、采集日志、用户认证、自选列表、交易信号、研报等。
+    【关键逻辑】实例化时自动确保数据库目录存在并初始化 8 张表(_init_tables);
                每次数据库操作都通过 _conn() 上下文管理器获取新连接,用完即关。
     """
 
@@ -115,7 +116,7 @@ class AgentSenseDB:
             conn.close()
 
     def _init_tables(self):
-        """创建 7 张数据表及索引(若不存在)。
+        """创建 8 张数据表及索引(若不存在)。
 
         【功能】执行建表 SQL,确保数据库结构就绪;重复调用不会报错(IF NOT EXISTS)。
         【参数】无。
@@ -123,7 +124,7 @@ class AgentSenseDB:
         【关键逻辑】executescript 一次性执行整段建表语句;每张表都尽量带上
                    常用查询索引以加速按平台/时间/情感/品种的检索。
 
-        【7 张表用途速览】
+        【8 张表用途速览】
         (1) posts —— 帖子主表:采集到的每一条社区帖子/评论。
             note_id 唯一,是去重依据;varieties 存该帖子涉及的品种 JSON 数组;
             sentiment / sentiment_score 存情感分析结果。
@@ -139,6 +140,9 @@ class AgentSenseDB:
         (6) watchlist —— 自选清单:user_id + variety 唯一,记录用户关注品种。
         (7) trade_signals —— 交易信号:情感/动量等策略产出的买卖信号,
             记录方向、入场/出场价、预测周期、实际盈亏 pnl_pct 与结果 outcome。
+        (8) research_reports —— 研报:用户上传研报(文本/PDF/图片)后,LLM 提取
+            结构化数据(方向/置信度/关键数据点)与观点结论;运行分析时作为
+            高优先级数据源供基本面/宏观分析师消费。
         """
         with self._conn() as c:
             c.executescript("""
@@ -238,6 +242,25 @@ class AgentSenseDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_trade_variety ON trade_signals(variety);
                 CREATE INDEX IF NOT EXISTS idx_trade_outcome ON trade_signals(outcome);
+
+                CREATE TABLE IF NOT EXISTS research_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    variety TEXT NOT NULL,
+                    title TEXT DEFAULT '',
+                    source TEXT DEFAULT '',
+                    filename TEXT DEFAULT '',
+                    file_path TEXT DEFAULT '',
+                    status TEXT DEFAULT 'processing',  -- processing / done / error
+                    extracted_text TEXT DEFAULT '',
+                    structured_data TEXT DEFAULT '',   -- LLM 提取的结构化数据 JSON
+                    conclusion_md TEXT DEFAULT '',     -- LLM 观点分析结论(markdown)
+                    direction TEXT DEFAULT '',         -- 看多 / 看空 / 中性
+                    confidence REAL,
+                    error TEXT DEFAULT '',
+                    uploaded_at TEXT DEFAULT (datetime('now')),
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_research_variety ON research_reports(variety);
             """)
 
     # ── Posts ──────────────────────────────────────────────────────────
@@ -729,3 +752,102 @@ class AgentSenseDB:
             "win_rate": round(wins / total, 3) if total > 0 else 0,
             "avg_pnl_pct": round(avg_pnl or 0, 3),
         }
+
+    # ── Research Reports ────────────────────────────────────────────────
+
+    def insert_research_report(
+        self,
+        variety: str,
+        title: str = "",
+        source: str = "",
+        filename: str = "",
+        file_path: str = "",
+        status: str = "processing",
+    ) -> int:
+        """新增一条研报记录(状态默认 processing,由后台线程处理后更新)。
+
+        【功能】向 research_reports 表插入一行"待处理研报",返回自增 id。
+        【参数】variety: 品种代码;title/source/filename/file_path: 元信息;
+                status: 初始状态('processing' 由上传接口写入)。
+        【返回】int: 新研报的自增 id(后台线程据此处理并回写)。
+        """
+        with self._conn() as c:
+            cur = c.execute(  # 【变量】cur:插入游标(lastrowid 取新记录自增 id)
+                "INSERT INTO research_reports (variety, title, source, filename, file_path, status) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (variety, title, source, filename, file_path, status),
+            )
+            return cur.lastrowid
+
+    def update_research_report(self, report_id: int, **fields):
+        """更新一条研报记录的部分字段(白名单过滤,防注入)。
+
+        【功能】按字段名白名单把传入的字段写入指定研报行;
+                不在白名单里的键会被忽略,不报错。
+        【参数】report_id: 研报自增 id;fields: 可更新字段(如 status/
+                extracted_text/structured_data/conclusion_md/direction/confidence/error)。
+        【返回】无。
+        """
+        allowed = {
+            "title", "source", "filename", "file_path", "status",
+            "extracted_text", "structured_data", "conclusion_md",
+            "direction", "confidence", "error",
+        }
+        sets, params = [], []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            sets.append(f"{key}=?")
+            params.append(value)
+        if not sets:
+            return
+        params.append(report_id)
+        with self._conn() as c:
+            c.execute(
+                f"UPDATE research_reports SET {', '.join(sets)} WHERE id=?", params
+            )
+
+    def list_research_reports(self, variety: str | None = None, limit: int = 50) -> list[dict]:
+        """按品种(可选)查询研报列表,按上传时间倒序。
+
+        【功能】获取研报列表;可按品种过滤,默认返回最近 50 条。
+        【参数】variety: 品种代码(可选);limit: 条数上限,默认 50。
+        【返回】list[dict]: 研报记录字典列表(按 uploaded_at 倒序)。
+        """
+        if variety:
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT * FROM research_reports WHERE variety=? ORDER BY uploaded_at DESC LIMIT ?",
+                    (variety, limit),
+                ).fetchall()
+        else:
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT * FROM research_reports ORDER BY uploaded_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_research_report(self, report_id: int) -> dict | None:
+        """按 id 查询单条研报(含提取文本/结构化数据/结论全文)。
+
+        【功能】返回指定研报的完整记录;不存在时返回 None。
+        【参数】report_id: 研报自增 id。
+        【返回】dict | None: 研报记录(详情查看用)或 None。
+        """
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM research_reports WHERE id=?", (report_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_research_report(self, report_id: int) -> bool:
+        """按 id 删除一条研报记录。
+
+        【功能】删除指定研报;删除成功返回 True,不存在返回 False。
+        【参数】report_id: 研报自增 id。
+        【返回】bool: 是否真的删掉了记录。
+        """
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM research_reports WHERE id=?", (report_id,))
+            return cur.rowcount > 0
