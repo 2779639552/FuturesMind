@@ -2928,6 +2928,50 @@ def api_research_delete(report_id):
     return jsonify({"ok": True})
 
 
+# 【变量】研报自动接入并发标志(防止手动/定时并发重复接入)。
+_research_collecting = False
+
+
+# 【功能】手动触发"研报自动接入"(发现报告 5 家期货公司最新研报)。
+# 【请求体】可选 {"dry_run": true};缺省真实接入。
+# 【返回】{"status": "started"} / 进行中 409 / 异常 500。
+# 【关键逻辑】daemon 线程跑 research_collector.ingest_all(与上传端点后台
+#           线程同模式,不阻塞响应);模块级 _research_collecting 标志防并发;
+#           失败记 alert,便于前端告警中心可见。
+@app.route("/api/research/collect", methods=["POST"])
+def api_research_collect():
+    global _research_collecting
+    if _research_collecting:
+        return jsonify({"status": "busy", "message": "研报接入正在进行中,请稍候"}), 409
+    dry_run = bool((request.json or {}).get("dry_run"))
+
+    def _run():
+        global _research_collecting
+        # 懒导入:避免 web_app 顶部 import 块进一步膨胀;本地作用域内排序保持 ruff 干净。
+        from contextlib import suppress  # 【调用包】忽略告警写入失败的异常
+
+        from research_collector import ingest_all  # 【调用包】研报采集器(懒导入)
+
+        try:
+            result = ingest_all(dry_run=dry_run)
+            logger.info("Research auto-collect done: %s", result)
+        except Exception as e:
+            logger.exception("Research auto-collect failed")
+            with suppress(Exception):
+                get_db().create_alert(  # 【调用函数】写入"研报接入异常"告警
+                    "research_error",
+                    "Manual research collect failed",
+                    str(e)[:300],
+                    severity="error",
+                )
+        finally:
+            _research_collecting = False
+
+    _research_collecting = True
+    threading.Thread(target=_run, daemon=True).start()  # 【调用函数】后台线程执行接入(不阻塞响应)
+    return jsonify({"status": "started", "dry_run": dry_run, "message": "研报自动接入已启动,后台处理中"})
+
+
 # ── PDF / Markdown Export ──────────────────────────────────────────────────
 
 
@@ -3755,8 +3799,8 @@ def api_scheduler_status():
 
 
 # 【功能】启动调度器。
-# 【请求体】{"schedule_times": ["08:00", "18:00"]}(可选,缺省这两个时间点)。
-# 【返回】{"status": "started", "schedule_times": [...]}。
+# 【请求体】{"schedule_times": ["08:00", "18:00"], "research_times": ["08:10","18:00"]}(可选,缺省用默认)。
+# 【返回】{"status": "started", "schedule_times": [...], "research_times": [...]}。
 @app.route("/api/scheduler/start", methods=["POST"])
 def api_scheduler_start():
     try:
@@ -3764,8 +3808,9 @@ def api_scheduler_start():
 
         data = request.json or {}
         times = data.get("schedule_times", ["08:00", "18:00"])
-        start_scheduler(schedule_times=times)
-        return jsonify({"status": "started", "schedule_times": times})
+        research_times = data.get("research_times", ["08:10", "18:00"])
+        start_scheduler(schedule_times=times, research_times=research_times)
+        return jsonify({"status": "started", "schedule_times": times, "research_times": research_times})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -5010,8 +5055,11 @@ if __name__ == "__main__":
     try:
         from scheduler import start_scheduler  # 【调用包】调度器启动
 
-        start_scheduler(schedule_times=["08:00", "18:00"])
-        print("Scheduler started: daily at 08:00, 18:00")
+        start_scheduler(
+            schedule_times=["08:00", "18:00"],  # 情感采集管道
+            research_times=["08:10", "18:00"],  # 开盘前研报自动接入(日盘 09:00 前 + 夜盘 21:00 前)
+        )
+        print("Scheduler started: daily 08:00/18:00, research 08:10/18:00")
     except Exception as e:
         print(f"Scheduler not started: {e}")
 
