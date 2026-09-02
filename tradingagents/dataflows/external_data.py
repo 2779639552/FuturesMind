@@ -345,7 +345,14 @@ def _research_point(research, key):
 # 【参数】res_social/res_mill: 研报社会库存/厂库数据点(dict 或 None)。
 # 【返回】list[str]:研报库存区块的文本行(含来源标注),无任何研报库存时返回空列表。
 def _research_inventory_section(res_social, res_mill) -> list:
-    """Build the RESEARCH inventory section lines (Part 0) for the merged output."""
+    """Build the RESEARCH inventory section lines (Part 0) for the merged output.
+
+    Returns an empty list when neither research inventory exists, so callers
+    never emit a "Part 0" header with no data underneath (would mislead the LLM
+    into thinking research data is present).
+    """
+    if res_social is None and res_mill is None:
+        return []
     lines = [
         "## Part 0: Research Report Inventory (研报库存, 可信优先级最高)",
         "# 研报为人工上传的一手材料,优先于 EXTERNAL 与 FREE_API;若与免费数据分歧,优先采信研报。",

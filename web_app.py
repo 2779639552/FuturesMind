@@ -95,6 +95,8 @@ from commodity_demo import (  # noqa: E402  # 【调用包】构建 LangGraph �
     build_commodity_graph,
 )
 
+from tradingagents.dataflows.commodity_futures import VARIETY_METADATA  # noqa: E402  # 【调用包】品种代码→中文名映射(LLM 输出品种名归一化为代码)
+
 # New imports for v2.6
 from database import get_db  # noqa: E402  # 【调用包】SQLite 存取(自选/交易信号/告警/用户)
 from path_utils import resolve_think2_dir  # noqa: E402  # 【调用包】思路2项目目录自动探测
@@ -2579,29 +2581,76 @@ def _extract_json_object(text: str) -> dict | None:
     return None
 
 
-# 【功能】LLM 第一步:把研报文本提取成结构化 JSON(现货价/库存/供需/成本/目标价/关键事件/方向/置信度)。
-# 【参数】llm: 已创建的大模型客户端;variety: 品种代码;text: 研报文本。
-# 【返回】dict:结构化字段;提取失败时返回空 dict(不抛错)。
-# 【关键逻辑】1) prompt 明确"只输出一个 JSON 对象",提取不到的字段留空不编造;
-#           2) 方向做归一化(看多/看空/中性),置信度转 float 默认 0.5;
-#           3) 文本截前 8000 字符控制 token。
+# 【功能】把 LLM 输出的品种名/代码归一化为标准品种代码。
+# 【参数】raw: LLM 输出的品种标识(如 "RB"、"rb"、"螺纹钢")。
+# 【返回】str | None:标准大写代码;无法识别返回 None。
+# 【关键逻辑】1) 大写后先查 VARIETY_METADATA 直接命中;2) 再用中文名反查;
+#           3) 兜底:保留字母数字并大写(未知品种也能落库,消费端按同代码匹配)。
+def _normalize_variety_code(raw) -> str | None:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    up = s.upper()
+    if up in VARIETY_METADATA:
+        return up
+    name_map = {v["name"]: k for k, v in VARIETY_METADATA.items()}
+    if s in name_map:
+        return name_map[s]
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", up)
+    return cleaned or None
+
+
+# 【功能】把 LLM 输出的方向词统一成 看多/看空/中性。
+# 【参数】raw: 原始方向词(中文或英文)。
+# 【返回】str:归一化后的方向。
+def _normalize_direction(raw: str) -> str:
+    dir_map = {
+        "看多": "看多", "多头": "看多", "利好": "看多", "bullish": "看多", "buy": "看多",
+        "看空": "看空", "空头": "看空", "利空": "看空", "bearish": "看空", "sell": "看空",
+    }
+    return dir_map.get(raw.lower(), "中性")
+
+
+# 【变量】已知品种提示(代码+中文名),传给 LLM 提升它输出标准代码的概率。
+_SUPPORTED_VARIETY_HINT = "、".join(f"{k}({v['name']})" for k, v in VARIETY_METADATA.items())
+
+
+# 【功能】LLM 第一步:提取研报元数据 + 全部涉及品种的结构化数据。
+# 【参数】llm: 已创建的大模型客户端;variety: 用户选择的品种(可为空,仅作提示);
+#           text: 研报文本。
+# 【返回】dict:{"report_title","publisher","publish_date","varieties":[...]};
+#           varieties 每元素含该品种的现货价/库存/供需/成本/目标价/关键事件/
+#           方向/置信度/评级;提取失败返回空 dict(不抛错)。
+# 【关键逻辑】1) 一份研报可能覆盖多个品种,prompt 要求列出所有品种并各自输出;
+#           2) 旧版单品种输出(无 varieties 键)向后兼容包装成 varieties 数组;
+#           3) 品种代码归一化去重;每品种方向/置信度独立归一化。
 def _llm_extract_structured(llm, variety: str, text: str) -> dict:
     prompt = (
-        "你是中国商品期货基本面分析师。请从下面这份研报文本中提取结构化数据。\n"
-        "只输出一个 JSON 对象(不要输出任何其他文字、不要用代码围栏),字段如下:\n"
-        '{"spot_price":{"value":number,"unit":"元/吨","date":"YYYY-MM-DD"},\n'
-        ' "social_inventory":{"value":number,"unit":"万吨","date":"YYYY-MM-DD"},\n'
-        ' "mill_inventory":{"value":number,"unit":"万吨","date":"YYYY-MM-DD"},\n'
-        ' "supply":{"note":"...","date":"..."},\n'
-        ' "demand":{"note":"...","date":"..."},\n'
-        ' "costs":{"note":"...","date":"..."},\n'
-        ' "target_price":number,\n'
-        ' "key_events":[{"event":"...","detail":"...","impact":"bullish/bearish/neutral","source":"..."}],\n'
-        ' "direction":"看多/看空/中性",\n'
-        ' "confidence":0.0,\n'
-        ' "rating":"买入/增持/中性/减持/卖出"}\n'
-        "研报中没有出现的字段留空字符串或 null,绝对不要编造。\n"
-        f"品种:{variety}\n---\n研报文本:\n{text[:8000]}"
+        "你是中国商品期货基本面分析师。请从下面这份研报文本中提取信息。\n"
+        "只输出一个 JSON 对象(不要输出任何其他文字、不要用代码围栏),结构如下:\n"
+        '{"report_title":"研报标题","publisher":"发行方/机构名称","publish_date":"YYYY-MM-DD或留空",\n'
+        ' "varieties":[{\n'
+        '   "variety":"品种标准代码(研报为哪几个品种给出观点/数据就列哪几个)",\n'
+        '   "spot_price":{"value":number,"unit":"元/吨","date":"YYYY-MM-DD"},\n'
+        '   "social_inventory":{"value":number,"unit":"万吨","date":"YYYY-MM-DD"},\n'
+        '   "mill_inventory":{"value":number,"unit":"万吨","date":"YYYY-MM-DD"},\n'
+        '   "supply":{"note":"...","date":"..."},\n'
+        '   "demand":{"note":"...","date":"..."},\n'
+        '   "costs":{"note":"...","date":"..."},\n'
+        '   "target_price":number,\n'
+        '   "key_events":[{"event":"...","detail":"...","impact":"bullish/bearish/neutral","source":"..."}],\n'
+        '   "direction":"看多/看空/中性",\n'
+        '   "confidence":0.0,\n'
+        '   "rating":"买入/增持/中性/减持/卖出"}]\n'
+        "}\n"
+        "要求:\n"
+        "1) varieties 列出研报中出现的所有品种,每个品种一份,同一品种不要重复;若只涉及一个品种就放一个元素。\n"
+        "2) 品种代码用标准代码,例如: " + _SUPPORTED_VARIETY_HINT + "\n"
+        "3) 研报中没有出现的字段留空字符串或 null,绝对不要编造。\n"
+        "4) report_title / publisher 从研报中识别,识别不到留空。\n"
+        f"用户选择的主品种(仅供参考,可不含在 varieties 中):{variety}\n---\n研报文本:\n{text[:8000]}"
     )
     try:
         result = llm.invoke(prompt)
@@ -2610,57 +2659,99 @@ def _llm_extract_structured(llm, variety: str, text: str) -> dict:
     except Exception:
         logger.warning("LLM structured extraction failed for %s", variety, exc_info=True)
         data = {}
-    # 方向归一化:统一成 看多/看空/中性
-    dir_map = {
-        "看多": "看多", "多头": "看多", "利好": "看多", "bullish": "看多", "BUY": "看多",
-        "看空": "看空", "空头": "看空", "利空": "看空", "bearish": "看空", "SELL": "看空",
-    }
-    raw_dir = str(data.get("direction", "中性")).strip()
-    data["direction"] = dir_map.get(raw_dir.lower(), "中性")
-    try:
-        data["confidence"] = float(data.get("confidence", 0.5))
-    except (TypeError, ValueError):
-        data["confidence"] = 0.5
+
+    # 向后兼容:旧版单品种输出(无 varieties 键)包装成 varieties 数组;
+    # 单品种输出里通常没有 variety 字段,用用户选择的品种代码兜底。
+    if "varieties" not in data or not isinstance(data.get("varieties"), list):
+        entry = {
+            k: v for k, v in data.items()
+            if k not in ("report_title", "publisher", "publish_date", "varieties")
+        }
+        if entry or data.get("direction"):
+            if "variety" not in entry:
+                entry["variety"] = variety or "?"
+            data["varieties"] = [entry]
+        else:
+            data["varieties"] = []
+
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    for item in data["varieties"]:
+        if not isinstance(item, dict):
+            continue
+        code = _normalize_variety_code(item.get("variety"))
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        item["variety"] = code
+        item["direction"] = _normalize_direction(str(item.get("direction", "中性")))
+        try:
+            item["confidence"] = float(item.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            item["confidence"] = 0.5
+        cleaned.append(item)
+    data["varieties"] = cleaned
     return data
 
 
-# 【功能】LLM 第二步:基于研报文本 + 已提取结构,生成观点分析结论(markdown)。
-# 【参数】llm: 大模型客户端;variety: 品种代码;text: 研报文本;structured: 第一步结果。
-# 【返回】str:markdown 结论(截 4000 字符);失败返回降级提示。
-def _llm_opinion_conclusion(llm, variety: str, text: str, structured: dict) -> str:
-    prompt = (
-        f"你是中国商品期货基本面分析师。请基于这份研报,对品种 {variety} 输出一份"
-        "观点分析结论,格式为 markdown:\n"
-        "## 核心观点\n## 数据支撑\n## 与系统自动分析的潜在分歧\n## 建议权重\n"
-        "控制在 400 字以内,数据必须引用研报原文。\n"
-        f"已提取结构:{json.dumps(structured, ensure_ascii=False)}\n---\n研报文本:\n{text[:8000]}"
-    )
-    try:
-        result = llm.invoke(prompt)
-        content = result.content if hasattr(result, "content") else str(result)
-        return str(content)[:4000]
-    except Exception:
-        logger.warning("LLM conclusion failed for %s", variety, exc_info=True)
-        return "## 核心观点\n(LLM 观点生成失败,请人工阅读研报原文。)"
+# 【变量】单份研报最多生成结论的品种数(防止超长多品种研报拖慢后台处理)。
+MAX_CONCLUSION_VARIETIES = 6
 
 
-# 【功能】后台线程:处理一份已入库的研报(提取文本 → LLM 两步 → 落库 + 写聚合)。
+# 【功能】LLM 第二步:按品种逐一生成观点分析结论(markdown),与品种一一对应。
+# 【参数】llm: 大模型客户端;text: 研报文本;varieties: 已归一化的品种 dict 列表。
+# 【返回】dict {品种代码: markdown 结论}。
+# 【关键逻辑】每个品种单独一次 LLM 调用(聚焦该品种,不经标题切分,稳健);
+#           单个品种失败降级为提示文案,不中断其它品种。
+def _llm_opinion_conclusion(llm, text: str, varieties: list[dict]) -> dict:
+    conclusions: dict[str, str] = {}
+    name_map = {k: v["name"] for k, v in VARIETY_METADATA.items()}
+    for item in varieties[:MAX_CONCLUSION_VARIETIES]:
+        code = item.get("variety") or ""
+        if not code:
+            continue
+        label = f"{code} ({name_map.get(code, '')})".strip()
+        prompt = (
+            f"你是中国商品期货基本面分析师。研报全文见下,请只针对品种 {label} 输出一份"
+            "观点分析结论,格式为 markdown:\n"
+            "## 核心观点\n## 数据支撑\n## 与系统自动分析的潜在分歧\n## 建议权重\n"
+            "控制在 200 字以内,数据必须引用研报原文,只谈该品种。\n"
+            f"该品种已提取结构:{json.dumps(item, ensure_ascii=False)}\n---\n研报文本:\n{text[:8000]}"
+        )
+        try:
+            result = llm.invoke(prompt)
+            content = result.content if hasattr(result, "content") else str(result)
+            conclusions[code] = str(content)[:4000]
+        except Exception:
+            logger.warning("LLM conclusion failed for %s", code, exc_info=True)
+            conclusions[code] = f"## 核心观点\n({code} 观点生成失败,请人工阅读研报原文。)"
+    return conclusions
+
+
+# 【功能】后台线程:处理一份已入库的研报(提取文本 → LLM 两步 → 落库 + 按品种写聚合)。
 # 【参数】report_id: research_reports 表主键。
 # 【返回】无。过程状态推进:processing → done / error。
 # 【关键逻辑】1) 镜像 run_analysis 的 daemon 线程模式,不阻塞上传响应;
-#           2) LLM 复用 create_llm_client(quick_think 优先),结构化失败不中断
-#              (空 dict 也能继续生成结论);
-#           3) 成功 → status=done + 写聚合 JSON(upsert_research_report),供
-#              get_research_report / merge_* 消费;异常 → status=error + error 前 2000 字符。
+#           2) 一份研报可覆盖多个品种:第一步 LLM 识别全部品种并逐品种提取
+#              数据(含标题/发行方自动识别),第二步按品种逐一生成结论;
+#           3) 成功 → status=done,并把每个品种的数据点/方向/置信度/结论
+#              分别 upsert 到对应品种的聚合 JSON(upssert_research_report),
+#              get_research_report / merge_* 按品种读取即自动一一匹配;
+#           4) 主品种 = 用户选择优先、否则第一个识别品种,回写 DB 行供列表
+#              徽标/主方向展示;异常 → status=error + error 前 2000 字符。
 def _process_research_report(report_id: int):
     db = get_db()
     report = db.get_research_report(report_id)
     if not report:
         logger.warning("Research report %s not found, skip processing", report_id)
         return
-    variety = (report.get("variety") or "").upper().strip()
+    selected = (report.get("variety") or "").upper().strip()
     try:
         text, _used_ocr = _extract_report_text(report.get("file_path") or "")
+        if not text.strip():
+            # 空文本喂给 LLM 只会得到空/编造结果,直接判失败让用户看到明确原因
+            # (扫描版 PDF 无 OCR、图片 OCR 失败、或文件本身为空都属于这种情况)。
+            raise ValueError("未能从文件中提取到文本(文件为空,或需 OCR 但 OCR 不可用)")
         db.update_research_report(report_id, status="processing", extracted_text=text[:20000])
 
         client = create_llm_client(
@@ -2668,36 +2759,69 @@ def _process_research_report(report_id: int):
             config.get("quick_think_llm", config["deep_think_llm"]),
         )
         llm = client.get_llm()
-        structured = _llm_extract_structured(llm, variety, text)
-        conclusion = _llm_opinion_conclusion(llm, variety, text, structured)
-        direction = structured.get("direction", "中性")
-        confidence = structured.get("confidence", 0.5)
+
+        # 第一步:研报元数据 + 多品种结构化数据(标题/发行方自动识别,用户手填兜底)
+        structured = _llm_extract_structured(llm, selected, text)
+        varieties = structured.get("varieties") or []
+        if not varieties:
+            raise ValueError("未能识别研报中的品种与数据,请确认研报内容或重新上传")
+        title = (
+            (structured.get("report_title") or "").strip()
+            or (report.get("title") or "").strip()
+            or Path(report.get("filename") or "研报").stem
+        )
+        source = (
+            (structured.get("publisher") or "").strip()
+            or (report.get("source") or "").strip()
+            or "上传"
+        )
+        codes = [v["variety"] for v in varieties]
+        primary = selected if selected in codes else codes[0]  # 主品种:用户选择优先,否则第一个识别品种
+        primary_item = next(v for v in varieties if v["variety"] == primary)
+
+        # 第二步:按品种生成结论(markdown),与品种一一对应
+        conclusions = _llm_opinion_conclusion(llm, text, varieties)
+        full_conclusion = "\n\n".join(
+            f"## {code} 结论\n{conclusions.get(code, '')}" for code in codes
+        ).strip()
 
         db.update_research_report(
             report_id,
             status="done",
+            title=title,
+            source=source,
+            variety=primary,
+            varieties=",".join(codes),
             structured_data=json.dumps(structured, ensure_ascii=False),
-            conclusion_md=conclusion,
-            direction=direction,
-            confidence=confidence,
+            conclusion_md=full_conclusion,
+            direction=primary_item.get("direction", "中性"),
+            confidence=primary_item.get("confidence", 0.5),
         )
-        # 写聚合 JSON(面向分析的最高优先级数据源)
+        # 写聚合 JSON:按品种拆分,每个品种只落自己的数据点/方向/置信度/结论,
+        # 消费端 get_research_report("X") / merge_* 读 X 的聚合即自动一一匹配。
         from tradingagents.dataflows.research_data import upsert_research_report  # 【调用包】研报聚合 JSON 写入
 
-        upsert_research_report(
-            variety,
-            {
-                "id": report_id,
-                "title": report.get("title") or Path(report.get("filename") or "研报").stem,
-                "source": report.get("source") or "上传",
-                "uploaded_at": report.get("uploaded_at") or "",
-                "direction": direction,
-                "confidence": confidence,
-                "conclusion": conclusion,
-                "data_points": structured,
-            },
+        data_point_keys = (
+            "spot_price", "social_inventory", "mill_inventory",
+            "supply", "demand", "costs", "target_price", "key_events", "rating",
         )
-        logger.info("Research report %s (%s) processed OK", report_id, variety)
+        for item in varieties:
+            code = item["variety"]
+            upsert_research_report(
+                code,
+                {
+                    "id": report_id,
+                    "title": title,
+                    "source": source,
+                    "uploaded_at": report.get("uploaded_at") or "",
+                    "varieties": codes,  # 覆盖品种标注:读该品种时提示"本研报还覆盖 X/Y"
+                    "direction": item.get("direction", "中性"),
+                    "confidence": item.get("confidence", 0.5),
+                    "conclusion": conclusions.get(code, ""),
+                    "data_points": {k: val for k, val in item.items() if k in data_point_keys},
+                },
+            )
+        logger.info("Research report %s (%s) processed OK, varieties=%s", report_id, primary, codes)
     except Exception as e:
         logger.exception("Research processing failed for report %s", report_id)
         try:
@@ -2708,13 +2832,15 @@ def _process_research_report(report_id: int):
 
 @app.route("/api/research/upload", methods=["POST"])
 def api_research_upload():
-    """上传研报(PDF/图片/MD/TXT):校验 → 落盘 → 入库 processing → 后台处理,立即返回 {id}。"""
+    """上传研报(PDF/图片/MD/TXT):校验 → 落盘 → 入库 processing → 后台处理,立即返回 {id}。
+
+    variety/title/source 全部可选:留空由 LLM 在后台自动识别(多品种研报会识别
+    出全部品种并拆分;标题/发行方从文本中识别)。文件必填。
+    """
     variety = (request.form.get("variety") or "").strip().upper()
     title = (request.form.get("title") or "").strip()
     source = (request.form.get("source") or "").strip()
     f = request.files.get("file")
-    if not variety:
-        return jsonify({"error": "缺少品种参数 variety"}), 400
     if not f or not f.filename:
         return jsonify({"error": "缺少上传文件"}), 400
 
@@ -2731,7 +2857,7 @@ def api_research_upload():
     from werkzeug.utils import secure_filename  # 【调用包】文件名安全化(防路径穿越)
 
     safe = secure_filename(f.filename) or "report"
-    upload_dir = RESEARCH_UPLOAD_DIR / variety
+    upload_dir = RESEARCH_UPLOAD_DIR / (variety or "MULTI")  # 未选品种时归入 MULTI 目录
     upload_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_path = upload_dir / f"{ts}_{safe}"
@@ -2741,7 +2867,10 @@ def api_research_upload():
         variety=variety, title=title, source=source, filename=f.filename, file_path=str(file_path)
     )
     threading.Thread(target=_process_research_report, args=(report_id,), daemon=True).start()
-    return jsonify({"id": report_id, "status": "processing", "message": "研报已接收,后台处理中"})
+    return jsonify({
+        "id": report_id, "status": "processing",
+        "message": "研报已接收,后台处理中(标题/发行方/品种将自动识别)",
+    })
 
 
 @app.route("/api/research")
@@ -2777,10 +2906,16 @@ def api_research_delete(report_id):
     r = db.get_research_report(report_id)
     if not r:
         return jsonify({"error": "研报不存在"}), 404
+    # 多品种研报的记录存在于多个品种聚合文件中,按 varieties 列逐一清除;
+    # 旧行 varieties 为空时回退主品种列。
+    varieties = [v.strip() for v in (r.get("varieties") or "").split(",") if v.strip()]
+    if not varieties and r.get("variety"):
+        varieties = [r["variety"]]
     try:
         from tradingagents.dataflows.research_data import remove_research_report  # 【调用包】聚合 JSON 记录删除
 
-        remove_research_report(r["variety"], report_id)
+        for v in varieties:
+            remove_research_report(v, report_id)
     except Exception as e:
         logger.warning("Failed to update research aggregate on delete %s: %s", report_id, e)
     fp = r.get("file_path")

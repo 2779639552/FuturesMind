@@ -88,6 +88,20 @@ class AgentSenseDB:
         self.path_obj = Path(self.path)
         self.path_obj.parent.mkdir(parents=True, exist_ok=True)  # 【调用函数】确保数据库父目录存在(不存在则递归创建)
         self._init_tables()
+        self._migrate()
+
+    def _migrate(self):
+        """对旧库执行增量迁移(新列 ALTER TABLE),新库无需改动。
+
+        【功能】CREATE TABLE IF NOT EXISTS 不会给已存在的表补新列;这里按需
+                ALTER TABLE 补列,保证升级后旧库也能用上新字段。
+        【关键逻辑】用 PRAGMA table_info 探测列是否存在,缺哪列补哪列;缺列
+                判定已覆盖,重复调用安全(幂等)。
+        """
+        with self._conn() as c:
+            cols = {row[1] for row in c.execute("PRAGMA table_info(research_reports)").fetchall()}
+            if cols and "varieties" not in cols:
+                c.execute("ALTER TABLE research_reports ADD COLUMN varieties TEXT DEFAULT ''")
 
     @contextmanager
     def _conn(self):
@@ -246,6 +260,7 @@ class AgentSenseDB:
                 CREATE TABLE IF NOT EXISTS research_reports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     variety TEXT NOT NULL,
+                    varieties TEXT DEFAULT '',  -- LLM 识别出的全部品种(逗号分隔,如 "RB,CU"),用于多品种研报按品种过滤/拆分
                     title TEXT DEFAULT '',
                     source TEXT DEFAULT '',
                     filename TEXT DEFAULT '',
@@ -789,9 +804,9 @@ class AgentSenseDB:
         【返回】无。
         """
         allowed = {
-            "title", "source", "filename", "file_path", "status",
+            "title", "source", "variety", "filename", "file_path", "status",
             "extracted_text", "structured_data", "conclusion_md",
-            "direction", "confidence", "error",
+            "direction", "confidence", "error", "varieties",
         }
         sets, params = [], []
         for key, value in fields.items():
@@ -813,12 +828,18 @@ class AgentSenseDB:
         【功能】获取研报列表;可按品种过滤,默认返回最近 50 条。
         【参数】variety: 品种代码(可选);limit: 条数上限,默认 50。
         【返回】list[dict]: 研报记录字典列表(按 uploaded_at 倒序)。
+        【关键逻辑】多品种研报的 varieties 列是逗号分隔列表;过滤时用
+                   ','||varieties||',' 包裹后做 LIKE 精确匹配(避免 "RB"
+                   误匹配到 "IRB")。旧行 varieties 为空时回退匹配主品种列。
         """
         if variety:
             with self._conn() as c:
                 rows = c.execute(
-                    "SELECT * FROM research_reports WHERE variety=? ORDER BY uploaded_at DESC LIMIT ?",
-                    (variety, limit),
+                    "SELECT * FROM research_reports "
+                    "WHERE (',' || varieties || ',' LIKE '%,' || ? || ',%' "
+                    "       OR (varieties = '' AND variety = ?)) "
+                    "ORDER BY uploaded_at DESC LIMIT ?",
+                    (variety, variety, limit),
                 ).fetchall()
         else:
             with self._conn() as c:

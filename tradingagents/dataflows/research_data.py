@@ -136,7 +136,14 @@ def get_research_report_text(variety: str) -> str:
         direction = r.get("direction") or "中性"
         confidence = r.get("confidence")
         conf_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "N/A"
-        lines.append(f"- [{direction} · 置信度 {conf_str}] {title} (来源: {r.get('source', 'N/A')}, 上传: {r.get('uploaded_at', 'N/A')})")
+        # 多品种研报:标注覆盖品种,并说明以下为当前品种的部分(避免 LLM 把
+        # 其它品种的数据点误当成当前品种的)。
+        covers = r.get("varieties") or []
+        cov_str = f" · 覆盖品种: {', '.join(covers)}" if len(covers) > 1 else ""
+        lines.append(
+            f"- [{direction} · 置信度 {conf_str}] {title}{cov_str} "
+            f"(来源: {r.get('source', 'N/A')}, 上传: {r.get('uploaded_at', 'N/A')})"
+        )
         conclusion = (r.get("conclusion") or "").strip()
         if conclusion:
             # 结论摘要只取第一段,控制 token 占用
