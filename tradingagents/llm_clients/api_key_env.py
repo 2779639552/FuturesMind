@@ -23,6 +23,9 @@ PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     "bedrock": None,
     "xai": "XAI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    # Doubao -> 火山方舟(Volcengine Ark)。Coding Plan 订阅的密钥前缀 ark-,
+    # 官方文档统一叫 ARK_API_KEY。
+    "doubao": "ARK_API_KEY",
     # Dual-region providers each carry their own account; keys are not
     # interchangeable between the international and China endpoints.
     "qwen": "DASHSCOPE_API_KEY",

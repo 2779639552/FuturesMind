@@ -152,6 +152,25 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
     },
+    # Doubao -> 火山方舟 Coding Plan(api/coding/v3, 消耗套餐额度)。套餐覆盖
+    # doubao-seed 系列、deepseek-v4 系列直调与 ark-code-latest(控制台托管的
+    # Auto 智能选型, 按请求自动路由)。五个 ID 均已用 Coding Plan key 实测
+    # 调通(2026-09-04); dated ID 来自 /api/v3/models 列表。
+    "doubao": {
+        "quick": [
+            ("DeepSeek V4 Flash - 套餐内直调(省额度首选)", "deepseek-v4-flash"),
+            ("Ark Code Auto - 套餐托管智能选型(按请求自动路由)", "ark-code-latest"),
+            ("Doubao Seed 2.0 Mini - 套餐内轻量思维模型", "doubao-seed-2-0-mini-260215"),
+            ("Custom model ID", "custom"),
+        ],
+        "deep": [
+            ("DeepSeek V4 Flash - 套餐内直调(省额度首选)", "deepseek-v4-flash"),
+            ("Doubao Seed 2.0 Pro - 套餐内旗舰思维模型", "doubao-seed-2-0-pro-260215"),
+            ("Doubao Seed Code - 编码/推理强化(256K ctx)", "doubao-seed-code"),
+            ("Ark Code Auto - 套餐托管智能选型", "ark-code-latest"),
+            ("Custom model ID", "custom"),
+        ],
+    },
     # Qwen: same model IDs across global (dashscope-intl) and China
     # (dashscope) endpoints, so the two provider keys share one model list.
     "qwen": _QWEN_MODELS,

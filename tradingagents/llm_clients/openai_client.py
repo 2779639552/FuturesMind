@@ -249,6 +249,15 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "openai": ProviderSpec(use_responses_api=True),
     "xai": ProviderSpec(base_url="https://api.x.ai/v1"),
     "deepseek": ProviderSpec(base_url="https://api.deepseek.com", chat_class=DeepSeekChatOpenAI),
+    # Doubao -> 火山方舟 Coding Plan 订阅端点(OpenAI 协议)。【关键】Coding Plan
+    # 额度只从 /api/coding/v3 扣;按量付费须改用 /api/v3 并在方舟控制台开通模型,
+    # 两端点模型互不通用(coding 端点实测报 UnsupportedModel 的按量模型反之亦然)。
+    # chat_class 复用 DeepSeek round-trip:doubao-seed 思维模型同样返回
+    # reasoning_content,且实测 Ark 兼容该字段回传(2026-09-04 curl 双向验证)。
+    "doubao": ProviderSpec(
+        base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
+        chat_class=DeepSeekChatOpenAI,
+    ),
     "qwen": ProviderSpec(base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
     "qwen-cn": ProviderSpec(base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"),
     "glm": ProviderSpec(base_url="https://api.z.ai/api/paas/v4/"),
