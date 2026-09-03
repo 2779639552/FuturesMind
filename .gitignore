@@ -253,3 +253,7 @@ Thumbs.db
 
 # Project launcher shortcut (Windows-specific, not portable)
 FuturesMind Web.lnk
+
+# 运行期杂项(2026-09-04): 本地散库副本与 web 日志
+data/*.db
+_web_err.log
