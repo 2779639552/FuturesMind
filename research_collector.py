@@ -1,10 +1,11 @@
-"""research_collector.py — 每日开盘前自动接入期货公司研报(发现报告 / 5 家统一源)
+"""research_collector.py — 每日开盘前自动接入期货公司研报(发现报告 / 4 家统一源)
 
 【模块角色】
-  从发现报告(fxbaogao.com)机构页批量抓取 5 家期货公司(永安/中信/国泰君安/
-  东证/华泰)的最新研报,写入本机研报库并复用 web_app._process_research_report
-  的 LLM 提取链路(结构化数据 + 观点结论 → research_reports 表 + 按品种聚合
-  JSON),让基本面/宏观分析师每天开盘前就能读到最新机构观点。
+  从发现报告(fxbaogao.com)机构页批量抓取 4 家期货公司(永安/中信/国泰君安/
+  东证)的最新研报(华泰期货于 2026-09 改走官方天玑源 research_collector_htfc.py),
+  写入本机研报库并复用 web_app._process_research_report 的 LLM 提取链路(结构化
+  数据 + 观点结论 → research_reports 表 + 按品种聚合 JSON),让基本面/宏观分析
+  师每天开盘前就能读到最新机构观点。
 
   由两条路径触发:
     1. scheduler.py 每日定时子进程(08:10 / 18:00,开盘前)。
@@ -14,9 +15,15 @@
   发现报告是 Next.js:机构页 `/archives/organization/<机构名>?page=N` 的报告
   列表首选从 `/_next/data/<buildId>/...json` 的 dataList 解析(字段 docId/
   title/pubTime,对所有机构统一;中信期货等机构页不走 SSR 卡片,<a> 正则抓
-  不到,JSON 不受影响);详情页正文在 HTML 里可读(免登录),PDF 下载才要 VIP
-  (不影响文本提取)。列表 JSON 失败时退回 SSR `<a title href="/detail/{id}">`
-  正则(东证/华泰等走服务端卡片的机构)。
+  不到,JSON 不受影响),列表 JSON 失败时退回 SSR `<a title href="/detail/{id}">`
+  正则(东证等走服务端卡片的机构)。
+
+  详情页正文在客户端渲染(SSR 仅返回导航外壳 + 空 __NEXT_DATA__,裸 HTML 抓
+  不到正文,只能拿到"摘要"标签页)——所以详情走 `/_next/data/<buildId>/
+  detail/<id>.json` 的 pageProps.dtlData:content 是完整研报正文 HTML(早报/
+  简讯类可能为空),summaryHtml 是摘要(全文缺失时退回,本身即研报);标题/机构/
+  发布日期优先取 report 对象的 title/orgName/pubTime(比 HTML 正则更稳)。JSON
+  抓取失败再退回旧 SSR 整页剥标签(兜底)。PDF 下载才要 VIP,不影响文本提取。
 
 【增量去重】
   报告 id 随新报告递增(同标题如"铁合金早报"每天重复,不能按标题去重),所以
@@ -25,7 +32,7 @@
   --max-per-org 限流),并把水位推进到该页最大 id——此后每天只接增量。
 
   用法:
-    python research_collector.py                          # 5 家全部接入
+    python research_collector.py                          # 4 家全部接入
     python research_collector.py --org 永安期货           # 只接一家
     python research_collector.py --dry-run                # 只打印不写库
     python research_collector.py --max-per-org 2          # 每家最多接 2 份(首日限流)
@@ -47,7 +54,8 @@ import requests  # 【调用包】HTTP 请求(fxbaogao 列表/详情抓取)
 
 BASE_URL = "https://www.fxbaogao.com"  # 【变量】发现报告站点根
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"  # 【变量】浏览器 UA(规避简单反爬)
-ORGS = ["永安期货", "中信期货", "国泰君安期货", "东证期货", "华泰期货"]  # 【变量】接入的 5 家期货公司机构名(对应 fxbaogao 机构页)
+ORGS = ["永安期货", "中信期货", "国泰君安期货", "东证期货"]  # 【变量】接入的 4 家期货公司机构名(华泰期货已改走官方天玑源,见 research_collector_htfc.py)
+MIN_BODY_CHARS = 200  # 【变量】正文最小字符数(去空白),低于则跳过不入库(与 HTFC/研报暂存同阈值)
 REQUEST_TIMEOUT = 20  # 【变量】单次请求超时(秒)
 SLEEP_BETWEEN = 0.6  # 【变量】请求间间隔(秒,礼貌限速)
 MAX_RETRIES = 1  # 【变量】单次请求失败重试次数
@@ -88,6 +96,36 @@ def _get(url: str) -> str | None:
         if attempt < MAX_RETRIES:
             time.sleep(SLEEP_BETWEEN * 2)
     return None
+
+
+_BUILD_ID_CACHE = None  # 【变量】主站 Next.js buildId 缓存(所有路由共用,单次运行只取一次)
+
+
+def _get_build_id() -> str | None:
+    """取主站 Next.js buildId(所有路由共用,首页即可拿到,模块级缓存避免重复请求)。
+
+    【返回】buildId 字符串;首页与机构页都拿不到返回 None(JSON 详情抓取将退回 SSR 兜底)。
+    """
+    global _BUILD_ID_CACHE
+    if _BUILD_ID_CACHE:
+        return _BUILD_ID_CACHE
+    for url in (f"{BASE_URL}/", f"{BASE_URL}/archives/organization/{quote('永安期货')}?page=1"):
+        html = _get(url)
+        if html:
+            m = re.search(r'"buildId":"([^"]+)"', html)
+            if m:
+                _BUILD_ID_CACHE = m.group(1)
+                break
+    return _BUILD_ID_CACHE
+
+
+def _html_to_text(html: str) -> str:
+    """HTML → 可见文本(剥 script/style/标签,换行替换 <br>,折叠空行)。"""
+    html = re.sub(r"(?is)<script.*?</script>", " ", html)
+    html = re.sub(r"(?is)<style.*?</style>", " ", html)
+    html = re.sub(r"(?i)<br\s*/?>", "\n", html)
+    text = re.sub(r"<[^>]+>", "\n", html)
+    return "\n".join(ln.strip() for ln in text.splitlines() if ln.strip())
 
 
 def _find_data_list(obj) -> list | None:
@@ -183,35 +221,62 @@ def fetch_detail(report_id: int) -> dict:
     """抓取详情页正文与发布日期。
 
     【参数】report_id: 报告 id。
-    【返回】{"title", "date", "text"}。text 为去除 script/style/标签后的
-            可见文本(含报告正文与少量导航噪音,交由 LLM 提取容错)。
-    【关键逻辑】先剥 <script>/<style>,再以换行替换标签、折叠空行;正文从
-              报告标题处开始,截到"免责声明/会员中心/Copyright"等页脚。
+    【返回】{"title", "date", "text"}。text 为研报正文可见文本(完整研报经
+            content 全文;早报/简讯类 content 空则退回 summaryHtml 摘要)。
+    【关键逻辑】发现报告详情页是客户端渲染(SSR 仅壳,裸 HTML 抓不到正文,只
+              能拿到"摘要"标签页),正文在 /_next/data/{buildId}/detail/{id}.json
+              的 pageProps.dtlData:content(完整研报 HTML,可能为空)优先,空则
+              退回 summaryHtml;标题/机构/发布日期优先取 report 对象的
+              title/orgName/pubTime(比 HTML 正则更稳)。JSON 抓取失败(网络/
+              404/解析异常)再退回旧 SSR 整页剥标签兜底。死链/验证码页视为
+              无正文,交由 _ingest_one 跳过。
     """
+    # 首选:Next.js 数据 JSON(含完整正文,免登录)
+    bid = _get_build_id()
+    if bid:
+        raw = _get(f"{BASE_URL}/_next/data/{bid}/detail/{report_id}.json")
+        if raw:
+            try:
+                payload = json.loads(raw)
+                dtl = (payload.get("pageProps") or {}).get("dtlData") or {}
+                report = dtl.get("report") or {}
+                content = dtl.get("content") or ""
+                summary = dtl.get("summaryHtml") or ""
+                text = _html_to_text(content) if content else _html_to_text(summary)
+                # 死链/反爬:JSON 内若裹着 404/验证码提示,视为无正文
+                if text and "被风吹走" not in text and "wappoc_appmsgcaptcha" not in text and "环境异常" not in text:
+                    title = report.get("title") or ""
+                    date = ""
+                    pt = report.get("pubTime")
+                    if pt:
+                        try:
+                            date = datetime.fromtimestamp(int(pt)).strftime("%Y-%m-%d")
+                        except (ValueError, TypeError, OSError):
+                            date = ""
+                    if not date and report.get("pubTimeStr"):
+                        m = re.search(r"(20\d{2})[-/年.](\d{1,2})[-/月.](\d{1,2})", str(report["pubTimeStr"]))
+                        if m:
+                            date = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                    return {"title": title, "date": date, "text": text}
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass  # 落到 SSR 兜底
+
+    # 兜底:旧逻辑,SSR 整页剥标签(用于 JSON 不可用时)
     url = f"{BASE_URL}/detail/{report_id}"
     html = _get(url) or ""
-    html = re.sub(r"(?is)<script.*?</script>", " ", html)
-    html = re.sub(r"(?is)<style.*?</style>", " ", html)
-    html = re.sub(r"(?i)<br\s*/?>", "\n", html)
-    text = re.sub(r"<[^>]+>", "\n", html)
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not html or "被风吹走" in html or "wappoc_appmsgcaptcha" in html or "环境异常" in html:
+        return {"title": "", "date": "", "text": ""}
     title = ""
     m = re.search(r"<title>(.*?)</title>", html, re.S)
     if m:
         title = m.group(1).strip()
-    # 发布日期:详情页正文中首个 20xx-xx-xx / 20xx年xx月xx日
-    date = ""
-    for cand in re.findall(r"(20\d{2})[-/年.](\d{1,2})[-/月.](\d{1,2})日?", text):
-        try:
-            date = f"{int(cand[0]):04d}-{int(cand[1]):02d}-{int(cand[2]):02d}"
-            break
-        except ValueError:
-            continue
-    # 正文裁剪:从标题出现处起(找不到就从全文起),到页脚关键词止
+    text = _html_to_text(html)
+    # 正文裁剪:从标题出现处起,到页脚关键词止
+    lines = text.splitlines()
     body_start = 0
     if title:
         for i, ln in enumerate(lines):
-            if title.split("-")[0][:6] and title[:6] in ln:
+            if title[:6] and title[:6] in ln:
                 body_start = i
                 break
     footers = ("免责声明", "关于我们", "会员中心", "Copyright", "版权所有", "温馨提示")
@@ -221,7 +286,7 @@ def fetch_detail(report_id: int) -> dict:
             body_end = i
             break
     text = "\n".join(lines[body_start:body_end]).strip()
-    return {"title": title, "date": date, "text": text}
+    return {"title": title, "date": "", "text": text}
 
 
 # ── 入库(写文件 + 落库 + 触发 LLM 处理) ───────────────────────────────
@@ -243,8 +308,8 @@ def _ingest_one(org: str, item: dict, detail: dict) -> bool:
                  既有 LLM 提取 + 按品种 upsert 全链路)。
     """
     text = (detail.get("text") or "").strip()
-    if not text:
-        print(f"    ! {item['id']} {item['title']} 正文为空,跳过")
+    if len(text) < MIN_BODY_CHARS:
+        print(f"    ! {item['id']} {item['title']} 正文过短({len(text)}字符,<{MIN_BODY_CHARS}),跳过")
         return False
 
     # 懒导入:复用 web_app 的存储目录与后台处理链路(避免模块加载重);get_db 落库。
@@ -273,6 +338,7 @@ def _ingest_one(org: str, item: dict, detail: dict) -> bool:
         source=f"发现报告-{org}",
         filename=file_path.name,
         file_path=str(file_path),
+        ingest_source="auto",  # 【来源】fxbaogao 自动采集入库(数据仓库"研报库"徽标=自动)
     )
     _process_research_report(report_id)  # 【调用函数】复用 web_app 后台处理(LLM 提取 → 落库 → 写聚合 JSON)
     print(f"    + {item['id']} {item['title']} -> report_id={report_id}")

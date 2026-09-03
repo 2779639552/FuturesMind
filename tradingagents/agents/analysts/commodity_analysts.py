@@ -50,8 +50,8 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_macro,
     get_futures_news,
     get_futures_price,
-    get_research_report,
     get_futures_supply_demand,
+    get_research_report,
     get_variety_info,
     get_verified_quote,
 )  # 【调用包】商品期货行情/指标/库存/基差/宏观/新闻/供需/研报/品种信息/核验报价工具;由 LLM 通过 _run_tool_loop 调度取数
@@ -448,7 +448,24 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
 - Cost transmission = determines margin direction and supply response
 - Inventory VELOCITY matters more than absolute level — accelerating change precedes price moves
 
-**Workflow**: Call `get_variety_info` → `get_futures_price` (for target variety AND key upstream varieties from related_varieties) → `get_futures_basis` → `get_futures_inventory` → `get_futures_supply_demand`.
+**Research Reports — objective vs subjective split (IMPORTANT, prevents double-counting, 2026-09-03)**:
+- Research text you may see (via `get_research_report` / `get_futures_supply_demand`) lists each
+  report's DIRECTION (看多/看空/中性), CONFIDENCE, an opinion line, and typed objective rows
+  (`研报-基差/交易所仓单/开工率/加工利润`, `# RESEARCH SPOT PRICE` / `# RESEARCH BASIS`,
+  `Research Social/Mill/Warehouse Receipts`).
+- DIRECTION/CONFIDENCE is the research house's SUBJECTIVE view. The Sentiment analyst already
+  counts it as the INSTITUTIONAL group. NEVER let a report's bare 看多/看空 label become your own
+  Fundamental BIAS — that would double-count the institutional opinion.
+- A research claim with objective data support is PARTIALLY objective ("有依据的观点可作部分客观").
+  You MAY adopt it, but only after INDEPENDENTLY checking the evidence against the numbers you
+  retrieve: if the evidence agrees → treat the claim as supporting evidence (cite 来源: 研报);
+  if it contradicts the actual numbers → flag the conflict and do NOT adopt the conclusion.
+- Purely qualitative opinions with NO numbers (e.g. only "因政策情绪转多") are institutional
+  sentiment, not objective input — leave them to the Sentiment analyst.
+- Where research rows (`# RESEARCH ...` / 研报-*) disagree with EXTERNAL / FREE_API rows, prefer
+  the research value (RESEARCH > EXTERNAL > FREE_API).
+
+**Workflow**: Call `get_variety_info` → `get_futures_price` (for target variety AND key upstream varieties from related_varieties) → `get_futures_basis` → `get_futures_inventory` → `get_futures_supply_demand` → (optionally `get_research_report` when you need the research house's objective figures/typed rows — read only the data-backed rows, not its bare direction).
 
 Write a comprehensive fundamental analysis (450-650 words) with specific data points.
 Include: (a) inventory velocity calculation, (b) upstream cost transmission analysis, (c) margin direction.
@@ -556,7 +573,8 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
 **Analysis Framework**:
 
 **Data Availability (MUST follow — never fabricate data)**:
-- `get_futures_macro` returns ONLY Chinese domestic indicators: GDP, PMI, FAI, Real Estate Climate Index, Industrial Production, Construction Index.
+- `get_futures_macro` returns Chinese domestic indicators (official, latest available release per series): GDP, PMI, FAI, Real Estate Climate Index, Industrial Production, Construction Index, plus CPI, PPI, Money Supply M2/M1/M0, LPR, and Social Financing flow. All rows are sorted ascending by period internally, so the values shown are the LATEST releases (a recent fix removed a bug that surfaced 2008/2006-era stale rows).
+- Snapshot semantics: if a section header says "快照 YYYY-MM-DD" or "接口暂不可用", that value is a LAST-GOOD snapshot from the stated date — treat its recency per that date, never present it as the current-period figure.
 - Foreign/global data — USD index, Fed rate decisions, US nonfarm payrolls, EIA/API inventories, BDI shipping index, Singapore/Fujairah prices — has NO quantitative tool. Only mention such factors if they appear in the `get_futures_news` feed; otherwise state explicitly "该数据本项目无法获取" rather than guessing numbers.
 - If a variety's key_factors reference a data source you cannot call, flag the limitation in your report instead of estimating.
 
@@ -567,6 +585,10 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
    - **Real Estate Climate Index**: Level and 6-month trend. This is THE key driver for rebar (~60% of demand). A declining index signals structural demand weakness.
    - **Industrial Production**: YoY growth. Decelerating IP = weakening industrial commodity demand.
    - **Construction Index**: Daily/weekly trend. Direct proxy for construction activity.
+   - **CPI & PPI**: YoY and the PPI–CPI spread. A positive/rising spread favors upstream industrial commodities; a negative spread signals upstream margin squeeze.
+   - **Money Supply M2/M1/M0**: YoY and the M1–M2 spread. A widening/positive spread = corporate cash activation = demand-positive for domestic commodities.
+   - **LPR**: Latest 1Y/5Y quotes and change vs prior fixing. 5Y LPR steers property/construction chain demand expectations.
+   - **Social Financing flow**: Monthly increment trend. Rising credit impulse supports domestic-demand commodities.
    - Report exact values and trends from all indicators. Quantify the macro headwinds/tailwinds.
 
 2. **News Sentiment** (call `get_futures_news` — qualitative context):
@@ -599,6 +621,15 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
    - Global commodity cycle coordination
 
 **Workflow**: Call `get_variety_info` → `get_futures_macro` → `get_futures_news` → `get_futures_price` (for price context).
+
+**Research Reports (`get_research_report`, optional)**:
+- Research is a human-uploaded highest-trust source; its macro/policy arguments are usually the
+  house's SUBJECTIVE read. Its bare direction/confidence belongs to the Sentiment analyst's
+  INSTITUTIONAL group — do NOT let a report's 看多/看空 label become your macro bias.
+- You MAY adopt a research statement only when it rests on objective, quantifiable facts
+  (statistics / measurable policy measures) that you can verify yourself; otherwise treat it as
+  opinion and weigh it accordingly. If research returns RESEARCH_NO_DATA, say so honestly rather
+  than inventing an institutional view.
 
 Write a detailed macro/policy analysis (400-600 words) with specific macro data points.
 Connect each macro indicator to the specific commodity's demand outlook.

@@ -159,6 +159,171 @@ def get_research_report_text(variety: str) -> str:
                     items.append(f"{k}={v}")
             if items:
                 lines.append(f"  数据点: {'; '.join(items)}")
+            # 【2026-09-03】四类基本面指标(基差/交易所仓单/开工率·负荷率/加工利润·价差)
+            #   单独具名输出:不在前 6 项通用"数据点"内也能进入分析师研报文本(供分析)。
+            #   研报没给该值就整条不输出 → 天然留空;若给的是 {value, unit, date, note}
+            #   对象则把 unit/date/note 一并带上,便于 LLM 判断口径与时效。
+            _research_typed = (
+                ("basis", "基差"),
+                ("warehouse_receipts", "交易所仓单"),
+                ("operating_rate", "开工率/负荷率"),
+                ("processing_margin", "加工利润/加工费"),
+            )  # 【变量】四类指标的研报 data_points 键 → 展示名
+            for dk, lbl in _research_typed:
+                v = dps.get(dk)
+                if v is None:
+                    continue
+                val = v.get("value") if isinstance(v, dict) else v
+                if val is None or val == "":
+                    continue
+                unit_s = v.get("unit") if isinstance(v, dict) else ""
+                num = f"{val}{unit_s}" if unit_s else str(val)
+                meta = []
+                if isinstance(v, dict):
+                    for fld in ("date", "note"):
+                        if v.get(fld):
+                            meta.append(str(v[fld]))
+                suffix = f" ({', '.join(meta)})" if meta else ""
+                lines.append(f"  研报-{lbl}: {num}{suffix}")
+    return "\n".join(lines)
+
+
+# ===========================================================================
+# 【机构/研报群体多空汇总 —— 确定性纯函数(无 LLM)】
+#   用途: 1) get_research_view_summary 工具(情绪分析师"机构/研报群体"第 2 群体
+#         取数,与 get_futures_sentiment 的"散户/社媒群体"并列);
+#         2) 运行分析结果区「机构(研报) vs 散户(社媒) 观点对比」卡的数据生产;
+#         3) 历史报告持久化的 markdown 段。
+#   口径: 按该品种聚合文件里在库(最近 MAX_REPORTS 份)研报的 direction 全量计数,
+#         direction 缺省视为中性;客观性过滤不在此层(基本面是否采纳另由提示词把关)。
+# ===========================================================================
+
+_DIR_GROUP = {"看多": "bull", "偏多": "bull", "看空": "bear", "偏空": "bear", "中性": "neutral"}  # 【变量】研报方向 → 三向分组键
+
+
+# 【功能】研报方向字符串归一为三向分组键。
+# 【参数】direction: 研报方向(如 "看多"/"偏多"/"看空"/"中性"/None/未知)。
+# 【返回】str: "bull" | "bear" | "neutral"。
+def _group_direction(direction) -> str:
+    """Map a research report direction string to a 3-way group key."""
+    return _DIR_GROUP.get((direction or "").strip(), "neutral")
+
+
+# 【功能】结论全文 → 一行纯文本摘要(用于情绪工具/对比卡的"一句观点")。
+# 【参数】text: 研报 conclusion 全文(markdown 或纯文本)。
+# 【返回】str: 去掉标题符/空行后的首个非空行;无内容返回 ""。
+def _plain_first_line(text: str) -> str:
+    """Return the first plain-text content line of a markdown conclusion.
+
+    跳过结构行,取真正的观点/叙事句:
+    - markdown 标题(以 # 开头);
+    - 【…】整行模板标记(如 【第一部分 · 多角度核心观点】,含加粗变体 **【…】**)。
+    若全文只有标题/标记行,退回最后一个剥离 # 后的文本,保证非空。
+    """
+    fallback = ""
+    for raw in (text or "").splitlines():
+        ln = raw.strip().strip("*").strip()
+        if not ln:
+            continue
+        if ln.startswith("#"):
+            fallback = ln.lstrip("#").strip().strip("*").strip()
+            continue
+        if ln.startswith("【") and ln.endswith("】"):
+            continue  # 【…】整行标记是结构说明(第几部分), 不是观点内容
+        return ln[:120]
+    return fallback[:120]
+
+
+# 【功能】确定性汇总某品种在库研报的方向/置信度(机构/研报群体视角)。
+# 【参数】variety: 品种代码(如 "RB")。
+# 【返回】dict: {count, updated, counts:{bull,neutral,bear}, conf_avg:{bull,neutral,bear}|None,
+#          score(多-空), net_dir(看多|中性|看空), items:[{id,source,title,uploaded_at,
+#          direction,group,confidence,one_line}]};无研报返回 count=0 的骨架(非 None)。
+def summarize_research_views(variety: str) -> dict:
+    """Deterministically aggregate the institutional (research) directional views.
+
+    No LLM involved: reads the variety's aggregated research JSON and tallies each
+    in-library report's direction/confidence. Returns an empty skeleton
+    (count == 0) rather than None so callers can uniformly handle the no-data case.
+    """
+    data = _load_research(variety)
+    reports = (data or {}).get("reports") or []
+    empty = {
+        "count": 0,
+        "updated": "",
+        "counts": {"bull": 0, "neutral": 0, "bear": 0},
+        "conf_avg": {"bull": None, "neutral": None, "bear": None},
+        "score": 0,
+        "net_dir": "",
+        "items": [],
+    }
+    if not reports:
+        return empty
+
+    counts = {"bull": 0, "neutral": 0, "bear": 0}
+    confs = {"bull": [], "neutral": [], "bear": []}
+    items = []
+    for r in reports:
+        g = _group_direction(r.get("direction"))
+        counts[g] += 1
+        c = r.get("confidence")
+        if isinstance(c, (int, float)) and not isinstance(c, bool):
+            confs[g].append(float(c))
+        items.append(
+            {
+                "id": r.get("id"),
+                "source": r.get("source") or "未知",
+                "title": r.get("title") or "未命名研报",
+                "uploaded_at": r.get("uploaded_at") or "",
+                "direction": r.get("direction") or "中性",
+                "group": g,
+                "confidence": c,
+                "one_line": _plain_first_line(r.get("conclusion") or "")[:120],
+            }
+        )
+
+    conf_avg = {
+        k: (round(sum(v) / len(v), 3) if v else None) for k, v in confs.items()
+    }
+    if counts["bull"] > counts["bear"]:
+        net_dir = "看多"
+    elif counts["bear"] > counts["bull"]:
+        net_dir = "看空"
+    else:
+        net_dir = "中性"
+    return {
+        "count": len(reports),
+        "updated": (data or {}).get("updated", ""),
+        "counts": counts,
+        "conf_avg": conf_avg,
+        "score": counts["bull"] - counts["bear"],
+        "net_dir": net_dir,
+        "items": items,
+    }
+
+
+# 【功能】机构/研报群体的方向聚合文本,供 get_research_view_summary 工具返回。
+# 【参数】variety: 品种代码(如 "RB")。
+# 【返回】str: 带计数的研报多空汇总文本;无研报返回 RESEARCH_VIEW_NO_DATA 哨兵
+#          (明确告知情绪分析师"机构侧无数据",禁止其编造机构观点)。
+def format_research_views_text(variety: str) -> str:
+    """Format the institutional (research) group's directional views as text."""
+    s = summarize_research_views(variety)
+    if s["count"] == 0:
+        return "RESEARCH_VIEW_NO_DATA: 该品种暂无上传研报(机构/研报群体无数据)"
+
+    lines = [
+        "# RESEARCH INSTITUTIONAL VIEWS (机构/研报群体, 按方向全量计数)",
+        f"# 在库研报 {s['count']} 份 · 更新于 {s['updated'] or 'N/A'}",
+        "# 研报方向是机构主观观点, 已由情绪分析师按机构群体计数; 客观数据由基本面分析师另行处理。",
+        f"# 方向统计: 看多/偏多 {s['counts']['bull']} 份 | 中性 {s['counts']['neutral']} 份 | 看空/偏空 {s['counts']['bear']} 份",
+        "# ---",
+    ]
+    for it in s["items"]:
+        conf = f"{it['confidence']:.2f}" if isinstance(it["confidence"], (int, float)) and not isinstance(it["confidence"], bool) else "N/A"
+        lines.append(f"- [{it['direction']} · 置信度 {conf}] {it['title']} (来源: {it['source']})")
+        if it["one_line"]:
+            lines.append(f"  观点摘要: {it['one_line']}")
     return "\n".join(lines)
 
 

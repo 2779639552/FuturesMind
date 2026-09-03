@@ -102,6 +102,8 @@ class AgentSenseDB:
             cols = {row[1] for row in c.execute("PRAGMA table_info(research_reports)").fetchall()}
             if cols and "varieties" not in cols:
                 c.execute("ALTER TABLE research_reports ADD COLUMN varieties TEXT DEFAULT ''")
+            if cols and "ingest_source" not in cols:
+                c.execute("ALTER TABLE research_reports ADD COLUMN ingest_source TEXT DEFAULT 'manual'")
 
     @contextmanager
     def _conn(self):
@@ -261,6 +263,7 @@ class AgentSenseDB:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     variety TEXT NOT NULL,
                     varieties TEXT DEFAULT '',  -- LLM 识别出的全部品种(逗号分隔,如 "RB,CU"),用于多品种研报按品种过滤/拆分
+                    ingest_source TEXT DEFAULT 'manual',  -- 入库来源:manual=网页人工上传 / auto=采集/本地批量接入(数据仓库"研报库"来源徽标用)
                     title TEXT DEFAULT '',
                     source TEXT DEFAULT '',
                     filename TEXT DEFAULT '',
@@ -778,19 +781,23 @@ class AgentSenseDB:
         filename: str = "",
         file_path: str = "",
         status: str = "processing",
+        ingest_source: str = "manual",
     ) -> int:
         """新增一条研报记录(状态默认 processing,由后台线程处理后更新)。
 
         【功能】向 research_reports 表插入一行"待处理研报",返回自增 id。
         【参数】variety: 品种代码;title/source/filename/file_path: 元信息;
-                status: 初始状态('processing' 由上传接口写入)。
+                status: 初始状态('processing' 由上传接口写入);
+                ingest_source: 入库来源('manual'=网页人工上传 / 'auto'=采集器/
+                本地批量接入),数据仓库"研报库"据此打"上传/自动"来源徽标。
         【返回】int: 新研报的自增 id(后台线程据此处理并回写)。
         """
         with self._conn() as c:
             cur = c.execute(  # 【变量】cur:插入游标(lastrowid 取新记录自增 id)
-                "INSERT INTO research_reports (variety, title, source, filename, file_path, status) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (variety, title, source, filename, file_path, status),
+                "INSERT INTO research_reports "
+                "(variety, title, source, filename, file_path, status, ingest_source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (variety, title, source, filename, file_path, status, ingest_source),
             )
             return cur.lastrowid
 
@@ -822,31 +829,40 @@ class AgentSenseDB:
                 f"UPDATE research_reports SET {', '.join(sets)} WHERE id=?", params
             )
 
-    def list_research_reports(self, variety: str | None = None, limit: int = 50) -> list[dict]:
-        """按品种(可选)查询研报列表,按上传时间倒序。
+    def list_research_reports(
+        self,
+        variety: str | None = None,
+        limit: int = 50,
+        ingest_source: str | None = None,
+    ) -> list[dict]:
+        """按品种/来源(可选)查询研报列表,按上传时间倒序。
 
-        【功能】获取研报列表;可按品种过滤,默认返回最近 50 条。
-        【参数】variety: 品种代码(可选);limit: 条数上限,默认 50。
+        【功能】获取研报列表;可按品种与入库来源(manual/auto)组合过滤,
+                默认返回最近 50 条。
+        【参数】variety: 品种代码(可选);limit: 条数上限,默认 50;
+                ingest_source: 入库来源('manual'/'auto',可选);None 不过滤。
         【返回】list[dict]: 研报记录字典列表(按 uploaded_at 倒序)。
         【关键逻辑】多品种研报的 varieties 列是逗号分隔列表;过滤时用
                    ','||varieties||',' 包裹后做 LIKE 精确匹配(避免 "RB"
                    误匹配到 "IRB")。旧行 varieties 为空时回退匹配主品种列。
         """
+        where, params = [], []
         if variety:
-            with self._conn() as c:
-                rows = c.execute(
-                    "SELECT * FROM research_reports "
-                    "WHERE (',' || varieties || ',' LIKE '%,' || ? || ',%' "
-                    "       OR (varieties = '' AND variety = ?)) "
-                    "ORDER BY uploaded_at DESC LIMIT ?",
-                    (variety, variety, limit),
-                ).fetchall()
-        else:
-            with self._conn() as c:
-                rows = c.execute(
-                    "SELECT * FROM research_reports ORDER BY uploaded_at DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
+            where.append(
+                "(',' || varieties || ',' LIKE '%,' || ? || ',%' "
+                " OR (varieties = '' AND variety = ?))"
+            )
+            params += [variety, variety]
+        if ingest_source:
+            where.append("ingest_source = ?")
+            params.append(ingest_source)
+        sql = "SELECT * FROM research_reports"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY uploaded_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as c:
+            rows = c.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def get_research_report(self, report_id: int) -> dict | None:
@@ -859,6 +875,21 @@ class AgentSenseDB:
         with self._conn() as c:
             row = c.execute(
                 "SELECT * FROM research_reports WHERE id=?", (report_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_research_report_by_filename(self, filename: str) -> dict | None:
+        """按本地文件名精确查询一条研报记录(幂等用)。
+
+        【功能】返回 filename 完全一致的研报行;不存在时返回 None。
+        【参数】filename: 上传目录内的文件名(采集器以 articleId 为前缀命名)。
+        【返回】dict | None: 研报记录或 None。
+        【用途】崩溃发生在"md 已落盘 → DB 插入"之间时会留下孤儿文件;采集器
+                靠此行判定是否真已入库,而不是看文件是否存在。
+        """
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM research_reports WHERE filename=?", (filename,)
             ).fetchone()
         return dict(row) if row else None
 

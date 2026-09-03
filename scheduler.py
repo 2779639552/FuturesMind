@@ -15,8 +15,11 @@
 #     3. 平台采集(_run_platform_collection):单个平台的采集任务,通过启动
 #        batch_collect.py 子进程实现,结果与异常都会写入数据库并生成告警。
 #     4. 研报接入(_run_research_collection):每天开盘前 08:10 与 18:00 各执行
-#        一次,通过启动 research_collector.py 子进程抓取发现报告 5 家期货公司
+#        一次,通过启动 research_collector.py 子进程抓取发现报告 4 家期货公司
 #        最新研报,复用研报模块的 LLM 提取链路入库,结果与异常写入告警。
+#     5. 华泰天玑研报接入(_run_htfc_collection):同一 research_times 时刻再跑
+#        research_collector_htfc.py 子进程(华泰官方源,能化 21 品种日报),与
+#        fxbaogao 4 家并跑;job id 前缀 research_htfc_,告警前缀 htfc_*。
 #
 #   所有任务都通过数据库(get_db())记录状态与告警,便于 Web 前端展示;
 #   start_scheduler() 返回的调度器对象由调用方(通常是 web_app/main)持有。
@@ -28,7 +31,9 @@ import sys  # 【调用包】当前解释器路径定位(复用同一虚拟环�
 from contextlib import suppress  # 【调用包】忽略指定异常的上下文管理器(解析条数容错)
 from datetime import datetime  # 【调用包】当前时间/日期生成
 
-from apscheduler.schedulers.background import BackgroundScheduler  # 【调用包】APScheduler 后台调度器(守护线程运行)
+from apscheduler.schedulers.background import (
+    BackgroundScheduler,  # 【调用包】APScheduler 后台调度器(守护线程运行)
+)
 from apscheduler.triggers.cron import CronTrigger  # 【调用包】cron 表达式触发器(定时/周期任务)
 
 from database import get_db  # 【调用包】数据库访问(记录采集状态与告警)
@@ -287,6 +292,79 @@ def _run_research_collection():
         )
 
 
+def _run_htfc_collection():
+    """每日开盘前接入华泰官方天玑研报:子进程跑 research_collector_htfc.py 并记录告警。
+
+    【功能】与 _run_research_collection 同模式,但跑华泰期货官方天玑采集器
+            (research_collector_htfc.py,能化 21 品种日报)。单独函数 + 单独
+            job id(research_htfc_{time}),告警前缀 htfc_*,便于与 fxbaogao
+            4 家在 /api/scheduler/status 与告警中心里区分。
+    【参数】无。
+    【返回】无。
+    【关键逻辑】
+            - 同一虚拟环境子进程,同一 cwd(AgentSense 根),无 env= 继承 os.environ。
+            - 90 分钟超时(timeout=5400):单日 ≤21 篇 × LLM ~110s + 详情拉取,
+              兜底放得更宽,避免首日/回补日被误杀。
+            - 从 stdout 解析 "Collected: N" / "Processed: M"。
+    """
+    db = get_db()  # 【调用函数】取数据库实例(写采集日志/告警)
+    db.create_alert(  # 【调用函数】写入"天玑研报接入启动"信息告警
+        "htfc_started",
+        "HTFC research collection started",
+        f"Automated HTFC research ingest at {datetime.now():%H:%M}",
+        severity="info",
+    )
+    try:
+        venv_py = os.path.join(os.path.dirname(sys.executable), "python")  # 【变量】venv_py:当前虚拟环境解释器路径
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # 【变量】script_dir:AgentSense 根(research_collector_htfc.py 同目录)
+        cmd = [venv_py, "research_collector_htfc.py"]
+        result = subprocess.run(  # 【调用函数】启动天玑研报接入子进程(90 分钟超时)
+            cmd,
+            cwd=script_dir,
+            capture_output=True,
+            text=True,
+            timeout=5400,  # 90 min timeout:接入含 LLM 提取,单日 21 篇约 40min,回补更久;超时视为失败
+        )
+        output = (result.stdout or "") + (result.stderr or "")  # 【变量】output:子进程输出(合并 stdout+stderr)
+        collected = processed = 0  # 【变量】解析出的接入统计(默认 0)
+        for line in output.splitlines():
+            if line.startswith("Collected:"):
+                with suppress(Exception):
+                    collected = int(line.split(":", 1)[1].strip())
+            elif line.startswith("Processed:"):
+                with suppress(Exception):
+                    processed = int(line.split(":", 1)[1].strip())
+
+        if result.returncode != 0:
+            db.create_alert(  # 【调用函数】写入"天玑研报接入失败"告警
+                "htfc_error",
+                "HTFC research collection failed",
+                output[-500:] or "Unknown error",
+                severity="error",
+            )
+        else:
+            db.create_alert(  # 【调用函数】写入"天玑研报接入完成"信息告警
+                "htfc_complete",
+                "HTFC research collection complete",
+                f"Collected {collected}, processed {processed} reports",
+                severity="info",
+            )
+    except subprocess.TimeoutExpired:
+        db.create_alert(  # 【调用函数】写入"天玑研报接入超时"告警
+            "htfc_timeout",
+            "HTFC research collection timeout",
+            "HTFC research ingest exceeded 90 minutes",
+            severity="error",
+        )
+    except Exception as e:
+        db.create_alert(  # 【调用函数】写入"天玑研报接入异常"告警
+            "htfc_error",
+            "HTFC research collection error",
+            str(e)[:300],
+            severity="error",
+        )
+
+
 def start_scheduler(schedule_times: list[str] = None, research_times: list[str] = None):
     """启动后台调度器(每日定时管道 + 开盘前研报接入 + 30 分钟健康检查)。
 
@@ -299,7 +377,8 @@ def start_scheduler(schedule_times: list[str] = None, research_times: list[str] 
     【返回】BackgroundScheduler: 已启动的调度器对象(全局 _scheduler)。
     【关键逻辑】
             - 每个管道时间点注册一个 CronTrigger 触发的 _run_daily_pipeline 任务。
-            - 每个研报时间点注册一个 CronTrigger 触发的 _run_research_collection 任务。
+            - 每个研报时间点注册两个 CronTrigger 任务:_run_research_collection
+              (fxbaogao 4 家)与 _run_htfc_collection(华泰天玑,id=research_htfc_{time})。
             - 另注册 _health_check 任务,每 30 分钟(minute="*/30")运行一次。
             - 启动后立即调用 get_db().ensure_default_user() 确保管理员存在。
             - daemon=True:调度器作为守护线程运行,不阻塞主进程退出。
@@ -333,11 +412,17 @@ def start_scheduler(schedule_times: list[str] = None, research_times: list[str] 
 
     for time_str in research_times:
         hour, minute = time_str.split(":")
-        _scheduler.add_job(  # 【调用函数】注册开盘前研报接入任务(与管道任务相互独立)
+        _scheduler.add_job(  # 【调用函数】注册开盘前研报接入任务(fxbaogao 4 家,与管道任务相互独立)
             _run_research_collection,
             CronTrigger(hour=int(hour), minute=int(minute)),
             id=f"research_{time_str}",
             name=f"Research collection {time_str}",
+        )
+        _scheduler.add_job(  # 【调用函数】注册开盘前天玑研报接入任务(华泰官方源,90 分钟超时兜底)
+            _run_htfc_collection,
+            CronTrigger(hour=int(hour), minute=int(minute)),
+            id=f"research_htfc_{time_str}",
+            name=f"HTFC research collection {time_str}",
         )
 
     _scheduler.start()  # 【调用函数】启动调度器(任务开始按时触发)

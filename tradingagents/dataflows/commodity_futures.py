@@ -66,6 +66,7 @@ import json  # 【调用包】JSON 序列化(品种元信息输出)
 import logging  # 【调用包】日志输出(拉取失败告警)
 import pickle  # 【调用包】基差缓存磁盘持久化(重启不丢,序列化 DataFrame)
 import random  # 【调用包】随机延时(降低免费接口请求频率)
+import re  # 【调用包】正则(宏观月份/季度标记解析,get_futures_macro 排序规范化)
 import time  # 【调用包】缓存时间戳与 TTL 过期判断
 import warnings  # 【调用包】过滤 AKShare "非交易日" 信息性警告
 from datetime import timedelta  # 【调用包】日期加减(get_verified_quote 拉取窗口推算)
@@ -85,15 +86,24 @@ from tradingagents.dataflows.external_data import (  # 【调用包】外部数�
     merge_basis_data,
     merge_inventory_data,
 )
+
 # 从 research_data.py(研报注入层)导入人工上传研报的读取接口:
-#   get_research_report_text  格式化研报摘要(供 get_research_report 工具与供需函数并入)
-#   load_research_data        读研报聚合 dict(供基差/库存函数在 merge 时取研报数据点)
-from tradingagents.dataflows.research_data import (  # 【调用包】研报注入层(人工上传研报,可信优先级最高)
-    get_research_report_text,
-    load_research_data,
+#   get_research_report_text      格式化研报摘要(供 get_research_report 工具与供需函数并入)
+#   format_research_views_text    机构/研报群体方向聚合文本(供情绪分析师第二群体工具并入)
+from tradingagents.dataflows.research_data import (
+    format_research_views_text,  # 【调用包】机构(研报)多空汇总文本(确定性,无 LLM)
+    get_research_report_text,  # 【调用包】研报注入层(人工上传研报,可信优先级最高)
 )
 
 logger = logging.getLogger(__name__)
+
+# 国泰君安(GTJA)数据源优先增强(2026-09-03):配置了 GTJA_ACCESS_KEY_ID/SECRET 时,
+#   基差/库存优先取国君(更准更全),空则回落本文件的 AKShare 链路。缺依赖时置 None,
+#   可逆——行为与接入前完全一致。置于 logger 之后,不参与顶部 isort 导入段。
+try:  # 【调用包】GTJA cloudApi 提供者(基差/仓单优先源;未安装依赖不影响启动)
+    from tradingagents.dataflows import gtja_api as _gtja_api  # type: ignore[attr-defined]
+except Exception:  # noqa: BLE001 - 可选增强,导入失败绝不影响主数据链
+    _gtja_api = None
 
 # Suppress AKShare "非交易日" warnings — they're informational
 # (one per weekend/holiday in the date range) and flood the output.
@@ -123,6 +133,7 @@ _BASIS_CACHE_TTL = 6 * 3600  # 【变量】基差缓存有效期 6 小时(日频
 #   重启后用户反馈"提速没生效")。落到磁盘后,同一品种 6h 内跨重启也直接命中;
 #   pickle 损坏/过期一律视为未命中重拉,绝不阻断主流程。
 _BASIS_CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "basis"
+_basis_source: dict[str, str] = {}  # 【变量】当前品种基差数据的来源标签(如 "国泰君安(GTJA)"),供输出 DATA_SOURCE 注释(内存态,不持久化)
 
 
 def _basis_cache_path(code: str) -> Path:
@@ -249,6 +260,121 @@ def _inventory_cache_save(code: str, text: str | None) -> None:
             pickle.dump((time.time(), text), f, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception as e:
         logger.warning("Failed to persist inventory cache for %s: %s", code, e)
+
+
+# ---------------------------------------------------------------------------
+# 【宏观 last-good 缓存 + 日期排序规范化】(2026-09-03)
+# 背景: akshare 的 macro_* 系列多数是【最新在前倒序】(实测 macro_china_pmi/gdp/gdzctz/
+#       cpi/ppi/money_supply 的第 0 行即最新),而 get_futures_macro 原用 .iloc[-1] /
+#       .tail(n) 当"最新",取到的实际是最旧期(2008/2006 年),被宏观分析师判为陈旧丢弃。
+#       修复三层:
+#         · _macro_sort_ascending  按日期列升序规范化后再取最新(修倒序 + GDP '日期'列名错位);
+#         · 进程内新鲜度缓存(30min) 月/季度频数据,同一次"输入看板→跑分析"不重复打免费接口;
+#         · 磁盘 last-good         单接口当天瞬时失败时回读上次成功快照(标注快照日期)。
+# ---------------------------------------------------------------------------
+_MACRO_FRESH_TTL = 30 * 60  # 【变量】宏观新鲜度缓存 TTL 30 分钟(月/季度频,无需更勤)
+_macro_mem_cache: dict[str, tuple[float, str]] = {}  # 【变量】进程内新鲜度:键 "text",值 (时间戳, 文本)
+_MACRO_CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "macro"  # 【变量】宏观 last-good 磁盘目录
+
+
+def _macro_cache_path() -> Path:
+    """宏观 last-good 磁盘文件路径(单文件,按 section 存每节正文)。"""
+    return _MACRO_CACHE_DIR / "macro_last_good.json"
+
+
+def _macro_cache_load() -> dict:
+    """读宏观 last-good JSON;缺失/损坏 → 空 dict,绝不抛。"""
+    try:
+        with open(_macro_cache_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _macro_cache_save(data: dict) -> None:
+    """宏观 last-good 写盘;失败只记日志不阻断(仿 _basis_cache_save)。"""
+    try:
+        _MACRO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_macro_cache_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("Failed to persist macro last-good cache: %s", e)
+
+
+def _macro_date_col(df: pd.DataFrame) -> str:
+    """取该表首个日期类列(月份/季度/日期/TRADE_DATE/date);找不到 → 第 0 列。"""
+    for c in df.columns:
+        if any(k in str(c) for k in ("月份", "季度", "日期", "TRADE_DATE", "date", "Date")):
+            return c
+    return df.columns[0]
+
+
+def _macro_date_key(v) -> tuple | None:
+    """把宏观点上的时间标记解析成可排序的 (年, 月/季末月);解析失败 → None。"""
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return (v.year, v.month)
+    if isinstance(v, str):
+        s = v.strip()
+        m = re.search(r"(\d{4})年(\d{1,2})月", s)
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+        qm = re.search(r"(\d{4})年.*?第(\d)(?:-(\d))?季度", s)
+        if qm:
+            end = int(qm.group(3) or qm.group(2))
+            return (int(qm.group(1)), end * 3)  # 季末近似月,保证同年内升序
+        iso = re.match(r"(\d{4})[-/.](\d{1,2})", s)  # ISO 日/月,如 2026-08-28、2026/08
+        if iso:
+            return (int(iso.group(1)), int(iso.group(2)))
+        if re.fullmatch(r"\d{6}", s):  # 形如 "201501"(社融月度)
+            return (int(s[:4]), int(s[4:6]))
+        if re.fullmatch(r"\d{8}", s):  # 形如 "20260828"
+            return (int(s[:4]), int(s[4:6]))
+        return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)) and v == v:  # 数值(非 NaN);201501 → (2015,1)
+        s = str(int(v))
+        if len(s) == 6 or len(s) == 8:
+            return (int(s[:4]), int(s[4:6]))
+    return None
+
+
+def _macro_sort_ascending(df: pd.DataFrame) -> pd.DataFrame:
+    """按日期列解析键【稳定升序】排;让既有 .iloc[-1]/.tail(n) 语义 = 最新期。
+
+    解析失败的行视为最旧(排最前),避免被误当"最新";全表都解析不出 → 原样返回。
+    """
+    if df is None or df.empty or len(df) < 2:
+        return df
+    col = _macro_date_col(df)
+    keys = [_macro_date_key(x) for x in df[col]]
+    if all(k is None for k in keys):
+        return df
+    order = sorted(range(len(df)), key=lambda i: (0, 0) if keys[i] is None else keys[i])
+    return df.iloc[order].reset_index(drop=True)
+
+
+def _macro_float(v):
+    """宽松转 float;None/非数值/NaN → None。"""
+    try:
+        f = float(v)
+        return f if f == f else None  # NaN 判 False → None
+    except (TypeError, ValueError):
+        return None
+
+
+def _macro_fallback_lines(section: str, err: Exception, sections: dict) -> list[str]:
+    """失败块回退:有上次成功快照 → 输出带快照日期的节;无 → UNAVAILABLE。"""
+    snap = sections.get(section)
+    if snap and snap.get("lines"):
+        d = snap.get("date", "?")
+        return [
+            f"## {section} (快照 {d};接口暂不可用)",
+            *snap["lines"],
+            f"  口径: 上次成功快照({d})数值,非当日抓取;本次错误: {err}",
+        ]
+    return [f"## {section}: UNAVAILABLE ({err})"]
 
 
 def _fetch_exchange_dailystock(date: str) -> dict | None:
@@ -2034,6 +2160,11 @@ def _build_basis_output(code: str, result: pd.DataFrame) -> str:
 
     api_output = out.to_csv(index=False) + basis_note
 
+    # 追加数据来源标注(如 GTJA 优先拉取;AKShare 路径亦打标,便于 Agent/前端辨别)
+    src = _basis_source.get(code)
+    if src:
+        api_output += f"# DATA_SOURCE: {src}\n"
+
     # --- Hybrid injection: merge with external spot price if available ---
     # 【Hybrid Mode 回退逻辑(基差)】
     # merge_basis_data 会先尝试读取 ~/.tradingagents/external_data/{code}.json:
@@ -2090,6 +2221,23 @@ def get_futures_basis(
             if _cached_covers_range(cached_df, start_date, end_date):
                 logger.info("basis cache hit for %s", code)
                 return _build_basis_output(code, cached_df)
+
+    # --- 优先源:国泰君安(GTJA) 基差/现货(2026-09-03 接入) ---
+    # 【设计】配置 GTJA key 时优先取国君现货+基差(更准更全);命中则与 AKShare 路径
+    #   同样写入 6h 磁盘缓存(_basis_cache),重启后也直接命中,不重复打接口。
+    #   国君无该品种(如 SC 无现货指数 → 0 行)或拉取失败 → 落入下方 AKShare 链。
+    if _gtja_api is not None and _gtja_api.configured():
+        gtja_df = None
+        try:
+            gtja_df = _gtja_api.fetch_basis_df(code, start_date, end_date)
+        except Exception as e:  # noqa: BLE001 - 数据层绝不因 GTJA 异常中断主链
+            logger.warning("GTJA basis fetch error for %s: %s", code, e)
+        if gtja_df is not None and not gtja_df.empty:
+            result = _basis_cache_merge_widest(code, gtja_df)
+            _basis_source[code] = "国泰君安(GTJA) 现货+基差"
+            _basis_cache[cache_key] = (time.time(), result.copy())
+            _basis_cache_save(code, result)
+            return _build_basis_output(code, result)
 
     try:
         from akshare import futures_spot_price_daily  # 【调用包】AKShare 现货+基差接口(东方财富)
@@ -2150,6 +2298,9 @@ def get_futures_basis(
         if c in df.columns
     ]
     result = df[keep_cols].copy()
+
+    # 【来源】GTJA 空/未配置时回落 AKShare → 来源标签覆盖为 AKShare(若之前标过 GTJA)
+    _basis_source[code] = "东方财富 现货+基差(AKShare)"
 
     # 【关键】缓存成功拉取、已归一化的 DataFrame,并【合并到最宽覆盖】:老缓存可能更宽
     #   (如先拉 180 天),新拉可能更窄(如切回 60 天)——拼接去重保住最宽窗口,使后续任意
@@ -2225,23 +2376,37 @@ def get_futures_inventory(
             merged_hit, _used = merge_inventory_data(code, cached_text)  # 【调用函数】解包合并结果,仅返回文本
             return merged_hit
 
-    # --- 主源:东财仓单库存 ---
+    # --- 优先源:国泰君安(GTJA) 交易所注册仓单(2026-09-03 接入) ---
+    # 【设计】配置 GTJA key 时优先取国君仓单(实时、较东财/交易所旧版 .dat 更全);
+    #   国君空/失败 → 回落东财 AKShare → 再回落交易所仓单日报,维持原回退链。
     df = None
-    try:
-        from akshare import futures_inventory_em  # 【调用包】AKShare 仓单库存接口(东方财富)
+    used_gtja = False  # 【变量】本次结果是否来自 GTJA 优先源(用于追加来源标注)
+    if _gtja_api is not None and _gtja_api.configured():
+        try:
+            df = _gtja_api.fetch_inventory_df(code)
+        except Exception as e:  # noqa: BLE001 - 数据层绝不因 GTJA 异常中断主链
+            logger.warning("GTJA inventory fetch error for %s: %s", code, e)
+        if df is not None and not df.empty:
+            used_gtja = True
+            logger.info("Inventory for %s via GTJA warehouse receipts (%d pts).", code, len(df))
 
-        time.sleep(random.uniform(0.1, 0.3))
-        df = futures_inventory_em(symbol=inv_code)  # 【调用函数】东财仓单库存(一次返回全部历史)
-    except ImportError:
-        return "DATA_ERROR: akshare is required."
-    except Exception as e:
-        # 【关键】东财失败(SC/WR 在其 POSITIONCODE 表内不存在 → TypeError)→ 走交易所回退源
-        logger.warning(
-            "Eastmoney inventory failed for %s (%s); falling back to exchange warehouse receipts.",
-            code, e,
-        )
+    # --- 回退源1:东财仓单库存(AKShare;GTJA 空/未配置时) ---
+    if df is None or df.empty:
+        try:
+            from akshare import futures_inventory_em  # 【调用包】AKShare 仓单库存接口(东方财富)
 
-    # --- 回退源:交易所仓单日报(dailystock.dat,SHFE/INE 官网) ---
+            time.sleep(random.uniform(0.1, 0.3))
+            df = futures_inventory_em(symbol=inv_code)  # 【调用函数】东财仓单库存(一次返回全部历史)
+        except ImportError:
+            return "DATA_ERROR: akshare is required."
+        except Exception as e:
+            # 【关键】东财失败(SC/WR 在其 POSITIONCODE 表内不存在 → TypeError)→ 走交易所回退源
+            logger.warning(
+                "Eastmoney inventory failed for %s (%s); falling back to exchange warehouse receipts.",
+                code, e,
+            )
+
+    # --- 回退源2:交易所仓单日报(dailystock.dat,SHFE/INE 官网) ---
     used_exchange = False  # 【变量】本次结果是否来自交易所回退源(用于追加来源/截止标注)
     if df is None or df.empty:
         df = _fetch_exchange_inventory(code, meta)  # 【调用函数】回退源:逐日扫描交易所仓单
@@ -2292,7 +2457,14 @@ def get_futures_inventory(
 
     api_output = result.to_csv(index=False) + trend_note
 
-    if used_exchange:
+    if used_gtja:
+        # 【关键】诚实标注 GTJA 优先源(交易所注册仓单;国君实时接口较东财/旧版 .dat 更全)
+        _end = result["date"].iloc[-1].strftime("%Y-%m-%d")
+        api_output += (
+            f"# DATA_SOURCE: 国泰君安(GTJA) 交易所注册仓单\n"
+            f"# DATA_END: {_end}\n"
+        )
+    elif used_exchange:
         # 【关键】诚实标注回退源覆盖范围:旧版 .dat 端点 2026 起 404(交易所迁移新站),
         #   本机数据至 ~2025Q4;大陆服务器部署后可切 tsite 拿当前仓单。
         _end = result["date"].iloc[-1].strftime("%Y-%m-%d")
@@ -2705,172 +2877,312 @@ def get_futures_news(
 
 # 【功能】抓取影响商品期货的中国宏观指标,汇总成文本报告。
 # 【参数】start_date/end_date: 形参保留,当前未使用(接口默认返回全量最新)。
-# 【返回】格式化文本:GDP(季度同比)、制造业PMI(含荣枯线判断)、固定资产投资、
-#        房地产景气指数、工业增加值、建筑业指数(日度)。
-# 【关键逻辑】1) 全部来自 akshare 的 macro_* 系列免费接口:
-#              macro_china_gdp / macro_china_pmi / macro_china_gdzctz /
-#              macro_china_real_estate / macro_china_gyzjz / macro_china_construction_index;
-#           2) 每个指标各自 try/except,单个接口失败不影响其他指标,
-#              失败处输出 "UNAVAILABLE (异常信息)";
-#           3) 在房地产/建筑业部分给出与螺纹钢需求的联动解读(供大模型参考)。
+# 【返回】格式化文本:GDP(季度)、PMI(制造业含荣枯线)、固定资产投资、房地产景气指数、
+#        工业增加值、建筑业指数(日度),及 CPI / PPI / 货币供应(M2-M1-M0) /
+#        LPR / 社会融资规模增量(月度),各节给最新期数值 + 近几期趋势 + 品种相关性解读。
+# 【关键逻辑】1) 数据全部来自 akshare 的 macro_* 系列免费接口;AKShare 这些接口多为
+#              【最新在前倒序】(2026-09-03 实测 pmi/gdp/gdzctz/cpi/ppi/money_supply),
+#              本函数统一先 _macro_sort_ascending 升序规范化,保证"最新一期"取对
+#              (旧实现 .iloc[-1] 曾取到 2008/2006 年数据,宏观段被大模型判为陈旧丢弃);
+#           2) 每个指标各自 try/except:单个接口失败不影响其他指标;失败处优先回退
+#              _macro_cache_load 里上次成功快照(标注快照日期),无快照才输出 UNAVAILABLE;
+#           3) 全部成功后写磁盘 last-good;整体另走 _MACRO_FRESH_TTL 进程内新鲜度缓存,
+#              避免同一次分析重复打 11 个免费接口;
+#           4) 房地产/建筑业/货币/LPR/社融给与品种需求的联动解读(供大模型参考)。
 def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
     """Fetch key China macroeconomic indicators for commodity analysis.
 
     Data sources (via akshare / Eastmoney):
-      - GDP (quarterly, YoY%)
-      - PMI (manufacturing, monthly)
-      - Fixed Asset Investment (monthly, YoY%)
-      - Real Estate Climate Index (monthly)
-      - Industrial Production / Value-Added (monthly, YoY%)
-      - Construction Industry Index (daily)
+      - GDP (quarterly, YoY%), PMI (manufacturing monthly), Fixed Asset Investment
+      - Real Estate Climate Index, Industrial Production / Value-Added, Construction
+      - CPI / PPI (monthly YoY), Money supply M2/M1/M0, LPR, Social financing flow
+    Rows are normalised ascending by period so ".iloc[-1]" means the latest release.
 
     Returns a formatted text report suitable for LLM consumption.
     """
+    # 进程内新鲜度:宏观为月/季度频,30 分钟内同文本直接复用(避免重复打免费接口)。
+    now = time.time()
+    hit = _macro_mem_cache.get("text")
+    if hit and now - hit[0] < _MACRO_FRESH_TTL:
+        return hit[1]
+
     import akshare as ak  # 【调用包】AKShare 宏观指标系列接口(macro_*)
 
     parts = [
         "# CHINA MACROECONOMIC INDICATORS (for commodity futures analysis)",
         "# Data_Source: FREE_API (AKShare / Eastmoney)",
-        "# Note: latest available data points shown. Some series lag 1-2 months.",
+        "# Note: 各序列按官方发布滞后 1-2 个月;已按日期升序规范化,以下均为最新一期。",
         "",
     ]
+    disk = _macro_cache_load()
+    sections = disk.get("sections", {})
+    fresh: dict[str, dict] = {}  # 本次成功节: {"date":..., "lines":[...]},块末并入磁盘缓存
+    yoy: dict[str, float] = {}  # CPI/PPI 最新同比 → 供剪刀差
+    today = datetime.date.today().isoformat()
 
-    # --- GDP ---
-    try:
-        gdp = ak.macro_china_gdp()  # 【调用函数】GDP 季度数据(含三产业同比)
-        if not gdp.empty:
-            latest = gdp.iloc[-1]
-            parts.append("## GDP (季度)")
-            parts.append(f"  最新季度: {latest.get('日期', 'N/A')}")
-            parts.append(f"  GDP 绝对值: {latest.get('国内生产总值-绝对值', 'N/A')} 亿元")
-            parts.append(f"  GDP 同比: {latest.get('国内生产总值-同比增长', 'N/A')}%")
-            parts.append(f"  第一产业同比: {latest.get('第一产业-同比增长', 'N/A')}%")
-            parts.append(f"  第二产业同比: {latest.get('第二产业-同比增长', 'N/A')}%")
-            parts.append(f"  第三产业同比: {latest.get('第三产业-同比增长', 'N/A')}%")
-            # Recent trend
-            recent = gdp.tail(4)
-            parts.append(
-                f"  近四个季度趋势: {', '.join(str(x) for x in recent['国内生产总值-同比增长'].tail(4))}"
-            )
-            parts.append("")
-    except Exception as e:
-        parts.append(f"## GDP: UNAVAILABLE ({e})")
+    def emit(name: str, desc: str, body: list[str]) -> None:
+        """成功块:输出头部 + 正文,并把正文登记为本次快照(块末落盘)。"""
+        parts.append(f"## {name} ({desc})")
+        parts.extend(body)
+        parts.append("")
+        fresh[name] = {"date": today, "lines": body}
+
+    def fail(name: str, err: Exception) -> None:
+        """失败块:优先回退上次成功快照,否则 UNAVAILABLE。"""
+        parts.extend(_macro_fallback_lines(name, err, sections))
         parts.append("")
 
-    # --- PMI ---
+    # --- GDP(季度) ---
     try:
-        pmi = ak.macro_china_pmi()  # 【调用函数】制造业/非制造业 PMI(附荣枯线判断)
+        gdp = _macro_sort_ascending(ak.macro_china_gdp())  # 【调用函数】GDP 季度数据(含三产业同比)
+        if not gdp.empty:
+            dcol = _macro_date_col(gdp)
+            latest = gdp.iloc[-1]
+            recent = gdp.tail(4)
+            body = [
+                f"  最新季度: {latest.get(dcol, 'N/A')}",
+                f"  GDP 绝对值: {latest.get('国内生产总值-绝对值', 'N/A')} 亿元",
+                f"  GDP 同比: {latest.get('国内生产总值-同比增长', 'N/A')}%",
+                f"  第一产业同比: {latest.get('第一产业-同比增长', 'N/A')}%",
+                f"  第二产业同比: {latest.get('第二产业-同比增长', 'N/A')}%",
+                f"  第三产业同比: {latest.get('第三产业-同比增长', 'N/A')}%",
+                f"  近四个季度同比趋势: {', '.join(str(x) for x in recent['国内生产总值-同比增长'].tail(4))}",
+            ]
+            emit("GDP", "季度", body)
+    except Exception as e:
+        fail("GDP", e)
+
+    # --- PMI(月度) ---
+    try:
+        pmi = _macro_sort_ascending(ak.macro_china_pmi())  # 【调用函数】制造业/非制造业 PMI
         if not pmi.empty:
             latest = pmi.iloc[-1]
-            parts.append("## PMI (制造业采购经理指数)")
-            parts.append(f"  最新月份: {latest.get('月份', 'N/A')}")
-            parts.append(f"  制造业PMI: {latest.get('制造业-指数', 'N/A')}")
-            parts.append(f"  非制造业PMI: {latest.get('非制造业-指数', 'N/A')}")
-            # Recent 3 months
             recent = pmi.tail(3)
-            parts.append(
-                f"  近3个月制造业PMI: {', '.join(str(x) for x in recent['制造业-指数'].tail(3))}"
-            )
-            below_50 = float(latest.get("制造业-指数", 50)) < 50
-            parts.append(
-                f"  荣枯线判断: {'**低于50荣枯线，经济收缩**' if below_50 else '高于50荣枯线，经济扩张'}"
-            )
-            parts.append("")
+            idx = _macro_float(latest.get("制造业-指数"))
+            below = idx is not None and idx < 50
+            body = [
+                f"  最新月份: {latest.get('月份', 'N/A')}",
+                f"  制造业PMI: {latest.get('制造业-指数', 'N/A')}",
+                f"  非制造业PMI: {latest.get('非制造业-指数', 'N/A')}",
+                f"  近3个月制造业PMI: {', '.join(str(x) for x in recent['制造业-指数'].tail(3))}",
+                f"  荣枯线判断: {'**低于50荣枯线，经济收缩**' if below else '高于50荣枯线，经济扩张'}",
+            ]
+            emit("PMI", "制造业采购经理指数", body)
     except Exception as e:
-        parts.append(f"## PMI: UNAVAILABLE ({e})")
-        parts.append("")
+        fail("PMI", e)
 
-    # --- Fixed Asset Investment ---
+    # --- 固定资产投资 FAI(月度) ---
     try:
-        fai = ak.macro_china_gdzctz()  # 【调用函数】固定资产投资(FAI,当月/累计同比)
+        fai = _macro_sort_ascending(ak.macro_china_gdzctz())  # 【调用函数】固定资产投资(当月/累计同比)
         if not fai.empty:
             latest = fai.iloc[-1]
-            parts.append("## 固定资产投资 (FAI)")
-            parts.append(f"  最新月份: {latest.get('月份', 'N/A')}")
-            parts.append(f"  当月值: {latest.get('当月', 'N/A')} 亿元")
-            parts.append(f"  同比增长: {latest.get('同比增长', 'N/A')}%")
-            parts.append(f"  累计值: {latest.get('累计值', 'N/A')} 亿元")
-            # Recent trend
             recent = fai.tail(3)
+            body = [
+                f"  最新月份: {latest.get('月份', 'N/A')}",
+                f"  当月值: {latest.get('当月', 'N/A')} 亿元",
+                f"  同比增长: {latest.get('同比增长', 'N/A')}%",
+                f"  累计值: {latest.get('累计值', 'N/A')} 亿元",
+            ]
             trend = [str(x) for x in recent["同比增长"].tail(3) if str(x) != "nan"]
             if trend:
-                parts.append(f"  近3个月同比趋势: {', '.join(trend)}%")
-            parts.append("")
+                body.append(f"  近3个月同比趋势: {', '.join(trend)}%")
+            body.append(
+                "  **判断**: 基建/地产投资是内需型商品(螺纹钢/玻璃/沥青)的核心需求驱动。"
+            )
+            emit("固定资产投资", "FAI", body)
     except Exception as e:
-        parts.append(f"## FAI: UNAVAILABLE ({e})")
-        parts.append("")
+        fail("固定资产投资", e)
 
-    # --- Real Estate ---
+    # --- 房地产景气指数 ---
     try:
-        re = ak.macro_china_real_estate()  # 【调用函数】房地产景气指数(与螺纹钢需求强相关)
-        if not re.empty:
-            latest = re.iloc[-1]
-            col_date = next((c for c in re.columns if "日期" in str(c)), re.columns[0])
-            col_val = next(
-                (c for c in re.columns if "指数值" in str(c) or "值" in str(c)), re.columns[1]
-            )
-            col_chg = next(
-                (c for c in re.columns if "涨跌幅" in str(c) and "近" not in str(c)), None
-            )
-            parts.append("## 房地产景气指数")
-            parts.append(f"  最新日期: {latest.get(col_date, 'N/A')}")
-            real_val = latest.get(col_val, "N/A")
-            parts.append(f"  指数值: {real_val}")
+        re_ = _macro_sort_ascending(ak.macro_china_real_estate())  # 【调用函数】房地产景气指数
+        if not re_.empty:
+            latest = re_.iloc[-1]
+            dcol = _macro_date_col(re_)
+            col_val = next((c for c in re_.columns if "指数值" in str(c) or "值" in str(c)), re_.columns[1])
+            col_chg = next((c for c in re_.columns if "涨跌幅" in str(c) and "近" not in str(c)), None)
+            body = [
+                f"  最新日期: {latest.get(dcol, 'N/A')}",
+                f"  指数值: {latest.get(col_val, 'N/A')}",
+            ]
             if col_chg:
-                parts.append(f"  涨跌幅: {latest.get(col_chg, 'N/A')}%")
-            recent = re.tail(6)
-            recent_vals = [str(x) for x in recent[col_val].tail(6)]
-            parts.append(f"  近6个月指数走势: {', '.join(recent_vals)}")
-            parts.append(
+                body.append(f"  涨跌幅: {latest.get(col_chg, 'N/A')}%")
+            recent_vals = [str(x) for x in re_.tail(6)[col_val].tail(6)]
+            body.append(f"  近6个月指数走势: {', '.join(recent_vals)}")
+            body.append(
                 "  **判断**: 指数持续低迷表明房地产行业仍在筑底，利空螺纹钢需求（房地产占螺纹钢需求约60%）。"
             )
-            parts.append("")
+            emit("房地产景气指数", "月度", body)
     except Exception as e:
-        parts.append(f"## Real Estate: UNAVAILABLE ({e})")
-        parts.append("")
+        fail("房地产景气指数", e)
 
-    # --- Industrial Production ---
+    # --- 工业增加值(月度) ---
     try:
-        ip = ak.macro_china_gyzjz()  # 【调用函数】工业增加值(月度同比/累计增长)
+        ip = _macro_sort_ascending(ak.macro_china_gyzjz())  # 【调用函数】工业增加值(月度同比/累计)
         if not ip.empty:
             latest = ip.iloc[-1]
-            parts.append("## 工业增加值")
-            parts.append(f"  最新月份: {latest.get('月份', 'N/A')}")
-            parts.append(f"  同比增长: {latest.get('同比增长', 'N/A')}%")
-            parts.append(f"  累计增长: {latest.get('累计增长', 'N/A')}%")
-            recent = ip.tail(3)
-            trend = [str(x) for x in recent["同比增长"].tail(3)]
-            parts.append(f"  近3个月同比趋势: {', '.join(trend)}%")
-            parts.append("")
+            body = [
+                f"  最新月份: {latest.get('月份', 'N/A')}",
+                f"  同比增长: {latest.get('同比增长', 'N/A')}%",
+                f"  累计增长: {latest.get('累计增长', 'N/A')}%",
+            ]
+            trend = [str(x) for x in ip.tail(3)["同比增长"].tail(3)]
+            body.append(f"  近3个月同比趋势: {', '.join(trend)}%")
+            emit("工业增加值", "月度", body)
     except Exception as e:
-        parts.append(f"## Industrial Production: UNAVAILABLE ({e})")
-        parts.append("")
+        fail("工业增加值", e)
 
-    # --- Construction Industry Index ---
+    # --- 建筑业指数(日度) ---
     try:
-        ci = ak.macro_china_construction_index()  # 【调用函数】建筑业指数(日度,建筑活动强弱直接反映)
+        ci = _macro_sort_ascending(ak.macro_china_construction_index())  # 【调用函数】建筑业指数
         if not ci.empty:
             latest = ci.iloc[-1]
-            col_date = next((c for c in ci.columns if "日期" in str(c)), ci.columns[0])
-            col_val = next(
-                (c for c in ci.columns if "指数值" in str(c) or "值" in str(c)), ci.columns[1]
-            )
-            parts.append("## 建筑业指数 (日度)")
-            parts.append(f"  最新日期: {latest.get(col_date, 'N/A')}")
-            parts.append(f"  指数值: {latest.get(col_val, 'N/A')}")
-            # Weekly trend (last 5 trading days)
-            recent = ci.tail(5)
-            recent_vals = [str(x) for x in recent[col_val].tail(5)]
-            parts.append(f"  近5个交易日: {', '.join(recent_vals)}")
-            parts.append(
+            dcol = _macro_date_col(ci)
+            col_val = next((c for c in ci.columns if "指数值" in str(c) or "值" in str(c)), ci.columns[1])
+            body = [
+                f"  最新日期: {latest.get(dcol, 'N/A')}",
+                f"  指数值: {latest.get(col_val, 'N/A')}",
+            ]
+            recent_vals = [str(x) for x in ci.tail(5)[col_val].tail(5)]
+            body.append(f"  近5个交易日: {', '.join(recent_vals)}")
+            body.append(
                 "  **与钢铁需求关系**: 建筑业是螺纹钢最大下游，指数走势直接反映建筑活动强弱。"
             )
-            parts.append("")
+            emit("建筑业指数", "日度", body)
     except Exception as e:
-        parts.append(f"## Construction Index: UNAVAILABLE ({e})")
-        parts.append("")
+        fail("建筑业指数", e)
 
-    return "\n".join(parts)
+    # --- CPI(月度) ---
+    try:
+        cpi = _macro_sort_ascending(ak.macro_china_cpi())  # 【调用函数】CPI(月度,全国/城市/农村)
+        if not cpi.empty:
+            latest = cpi.iloc[-1]
+            cy = _macro_float(latest.get("全国-同比增长"))
+            if cy is not None:
+                yoy["CPI"] = cy
+            body = [
+                f"  最新月份: {latest.get('月份', 'N/A')}",
+                f"  CPI 当月(指数): {latest.get('全国-当月', 'N/A')}",
+                f"  CPI 同比: {latest.get('全国-同比增长', 'N/A')}%",
+                f"  CPI 环比: {latest.get('全国-环比增长', 'N/A')}%",
+            ]
+            trend = [str(x) for x in cpi.tail(3)["全国-同比增长"].tail(3)]
+            body.append(f"  近3个月CPI同比趋势: {', '.join(trend)}%")
+            body.append(
+                "  **解读**: CPI 温和→终端需求平稳;若 CPI 大幅波动会牵动货币政策与内需类商品(农副/生猪)预期。"
+            )
+            emit("CPI", "居民消费价格指数", body)
+    except Exception as e:
+        fail("CPI", e)
+
+    # --- PPI(月度, 与 CPI 剪刀差) ---
+    try:
+        ppi = _macro_sort_ascending(ak.macro_china_ppi())  # 【调用函数】PPI(工业生产者出厂价格)
+        if not ppi.empty:
+            latest = ppi.iloc[-1]
+            py = _macro_float(latest.get("当月同比增长"))
+            if py is not None:
+                yoy["PPI"] = py
+            body = [
+                f"  最新月份: {latest.get('月份', 'N/A')}",
+                f"  PPI 当月(指数): {latest.get('当月', 'N/A')}",
+                f"  PPI 同比: {latest.get('当月同比增长', 'N/A')}%",
+                f"  PPI 累计(指数): {latest.get('累计', 'N/A')}",
+            ]
+            if "CPI" in yoy and "PPI" in yoy:
+                spread = yoy["PPI"] - yoy["CPI"]
+                tone = (
+                    "PPI 涨幅高于 CPI → 中上游利润修复,对工业品/黑色偏多"
+                    if spread > 0
+                    else "PPI 跑输 CPI → 中上游利润承压,对工业品需求偏谨慎"
+                )
+                body.append(f"  PPI-CPI 剪刀差(PPI同比−CPI同比): {spread:+.1f} 个百分点 — {tone}")
+            emit("PPI", "工业生产者出厂价格指数", body)
+    except Exception as e:
+        fail("PPI", e)
+
+    # --- 货币供应 M2/M1/M0(月度) ---
+    try:
+        ms = _macro_sort_ascending(ak.macro_china_money_supply())  # 【调用函数】货币供应量(M2/M1/M0)
+        if not ms.empty:
+            latest = ms.iloc[-1]
+            m2 = _macro_float(latest.get("货币和准货币(M2)-同比增长"))
+            m1 = _macro_float(latest.get("货币(M1)-同比增长"))
+            body = [
+                f"  最新月份: {latest.get('月份', 'N/A')}",
+                f"  M2 同比: {latest.get('货币和准货币(M2)-同比增长', 'N/A')}%",
+                f"  M1 同比: {latest.get('货币(M1)-同比增长', 'N/A')}%",
+                f"  M0 同比: {latest.get('流通中的现金(M0)-同比增长', 'N/A')}%",
+            ]
+            if m2 is not None and m1 is not None:
+                spread = m1 - m2
+                tone = (
+                    "剪刀差走扩/为正 → 企业活期资金活化、实体景气回暖,利多内需型商品"
+                    if spread > 0
+                    else "剪刀差为负/走弱 → 企业活化不足、实体需求谨慎,对商品需求偏空"
+                )
+                body.append(f"  M1-M2 剪刀差(M1同比−M2同比): {spread:+.1f} 个百分点 — {tone}")
+            emit("货币供应", "M2/M1/M0 月度", body)
+    except Exception as e:
+        fail("货币供应", e)
+
+    # --- LPR(月度) ---
+    try:
+        lpr = _macro_sort_ascending(ak.macro_china_lpr())  # 【调用函数】LPR(1Y/5Y 报价,升序)
+        if not lpr.empty:
+            latest = lpr.iloc[-1]
+            prev = lpr.iloc[-2] if len(lpr) >= 2 else latest
+            l1, l1p = _macro_float(latest.get("LPR1Y")), _macro_float(prev.get("LPR1Y"))
+            l5, l5p = _macro_float(latest.get("LPR5Y")), _macro_float(prev.get("LPR5Y"))
+            d1 = f"{l1 - l1p:+.2f}" if (l1 is not None and l1p is not None) else "—"
+            d5 = f"{l5 - l5p:+.2f}" if (l5 is not None and l5p is not None) else "—"
+
+            def _rate(v, chg):
+                return "N/A" if v is None else f"{v:g}% (较上期 {chg})"
+
+            body = [
+                f"  最新公布日: {latest.get('TRADE_DATE', 'N/A')}",
+                f"  LPR1Y: {_rate(l1, d1)}",
+                f"  LPR5Y: {_rate(l5, d5)}",
+                "  **解读**: LPR5Y 定房贷与长端融资成本,直接影响地产/基建链(螺纹/玻璃/沥青)需求预期;LPR1Y 影响短期资金成本。",
+            ]
+            emit("LPR", "贷款市场报价利率", body)
+    except Exception as e:
+        fail("LPR", e)
+
+    # --- 社会融资规模增量(月度) ---
+    try:
+        sz = _macro_sort_ascending(ak.macro_china_shrzgm())  # 【调用函数】社会融资规模增量
+        if not sz.empty:
+
+            def _fmt_month(v):
+                s = str(v)
+                if len(s) == 6 and s.isdigit():
+                    return f"{s[:4]}年{s[4:]}月"
+                return v
+
+            latest = sz.iloc[-1]
+            body = [
+                f"  最新月份: {_fmt_month(latest.get('月份', 'N/A'))}",
+                f"  社会融资规模增量: {latest.get('社会融资规模增量', 'N/A')} 亿元",
+                f"  其中人民币贷款: {latest.get('其中-人民币贷款', 'N/A')} 亿元",
+            ]
+            inc_recent = [str(x) for x in sz.tail(3)["社会融资规模增量"].tail(3)]
+            body.append(f"  近3月增量: {', '.join(inc_recent)} 亿元")
+            body.append(
+                "  **解读**: 社融增量是实体融资需求的领先指标;多增预示投资需求回暖,利多内需型商品(黑色/建材)。"
+            )
+            emit("社会融资规模增量", "月度", body)
+    except Exception as e:
+        fail("社会融资规模增量", e)
+
+    # 落盘:本次成功节并入磁盘 last-good;文本进进程内新鲜度缓存后返回。
+    if fresh:
+        disk.setdefault("sections", {}).update(fresh)
+        _macro_cache_save(disk)
+    text = "\n".join(parts)
+    _macro_mem_cache["text"] = (time.time(), text)
+    return text
 
 
 # 【功能】汇总一个品种的供需两侧指标(产量、成交、开工率、利润、库存、事件等)。
@@ -3080,6 +3392,17 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
 def get_research_report(variety: str, start_date: str = "", end_date: str = "") -> str:
     """Fetch manually-uploaded research report summaries for a variety (HIGHEST priority)."""
     return get_research_report_text(variety)  # 【调用函数】读研报聚合 JSON 并格式化为文本(无研报返回 RESEARCH_NO_DATA 哨兵)
+
+
+# 【功能】机构/研报群体的方向聚合文本(情绪分析师"第二群体"取数)。
+# 【参数】variety: 品种代码;start_date/end_date: 形参保留(与其它 get_futures_* 签名一致)。
+# 【返回】按方向统计的研报多空汇总文本;无研报返回 RESEARCH_VIEW_NO_DATA 哨兵。
+# 【关键逻辑】薄封装 research_data.format_research_views_text(确定性,无 LLM)。研报多空
+#           方向=机构主观观点,情绪分析师把它当作"机构群体"与社媒"散户群体"并列分析;
+#           机构多空计数按 direction 全量计(客观性过滤不在此层)。
+def get_research_view_summary(variety: str, start_date: str = "", end_date: str = "") -> str:
+    """Fetch the institutional (research-report) group's aggregated directional views."""
+    return format_research_views_text(variety)  # 【调用函数】机构(研报)方向聚合文本(无研报返回 RESEARCH_VIEW_NO_DATA 哨兵)
 
 
 # ---------------------------------------------------------------------------

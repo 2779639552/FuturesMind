@@ -38,6 +38,19 @@ def _dummy_api_keys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _disable_gtja(monkeypatch):
+    """GTJA(国泰君安)是真实联网的优先数据源:默认置空 key,令离线单测稳定走原链路。
+
+    commodity_futures 基差/库存 与 web 观点路由都以 ``gtja_api.configured()``
+    (key 非空)为接入开关;置空 key 后该分支天然跳过 → 既有 cache/回退测试在无网
+    环境保持确定性(不真的打国君接口)。需要测 GTJA 分支的用例自行 setenv 补 key,
+    或 monkeypatch gtja_api.configured()/_request()。
+    """
+    monkeypatch.setenv("GTJA_ACCESS_KEY_ID", "")
+    monkeypatch.setenv("GTJA_ACCESS_KEY_SECRET", "")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_config():
     """Reset the global dataflows config before and after each test.
 

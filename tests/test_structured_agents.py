@@ -406,9 +406,11 @@ class TestCommoditySentimentAnalyst:
             "tradingagents.agents.analysts.sentiment_analyst._run_tool_loop", side_effect=fake_loop
         ):
             create_commodity_sentiment_analyst(llm)(_make_commodity_state())
+        # 2026-09-03:情绪分析师新增"机构(研报)群体"工具 get_research_view_summary。
         assert seen["tool_names"] == [
             "get_futures_price",
             "get_futures_sentiment",
+            "get_research_view_summary",
             "get_variety_info",
             "get_verified_quote",
         ]

@@ -1,0 +1,24 @@
+# Minimal runtime dependencies for analyze_one.py (10 packages).
+# Keep this file ASCII-only: pip decodes it with the locale encoding (GBK on
+# Chinese Windows), so any non-ASCII comment breaks the install.
+#
+# Install: pip install -r min-requirements.txt
+# Faster in CN network: pip install -r min-requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# LLM client + tool framework
+langchain-core>=0.3.81
+langchain-openai>=0.3.23
+langgraph>=0.4.8   # needed transitively: tradingagents/agents/__init__ imports agent_states
+
+# env loading / HTTP / dataframe
+python-dotenv>=1.0.0
+requests>=2.32.4
+pandas>=2.3.0
+
+# market & news data sources
+yfinance>=1.4.1
+stockstats>=0.6.5
+python-dateutil>=2.9.0
+
+# Chinese commodity futures quotes (real-time; lazily imported inside tools)
+akshare>=1.18

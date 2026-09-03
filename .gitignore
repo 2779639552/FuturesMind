@@ -257,3 +257,6 @@ FuturesMind Web.lnk
 # 运行期杂项(2026-09-04): 本地散库副本与 web 日志
 data/*.db
 _web_err.log
+
+# 研报批量重跑前的磁盘备份(DB+聚合JSON, 不进 git)
+backup/

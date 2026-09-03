@@ -1,4 +1,4 @@
-# FuturesMind v2.9 — Commodity Futures Multi-Agent Research System
+# FuturesMind v2.9 - Commodity Futures Multi-Agent Research System
 #
 # Full dependency list is in pyproject.toml.
 # Run: pip install -e .     (installs everything from pyproject.toml)
@@ -16,7 +16,7 @@ akshare>=1.18
 # Eastmoney Guba / xueqiu / zhihu collection (Playwright APIRequestContext, WAF TLS bypass)
 playwright>=1.61
 
-# Markdown report → PDF export (/api/report/<file>/pdf, web_app.py uses fpdf2)
+# Markdown report -> PDF export (/api/report/<file>/pdf, web_app.py uses fpdf2)
 fpdf2>=2.7
 
 # Research report PDF text extraction (/api/research/upload, web_app.py uses fitz)

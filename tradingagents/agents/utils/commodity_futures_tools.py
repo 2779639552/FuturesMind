@@ -251,6 +251,42 @@ def get_research_report(
     return route_to_vendor("get_research_report", symbol, "", "")  # 【调用函数】跨模块路由:取人工上传研报摘要(最高优先级数据源)
 
 
+# 【功能】机构/研报群体的方向聚合视图(情绪分析师"第二群体"取数)。
+# 【参数】symbol: 品种代码。
+# 【返回】按方向统计的研报多空汇总文本;无研报返回 RESEARCH_VIEW_NO_DATA 哨兵。
+# 【关键逻辑】转发给 route_to_vendor("get_research_view_summary", symbol, "", "");
+#           底层读 research_data.format_research_views_text(确定性,无 LLM)。研报多空
+#           方向=机构主观观点,与 get_futures_sentiment(散户社媒)配套构成"两群体":
+#           情绪分析师应把两者分开分析并做机构 vs 散户 背离/共振判定。
+@tool
+def get_research_view_summary(
+    symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
+) -> str:
+    """
+    Get the INSTITUTIONAL (research-report) group's aggregated directional views.
+
+    Human-uploaded research reports aggregated by direction. Returns per-direction
+    counts (看多/偏多 vs 中性 vs 看空/偏空), average confidence per group, and each
+    report's source/title/direction/confidence plus a one-line opinion summary.
+
+    Use this for SENTIMENT analysis when you reason about TWO groups on the same
+    variety:
+      - Group A = 机构/研报 (institutional research views) — THIS tool;
+      - Group B = 散户/社媒 (retail social-media views) — use `get_futures_sentiment`.
+    The report-direction counts are the institutional group's SENTIMENT signal; the
+    objective figures inside the reports are handled by the Fundamental analyst.
+
+    If the response starts with "RESEARCH_VIEW_NO_DATA", no research has been
+    uploaded for the variety — report the institutional side honestly as ABSENT
+    rather than inventing it.
+    Args:
+        symbol: Variety code like RB, I, HC
+    Returns:
+        Aggregated institutional directional-views text (or RESEARCH_VIEW_NO_DATA sentinel).
+    """
+    return route_to_vendor("get_research_view_summary", symbol, "", "")  # 【调用函数】跨模块路由:机构(研报)方向聚合(确定性,无 LLM)
+
+
 # 【功能】获取品种的社交媒体情绪数据(微博/知乎/小红书)。
 # 【参数】symbol: 品种代码。
 # 【返回】格式化情绪报告文本。

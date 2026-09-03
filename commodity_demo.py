@@ -574,6 +574,9 @@ def build_commodity_graph(
     enable_feedback: bool = True,
     max_feedback_rounds: int = 5,
     include_sentiment: bool = True,
+    include_debate: bool = True,
+    include_synthesis: bool = True,
+    include_scenario: bool = True,
 ):
     """Build a LangGraph for commodity futures analysis.
 
@@ -589,7 +592,8 @@ def build_commodity_graph(
     # 【功能】构建整张商品分析 LangGraph 图,返回"已编译的可执行图"和"独立的用户反馈节点"。
     # 【参数】config: 配置字典(含 llm_provider、quick_think_llm、deep_think_llm 等);
     #          enable_feedback: 是否启用用户反馈(自我进化)节点;
-    #          max_feedback_rounds: 反馈对话最多轮数;include_sentiment: 是否包含情绪分析师。
+    #          max_feedback_rounds: 反馈对话最多轮数;include_sentiment: 是否包含情绪分析师;
+    #          include_debate/synthesis/scenario: 是否运行辩论/综合研判/情景(综合研判关 ⇒ 辩论+情景连锁关)。
     # 【返回】(graph.compile() 编译后的 app, feedback_node)。feedback_node 可单独调用,
     #         用于在分析完成后与用户进行独立讨论。
     # 【关键逻辑】完整的节点链(实际)为:
@@ -602,6 +606,11 @@ def build_commodity_graph(
     #           deep_llm 仅剩"用户反馈(自我进化)"节点使用;
     #           这是 v2.4 引入的"双 LLM 分工";综合研判 2026-09-01 由 deep 改 quick,
     #           情景分析同日由 deep 改 quick(实测显示情景才是占 ~18% 的慢节点之一)。
+
+    # 综合研判是"主开关":关闭它意味着不要最终结论 → 辩论素材与情景推演都无人消费,连锁关闭。
+    if not include_synthesis:
+        include_debate = False
+        include_scenario = False
 
     # Dual LLM: quick for analysts/debate/synthesis/scenario, deep only for feedback
     # quick_llm —— 快而省,用于分析师/辩论/综合研判/情景(高频、量大,不需要最高质量)
@@ -662,12 +671,15 @@ def build_commodity_graph(
     graph.add_node("macro_analyst", macro_node)
     if include_sentiment:
         graph.add_node("sentiment_analyst", sentiment_node)
-    graph.add_node("bull_opening", bull_opening_node)  # 多方开篇
-    graph.add_node("bear_refute", bear_node)  # 空方反驳
-    graph.add_node("bull_rebuttal", bull_rebuttal_node)  # 多方再反驳(最后发言)
-    graph.add_node("debate_moderator", moderator_node)  # 主持人裁决
-    graph.add_node("synthesis", synthesis_node)  # 综合研判
-    graph.add_node("scenario_analysis", scenario_node)  # 三情景分析
+    if include_debate:
+        graph.add_node("bull_opening", bull_opening_node)  # 多方开篇
+        graph.add_node("bear_refute", bear_node)  # 空方反驳
+        graph.add_node("bull_rebuttal", bull_rebuttal_node)  # 多方再反驳(最后发言)
+        graph.add_node("debate_moderator", moderator_node)  # 主持人裁决
+    if include_synthesis:
+        graph.add_node("synthesis", synthesis_node)  # 综合研判
+    if include_scenario:
+        graph.add_node("scenario_analysis", scenario_node)  # 三情景分析
 
     # Fan-out: START → analysts in parallel (sentiment optional)
     # 扇出:从 START 同时连到所有分析师 —— 这是 LangGraph 实现"并行"的方式,
@@ -678,26 +690,35 @@ def build_commodity_graph(
     if include_sentiment:
         graph.add_edge(START, "sentiment_analyst")
 
-    # Fan-in → Bull Opening (R1)
-    # 扇入:四名分析师全部完成后才进入多方开篇节点 —— 保证辩论开始时四份报告都已就绪。
-    graph.add_edge("technical_analyst", "bull_opening")  # 【调用函数】技术面完成 → 进入多方开篇(扇入,保证四份报告就绪)
-    graph.add_edge("fundamental_analyst", "bull_opening")
-    graph.add_edge("macro_analyst", "bull_opening")
+    # 已启用的分析师节点列表:技术/基本面/宏观为固定"数据层",情绪由 include_sentiment 决定。
+    analyst_nodes = ["technical_analyst", "fundamental_analyst", "macro_analyst"]
     if include_sentiment:
-        graph.add_edge("sentiment_analyst", "bull_opening")
+        analyst_nodes.append("sentiment_analyst")
 
-    # Debate: Bull(R1) → Bear(R1) → Bull(R2 rebuttal) → Moderator
-    # Both sides get equal turns; Bull gets LAST WORD (fair rebuttal right)
-    # 辩论主线:双方各发言两轮对等,且多方拥有"最后发言权"(公平反驳权)。
-    graph.add_edge("bull_opening", "bear_refute")  # 【调用函数】辩论主线:多方→空方→多方再反驳→主持人
-    graph.add_edge("bear_refute", "bull_rebuttal")
-    graph.add_edge("bull_rebuttal", "debate_moderator")
+    if include_synthesis:
+        # 扇入到下游"首节点":辩论启用则进 bull_opening(全部报告就绪后开辩),
+        # 否则直达 synthesis —— 跳辩论时综合研判直接基于各分析师报告产出。
+        downstream = "bull_opening" if include_debate else "synthesis"
+        for a in analyst_nodes:
+            graph.add_edge(a, downstream)
 
-    # Moderator → Synthesis → Scenario → END
-    # 裁决后顺序执行:综合研判 -> 三情景分析 -> 结束。
-    graph.add_edge("debate_moderator", "synthesis")  # 【调用函数】裁决后 → 综合研判 → 三情景 → 结束
-    graph.add_edge("synthesis", "scenario_analysis")
-    graph.add_edge("scenario_analysis", END)
+        if include_debate:
+            # Debate: Bull(R1) → Bear(R1) → Bull(R2 last-word rebuttal) → Moderator
+            # 辩论主线:双方各发言两轮对等,且多方拥有"最后发言权"(公平反驳权)。
+            graph.add_edge("bull_opening", "bear_refute")
+            graph.add_edge("bear_refute", "bull_rebuttal")
+            graph.add_edge("bull_rebuttal", "debate_moderator")
+            graph.add_edge("debate_moderator", "synthesis")
+        # 综合研判之后的收尾:情景启用则多一段,否则直接 END。
+        if include_scenario:
+            graph.add_edge("synthesis", "scenario_analysis")
+            graph.add_edge("scenario_analysis", END)
+        else:
+            graph.add_edge("synthesis", END)
+    else:
+        # 极简档(仅基础报告):无辩论/综合/情景,各分析师完成即各自汇入 END。
+        for a in analyst_nodes:
+            graph.add_edge(a, END)
 
     # 编译图并返回;同时把 feedback_node 单独返回,供 main() 在分析结束后独立调用。
     return graph.compile(), feedback_node  # Return feedback_node for standalone use  # 【调用函数】编译图(生成可执行 app)并返回独立反馈节点
@@ -715,16 +736,23 @@ def main():
     【参数】无(命令行参数通过 sys.argv 读取)。
     【返回】无(正常结束返回;分析失败会 sys.exit(1))。
     【关键逻辑】参数解析用手写 while 循环(而非 argparse),支持 [品种] [日期] 两个位置参数,
-               以及 --no-feedback / --feedback-rounds N 两个开关;图用 app.stream(..., stream_mode="updates")
-               逐节点流式执行,实时打印每个节点的产出。
+               以及 --no-feedback / --feedback-rounds N / --mode {full|light|minimal}
+               / --skip-debate / --skip-synthesis / --skip-scenario 开关;图用
+               app.stream(..., stream_mode="updates") 逐节点流式执行,实时打印每个节点的产出。
     """
     # Parse arguments —— 手动解析命令行参数(未用 argparse,以支持灵活的位置参数)
     # Support: commodity_demo.py [symbol] [date] [--no-feedback] [--feedback-rounds N]
+    #          [--mode full|light|minimal] [--skip-debate] [--skip-synthesis] [--skip-scenario]
     args = sys.argv[1:]  # 【变量】args:命令行参数列表(去掉脚本名)
     symbol = "RB"  # 默认品种:螺纹钢  # 【变量】symbol:品种代码(可被位置参数覆盖)
     trade_date = "2026-07-14"  # 默认交易日期  # 【变量】trade_date:分析日期(可被位置参数覆盖)
     enable_feedback = True  # 默认开启用户反馈(自我进化)  # 【变量】enable_feedback:是否启用用户反馈(--no-feedback 关闭)
     max_feedback_rounds = 5  # 反馈对话默认最多 5 轮  # 【变量】max_feedback_rounds:反馈对话最多轮数
+    # 模块开关:默认全开(=现行为)。light 档跳辩论+情景;minimal 档仅基础报告(跳综合研判)。
+    # 【变量】include_debate/include_synthesis/include_scenario:是否运行辩论/综合研判/情景
+    include_debate = True  # 【变量】include_debate:是否运行辩论对抗(多方开篇→空方反驳→多方反驳→裁决)
+    include_synthesis = True  # 【变量】include_synthesis:是否运行综合研判(最终评级;主开关)
+    include_scenario = True  # 【变量】include_scenario:是否运行情景分析(三情景推演)
 
     i = 0
     while i < len(args):
@@ -736,6 +764,22 @@ def main():
             # contextlib.suppress 吞掉 ValueError:参数不是数字时静默保留默认值
             with contextlib.suppress(ValueError):
                 max_feedback_rounds = int(args[i])
+        elif a == "--mode" and i + 1 < len(args):
+            # 预设档位:light = 跳辩论+情景(保留综合研判);minimal = 仅基础报告(跳综合研判)。
+            # 预设只作起点,可再被下方细粒度 --skip-* 微调。
+            i += 1
+            mode = args[i]
+            if mode == "light":
+                include_debate = False
+                include_scenario = False
+            elif mode == "minimal":
+                include_synthesis = False
+        elif a == "--skip-debate":
+            include_debate = False  # 细粒度:单独跳过辩论对抗
+        elif a == "--skip-synthesis":
+            include_synthesis = False  # 细粒度:单独跳过综合研判(会连锁关闭辩论+情景)
+        elif a == "--skip-scenario":
+            include_scenario = False  # 细粒度:单独跳过情景分析
         elif not a.startswith("--"):
             # 位置参数:第一个非 "--" 开头的当作品种(默认 RB 时),第二个当作日期。
             # "202" 前缀用于区分"日期"与"品种"(避免把日期误判为品种)。
@@ -744,6 +788,11 @@ def main():
             elif trade_date == "2026-07-14":
                 trade_date = a
         i += 1
+
+    # 强制规则(与 build_commodity_graph 内部一致):综合研判关闭 ⇒ 辩论+情景一并关闭(否则白跑)。
+    if not include_synthesis:
+        include_debate = False
+        include_scenario = False
 
     symbol = symbol.upper()  # 品种代码统一转大写(如 rb -> RB)
 
@@ -764,6 +813,16 @@ def main():
     if enable_feedback:
         graph_desc += " -> User Feedback (self-evolution)"
     print(f"[Graph] {graph_desc}")
+    # 打印本次跳过的模块,避免"跑了轻量档却被当成完整分析"的静默降级。
+    skipped_mods = []
+    if not include_debate:
+        skipped_mods.append("辩论对抗")
+    if not include_synthesis:
+        skipped_mods.append("综合研判")
+    if not include_scenario:
+        skipped_mods.append("情景分析")
+    if skipped_mods:
+        print(f"[Modules] 本次跳过: {', '.join(skipped_mods)}")
     print()
 
     # Load evolution memory for this variety (injected into analyst prompts)
@@ -780,6 +839,9 @@ def main():
         config,
         enable_feedback=enable_feedback,
         max_feedback_rounds=max_feedback_rounds,
+        include_debate=include_debate,
+        include_synthesis=include_synthesis,
+        include_scenario=include_scenario,
     )
 
     # Create initial state —— 构造图的起始输入
@@ -941,8 +1003,18 @@ def main():
         f.write(f"# Commodity Futures Analysis: {symbol}\n\n")
         f.write(f"**Date**: {trade_date}\n")
         f.write(f"**Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"**Elapsed**: {elapsed:.0f}s\n\n")
-        f.write("---\n\n")
+        f.write(f"**Elapsed**: {elapsed:.0f}s\n")
+        # 文件头自述本次跳过的模块,避免历史报告被误读成"完整分析"。
+        skipped_mods = []
+        if not include_debate:
+            skipped_mods.append("辩论对抗")
+        if not include_synthesis:
+            skipped_mods.append("综合研判")
+        if not include_scenario:
+            skipped_mods.append("情景分析")
+        if skipped_mods:
+            f.write(f"> 本次运行跳过模块: {', '.join(skipped_mods)}\n")
+        f.write("\n---\n\n")
         for title, content in reports:
             if content:
                 f.write(f"## {title}\n\n{content}\n\n---\n\n")
