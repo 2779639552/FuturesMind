@@ -9,7 +9,6 @@ import json
 import re
 import sys
 import types
-from pathlib import Path
 
 import pytest
 
@@ -17,7 +16,6 @@ import database
 import tradingagents.dataflows.external_data as ed
 import tradingagents.dataflows.research_data as rd
 import web_app
-
 
 # ---------------------------------------------------------------------------
 # fixtures 与合成数据
@@ -120,6 +118,35 @@ class TestResearchDatabaseCRUD:
         # 旧行(varieties 为空)回退主品种列
         rid2 = db.insert_research_report(variety="HC", title="B", source="", filename="", file_path="")
         assert [r["id"] for r in db.list_research_reports("HC")] == [rid2]
+
+    def test_ingest_source_default_manual_and_roundtrip(self, tmp_path):
+        db = database.AgentSenseDB(tmp_path / "test.db")
+        # 默认(不传)落 manual —— 网页人工上传的既定口径
+        rid = db.insert_research_report(variety="RB", title="A", source="", filename="", file_path="")
+        assert db.get_research_report(rid)["ingest_source"] == "manual"
+        # 显式 auto —— 采集/本地批量接入
+        rid2 = db.insert_research_report(
+            variety="CU", title="B", source="", filename="", file_path="", ingest_source="auto"
+        )
+        assert db.get_research_report(rid2)["ingest_source"] == "auto"
+        assert db.get_research_report(rid)["ingest_source"] == "manual"  # 互不污染
+
+    def test_ingest_source_filter_and_variety_combo(self, tmp_path):
+        db = database.AgentSenseDB(tmp_path / "test.db")
+        db.insert_research_report(variety="RB", title="A", source="", filename="", file_path="")  # manual
+        db.insert_research_report(variety="RB", title="B", source="", filename="", file_path="", ingest_source="auto")
+        db.insert_research_report(variety="CU", title="C", source="", filename="", file_path="", ingest_source="auto")
+        # 单来源过滤
+        assert [r["title"] for r in db.list_research_reports(ingest_source="manual")] == ["A"]
+        assert sorted(r["title"] for r in db.list_research_reports(ingest_source="auto")) == ["B", "C"]
+        # 不传来源:行为不变,返回全部
+        assert len(db.list_research_reports()) == 3
+        # 组合过滤 (variety, ingest_source)
+        assert [r["title"] for r in db.list_research_reports("RB", ingest_source="auto")] == ["B"]
+        assert db.list_research_reports("RB", ingest_source="auto")[0]["ingest_source"] == "auto"
+        assert db.list_research_reports("CU", ingest_source="manual") == []
+        # 未知来源过滤 → 空(参数化,不报错)
+        assert db.list_research_reports(ingest_source="bogus") == []
 
 
 # ---------------------------------------------------------------------------
@@ -428,3 +455,831 @@ class TestResearchHighPriorityConsumption:
         assert "需求回暖钢价偏强" in out
         # 研报块在 External Data 之前
         assert out.index("## Research Reports") < out.index("## External Data")
+
+
+class TestOpinionConclusionPromptShape:
+    """核心观点提示词(2026-09-02 两段式)形态:六固定小节(200 字左右)+ 补回数据支撑/分歧/建议权重。"""
+
+    class _CaptureLLM:
+        """逐品种各捕获一次:prompts 存全部调用,prompt 为最后一次(单品种时等价)。"""
+
+        def __init__(self):
+            self.prompts: list[str] = []
+            self.prompt = ""
+
+        def invoke(self, prompt):
+            self.prompts.append(prompt)
+            self.prompt = prompt
+            return types.SimpleNamespace(content="## 供需格局\n样本观点输出")
+
+    def test_prompt_has_fixed_sections_and_writing_rules(self):
+        llm = self._CaptureLLM()
+        out = web_app._llm_opinion_conclusion(
+            llm,
+            "研报正文:现货低库存,开工回升。",
+            [{"variety": "RB", "direction": "看多", "confidence": 0.8}],
+        )
+        p = llm.prompt
+        # 第一部分:七固定小节齐备(2026-09-03 交易要素化,新增 交易要素与风险)
+        for sec in ("## 供需格局", "## 库存与结构", "## 成本与利润",
+                    "## 现货与目标价", "## 事件与驱动", "## 观点与依据",
+                    "## 交易要素与风险"):
+            assert sec in p
+        # 篇幅要求(第一部分 340 字左右)+ 未披露明说(严禁编造)
+        assert "340 字左右" in p
+        assert "研报未披露该指标" in p
+        # 五要素引导词(交易行硬约束:单行分号分隔,缺失写 —)
+        for hint in ("方向", "形态与区间", "单边", "区间震荡", "头寸", "头寸范围", "风险"):
+            assert hint in p
+        # 缺失写「—」,不写"未披露"字样(避开前端占位判据)
+        assert "一律写「—」" in p
+        # 第二部分:补回 数据支撑 / 潜在分歧 / 建议权重(原四段式中被删的三节)
+        for sec in ("## 数据支撑", "## 与系统自动分析的潜在分歧", "## 建议权重"):
+            assert sec in p
+        # 按品种输出且首个小节就是新格式
+        assert set(out) == {"RB"}
+        assert out["RB"].startswith("## 供需格局")
+
+    def test_prompt_never_targets_other_variety(self):
+        # 只谈该品种:多品种逐次调用,每次 prompt 只出现本品种代码
+        llm = self._CaptureLLM()
+        web_app._llm_opinion_conclusion(
+            llm,
+            "正文",
+            [{"variety": "RB", "direction": "看多", "confidence": 0.8},
+             {"variety": "CU", "direction": "看空", "confidence": 0.6}],
+        )
+        assert len(llm.prompts) == 2
+        assert "只针对品种 RB" in llm.prompts[0]
+        assert re.search(r"\bCU\b", llm.prompts[0]) is None
+        assert "只针对品种 CU" in llm.prompts[1]
+        assert re.search(r"\bRB\b", llm.prompts[1]) is None
+
+
+class TestReconcludeResearchReport:
+    """只重跑结论(reconclude):不动 structured_data,更新 conclusion_md 与各品种聚合。"""
+
+    class _FakeResp:
+        def __init__(self, content):
+            self.content = content
+
+    class _FakeLLM:
+        """reconclude 只走结论步:第二步按品种返回新格式观点。"""
+        def invoke(self, prompt):
+            m = re.search(r"只针对品种 (\w+)", prompt)
+            code = m.group(1) if m else "?"
+            return TestReconcludeResearchReport._FakeResp(
+                f"## 供需格局\n{code} 新格式多小节观点。"
+            )
+
+    def _seed(self, monkeypatch, tmp_path) -> tuple:
+        """造一条已 done、旧口径结论的研报行(带 structured_data.varieties + 正文)。"""
+        monkeypatch.setattr(rd, "RESEARCH_DIR", tmp_path)
+        rd._research_cache.clear()
+        db = database.AgentSenseDB(tmp_path / "test.db")
+        rid = db.insert_research_report(
+            variety="RB", title="月度展望(旧)", source="华泰期货",
+            filename="r.md", file_path=str(tmp_path / "r.md"), status="done",
+        )
+        structured = {
+            "report_title": "月度展望",
+            "publisher": "华泰期货",
+            "publish_date": "2026-09-02",
+            "varieties": [
+                {"variety": "RB", "direction": "看多", "confidence": 0.85,
+                 "spot_price": {"value": 3200, "unit": "元/吨", "date": "2026-09-02"}},
+                {"variety": "CU", "direction": "看空", "confidence": 0.6,
+                 "target_price": {"value": 75000, "unit": "元/吨", "date": "2026-09-02"}},
+            ],
+        }
+        db.update_research_report(
+            rid,
+            status="done",
+            extracted_text="## 研报\n黑色系与铜价展望,现货低库存。",
+            structured_data=json.dumps(structured, ensure_ascii=False),
+            conclusion_md="## RB 结论\n旧口径:需求回暖。\n\n## CU 结论\n旧口径:宏观偏弱。",
+        )
+        monkeypatch.setattr(web_app, "get_db", lambda: db)
+        monkeypatch.setattr(
+            web_app, "create_llm_client",
+            lambda *a, **k: types.SimpleNamespace(get_llm=lambda: self._FakeLLM()),
+        )
+        return db, rid, structured
+
+    def test_reconclude_updates_conclusion_and_aggregate_only(self, monkeypatch, tmp_path):
+        db, rid, structured = self._seed(monkeypatch, tmp_path)
+        res = web_app.reconclude_research_report(rid)
+        assert res["ok"] is True and sorted(res["codes"]) == ["CU", "RB"]
+
+        got = db.get_research_report(rid)
+        # structured_data / 标题 / 方向未被改动;status 保持 done
+        assert got["status"] == "done"
+        assert json.loads(got["structured_data"]) == structured
+        assert got["title"] == "月度展望(旧)"
+        assert got["error"] is None or got["error"] == ""
+        # 结论全文已被新格式覆盖(旧口径消失)
+        assert "## RB 结论" in got["conclusion_md"]
+        assert "## CU 结论" in got["conclusion_md"]
+        assert "旧口径" not in got["conclusion_md"]
+        assert "## 供需格局" in got["conclusion_md"]
+
+        # 各品种聚合 conclusion 已更新(upsert 按 id 覆盖)
+        agg = rd.load_research_data("RB")
+        r0 = next(r for r in agg["reports"] if r["id"] == rid)
+        assert r0["direction"] == "看多"          # 方向仍取 structured,未被重跑改动
+        assert "RB 新格式多小节观点" in r0["conclusion"]
+        assert r0["data_points"]["spot_price"]["value"] == 3200
+        rd._research_cache.clear()
+
+    def test_reconclude_twice_no_duplicate_aggregate(self, monkeypatch, tmp_path):
+        db, rid, structured = self._seed(monkeypatch, tmp_path)
+        assert web_app.reconclude_research_report(rid)["ok"] is True
+        assert web_app.reconclude_research_report(rid)["ok"] is True  # 幂等重跑
+        agg = rd.load_research_data("CU")
+        hits = [r for r in agg["reports"] if r["id"] == rid]
+        assert len(hits) == 1                     # 不产生重复聚合条目
+        rd._research_cache.clear()
+
+    def test_reconclude_missing_row_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rd, "RESEARCH_DIR", tmp_path)
+        rd._research_cache.clear()
+        db = database.AgentSenseDB(tmp_path / "test.db")
+        monkeypatch.setattr(web_app, "get_db", lambda: db)
+        res = web_app.reconclude_research_report(999999)
+        assert res["ok"] is False and "不存在" in res["error"]
+        rd._research_cache.clear()
+
+
+class TestReExtractResearchReport:
+    """存量"结构化重提取"(re_extract):重跑第一步,修置信度 + 补四类基本面。
+
+    只重跑第一步(_llm_extract_structured):存量行置信度默认 0.5/0.0、四键(basis/
+    warehouse_receipts/operating_rate/processing_margin)根本没提取过;重提取后按
+    已入库品种代码集合并,方向/评级/结论文本不变,结论从现有聚合按 id 原样写回。
+    """
+
+    class _FakeResp:
+        def __init__(self, content):
+            self.content = content
+
+    class _FakeLLM:
+        """第一步返回新口径结构化:RB/CU 真实置信度 + RB 基差 + CU 开工率;CU 基差缺(靠原文补)。"""
+        def invoke(self, prompt):
+            assert "只输出一个 JSON 对象" in prompt  # 只允许走第一步(重提取不该触第二步)
+            return TestReExtractResearchReport._FakeResp(
+                '{"report_title":"月度展望(新)","publisher":"华泰期货","publish_date":"2026-09-02",'
+                '"varieties":['
+                '{"variety":"RB","direction":"看多","confidence":0.8,'
+                '"basis":{"value":120,"unit":"元/吨","date":"2026-09-02","note":"RB 升水"},'
+                '"spot_price":{"value":3200,"unit":"元/吨","date":"2026-09-02"}},'
+                '{"variety":"CU","direction":"看空","confidence":0.65,'
+                '"operating_rate":{"value":85,"unit":"%","date":"2026-09-02"}}]}'
+            )
+
+    def _seed(self, monkeypatch, tmp_path, structured: dict, conclusion_md: str = "") -> tuple:
+        """造一条"旧口径"done 研报行(置信度默认 + 无四键),并预写各品种聚合(结论供保留)。"""
+        monkeypatch.setattr(rd, "RESEARCH_DIR", tmp_path)
+        rd._research_cache.clear()
+        db = database.AgentSenseDB(tmp_path / "test.db")
+        rid = db.insert_research_report(
+            variety="RB", title="月度展望(旧)", source="华泰期货",
+            filename="r.md", file_path=str(tmp_path / "r.md"), status="done",
+        )
+        db.update_research_report(
+            rid,
+            status="done",
+            extracted_text=structured.get("_text") or "## 研报\n黑色系与铜价展望。",
+            structured_data=json.dumps(
+                {k: v for k, v in structured.items() if not k.startswith("_")},
+                ensure_ascii=False,
+            ),
+            conclusion_md=conclusion_md,
+        )
+        # 预写聚合:re_extract 的结论保留依赖"现有聚合按 id 取回" → 必须先有聚合
+        r = db.get_research_report(rid)
+        stored = structured.get("varieties")
+        codes = [v["variety"] for v in stored]
+        web_app._write_research_aggregates(
+            rid, r.get("uploaded_at") or "", r.get("title") or "", r.get("source") or "",
+            codes, stored,
+            {c: f"旧结论:{c} 供应紧平衡。" for c in codes},
+        )
+        monkeypatch.setattr(web_app, "get_db", lambda: db)
+        monkeypatch.setattr(
+            web_app, "create_llm_client",
+            lambda *a, **k: types.SimpleNamespace(get_llm=lambda: self._FakeLLM()),
+        )
+        return db, rid
+
+    def _legacy_structured(self) -> dict:
+        """旧口径 structured_data:置信度默认 0.5、无四键,仅现货价等早期字段。"""
+        return {
+            "report_title": "月度展望", "publisher": "华泰期货", "publish_date": "2026-09-01",
+            "varieties": [
+                {"variety": "RB", "direction": "看多", "confidence": 0.5,
+                 "spot_price": {"value": 3200, "unit": "元/吨", "date": "2026-09-01"}},
+                {"variety": "CU", "direction": "看空", "confidence": 0.5},
+            ],
+        }
+
+    def test_reextract_fixes_confidence_adds_four_keys_keeps_conclusion(
+        self, monkeypatch, tmp_path
+    ):
+        db, rid = self._seed(monkeypatch, tmp_path, self._legacy_structured(),
+                             conclusion_md="## RB 结论\n旧RB。\n\n## CU 结论\n旧CU。")
+
+        res = web_app.re_extract_research_report(rid)
+        assert res["ok"] is True and sorted(res["codes"]) == ["CU", "RB"]
+
+        got = db.get_research_report(rid)
+        assert got["status"] == "done"
+        assert got["confidence"] == 0.8          # 行级主品种(RB)置信度 → 真实值,不再是默认 0.5
+        assert got["direction"] == "看多"        # 方向保留(重提取不改方向,防与结论文本冲突)
+        assert got["title"] == "月度展望(旧)"     # 标题保留(顶层元数据不动)
+        assert "旧RB" in got["conclusion_md"] and "旧CU" in got["conclusion_md"]  # 观点全文不变
+
+        sd = json.loads(got["structured_data"])
+        assert sd["report_title"] == "月度展望"    # 顶层元数据保留(未被新提取覆盖)
+        rb = next(v for v in sd["varieties"] if v["variety"] == "RB")
+        cu = next(v for v in sd["varieties"] if v["variety"] == "CU")
+        assert rb["confidence"] == 0.8            # 置信度真实化
+        assert rb["spot_price"]["value"] == 3200  # 旧字段保留
+        assert rb["basis"]["value"] == 120        # 四键:LLM 直接提取入结构化
+        assert cu["confidence"] == 0.65
+        assert cu["operating_rate"]["value"] == 85  # 四键:LLM 直接提取入结构化
+
+        # 聚合:结论原样保留 + confidence/data_points 更新(RB 缺基差→原文补→仍带值)
+        agg = rd.load_research_data("RB")
+        r0 = next(r for r in agg["reports"] if r["id"] == rid)
+        assert r0["direction"] == "看多" and r0["confidence"] == 0.8
+        assert r0["data_points"]["basis"]["value"] == 120
+        assert r0["data_points"]["spot_price"]["value"] == 3200
+        assert r0["conclusion"] == "旧结论:RB 供应紧平衡。"   # 结论未被重生成
+        rd._research_cache.clear()
+
+    def test_reextract_missing_four_key_backfilled_from_source(self, monkeypatch, tmp_path):
+        # CU 新提取无基差,但研报正文有 → _ingest_backfill_fund_metrics 从原文确定性补
+        # (note 记"研报原文『…』",同新研报入库路径;不重跑第二步,观点文本不变)
+        structured = self._legacy_structured()
+        structured["_text"] = (
+            "## 研报\n黑色系与铜价展望。\n"
+            "RB 现货库存低位,供需偏紧。\n"
+            "CU 现货贴水,基差 -45 元/吨,宏观偏空。"
+        )
+        db, rid = self._seed(monkeypatch, tmp_path, structured,
+                             conclusion_md="## RB 结论\n旧RB。\n\n## CU 结论\n旧CU。")
+
+        res = web_app.re_extract_research_report(rid)
+        assert res["ok"] is True
+        agg = rd.load_research_data("CU")
+        r0 = next(r for r in agg["reports"] if r["id"] == rid)
+        assert r0["confidence"] == 0.65
+        cu_basis = r0["data_points"]["basis"]
+        assert cu_basis["value"] == -45            # LLM 没给 → 原文补漏成功
+        assert "研报原文" in (cu_basis.get("note") or "")
+        assert r0["conclusion"] == "旧结论:CU 供应紧平衡。"   # 结论不被重生成
+        # RB 基差由 LLM 直接给 → 不落入原文补漏(值仍是 120)
+        agg_rb = rd.load_research_data("RB")
+        r_rb = next(r for r in agg_rb["reports"] if r["id"] == rid)
+        assert r_rb["data_points"]["basis"]["value"] == 120
+        assert "研报原文" not in (r_rb["data_points"]["basis"].get("note") or "")
+        rd._research_cache.clear()
+
+    def test_reextract_legacy_no_structured_varieties_anchors_to_primary(
+        self, monkeypatch, tmp_path
+    ):
+        # 最老的存量行:structured 无 varieties,只有主品种代码 → 锚到主品种单品种重提取
+        structured = {"report_title": "极老研报", "publisher": "", "publish_date": "",
+                      "varieties": []}
+        structured["_text"] = "## 研报\nRB 现货贴水,基差 120 元/吨。"
+        db, rid = self._seed(monkeypatch, tmp_path, structured,
+                             conclusion_md="## RB 结论\n旧RB。")
+        res = web_app.re_extract_research_report(rid)
+        assert res["ok"] is True and res["codes"] == ["RB"]
+        got = db.get_research_report(rid)
+        sd = json.loads(got["structured_data"])
+        assert [v["variety"] for v in sd["varieties"]] == ["RB"]
+        assert sd["varieties"][0]["confidence"] == 0.8
+        rd._research_cache.clear()
+
+    def test_reextract_missing_row_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rd, "RESEARCH_DIR", tmp_path)
+        rd._research_cache.clear()
+        db = database.AgentSenseDB(tmp_path / "test.db")
+        monkeypatch.setattr(web_app, "get_db", lambda: db)
+        res = web_app.re_extract_research_report(999999)
+        assert res["ok"] is False and "不存在" in res["error"]
+        rd._research_cache.clear()
+
+
+class TestResearchViewsHelpers:
+    """逐品种观点表格后端 helper:结论 markdown → 表格行(观点要点/方向/置信度)。
+
+    只测纯函数(_extract_key_opinion / _research_view_row / _compact_md),
+    不拉起 Flask 路由。
+    """
+
+    _TWO_PART = (
+        "## 供需格局\n"
+        "9 月 1 日美伊互袭后供应风险溢价抬升,SC 强势。\n"
+        "\n"
+        "## 观点与依据\n"
+        "SC 看多:地缘供应扰动是本轮核心驱动,跟踪 霍尔木兹海峡通航与 OPEC 增产节奏。\n"
+        "\n"
+        "## 交易要素与风险\n"
+        "方向:看多;形态与区间:单边看多, 运行区间 540~560;头寸:轻仓;头寸范围:回落 545 加仓;风险:OPEC 增产超预期。\n"
+        "\n"
+        "## 数据支撑\n"
+        "- 9/1 布伦特 78.2 美元/桶,环比 +4%。\n"
+        "\n"
+        "## 建议权重\n"
+        "多头 20%~30%。"
+    )
+
+    def test_extract_two_part_opinion_seven_sections(self):
+        # 两段式口径(2026-09-03):交易要素行前置为首行,其后推理链逐节(观点+依据),止于数据支撑前
+        out = web_app._extract_key_opinion(self._TWO_PART)
+        assert out.startswith("交易要素与风险：")        # 交易要素提到单元格首行(先结论后论据)
+        assert "头寸:轻仓" in out                        # 交易要素五段内容保留
+        assert "供需格局：9 月 1 日美伊互袭" in out   # 依据小节保留(为什么这么看)
+        assert "SC 看多" in out                       # 末节观点与依据收口
+        assert "霍尔木兹" in out
+        assert "跟踪" in out
+        assert "\n" in out                            # 按节换行成多行要点
+        assert "数据支撑" not in out                  # 节边界:不混入数据支撑/建议权重
+        assert "##" not in out                        # 装饰符已剥
+
+    def test_extract_trade_section_blank_uses_dash(self):
+        # 交易要素节为占位/空 → 该行给 —,但仍前置为首行(结构完整、不编造)
+        two = ("## 供需格局\n供应偏紧。\n\n"
+               "## 观点与依据\nSC 中性。\n\n"
+               "## 交易要素与风险\n研报未披露该指标。\n")
+        out = web_app._extract_key_opinion(two)
+        assert out.startswith("交易要素与风险：—")
+        assert "供需格局：供应偏紧" in out
+
+    def test_extract_two_part_with_trailing_sections_stops_at_next_h2(self):
+        two = self._TWO_PART + "\n## 数据支撑\n仅供研究。\n## 风险提示\n仅供研究。"
+        out = web_app._extract_key_opinion(two)
+        assert "风险提示" not in out       # 停在「观点与依据」节内,数据支撑/风险提示不进单元格
+        assert "数据支撑" not in out
+
+    def test_extract_blank_section_uses_dash(self):
+        # 某小节只写"研报未披露该指标"(或空) → 该点给 —(结构完整、不编造)
+        two = ("## 供需格局\n研报未披露该指标。\n\n"
+               "## 库存与结构\n9/2 港口库存 320 万吨,环比 -2%。\n\n"
+               "## 观点与依据\nSC 中性:等数据验证。\n")
+        out = web_app._extract_key_opinion(two)
+        assert "供需格局：—" in out
+        assert "库存与结构：9/2 港口库存" in out
+        assert "SC 中性" in out
+
+    def test_extract_old_format_falls_back_first_paragraph(self):
+        # 旧四段式(## 核心观点 开头)无「## 供需格局」节 → 取首个非标题段
+        old = "## 核心观点\nLC 震荡筑底,现货偏紧。\n\n## 数据支撑\n..."
+        out = web_app._extract_key_opinion(old)
+        assert "LC 震荡筑底" in out
+        assert "数据支撑" not in out       # 标题行不算正文
+
+    def test_extract_empty_returns_empty(self):
+        assert web_app._extract_key_opinion("") == ""
+        assert web_app._extract_key_opinion(None) == ""
+        assert web_app._extract_key_opinion("   \n  ") == ""
+
+    def test_fit_over_budget_keeps_last_section(self):
+        # 旧截断从尾部砍,会把末节「观点与依据」截掉;新裁剪首末节必保、保序、限长
+        lines = [
+            "供需格局：8/30 中东发运低位,较 2025 年均值明显偏低,供应偏紧延续。",
+            "库存与结构：全球原油库存环比小幅累库,幅度温和。",
+            "成本与利润：油价上行抬高国内炼厂原料成本,利润承压。",
+            "现货与目标价：国内现货维持紧平衡,买盘尚可。",
+            "事件与驱动：伊朗称霍尔木兹海峡完全关闭,美伊和谈无积极信号。",
+            "观点与依据：短期看多,地缘是当前主要上行驱动。",
+        ]
+        out = web_app._fit_section_lines(lines, max_len=200)
+        assert out.startswith("供需格局：")                       # 首节(依据起点)
+        assert "观点与依据：短期看多" in out                       # 末节(方向收口)不丢
+        assert out.rstrip().endswith("上行驱动。")                 # 末节内容完整,非半行截断
+        assert "库存与结构" in out                                # 优先保真实内容行
+        assert len(out) <= 200                                    # 限长
+        assert out.split("\n")[0].startswith("供需格局")           # 顺序不重排
+
+    def test_fit_drops_placeholder_lines_first(self):
+        # 预算紧张:纯占位「：—」行让位(无信息可丢),真实内容行 + 首末节保全
+        lines = [
+            "供需格局：美伊互袭推升地缘溢价,SC 供应风险抬升。",
+            "库存与结构：—",
+            "成本与利润：—",
+            "事件与驱动：伊朗 8/29 称霍尔木兹海峡完全关闭。",
+            "观点与依据：短期看多,地缘是主要上行驱动。",
+        ]
+        out = web_app._fit_section_lines(lines, max_len=75)
+        assert "库存与结构：—" not in out                          # 占位行先出局
+        assert "成本与利润：—" not in out
+        assert "事件与驱动" in out                                 # 真实内容行保留
+        assert "观点与依据：短期看多" in out
+        assert len(out) <= 75
+
+    def test_fit_within_budget_keeps_all_lines(self):
+        lines = ["供需格局：供应偏紧", "库存与结构：温和累库", "观点与依据：短期看多"]
+        assert web_app._fit_section_lines(lines, max_len=100) == \
+            "供需格局：供应偏紧\n库存与结构：温和累库\n观点与依据：短期看多"
+
+    def test_fit_must_keep_trade_row_with_tight_budget(self):
+        # 带交易行+预算紧:交易行(首行,must_keep 点名)保、供需保、观点末行保,占位行先出局
+        lines = [
+            "交易要素与风险：方向:看多;形态与区间:单边看多, 运行区间 540~560;头寸:轻仓;头寸范围:—;风险:OPEC 增产",
+            "供需格局：美伊互袭推升地缘溢价,SC 供应风险抬升。",
+            "库存与结构：—",
+            "成本与利润：—",
+            "观点与依据：短期看多,地缘是主要上行驱动。",
+        ]
+        out = web_app._fit_section_lines(lines, max_len=115, must_keep=(0,))
+        assert out.startswith("交易要素与风险：")       # 交易行前置且必保
+        assert "供需格局：美伊互袭" in out              # 推理链起点保留
+        assert "观点与依据：短期看多" in out            # 末节方向收口保留
+        assert "库存与结构：—" not in out               # 占位行最先出局
+        assert "成本与利润：—" not in out
+        assert len(out) <= 115
+
+    def test_compact_md_strips_decorations(self):
+        md = "**看多**: `基差` -35 元/吨\n\n*跟踪* 库存拐点"
+        out = web_app._compact_md(md)
+        assert "**" not in out and "`" not in out and "*" not in out
+        assert "基差 -35 元/吨 跟踪 库存拐点" in out
+
+    def test_view_row_shape(self):
+        row = web_app._research_view_row({
+            "id": 47, "title": "原油早报", "source": "华泰期货",
+            "uploaded_at": "2026-09-02 08:00:00", "direction": "看多",
+            "confidence": 0.8, "varieties": ["SC", "LU"],
+            "conclusion": self._TWO_PART,
+        })
+        assert row["id"] == 47 and row["source"] == "华泰期货"
+        assert row["direction"] == "看多" and row["confidence"] == 0.8
+        assert row["covers"] == ["SC", "LU"]
+        assert "SC 看多" in row["key_opinion"]
+        # 交易要素三列(2026-09-04 替换四类基本面列)
+        assert row["trade_range"] == "单边看多, 运行区间 540~560"
+        assert row["trade_position"] == "轻仓"
+        assert row["advice"] == "多头 20%~30%。"
+
+    def test_view_row_blank_conclusion(self):
+        row = web_app._research_view_row({"id": 1, "title": "t", "source": "s",
+                                          "uploaded_at": "2026-09-02 08:00:00",
+                                          "direction": "中性", "confidence": 0.5,
+                                          "varieties": [], "conclusion": None})
+        assert row["key_opinion"] == ""          # 前端渲染为 (无观点摘要)
+        assert row["direction"] == "中性"
+
+
+# ---------------------------------------------------------------------------
+# 10) 研报文本四类指标具名输出(get_research_report_text,供分析师研报文本)
+# ---------------------------------------------------------------------------
+
+
+def test_research_text_includes_four_typed_metrics(isolated_dirs):
+    """研报 data_points 含四类指标对象时,get_research_report_text 输出具名行(value+unit+date+note)。"""
+    data = {
+        "variety": "RB",
+        "updated": "2026-09-01T10:00:00",
+        "reports": [
+            {
+                "id": 1,
+                "title": "华泰月报",
+                "source": "华泰",
+                "uploaded_at": "2026-09-01T09:00:00",
+                "direction": "看多",
+                "confidence": 0.82,
+                "conclusion": "## 核心观点\n钢价偏强。",
+                "data_points": {
+                    "spot_price": {"value": 3200, "unit": "元/吨", "date": "2026-09-01"},
+                    "operating_rate": {"value": 78.5, "unit": "%", "date": "2026-09-01", "note": "唐山高炉"},
+                    "processing_margin": {"value": 180, "unit": "元/吨", "date": "2026-09-01"},
+                    "basis": {"value": 68, "unit": "元/吨", "date": "2026-09-01", "note": "现货升水"},
+                    "warehouse_receipts": {"value": 129662, "unit": "手", "date": "2026-09-02"},
+                },
+            }
+        ],
+    }
+    rd._save_research("RB", data)
+    text = rd.get_research_report_text("RB")
+    assert "研报-开工率/负荷率: 78.5% (2026-09-01, 唐山高炉)" in text
+    assert "研报-加工利润/加工费: 180元/吨 (2026-09-01)" in text
+    assert "研报-基差: 68元/吨 (2026-09-01, 现货升水)" in text
+    assert "研报-交易所仓单: 129662手 (2026-09-02)" in text
+
+
+def test_research_text_omits_typed_lines_when_missing(isolated_dirs):
+    """研报未给某类指标(缺键/值为 None)→ 整条不输出(留空),其余文本不受影响。"""
+    data = {
+        "variety": "RB",
+        "updated": "2026-09-01T10:00:00",
+        "reports": [
+            {
+                "id": 1,
+                "title": "华泰月报",
+                "source": "华泰",
+                "uploaded_at": "2026-09-01T09:00:00",
+                "direction": "中性",
+                "confidence": 0.5,
+                "conclusion": "## 核心观点\n震荡。",
+                "data_points": {"operating_rate": {"value": None, "date": "2026-09-01"}},
+            }
+        ],
+    }
+    rd._save_research("RB", data)
+    text = rd.get_research_report_text("RB")
+    assert "研报-开工率/负荷率" not in text
+    assert "研报-加工利润/加工费" not in text
+    assert "研报-基差" not in text
+    assert "研报-交易所仓单" not in text
+    assert "该品种已上传 1 份研报" in text
+
+
+# ---------------------------------------------------------------------------
+# 11) 观点总览交易要素列(_parse_trade_elements / _extract_advice / _research_view_row)
+# ---------------------------------------------------------------------------
+def test_parse_trade_elements_full_and_partial():
+    """交易要素行五要素解析:兼容中英文冒号/分号;「—」与「未披露」视为缺(键不出现)。"""
+    text = (
+        "## 观点与依据\n震荡偏强。\n\n"
+        "## 交易要素与风险\n"
+        "方向：反弹做多;形态与区间: 短期反弹, 区间 2400~2500；头寸:轻仓试多;头寸范围:—;风险:未披露\n"
+    )
+    te = web_app._parse_trade_elements(text)
+    assert te["方向"] == "反弹做多"
+    assert te["形态与区间"] == "短期反弹, 区间 2400~2500"
+    assert te["头寸"] == "轻仓试多"
+    assert "头寸范围" not in te and "风险" not in te  # 「—」/「未披露」= 缺
+
+
+def test_parse_trade_elements_absent():
+    """无交易节(旧口径结论)→ 空表。"""
+    assert web_app._parse_trade_elements("## 核心观点\n钢价偏强。") == {}
+    assert web_app._parse_trade_elements("") == {}
+
+
+def test_extract_advice_section():
+    """「## 建议权重」节取正文压缩单行;缺节/纯占位 → 空串。"""
+    text = "## 交易要素与风险\n方向:看多;\n\n## 建议权重\n多头 20%~30%, 区间操作为主。\n\n## 数据支撑\n- x\n"
+    assert web_app._extract_advice(text) == "多头 20%~30%, 区间操作为主。"
+    assert web_app._extract_advice("## 建议权重\n—") == ""
+    assert web_app._extract_advice("## 核心观点\n无") == ""
+
+
+def test_view_row_trade_fields_replace_fund_metrics():
+    """观点总览行:四类基本面已移除,改为交易要素三列(单边区间/头寸/建议);头寸缺时回退头寸范围。"""
+    row = web_app._research_view_row({
+        "id": 1, "title": "t", "source": "s", "uploaded_at": "2026-09-02 08:00:00",
+        "direction": "看多", "confidence": 0.8,
+        "conclusion": (
+            "## 供需格局\n供应收紧。\n\n"
+            "## 交易要素与风险\n方向:看多;形态与区间:单边看多;头寸:—;头寸范围:回落加仓;风险:增产\n\n"
+            "## 建议权重\n多头 20%~30%。"
+        ),
+    })
+    assert "fund_metrics" not in row  # 四类基本面列已下线(指标仍随 data_points 入库供看板)
+    assert row["trade_range"] == "单边看多"
+    assert row["trade_position"] == "回落加仓"  # 头寸「—」→ 回退头寸范围
+    assert row["advice"] == "多头 20%~30%。"
+
+
+def test_view_row_trade_fields_blank_for_legacy():
+    """旧口径结论(无交易节)→ 三个交易要素列均为空串(前端显示 —)。"""
+    row = web_app._research_view_row({"id": 3, "title": "", "conclusion": "## 核心观点\n震荡。"})
+    assert row["trade_range"] == "" and row["trade_position"] == "" and row["advice"] == ""
+
+
+def test_heuristic_fund_extracts_typed_values():
+    """总结文本里"词+数值+单位"相邻 → 提四类指标,note 带"自总结『原文』"片段。"""
+    text = (
+        "## 供需格局 8/28中国独立炼厂开工率52.69%（环比+2.99%）,需求回暖。\n"
+        "## 库存与结构 仓单45839手(+215)压制上行。\n"
+        "## 成本与利润 钢厂毛利约120元/吨,仍能覆盖成本。\n"
+        "## 现货与目标价 现货贴水25元/吨,期现套利空间收窄。"
+    )
+    m = {x["k"]: x for x in web_app._research_fund_metrics({})}
+    assert not m  # 无结构化 data_points 时为空 → 才会走文本兜底
+    out = web_app._heuristic_fund_from_text(text)
+    assert out["operating_rate"]["value"] == 52.69
+    assert out["operating_rate"]["unit"] == "%"
+    assert "自总结" in out["operating_rate"]["note"]
+    assert out["warehouse_receipts"]["value"] == "45839"
+    assert out["warehouse_receipts"]["unit"] == "手"
+    assert out["processing_margin"]["value"] == 120
+    assert out["basis"]["value"] == -25  # 现货贴水 → 基差取负
+
+
+def test_heuristic_fund_avoids_false_positives():
+    """防误报:裸"新开工"(地产词)、"基差及1-5月价差"(日期数字)、纯定性(无数值)都不采。"""
+    text = (
+        "## 供需格局 地产新开工/竣工延续负增长,对应需求偏弱。\n"
+        "## 库存与结构 宁夏、江苏、广西硅铁主力基差及1-5月、5-9月、9-1月价差均有波动。\n"
+        "## 成本与利润 锂辉石加工费略上行、外购矿成本边际抬升(无具体读数)。\n"
+        "## 观点与依据 中性:仓单无起色、基差抬升,期现共振未至。"
+    )
+    assert web_app._heuristic_fund_from_text(text) == {}
+
+
+def test_merge_fund_metrics_prefers_structured_over_heuristic():
+    """同键两者都有时,结构化 data_points 优先(文本不覆盖);缺项才用文本兜底。"""
+    dp = {"basis": {"value": 68, "unit": "元/吨", "date": "2026-09-01"},
+          "operating_rate": {"value": 78.5, "unit": "%"}}
+    text = "基差200元/吨,开工率99%,仓单45839手,毛利120元/吨"
+    merged = web_app._merge_fund_metrics(dp, text)
+    byk = {x["k"]: x for x in merged}
+    assert byk["basis"]["value"] == 68 and byk["basis"]["date"] == "2026-09-01"  # 结构化覆盖文本
+    assert byk["operating_rate"]["value"] == 78.5
+    assert byk["warehouse_receipts"]["value"] == "45839"  # 文本兜底补仓单
+    assert byk["processing_margin"]["value"] == 120
+    # 返回固定序(基差/仓单/开工率/加工利润)
+    assert [x["k"] for x in merged] == ["basis", "warehouse_receipts", "operating_rate", "processing_margin"]
+
+
+def test_row_research_fund_metrics_matches_variety_segment():
+    """列表行:从 structured_data.varieties 取与主品种匹配段的四类指标(多品种不串段)。"""
+    import json
+
+    r = {
+        "variety": "RB",
+        "structured_data": json.dumps({
+            "varieties": [
+                {"variety": "CU", "basis": {"value": -120, "unit": "元/吨"}},
+                {"variety": "RB", "operating_rate": {"value": 80.0, "unit": "%"},
+                 "data_points": {"basis": {"value": 20, "unit": "元/吨"}}},
+            ]
+        }),
+    }
+    m = web_app._row_research_fund_metrics(r)
+    # 取 RB 段(嵌套 data_points 的 basis=20 + 段顶层 operating_rate=80),绝不混入 CU 段 -120
+    assert [(x["k"], x["value"]) for x in m] == [("basis", 20), ("operating_rate", 80.0)]
+    # 段内无 data_points 包裹的顶层展平旧格式 → 直接取段顶层指标键
+    r2 = {"variety": "CU", "structured_data": json.dumps({"basis": {"value": 5, "unit": "元/吨"}})}
+    assert [(x["k"], x["value"]) for x in web_app._row_research_fund_metrics(r2)] == [("basis", 5)]
+
+
+# ---------------------------------------------------------------------------
+# 新研报入库补强 _ingest_backfill_fund_metrics(直接提自研报原文, 落库即带四键)
+# ---------------------------------------------------------------------------
+def test_ingest_backfill_single_variety_fills_missing_keeps_existing():
+    """单品种新研报:LLM 漏提开工率/仓单但原文有数 → 入库补进 data_points;已有结构化值不动。"""
+    text = "中国独立炼厂开工率52.69%，环比回升。\n仓单45839手，压制上行。"
+    items = [{"variety": "SC", "basis": {"value": -25, "unit": "元/吨"}, "direction": "中性"}]
+    web_app._ingest_backfill_fund_metrics(items, text)
+    item = items[0]
+    assert item["operating_rate"]["value"] == 52.69 and item["operating_rate"]["unit"] == "%"
+    assert "研报原文" in item["operating_rate"]["note"]  # 标来源, 与 LLM 结构化值区分
+    assert item["warehouse_receipts"]["value"] == "45839"
+    assert item["warehouse_receipts"]["unit"] == "手"
+    assert item["basis"] == {"value": -25, "unit": "元/吨"}  # LLM 已给的不覆盖
+    assert item["direction"] == "中性"
+
+
+def test_ingest_backfill_multi_variety_scopes_per_variety():
+    """多品种研报:各品种只扫含自己代码/中文名的句子 → 不把别家子品种的开工率串进来。"""
+    text = "RB 高炉开工率83.2%，环比回升。\nTA 聚酯开工率91.4%，表现尚可。"
+    items = [{"variety": "RB", "direction": "看多"}, {"variety": "TA", "direction": "看空"}]
+    web_app._ingest_backfill_fund_metrics(items, text)
+    byc = {i["variety"]: i for i in items}
+    assert byc["RB"]["operating_rate"]["value"] == 83.2
+    assert byc["TA"]["operating_rate"]["value"] == 91.4  # 不是误填 RB 的 83.2
+
+
+def test_ingest_backfill_untouched_when_body_has_no_number():
+    """原文无数值(纯定性)→ 品种项原样保留, 不产生任何指标键。"""
+    items = [{"variety": "RB", "direction": "看多"}]
+    before = [dict(i) for i in items]
+    web_app._ingest_backfill_fund_metrics(items, "宏观情绪回暖，关注库存去化节奏。")
+    assert items == before
+
+
+# ---------------------------------------------------------------------------
+# 机构(研报)方向汇总 summarize_research_views / format_research_views_text
+# (2026-09-03:情绪分析师"机构群体"取数 + 对比卡数据生产底座, 确定性无 LLM)
+# ---------------------------------------------------------------------------
+
+
+def _write_research_reports(reports):
+    rd._research_cache.clear()
+    rd._save_research(
+        "RB",
+        {"variety": "RB", "updated": "2026-09-03T00:00:00", "reports": reports},
+    )
+
+
+class TestResearchViewsSummary:
+    def test_empty_returns_skeleton_and_sentinel(self, isolated_dirs):
+        s = rd.summarize_research_views("RB")
+        assert s["count"] == 0
+        assert s["counts"] == {"bull": 0, "neutral": 0, "bear": 0}
+        assert s["conf_avg"] == {"bull": None, "neutral": None, "bear": None}
+        assert s["net_dir"] == ""
+        assert rd.format_research_views_text("RB").startswith("RESEARCH_VIEW_NO_DATA")
+
+    def test_counts_conf_avg_netdir_and_text(self, isolated_dirs):
+        _write_research_reports(
+            [
+                {"id": 1, "title": "A看多", "source": "华泰", "uploaded_at": "2026-09-02",
+                 "direction": "看多", "confidence": 0.8,
+                 "conclusion": "# 标题\n库存去化,看多。"},
+                {"id": 2, "title": "B看空", "source": "东证", "uploaded_at": "2026-09-01",
+                 "direction": "偏空", "confidence": 0.6,
+                 "conclusion": "需求走弱,偏空。"},
+            ]
+        )
+        s = rd.summarize_research_views("RB")
+        assert s["count"] == 2
+        assert s["counts"] == {"bull": 1, "neutral": 0, "bear": 1}
+        assert s["conf_avg"]["bull"] == 0.8 and s["conf_avg"]["bear"] == 0.6
+        assert s["net_dir"] == "中性"
+        assert s["items"][0]["one_line"] == "库存去化,看多。"
+        t = rd.format_research_views_text("RB")
+        assert "看多/偏多 1 份" in t and "看空/偏空 1 份" in t
+        assert "A看多" in t and "B看空" in t
+
+    def test_net_dir_bull_when_more_bullish(self, isolated_dirs):
+        _write_research_reports(
+            [
+                {"id": 1, "title": "a", "source": "s", "direction": "看多", "confidence": 0.7},
+                {"id": 2, "title": "b", "source": "s", "direction": "看多", "confidence": 0.6},
+                {"id": 3, "title": "c", "source": "s", "direction": "看空", "confidence": 0.5},
+            ]
+        )
+        assert rd.summarize_research_views("RB")["net_dir"] == "看多"
+
+    def test_one_line_skips_marker_and_heading_lines(self, isolated_dirs):
+        """观点摘要须跳过 【…】模板标记 与 ## 标题,取真正内容句(2026-09-03 复现修复)。"""
+        _write_research_reports(
+            [
+                {"id": 1, "title": "m", "source": "s", "direction": "看多",
+                 "conclusion": "【第一部分 · 多角度核心观点】\n## 供需格局\n9月1日期价收涨,委内瑞拉断供加剧供应缺口。"},
+                {"id": 2, "title": "empty", "source": "s", "direction": "中性", "conclusion": ""},
+            ]
+        )
+        s = rd.summarize_research_views("RB")
+        assert s["items"][0]["one_line"] == "9月1日期价收涨,委内瑞拉断供加剧供应缺口。"
+        assert s["items"][1]["one_line"] == ""
+
+    def test_route_registration_vendor_chain(self, isolated_dirs):
+        from tradingagents.dataflows.interface import route_to_vendor
+
+        out0 = route_to_vendor("get_research_view_summary", "RB", "", "")
+        assert out0.startswith("RESEARCH_VIEW_NO_DATA")
+        _write_research_reports(
+            [{"id": 1, "title": "A", "source": "s", "direction": "看多", "confidence": 0.8}]
+        )
+        out = route_to_vendor("get_research_view_summary", "RB", "", "")
+        assert out.startswith("# RESEARCH INSTITUTIONAL VIEWS")
+        assert "看多/偏多 1 份" in out
+
+
+# ---------------------------------------------------------------------------
+# 研报客观值最高优先级并入(2026-09-03):
+#   基差 → merge_basis_data 的 # RESEARCH BASIS 头;交易所仓单 → merge_inventory_data Part 0
+# ---------------------------------------------------------------------------
+
+
+class TestResearchBasisWarehouseMerge:
+    def test_merge_basis_prepends_research_basis(self, isolated_dirs):
+        _write_research_reports(
+            [
+                {"id": 1, "title": "r", "source": "s", "direction": "中性",
+                 "data_points": {"basis": {"value": -45, "unit": "元/吨",
+                                           "date": "2026-09-02", "note": "现货贴水"}}},
+            ]
+        )
+        merged, used = ed.merge_basis_data("RB", "date,spot_price,dom_basis\n2026-09-01,3200,20\n")
+        assert used is True
+        assert "# RESEARCH BASIS (研报口径 基差≈现货价−近月合约)" in merged
+        assert "-45 元/吨" in merged and "现货贴水" in merged
+
+    def test_merge_basis_still_prepends_research_spot(self, isolated_dirs):
+        _write_research_reports(
+            [
+                {"id": 1, "title": "r", "source": "s", "direction": "中性",
+                 "data_points": {"spot_price": {"value": 3300, "unit": "元/吨",
+                                                "date": "2026-09-02"}}},
+            ]
+        )
+        merged, used = ed.merge_basis_data("RB", "date,spot_price,dom_basis\n2026-09-01,3200,20\n")
+        assert used is True and "# RESEARCH SPOT PRICE" in merged
+
+    def test_merge_inventory_prepends_research_warehouse_receipts(self, isolated_dirs):
+        _write_research_reports(
+            [
+                {"id": 1, "title": "r", "source": "s", "direction": "中性",
+                 "data_points": {"warehouse_receipts": {"value": 12435, "unit": "张",
+                                                        "date": "2026-09-02", "note": "交易所仓单"}}},
+            ]
+        )
+        merged, used = ed.merge_inventory_data("RB", "date,warehouse_receipts\n2026-09-01,9000\n")
+        assert used is True
+        assert "## Part 0" in merged
+        assert "Research Warehouse Receipts (研报交易所仓单)" in merged
+        assert "12435 张" in merged
+
+    def test_merge_inventory_no_research_falls_back_free_api(self, isolated_dirs):
+        merged, used = ed.merge_inventory_data("RB", "date,warehouse_receipts\n2026-09-01,9000\n")
+        assert used is False
+        assert merged.splitlines()[0] == "# DATA_SOURCE: FREE_API (AKShare)"

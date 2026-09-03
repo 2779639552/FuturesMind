@@ -20,8 +20,11 @@
 #                  /api/pause /api/resume /api/stop /api/feedback,
 #                  /api/analysis_results、/api/backtest、/api/history、/api/compare
 #   5.5) 研报管理: /api/research/upload(上传)、/api/research(列表)、
-#                  /api/research/<id>(详情)、/api/research/<id> DELETE(删除);
+#                  /api/research/<id>(详情)、/api/research/<id>/download(下载原件)、
+#                  /api/research/<id> DELETE(删除);
 #                  上传后后台线程提取文本(PDF/图片 OCR)→ LLM 结构化 → 落库 + 写聚合 JSON
+#   5.6) 国君数据:  /api/gtja/views(周度观点信号;晨报日度已下线)、
+#                  /api/gtja/dataset/basis、/api/gtja/dataset/inventory(数据仓库基差/仓单数据集)
 #   6) 报告导出:   /api/report/<文件>/html(网页版)、/api/report/<文件>/pdf、/api/report/<文件>/md
 #   7) 配置:       /api/config
 #   8) 数据更新:   /api/update_data(SSE 流水线)
@@ -95,8 +98,6 @@ from commodity_demo import (  # noqa: E402  # 【调用包】构建 LangGraph �
     build_commodity_graph,
 )
 
-from tradingagents.dataflows.commodity_futures import VARIETY_METADATA  # noqa: E402  # 【调用包】品种代码→中文名映射(LLM 输出品种名归一化为代码)
-
 # New imports for v2.6
 from database import get_db  # noqa: E402  # 【调用包】SQLite 存取(自选/交易信号/告警/用户)
 from path_utils import resolve_think2_dir  # noqa: E402  # 【调用包】思路2项目目录自动探测
@@ -136,7 +137,7 @@ from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调�
     get_futures_basis,
     get_futures_indicators,  # 【调用包】技术指标(MA/MACD/RSI/BOLL/ATR,CSV)供小看板技术面块
     get_futures_inventory,
-    get_futures_macro,  # 【调用包】中国宏观指标(GDP/PMI/固投/地产/工业增加值/建筑业,格式化文本)
+    get_futures_macro,  # 【调用包】中国宏观指标(GDP/PMI/固投/地产/工业增加值/建筑业/CPI/PPI/M2/LPR/社融,格式化文本)
     get_futures_news,  # 【调用包】商品+宏观新闻(格式化文本,经 route_to_vendor 供分析师工具使用)
     get_futures_price,
     get_futures_supply_demand,  # 【调用包】供需指标(外部JSON+免费API,格式化文本)供小看板基本面块
@@ -1211,28 +1212,32 @@ def api_overlay(variety):
 
 # 【功能】数据看板:一次返回品种的价格/仓单库存/基差 + 关联分析,供 tab-dashboard 渲染。
 # 【参数】days=回看天数(默认 180,范围 30~365)。
-# 【返回】{"_meta": {variety, name, sector, price_points, inventory_available, basis_available, ...},
-#           "price": [{date, close}], "inventory": {available, points, note},
-#           "basis": {available, points, note}, "analysis": {关联分析结果}}。
+# 【返回】{"_meta": {variety, name, sector, price_points, inventory_available, basis_available,
+#           research_available, ...}, "price": [{date, close}], "inventory": {available, points, note},
+#           "basis": {available, points, note}, "research": {available, note, overlay, standalone},
+#           "analysis": {关联分析结果}}。
 # 【关键】价格走 _adjusted_price_points 后复权(与 /api/price、/api/overlay 口径一致);
 #   仓单库存/基差分别经 _inventory_points/_basis_points 解析,数据源不可用(DATA_*/NO_DATA_*)时优雅降级为
 #   available=false + note,不抛错。无仓单品种(SH/WR)、无基差品种(AO/CS/LC/SI)由此自然呈现空态。
+#   研报基本面指标(第 4 源)经 _research_dashboard_series 读 DB 结构化 data_points,同样只降级不抛错。
 @app.route("/api/dashboard/<variety>")
 def api_dashboard(variety):
-    """Return price / inventory / basis series + relationship analysis for the dashboard tab."""
+    """Return price / inventory / basis / research-metric series + relationship analysis for the dashboard tab."""
     code = variety.upper()
     days = request.args.get("days", 180, type=int)
     days = max(30, min(days, 365))  # 【变量】回看天数钳制 30~365
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    # 【关键】三数据源用线程池并行拉取:基差最慢(futures_spot_price_daily 实测 13~175s,现已 6h TTL
-    #   缓存),并行后首拉约等于最慢一项、刷新则全部命中缓存毫秒级返回;三项各自 try/except,
-    #   任一失败只降级该项(price→price_note / inventory、basis→available=false),不拖垮整个看板。
+    # 【关键】四数据源用线程池并行拉取:基差最慢(futures_spot_price_daily 实测 13~175s,现已 6h TTL
+    #   缓存),并行后首拉约等于最慢一项、刷新则全部命中缓存毫秒级返回;各项各自 try/except,
+    #   任一失败只降级该项(price→price_note / inventory、basis→available=false / research→available=false),
+    #   不拖垮整个看板。研报指标读 SQLite(每操作新连接、线程局部 get_db,并发安全)。
     price: list[dict] = []
     price_note = ""
     inv = {"available": False, "points": [], "note": ""}
     basis = {"available": False, "points": [], "note": ""}
+    research = {"available": False, "note": "", "overlay": {}, "standalone": {}}
 
     def _load_price():
         nonlocal price, price_note
@@ -1277,10 +1282,19 @@ def api_dashboard(variety):
             logger.warning("dashboard basis %s: %s", code, e)
             basis["note"] = f"DATA_ERROR: {e}"
 
-    with ThreadPoolExecutor(max_workers=3) as ex:  # 【变量】并行池:价格/库存/基差 3 个任务
-        futures = [ex.submit(fn) for fn in (_load_price, _load_inventory, _load_basis)]
-        for fut in futures:  # 【关键】任务内部已 catch 全部异常,result() 不会抛,等三项都完成
+    def _load_research():
+        # 研报基本面指标(DB 结构化 data_points → 时序点;_research_dashboard_series 内部已 try/except)
+        try:
+            return _research_dashboard_series(get_db(), code)  # 【调用函数】纯函数,读 DB 不读聚合
+        except Exception as e:
+            logger.warning("dashboard research %s: %s", code, e)
+            return {"available": False, "note": f"DATA_ERROR: {e}", "overlay": {}, "standalone": {}}
+
+    with ThreadPoolExecutor(max_workers=4) as ex:  # 【变量】并行池:价格/库存/基差/研报指标 4 个任务
+        futures = [ex.submit(fn) for fn in (_load_price, _load_inventory, _load_basis, _load_research)]
+        for fut in futures:  # 【关键】任务内部已 catch 全部异常,result() 不会抛,等各项都完成
             fut.result()
+        research = futures[3].result()  # _load_research 返回值(前三个走闭包变量原地写回)
 
     analysis = _dashboard_relationships(  # 【调用函数】纯函数关联分析(价格-库存 R/趋势/基差/背离)
         price,
@@ -1298,8 +1312,142 @@ def api_dashboard(variety):
         "basis_available": basis["available"],
         "inventory_note": inv["note"],
         "basis_note": basis["note"],
+        "research_available": research["available"],
+        "research_note": research.get("note", ""),
     }
-    return jsonify({"_meta": meta, "price": price, "inventory": inv, "basis": basis, "analysis": analysis})
+    return jsonify({
+        "_meta": meta, "price": price, "inventory": inv, "basis": basis,
+        "research": research, "analysis": analysis,
+    })
+
+
+# ---------------------------------------------------------------------------
+# 研报基本面指标进数据看板:研报结构化 data_points → 时序点(纯函数,读 DB 不读聚合)
+# ---------------------------------------------------------------------------
+
+
+# 【变量】研报基本面指标白名单(键, 中文标签)—— 只取 LLM 结构化/确定性补漏落库的
+#         数值点,启发式文本兜底(_heuristic_fund_from_text)不进看板序列。
+_RESEARCH_DASH_KEYS = (
+    ("basis", "基差"),
+    ("warehouse_receipts", "仓单"),
+    ("operating_rate", "开工率"),
+    ("processing_margin", "加工利润"),
+    ("spot_price", "现货价"),
+    ("social_inventory", "社会库存"),
+    ("mill_inventory", "钢厂库存"),
+)
+# 【变量】允许叠加到现有看板面板的键(口径安全):仅 basis(元/吨,与看板基差轴同
+#         单位);仓单(张/手)与东财库存序列单位是否一致未实证,先一律独立卡,
+#         实测一致再把键挪进本元组即可(前端按 overlay 键自动叠加)。
+_RESEARCH_DASH_OVERLAY_KEYS = ("basis",)
+
+
+def _dash_num(v) -> float | None:
+    """研报指标值 → 可绘图 float;非数值(文本/空)返回 None(不进序列)。
+
+    【关键】只做类型归一:int/float 直接收;"85%"/"1,234" 等去 % 与逗号后可解析才收;
+            其余(日期串、区间描述文本)一律 None —— 看板序列里不允许启发式猜测值。
+    """
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace(",", "").rstrip("%")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _research_dashboard_series(db, code: str) -> dict:
+    """研报结构化指标 → 数据看板时序点(叠加 + 独立卡两个出口)。
+
+    【功能】/api/dashboard 第 4 数据源:把该品种历史研报里 LLM 抽出的基本面读数
+            (基差/仓单/开工率/加工利润/现货价/社会库存/钢厂库存)落成时序点,
+            随每天研报采集/上传自动补新点。读 DB 全量(聚合 JSON 只存最近 10 份
+            且无 publish_date,时序必须走 DB),复用 _row_research_fund_metrics 的
+            段匹配/合并模式,但只收确定性数值(启发式兜底文本不进图)。
+    【参数】db: AgentSenseDB 实例;code: 品种代码(大写)。
+    【返回】{"available": bool, "note": str,
+             "overlay": {key: [点]}, "standalone": {key: [点]}}
+            点 = {date, value, unit, note, point_date, source, title, report_id}。
+    【关键逻辑】· 日期归键:publish_date 优先,缺则回退 uploaded_at[:10];
+              · (键, 日期) 去重:同键同日多份研报留 uploaded_at 最新一份;
+              · 叠加/独立分流:键在 _RESEARCH_DASH_OVERLAY_KEYS → overlay,其余 standalone;
+              · 整体 try/except:任何异常降级 available=False,看板绝不 500。
+    """
+    empty = {"available": False, "note": "", "overlay": {}, "standalone": {}}
+    try:
+        rows = [r for r in (db.list_research_reports(code, limit=2000) or [])
+                if (r.get("status") or "") == "done"]
+        if not rows:
+            return {**empty, "note": "该品种暂无已入库研报"}
+        code_u = str(code or "").upper()
+        latest: dict[tuple[str, str], tuple[str, dict]] = {}  # (键,日期) → (uploaded_at, 点)
+        for r in rows:
+            try:
+                sd = json.loads(r.get("structured_data") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(sd, dict):
+                continue
+            eff = ((sd.get("publish_date") or "").strip() or (r.get("uploaded_at") or ""))[:10]
+            if not eff:
+                continue
+            items = sd.get("varieties")
+            seg = next(
+                (i for i in (items or []) if isinstance(i, dict) and str(i.get("variety") or "").upper() == code_u),
+                items[0] if isinstance(items, list) and items else sd,
+            )
+            if not isinstance(seg, dict):
+                continue
+            # 指标可能在段内 data_points(嵌套)或段顶层(旧行平铺);两处合并,嵌套优先
+            dp = {}
+            nested = seg.get("data_points")
+            if isinstance(nested, dict):
+                dp.update(nested)
+            for k, _ in _RESEARCH_DASH_KEYS:
+                if k in dp:
+                    continue
+                v = seg.get(k)
+                if v is not None and v != "":
+                    dp[k] = v
+            uploaded = r.get("uploaded_at") or ""
+            for k, _ in _RESEARCH_DASH_KEYS:
+                fv = _fund_value(dp.get(k))  # 【调用函数】{value,unit,date,note} 归一
+                if fv is None:
+                    continue
+                val = _dash_num(fv["value"])
+                if val is None:
+                    continue  # 文本值(区间描述等)不进时序
+                point = {
+                    "date": eff,
+                    "value": val,
+                    "unit": fv.get("unit") or "",
+                    "note": fv.get("note") or "",
+                    "point_date": fv.get("date") or "",
+                    "source": r.get("source") or "",
+                    "title": r.get("title") or "",
+                    "report_id": r.get("id"),
+                }
+                prev = latest.get((k, eff))
+                if prev is None or uploaded >= prev[0]:  # 同键同日留最新一份
+                    latest[(k, eff)] = (uploaded, point)
+        overlay: dict[str, list] = {}
+        standalone: dict[str, list] = {}
+        for (k, _), (_, pt) in latest.items():
+            bucket = overlay if k in _RESEARCH_DASH_OVERLAY_KEYS else standalone
+            bucket.setdefault(k, []).append(pt)
+        for d in (overlay, standalone):
+            for pts in d.values():
+                pts.sort(key=lambda p: p["date"])  # 时序升序供 ECharts line
+        if not overlay and not standalone:
+            return {**empty, "note": "研报结构化指标暂无可绘图数值(未披露或文本值)"}
+        return {"available": True, "note": "", "overlay": overlay, "standalone": standalone}
+    except Exception as e:  # 【关键】研报指标异常不拖垮看板:降级空态
+        logger.warning("research dashboard series %s: %s", code, e)
+        return {**empty, "note": f"DATA_ERROR: {e}"}
 
 
 # ---------------------------------------------------------------------------
@@ -1420,6 +1568,11 @@ _MACRO_VALUE_LABELS = [
     ("房地产", "指数值"),
     ("工业增加值", "同比增长"),
     ("建筑业", "指数值"),
+    ("CPI", "CPI 同比"),
+    ("PPI", "PPI 同比"),
+    ("货币供应", "M2 同比"),
+    ("LPR", "LPR1Y"),
+    ("社会融资规模增量", "增量"),
 ]
 
 
@@ -1532,7 +1685,7 @@ def _parse_supply_demand(text: str) -> list[dict]:
 # 【返回】_meta + price/basis/inventory/sentiment/news/macro 六块;各块 available=false + note 优雅降级。
 # 【关键】1) 时间口径与数据看板一致(end_date=datetime.now(),meta.data_as_of 标注最新数据日);
 #        2) 价格/基差/库存/新闻走 ThreadPoolExecutor(max_workers=4) 并行(api_dashboard 同款);
-#        3) 宏观(6 个 akshare 子指标,最慢)另起单线程带 20s 超时,超时只降级该项不拖垮首拉;
+#        3) 宏观(11 个 akshare 子指标,最慢)另起单线程带 60s 超时(进程内 30 分钟新鲜度缓存,重复调用不重打网),超时只降级该项不拖垮首拉;
 #        4) 情绪直接读 {code}_sentiment.json(本地毫秒级);
 #        5) 新闻/宏观为格式化文本,经 _parse_news_text/_parse_macro_text 结构化;解析失败 raw 透传。
 @app.route("/api/run_input_data/<variety>")
@@ -1696,7 +1849,7 @@ def api_run_input_data(variety):
 
     def _load_macro():
         try:
-            raw = get_futures_macro()  # 【调用函数】宏观文本(内部 6 指标各自 try/except)
+            raw = get_futures_macro()  # 【调用函数】宏观文本(内部 11 指标各自 try/except)
             items, raw_err = _parse_macro_text(raw)  # 【调用函数】文本 → items
             if items and any(it["value"] is not None for it in items):
                 macro["available"] = True
@@ -1727,9 +1880,9 @@ def api_run_input_data(variety):
     mf = mex.submit(_load_macro)
     sf = mex.submit(_load_supply_demand)
     try:
-        mf.result(timeout=20)
+        mf.result(timeout=60)
     except concurrent.futures.TimeoutError:
-        macro["note"] = "MACRO_TIMEOUT: 宏观数据抓取超时(20s),可稍后刷新重试"
+        macro["note"] = "MACRO_TIMEOUT: 宏观数据抓取超时(60s),可稍后刷新重试"
     try:
         sf.result(timeout=20)
     except concurrent.futures.TimeoutError:
@@ -1860,9 +2013,10 @@ def api_backtest():
 # 【关键】此前只有 CLI 会写盘,Web 分析(run_analysis)从不落盘,导致 /api/history
 #         只能列出 CLI 时代的旧文件(2026-07-21 之后停更)。本函数补上 Web 侧落盘。
 # 【参数】symbol: 品种代码;trade_date: 交易日;final_state: 图最终状态;
-#         elapsed: 本次分析耗时秒数。
+#         elapsed: 本次分析耗时秒数;modules_note: 本次跳过的模块说明(可选,
+#         非空时在报告头部写一行"本次运行跳过模块",默认空=完整档不写)。
 # 【返回】写入成功的文件路径;目录不存在会自动创建。
-def _persist_analysis_report(symbol, trade_date, final_state, elapsed):
+def _persist_analysis_report(symbol, trade_date, final_state, elapsed, modules_note=""):
     """Save a finished analysis to REPORT_DIR in CLI-compatible markdown format."""
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # 时间戳用于文件名唯一化
@@ -1877,12 +2031,23 @@ def _persist_analysis_report(symbol, trade_date, final_state, elapsed):
         ("Synthesis & Recommendation", final_state.get("investment_plan", "")),
         ("Scenario Analysis", final_state.get("scenario_analysis", "")),
     ]
+    # 2026-09-03:机构(研报) vs 散户(社媒) 对比卡作为第 8 段(守卫追加,兼容历史 7 段调用)。
+    if final_state.get("group_compare") and final_state["group_compare"].get("available"):
+        reports.append(
+            (
+                "Group Sentiment Comparison (机构研报 vs 散户社媒)",
+                _group_compare_markdown(final_state["group_compare"]),
+            )
+        )
     with open(fpath, "w", encoding="utf-8") as f:  # 以 UTF-8 写入(跳过空内容段)
         f.write(f"# Commodity Futures Analysis: {symbol}\n\n")
         f.write(f"**Date**: {trade_date}\n")
         f.write(f"**Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"**Elapsed**: {elapsed:.0f}s\n\n")
-        f.write("---\n\n")
+        f.write(f"**Elapsed**: {elapsed:.0f}s\n")
+        # 文件头自述本次跳过的模块,避免轻量/极简档的历史报告被误读成"完整分析"。
+        if modules_note:
+            f.write(f"> 本次运行跳过模块: {modules_note}\n")
+        f.write("\n---\n\n")
         for title, content in reports:
             if content:
                 f.write(f"## {title}\n\n{content}\n\n---\n\n")
@@ -2053,15 +2218,83 @@ def api_report(filename):
 # ═══════════════════════════════════════════════════════════════════
 
 
+# 【功能】把前端/请求体里的开关值稳健地解析为布尔。支持 JSON 布尔、0/1、以及
+#         "true"/"false"/"on"/"off"/"yes"/"no" 等字符串;解析不了返回 default。
+# 【参数】value: 待解析值;default: 缺省/解析失败时的返回值。
+def _as_bool(value, default=True):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "on", "include"):
+            return True
+        if v in ("false", "0", "no", "off", "exclude"):
+            return False
+    return default
+
+
+# 【功能】解析一次运行分析的模块开关,并应用"综合研判是主开关"的强制规则。
+# 【参数】symbol: 品种代码(大写);data: 请求 JSON(可含 include_sentiment 与
+#         include_debate/include_synthesis/include_scenario,缺省全 True=完整档)。
+# 【返回】dict {include_sentiment, include_debate, include_synthesis, include_scenario}:
+#         include_sentiment 沿用 auto/include/exclude 判定(有数据才带);
+#         include_synthesis=False ⇒ include_debate/include_scenario 连锁关(否则白跑)。
+def resolve_run_options(symbol, data):
+    data = data or {}
+    # 决定本次是否运行情绪分析师(auto 默认:该品种存在情绪数据才包含,否则退化为 3 分析师)。
+    inc_choice = str(data.get("include_sentiment", "auto")).strip().lower()
+    if inc_choice == "include":
+        include_sentiment = True
+    elif inc_choice == "exclude":
+        include_sentiment = False
+    else:  # "auto" (default)
+        include_sentiment = should_include_sentiment(symbol)  # 【调用函数】质量感知判定(数据不足但有板块复合也算含)
+    include_debate = _as_bool(data.get("include_debate"), True)
+    include_synthesis = _as_bool(data.get("include_synthesis"), True)
+    include_scenario = _as_bool(data.get("include_scenario"), True)
+    # 综合研判是"主开关":关闭它意味着不要最终结论 → 辩论素材与情景推演都无人消费,连锁关闭。
+    if not include_synthesis:
+        include_debate = False
+        include_scenario = False
+    return {
+        "include_sentiment": include_sentiment,
+        "include_debate": include_debate,
+        "include_synthesis": include_synthesis,
+        "include_scenario": include_scenario,
+    }
+
+
+# 【功能】按本次启用的模块过滤 PIPELINE_STAGES:未启用模块对应的阶段 id 一并剔除,
+#         使进度条只显示实际会跑的阶段(纯函数,便于单测)。
+# 【参数】opts: resolve_run_options(...) 的返回 dict(含 include_sentiment/debate/synthesis/scenario)。
+# 【返回】过滤后的阶段列表(与 PIPELINE_STAGES 同结构,顺序保持)。
+def stages_for_run(opts):
+    dropped = set()  # 【变量】本次剔除的阶段 id
+    if not opts.get("include_sentiment"):
+        dropped.add("sentiment")
+    if not opts.get("include_debate"):
+        dropped.update(("bull_opening", "bear_refute", "bull_rebuttal", "moderator"))
+    if not opts.get("include_synthesis"):
+        dropped.add("synthesis")
+    if not opts.get("include_scenario"):
+        dropped.add("scenario")
+    return [s for s in PIPELINE_STAGES if s["id"] not in dropped]
+
+
 # 【功能】启动一次完整的多分析师分析(技术/基本面/宏观/情绪 + 多方辩论 + 综合研判 + 情景分析)。
 # 【请求体】{"symbol": "RB", "date": "2026-07-14",
-#             "include_sentiment": "auto" | "include" | "exclude"}
+#             "include_sentiment": "auto" | "include" | "exclude",
+#             "include_debate"/"include_synthesis"/"include_scenario": 布尔(可选,缺省 true=完整档)}
 #   · include_sentiment=include: 必定带情绪分析师; exclude: 不带;
 #     auto(默认)= 有该品种情绪数据就带,否则退化为 3 分析师(技术/基本面/宏观)。
-# 【返回】立即返回 {"status": "started", "include_sentiment": ..., "stages": [...]};
+#   · include_debate/synthesis/scenario: 模块细粒度跳选;综合研判=false ⇒ 辩论+情景连锁关(极简档)。
+# 【返回】立即返回 {"status": "started", "include_sentiment": ..., "modules": {...}, "stages": [...]};
 #   真正的分析在后台线程异步执行,前端通过 /api/progress 轮询进度。
 # 【关键逻辑】
-#   · 阶段列表随 include_sentiment 变化:不带情绪时过滤掉 "sentiment" 阶段。
+#   · 阶段列表随本次启用的模块变化:未启用模块对应的阶段 id 从 PIPELINE_STAGES 剔除,
+#     进度条随之只显示实际会跑的阶段(前端拿到 d1.stages 后按权威列表重绘)。
 #   · 后端把每个 Agent 节点名映射为阶段 id(stage_map),节点跑完就标记该阶段完成。
 #   · 分析流会检查 _tracker.stop_requested / wait_if_paused(),实现前端"停止/暂停"。
 @app.route("/api/run_analysis", methods=["POST"])
@@ -2072,26 +2305,16 @@ def api_run_analysis():
     symbol = data.get("symbol", "RB").upper()
     trade_date = data.get("date", "2026-07-14")
 
-    # 决定本次是否运行情绪分析师:
-    # · "include" → 强制包含; "exclude" → 强制排除;
-    # · "auto"(默认) → 该品种存在情绪数据(含仓库样例)则包含,否则退化为 3 分析师。
-    # Resolve whether the Sentiment analyst runs this time. "auto" degrades
-    # to the 3-analyst flow (Technical/Fundamental/Macro) when no sentiment
-    # data is actually available for this variety (incl. repo-sample fallback).
-    inc_choice = str(data.get("include_sentiment", "auto")).strip().lower()
-    if inc_choice == "include":
-        include_sentiment = True
-    elif inc_choice == "exclude":
-        include_sentiment = False
-    else:  # "auto" (default)
-        include_sentiment = should_include_sentiment(symbol)  # 【调用函数】质量感知判定(数据不足但有板块复合也算含)
+    # 解析本次运行的模块开关(情绪 auto/include/exclude + 辩论/综合/情景的细粒度跳选),
+    # 并把闭包要用到的 include_* 就地展开为局部变量。缺省全开 = 现行为(完整档)。
+    opts = resolve_run_options(symbol, data)  # 【调用函数】解析运行模块开关(含综合研判主开关的强制规则)
+    include_sentiment = opts["include_sentiment"]
+    include_debate = opts["include_debate"]
+    include_synthesis = opts["include_synthesis"]
+    include_scenario = opts["include_scenario"]
 
-    # 阶段列表:不带情绪分析时,过滤掉 "sentiment" 阶段,进度条也随之少一段。
-    stages = (
-        PIPELINE_STAGES
-        if include_sentiment
-        else [s for s in PIPELINE_STAGES if s["id"] != "sentiment"]
-    )
+    # 阶段列表:按本次启用的模块过滤 PIPELINE_STAGES,进度条也随之只显示实际会跑的阶段。
+    stages = stages_for_run(opts)
 
     _tracker = ProgressTracker(symbol=symbol, trade_date=trade_date, stages=stages)
     _tracker.is_running = True
@@ -2119,8 +2342,13 @@ def api_run_analysis():
         global _tracker
         try:
             # 构建 LangGraph 多分析师图;enable_feedback=False 表示本轮不要求用户反馈。
-            app_graph, _ = build_commodity_graph(
-                config, enable_feedback=False, include_sentiment=include_sentiment  # 【调用函数】构建 LangGraph 多分析师图
+            app_graph, _ = build_commodity_graph(  # 【调用函数】构建 LangGraph 多分析师图(按本次启用的模块接线)
+                config,
+                enable_feedback=False,
+                include_sentiment=include_sentiment,
+                include_debate=include_debate,
+                include_synthesis=include_synthesis,
+                include_scenario=include_scenario,
             )
             evo_ctx = get_evolution_context(symbol)  # 【调用函数】读取该品种历史进化记忆
             initial_state = {  # 【变量】LangGraph 初始状态(分析流水线的输入骨架,含会话与各报告槽位)
@@ -2195,14 +2423,39 @@ def api_run_analysis():
                             "bull_last" if "bull" in node_name else "bear_last", ""
                         )[:3000]
                     _tracker.update_stats(llm=_tracker.llm_calls + 1)
+
+            # 机构(研报) vs 散户(社媒) 观点对比卡:确定性计算(无 LLM、无图节点)。
+            # 仅在包含情绪分析师时产出,避免"未跑情绪"被误显示为"散户无数据"。
+            try:
+                if include_sentiment:
+                    gc = _build_group_compare(symbol)
+                    if gc and gc.get("available"):
+                        final_state["group_compare"] = gc
+                        _tracker._stage_reports["group_compare"] = gc
+            except Exception:
+                logger.exception("group_compare 计算失败(非阻断)")
+
             _tracker._stage_reports["_final_state"] = final_state
             _tracker.mark_complete(final_state)
 
             # 把本次分析落盘为历史报告(与 CLI 相同格式),供 /api/history 与
             # /api/report/<file> 读取。此前 Web 分析从不写盘,历史报告因此停更。
-            # 落盘失败只记日志,不阻断分析完成状态。
+            # 落盘失败只记日志,不阻断分析完成状态。跳过模块时在文件头自述,防静默降级。
+            skipped_mods = []
+            if not include_debate:
+                skipped_mods.append("辩论对抗")
+            if not include_synthesis:
+                skipped_mods.append("综合研判")
+            if not include_scenario:
+                skipped_mods.append("情景分析")
             try:
-                _persist_analysis_report(symbol, trade_date, final_state, elapsed=_tracker.elapsed)
+                _persist_analysis_report(
+                    symbol,
+                    trade_date,
+                    final_state,
+                    elapsed=_tracker.elapsed,
+                    modules_note="、".join(skipped_mods),
+                )
             except Exception:
                 logger.exception("Failed to persist analysis report for %s", symbol)
 
@@ -2258,6 +2511,12 @@ def api_run_analysis():
         {
             "status": "started",
             "include_sentiment": include_sentiment,
+            "modules": {  # 【变量】本次实际启用的模块(供前端记录/提示档位)
+                "sentiment": include_sentiment,
+                "debate": include_debate,
+                "synthesis": include_synthesis,
+                "scenario": include_scenario,
+            },
             "stages": [s["id"] for s in stages],
         }
     )
@@ -2462,6 +2721,96 @@ def _read_text_file(path: Path) -> str:
 # 【功能】用 PyMuPDF(fitz)提取 PDF 文本层。
 # 【参数】path: PDF 文件路径。
 # 【返回】str:拼接后的全文;PyMuPDF 未安装或读取失败返回空串(走 OCR 降级)。
+# 【变量】PDF 版面还原参数:同一行 y 坐标容差(磅);行内相邻词横向间隔超过该值
+#         时插双空格(保留分栏/表格列结构),否则按 CJK 规则决定插不插空格。
+_PDF_LINE_Y_TOL = 3.0
+_PDF_WORD_GAP = 12.0
+# 【变量】CJK 文字与常见全角标点:这些字符两两相邻时拼接不加空格。
+_CJK_CHARS = "。，、；：（）【】“”‘’％%℃"
+
+
+def _is_cjk_char(ch: str) -> bool:
+    """【功能】判断单字符是否为 CJK 文字/全角标点(CJK 相邻拼接时不插空格)。
+
+    【参数】ch:单个字符(可能为空串)。
+    【返回】bool。
+    """
+    if not ch:
+        return False
+    return "\u4e00" <= ch <= "\u9fff" or ch in _CJK_CHARS
+
+
+def _pdf_join_sep(left: str, right: str) -> str:
+    """【功能】决定相邻两词的连接符:CJK 相邻不插空格,其余插一个空格。
+
+    【参数】left:左侧已有文本的末字符;right:右侧待接词的首字符。
+    【返回】str:"" 或 " "。
+    """
+    return "" if (_is_cjk_char(left) and _is_cjk_char(right)) else " "
+
+
+def _pdf_words_to_lines(words: list) -> list[str]:
+    """【功能】把一页(或一块)的词条按 y 坐标聚成行、行内按 x 排序后拼成文本行。
+
+    【参数】words: page.get_text("words") 的词条列表
+                  (x0, y0, x1, y1, word, block_no, line_no, word_no)。
+    【返回】list[str]:按阅读顺序排列的文本行。
+
+    【关键逻辑】PyMuPDF 默认 get_text() 按**文本流**输出,遇到"每个数字/词单独定位"
+               的研报 PDF(设计软件导出,各文本块独立坐标)会碎成一行一 token——
+               实测永安周报平均行长仅 5.4 字,LPG 周报 6676 行,20000 字上限被碎片
+               吃光导致正文被截断。这里按 y 容差归行还原版面:行内按 x 排序,横向
+               间隔超阈值(分栏/表格列)插双空格保留列结构。
+    """
+    ordered = sorted(words, key=lambda w: (w[1], w[0]))
+    buckets: list[list] = []
+    cur: list = []
+    cur_y = None
+    for w in ordered:
+        y, x0, x1, txt = w[1], w[0], w[2], w[4]
+        if cur_y is None or abs(y - cur_y) <= _PDF_LINE_Y_TOL:
+            cur.append((x0, x1, txt))
+            if cur_y is None:
+                cur_y = y
+        else:
+            buckets.append(cur)
+            cur = [(x0, x1, txt)]
+            cur_y = y
+    if cur:
+        buckets.append(cur)
+
+    lines: list[str] = []
+    for bucket in buckets:
+        bucket.sort()
+        text = bucket[0][2]
+        for prev, nxt in zip(bucket, bucket[1:], strict=False):
+            sep = ("  " if (nxt[0] - prev[1]) > _PDF_WORD_GAP
+                   else _pdf_join_sep(text[-1:], nxt[2][:1]))
+            text += sep + nxt[2]
+        lines.append(text)
+    return lines
+
+
+def _pdf_page_text(page) -> str:
+    """【功能】单页 PDF → 还原版面后的文本(先按 block 分块,天然处理双栏排版)。
+
+    【参数】page: PyMuPDF 页面对象。
+    【返回】str:该页文本。
+    【关键逻辑】PyMuPDF 的 block 划分已把左右分栏切成不同块,故按块分组再各自聚行,
+               避免纯 y 排序把双栏目录串行(实测会串成 "01 要点综述 / 目录 / 02 价格表现")。
+    """
+    words = page.get_text("words")
+    if not words:  # 【分支】无词条(纯图页等)退回默认提取
+        return page.get_text()
+    blocks: dict[int, list] = {}
+    for w in words:
+        blocks.setdefault(w[5], []).append(w)
+    lines: list[str] = []
+    for bno in sorted(blocks):
+        lines.extend(_pdf_words_to_lines(blocks[bno]))
+    return "\n".join(lines)
+
+
 def _extract_pdf_text(path: Path) -> str:
     try:
         import pymupdf  # 【调用包】PyMuPDF(≥1.24 推荐入口):PDF 文本层提取 / 扫描页渲染
@@ -2472,7 +2821,7 @@ def _extract_pdf_text(path: Path) -> str:
             return ""
     try:
         doc = pymupdf.open(str(path))
-        parts = [page.get_text() for page in doc]
+        parts = [_pdf_page_text(page) for page in doc]
         doc.close()
         return "\n".join(parts)
     except Exception:
@@ -2581,11 +2930,41 @@ def _extract_json_object(text: str) -> dict | None:
     return None
 
 
+# 【变量】品种别名/子品种映射:LLM 或研报里出现的非标准叫法 → 标准代码。
+# 用于 fxbaogao 自动接入时,子品种(光伏玻璃→玻璃FG)、简称(螺纹→RB)、
+# 带"沪/价"后缀(沪铜→CU)等无法被 VARIETY_METADATA 直接命中时的兜底归一化。
+_VARIETY_ALIASES = {
+    # 玻璃系(子品种)
+    "光伏玻璃": "FG", "平板玻璃": "FG", "浮法玻璃": "FG", "low-e玻璃": "FG", "lowe玻璃": "FG",
+    # 钢材系(简称/子品种)
+    "螺纹": "RB", "热卷": "HC", "热轧": "HC", "线材": "WR", "盘螺": "RB",
+    # 煤焦
+    "炼焦煤": "JM",
+    # 铁合金
+    "硅铁": "SF", "锰硅": "SM", "硅锰": "SM",
+    # 金属(带"沪/价"等后缀)
+    "沪铜": "CU", "沪铝": "AL", "沪镍": "NI", "沪锌": "ZN", "沪铅": "PB", "沪锡": "SN",
+    "沪金": "AU", "沪银": "AG", "金价": "AU", "银价": "AG", "铜价": "CU", "铝价": "AL",
+    "氧化铝": "AO", "不锈钢": "SS",
+    # 能源
+    "低硫燃": "LU", "燃料油": "FU",
+    # 化工
+    "聚乙烯": "L", "聚氯乙烯": "V",
+    "合成橡胶": "BR", "丁二烯橡胶": "BR",
+    # 农产品(带"价")
+    "豆价": "M", "棉价": "CF", "糖价": "SR",
+}
+# 反向:标准中文名 + 别名 → 代码(供关键词恢复扫描用)。
+_VARIETY_KEYWORD_MAP = {v["name"]: k for k, v in VARIETY_METADATA.items()}
+_VARIETY_KEYWORD_MAP.update(_VARIETY_ALIASES)
+
+
 # 【功能】把 LLM 输出的品种名/代码归一化为标准品种代码。
-# 【参数】raw: LLM 输出的品种标识(如 "RB"、"rb"、"螺纹钢")。
+# 【参数】raw: LLM 输出的品种标识(如 "RB"、"rb"、"螺纹钢"、"光伏玻璃")。
 # 【返回】str | None:标准大写代码;无法识别返回 None。
-# 【关键逻辑】1) 大写后先查 VARIETY_METADATA 直接命中;2) 再用中文名反查;
-#           3) 兜底:保留字母数字并大写(未知品种也能落库,消费端按同代码匹配)。
+# 【关键逻辑】1) 大写后先查 VARIETY_METADATA 直接命中;2) 中文名反查;
+#           3) 别名/子品种表(_VARIETY_ALIASES,如 光伏玻璃→FG);
+#           4) 兜底:保留字母数字并大写(未知品种也能落库,消费端按同代码匹配)。
 def _normalize_variety_code(raw) -> str | None:
     if not raw:
         return None
@@ -2598,8 +2977,40 @@ def _normalize_variety_code(raw) -> str | None:
     name_map = {v["name"]: k for k, v in VARIETY_METADATA.items()}
     if s in name_map:
         return name_map[s]
+    if s in _VARIETY_ALIASES:
+        return _VARIETY_ALIASES[s]
     cleaned = re.sub(r"[^A-Za-z0-9]", "", up)
     return cleaned or None
+
+
+# 【功能】LLM 未识别出品种时的最后兜底:扫描标题+正文中的品种关键词。
+# 【参数】text: 研报文本;selected: 用户/调用方指定的主品种(优先)。
+# 【返回】dict | None:{"variety": 代码, "direction":"中性", "confidence":0.3~0.4}
+#            找到最长匹配的品种关键词则返回;否则 None(交由上层判失败)。
+# 【关键逻辑】优先用 selected(若可归一化);否则在标题+正文里按关键词长度
+#              降序匹配 _VARIETY_KEYWORD_MAP(标准名+别名),命中即返回。
+#              用于 fxbaogao 自动接入的子品种研报(如"光伏玻璃周度报告"→FG)。
+def _recover_variety_from_text(text: str, selected: str) -> dict | None:
+    if selected:
+        code = _normalize_variety_code(selected)
+        if code:
+            return {"variety": code, "direction": "中性", "confidence": 0.4}
+    if not text:
+        return None
+    title = (text.split("\n", 1)[0] or "")[:80]
+    hay = text[:8000]
+    best_code, best_len = None, 0
+    # 先扫标题(权重高,命中即返回);再扫正文取最长匹配
+    for kw, code in sorted(_VARIETY_KEYWORD_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if len(kw) < 2:
+            continue
+        if kw in title:
+            return {"variety": code, "direction": "中性", "confidence": 0.4}
+        if kw in hay and len(kw) > best_len:
+            best_code, best_len = code, len(kw)
+    if best_code:
+        return {"variety": best_code, "direction": "中性", "confidence": 0.3}
+    return None
 
 
 # 【功能】把 LLM 输出的方向词统一成 看多/看空/中性。
@@ -2634,21 +3045,36 @@ def _llm_extract_structured(llm, variety: str, text: str) -> dict:
         ' "varieties":[{\n'
         '   "variety":"品种标准代码(研报为哪几个品种给出观点/数据就列哪几个)",\n'
         '   "spot_price":{"value":number,"unit":"元/吨","date":"YYYY-MM-DD"},\n'
+        '   "basis":{"value":number,"unit":"元/吨","date":"YYYY-MM-DD","note":"现货对盘面升贴水/基差说明,如\"现货升水 120\"(可选)"},\n'
         '   "social_inventory":{"value":number,"unit":"万吨","date":"YYYY-MM-DD"},\n'
         '   "mill_inventory":{"value":number,"unit":"万吨","date":"YYYY-MM-DD"},\n'
+        '   "warehouse_receipts":{"value":number,"unit":"张","date":"YYYY-MM-DD","note":"交易所仓单口径/增减(可选)"},\n'
+        '   "operating_rate":{"value":number,"unit":"%","date":"YYYY-MM-DD","note":"开工率/负荷率口径,如\"炼厂开工/聚酯负荷\"(可选)"},\n'
         '   "supply":{"note":"...","date":"..."},\n'
         '   "demand":{"note":"...","date":"..."},\n'
         '   "costs":{"note":"...","date":"..."},\n'
+        '   "processing_margin":{"value":number,"unit":"元/吨","date":"YYYY-MM-DD","note":"加工利润/加工费/盘面价差口径(可选)"},\n'
         '   "target_price":number,\n'
         '   "key_events":[{"event":"...","detail":"...","impact":"bullish/bearish/neutral","source":"..."}],\n'
         '   "direction":"看多/看空/中性",\n'
-        '   "confidence":0.0,\n'
+        '   "confidence":0.6,\n'
         '   "rating":"买入/增持/中性/减持/卖出"}]\n'
         "}\n"
         "要求:\n"
+        "重要:上方 JSON 示例里的数值(如 confidence 0.6)只是字段格式示意,一律不得照抄;\n"
         "1) varieties 列出研报中出现的所有品种,每个品种一份,同一品种不要重复;若只涉及一个品种就放一个元素。\n"
         "2) 品种代码用标准代码,例如: " + _SUPPORTED_VARIETY_HINT + "\n"
-        "3) 研报中没有出现的字段留空字符串或 null,绝对不要编造。\n"
+        "3) 除 confidence 外:研报中没有出现的字段留空字符串或 null,绝对不要编造。\n"
+        "3c) confidence 含义与取值:confidence 表示你对 direction 判断的把握程度(0~1 小数)。\n"
+        "    研报明确看多/看空、且数据与事件支撑充分强 → 0.75~0.95;\n"
+        "    方向倾向明确但证据一般或研报语气谨慎 → 0.55~0.75;\n"
+        "    中性/区间/无明确倾向 → 0.4~0.6;\n"
+        "    研报几乎没有给出可供判断方向的依据 → 0.3~0.5(此时 direction 宜为中性)。\n"
+        "    数据/观点相互冲突或语焉不详取低档。严禁所有品种都填同一数值,严禁照抄示例 0.6;\n"
+        "    不要一看到 direction=中性就固定 0.5,应按该品种证据强弱在 0.4~0.6 内浮动。\n"
+        "3b) basis(基差/现货升贴水)/operating_rate(开工率/负荷率)/warehouse_receipts"
+        "(交易所仓单)/processing_margin(加工利润/加工费/价差)只在研报给出具体数字时"
+        "填 value,note 写口径(如\"炼厂开工/唐山高炉/PTA加工差\"),研报没给数就整体留空。\n"
         "4) report_title / publisher 从研报中识别,识别不到留空。\n"
         f"用户选择的主品种(仅供参考,可不含在 varieties 中):{variety}\n---\n研报文本:\n{text[:8000]}"
     )
@@ -2685,10 +3111,15 @@ def _llm_extract_structured(llm, variety: str, text: str) -> dict:
         seen.add(code)
         item["variety"] = code
         item["direction"] = _normalize_direction(str(item.get("direction", "中性")))
+        # confidence:只有模型真的给了 0~1 的数才保留(钳到合法区间);缺失/非法 → None,
+        # 前端显示"—(未给置信度)",绝不拿 0.5 冒充(2026-09-03 根因:全部默认 0.5)。
         try:
-            item["confidence"] = float(item.get("confidence", 0.5))
-        except (TypeError, ValueError):
-            item["confidence"] = 0.5
+            c = float(item["confidence"])
+            if c != c:  # NaN
+                c = None
+        except (TypeError, ValueError, KeyError):
+            c = None
+        item["confidence"] = None if c is None else max(0.0, min(1.0, c))
         cleaned.append(item)
     data["varieties"] = cleaned
     return data
@@ -2698,11 +3129,23 @@ def _llm_extract_structured(llm, variety: str, text: str) -> dict:
 MAX_CONCLUSION_VARIETIES = 6
 
 
-# 【功能】LLM 第二步:按品种逐一生成观点分析结论(markdown),与品种一一对应。
+# 【变量】结论"交易要素"节的标题关键词 —— _extract_key_opinion 据此把该节提到单元格
+#         首行(交易要素→推理链);scripts/reconclude_research.py 的 _NEW_FMT_MARKERS
+#         与此语义双份同步(脚本刻意不 import web_app,改任一侧须对齐另一侧)。
+_TRADE_TITLE_HINTS = ("交易要素", "头寸与风险", "仓位与风险")
+
+
+# 【功能】LLM 第二步:按品种逐一生成"核心观点"分析结论(markdown),与品种一一对应。
 # 【参数】llm: 大模型客户端;text: 研报文本;varieties: 已归一化的品种 dict 列表。
 # 【返回】dict {品种代码: markdown 结论}。
-# 【关键逻辑】每个品种单独一次 LLM 调用(聚焦该品种,不经标题切分,稳健);
-#           单个品种失败降级为提示文案,不中断其它品种。
+# 【关键逻辑】1) 每个品种单独一次 LLM 调用(聚焦该品种,不经标题切分,稳健);
+#           2) 逐品种结论=两段式 markdown:第一部分多角度核心观点(固定七小节:
+#              供需格局/库存与结构/成本与利润/现货与目标价/事件与驱动/观点与依据/
+#              交易要素与风险,每节一句关键数据+含义,340 字左右,研报未披露指标
+#              该节明写不得编造);
+#              第二部分附列信息:## 数据支撑(关键佐证清单)/## 与系统自动分析的
+#              潜在分歧(对照已提取 direction/confidence)/## 建议权重(权重建议)。
+#           3) 单个品种失败降级为提示文案,不中断其它品种。
 def _llm_opinion_conclusion(llm, text: str, varieties: list[dict]) -> dict:
     conclusions: dict[str, str] = {}
     name_map = {k: v["name"] for k, v in VARIETY_METADATA.items()}
@@ -2712,11 +3155,40 @@ def _llm_opinion_conclusion(llm, text: str, varieties: list[dict]) -> dict:
             continue
         label = f"{code} ({name_map.get(code, '')})".strip()
         prompt = (
-            f"你是中国商品期货基本面分析师。研报全文见下,请只针对品种 {label} 输出一份"
-            "观点分析结论,格式为 markdown:\n"
-            "## 核心观点\n## 数据支撑\n## 与系统自动分析的潜在分歧\n## 建议权重\n"
-            "控制在 200 字以内,数据必须引用研报原文,只谈该品种。\n"
-            f"该品种已提取结构:{json.dumps(item, ensure_ascii=False)}\n---\n研报文本:\n{text[:8000]}"
+            f"你是中国商品期货基本面分析师。研报全文见下。请只针对品种 {label} 输出一份"
+            "观点分析结论(markdown),分两部分:\n"
+            "【第一部分 · 多角度核心观点(总篇幅 340 字左右,300~400)】小节标题固定:\n"
+            "## 供需格局\n## 库存与结构\n## 成本与利润\n## 现货与目标价\n"
+            "## 事件与驱动\n## 观点与依据\n## 交易要素与风险\n"
+            "写作要求:\n"
+            "1) 每节只写该品种在该角度最要紧的一句话,引用研报原文里的具体数字与日期,"
+            "并点一句其含义,不铺陈展开;某角度研报未披露时该节写\"研报未披露该指标\","
+            "严禁编造数据或观点。\n"
+            "1a) 研报披露了下面指标时必须写进对应小节(带数字与日期):开工率/负荷率→"
+            "『供需格局』(供给强弱);加工利润/加工费/盘面价差→『成本与利润』;"
+            "交易所仓单增减→『库存与结构』;基差或现货升贴水(正基差=现货升水偏多,"
+            "负=贴水)→『现货与目标价』。研报没给的不写。\n"
+            "2) 只谈该品种,不涉及其他品种;『观点与依据』先给一句推理链:"
+            "因<事实/依据> → 推演<逻辑> → 方向<看多/看空/中性> + 单边/区间,"
+            "再附 1 个需跟踪的边际变量/风险。\n"
+            "3) 『交易要素与风险』必须单行输出,五段用中文分号分隔,依次为:\n"
+            "方向:看多/看空/中性;形态与区间:<单边<看多/看空, 运行或目标区间 a~b> "
+            "或 区间震荡(区间 a~b),研报没给区间写—>;头寸:<具体手数/手数区间优先"
+            "(如\"多头 30 手\"\"建仓 20~40 手\"),无手数则给仓位建议(轻仓/逢低分批/"
+            "主力持有/等回调分批),都没有写—>;头寸范围:<加仓/减仓/止损或触发价位区间"
+            "(如\"回落 7800 加仓\"),研报没给写—>;风险:<主要风险或需跟踪边际变量(1 条)>。\n"
+            "严禁编造手数与价位;研报未披露的一律写「—」,不得写\"未披露\"字样。\n"
+            "4) 保持紧凑:第一部分 340 字左右,不写套话。\n"
+            "【第二部分 · 附列信息】紧接第一部分,再依次输出三节:\n"
+            "## 数据支撑\n把支撑上述判断的关键数据/研报原文要点列成简明清单,每条注明数字"
+            "与日期;已被第一部分完整引述的数据不重复堆砌,只补最有分量的佐证。\n"
+            "## 与系统自动分析的潜在分歧\n对照该品种已提取结构中的 direction/confidence"
+            "(自动识别倾向/置信度),指出其与第一部分多空定性的分歧点;无实质分歧写"
+            "\"与系统自动分析基本一致\"。\n"
+            "## 建议权重\n给出该观点的配置/关注权重建议(如\"多头 20%~30%\"或\"区间操作为主,"
+            "权重 0.5\"),用一句话说明理由。\n"
+            f"该品种已提取结构(可能不完整,以研报原文为准):{json.dumps(item, ensure_ascii=False)}\n"
+            "---\n研报文本:\n" + text[:12000]
         )
         try:
             result = llm.invoke(prompt)
@@ -2724,8 +3196,52 @@ def _llm_opinion_conclusion(llm, text: str, varieties: list[dict]) -> dict:
             conclusions[code] = str(content)[:4000]
         except Exception:
             logger.warning("LLM conclusion failed for %s", code, exc_info=True)
-            conclusions[code] = f"## 核心观点\n({code} 观点生成失败,请人工阅读研报原文。)"
+            conclusions[code] = f"## 观点与依据\n({code} 观点生成失败,请人工阅读研报原文。)"
     return conclusions
+
+
+# 【功能】把一份研报按品种拆分写各品种聚合 JSON(供 get_research_report / merge_* 读取)。
+# 【参数】report_id: 研报主键(作为聚合记录 id);uploaded_at: 上传/发布时间;
+#           title/source: 已解析的标题与发行方;codes: 覆盖品种列表;
+#           varieties: 归一化品种 dict 列表;conclusions: 各品种 markdown 结论。
+# 【返回】无。
+# 【关键逻辑】每个品种只落自己的数据点/方向/置信度/结论;记录 id=report_id,
+#           同 id 覆盖(research_data.upsert 语义),不产生重复条目。由 _process_
+#           research_report 与 reconclude_research_report(只重跑结论)共用。
+def _write_research_aggregates(
+    report_id: int,
+    uploaded_at: str,
+    title: str,
+    source: str,
+    codes: list[str],
+    varieties: list[dict],
+    conclusions: dict[str, str],
+) -> None:
+    from tradingagents.dataflows.research_data import (
+        upsert_research_report,  # 【调用包】研报聚合 JSON 写入
+    )
+
+    data_point_keys = (
+        "spot_price", "basis", "social_inventory", "mill_inventory",
+        "warehouse_receipts", "operating_rate", "supply", "demand", "costs",
+        "processing_margin", "target_price", "key_events", "rating",
+    )
+    for item in varieties:
+        code = item["variety"]
+        upsert_research_report(
+            code,
+            {
+                "id": report_id,
+                "title": title,
+                "source": source,
+                "uploaded_at": uploaded_at,
+                "varieties": codes,  # 覆盖品种标注:读该品种时提示"本研报还覆盖 X/Y"
+                "direction": item.get("direction", "中性"),
+                "confidence": item.get("confidence", 0.5),
+                "conclusion": conclusions.get(code, ""),
+                "data_points": {k: val for k, val in item.items() if k in data_point_keys},
+            },
+        )
 
 
 # 【功能】后台线程:处理一份已入库的研报(提取文本 → LLM 两步 → 落库 + 按品种写聚合)。
@@ -2764,7 +3280,16 @@ def _process_research_report(report_id: int):
         structured = _llm_extract_structured(llm, selected, text)
         varieties = structured.get("varieties") or []
         if not varieties:
+            # LLM 未输出品种时的最后兜底:从标题/正文关键词恢复(子品种研报如
+            # "光伏玻璃周度报告"→FG),避免 fxbaogao 自动接入时整份研报被丢弃。
+            rec = _recover_variety_from_text(text, selected)
+            if rec:
+                varieties = [rec]
+        if not varieties:
             raise ValueError("未能识别研报中的品种与数据,请确认研报内容或重新上传")
+        # 【入库即直接提取四类基本面】LLM 四键提取后仍缺的键,用研报原文确定性补上并
+        # 随结构化 data_points 一起落库(新研报不靠读时兜底;总结遗漏也不丢数)。
+        _ingest_backfill_fund_metrics(varieties, text)
         title = (
             (structured.get("report_title") or "").strip()
             or (report.get("title") or "").strip()
@@ -2799,35 +3324,182 @@ def _process_research_report(report_id: int):
         )
         # 写聚合 JSON:按品种拆分,每个品种只落自己的数据点/方向/置信度/结论,
         # 消费端 get_research_report("X") / merge_* 读 X 的聚合即自动一一匹配。
-        from tradingagents.dataflows.research_data import upsert_research_report  # 【调用包】研报聚合 JSON 写入
-
-        data_point_keys = (
-            "spot_price", "social_inventory", "mill_inventory",
-            "supply", "demand", "costs", "target_price", "key_events", "rating",
+        _write_research_aggregates(
+            report_id, report.get("uploaded_at") or "", title, source, codes, varieties, conclusions
         )
-        for item in varieties:
-            code = item["variety"]
-            upsert_research_report(
-                code,
-                {
-                    "id": report_id,
-                    "title": title,
-                    "source": source,
-                    "uploaded_at": report.get("uploaded_at") or "",
-                    "varieties": codes,  # 覆盖品种标注:读该品种时提示"本研报还覆盖 X/Y"
-                    "direction": item.get("direction", "中性"),
-                    "confidence": item.get("confidence", 0.5),
-                    "conclusion": conclusions.get(code, ""),
-                    "data_points": {k: val for k, val in item.items() if k in data_point_keys},
-                },
-            )
         logger.info("Research report %s (%s) processed OK, varieties=%s", report_id, primary, codes)
     except Exception as e:
         logger.exception("Research processing failed for report %s", report_id)
-        try:
+        with contextlib.suppress(Exception):
             db.update_research_report(report_id, status="error", error=str(e)[:2000])
-        except Exception:
-            pass
+
+
+# 【功能】只重跑研报的"核心观点"结论步骤(不重跑品种识别/结构化提取)。
+# 【参数】report_id: research_reports 主键;llm: 可注入的模型客户端(默认按配置新建)。
+# 【返回】{"ok": bool, "report_id": …, "codes": [代码]};失败含 "error" 字段。
+# 【关键逻辑】1) 读已入库行的 extracted_text(缺则从文件重提)+ structured_data 里
+#              归一化好的 varieties,用当前 _llm_opinion_conclusion 提示词重生成
+#              逐品种观点;2) 回写 DB conclusion_md(status 保持 done,不改
+#              structured_data/标题/方向),再按品种覆盖写聚合 JSON(upsert 按 id
+#              替换,不新增重复);3) 供"观点提示词升级后刷新存量研报观点"使用,
+#              异常只写 error 字段、不把已 done 行打成 error。
+def reconclude_research_report(report_id: int, llm=None) -> dict:
+    db = get_db()
+    report = db.get_research_report(report_id)
+    if not report:
+        return {"ok": False, "report_id": report_id, "error": "研报不存在"}
+    text = (report.get("extracted_text") or "").strip()
+    if not text:
+        text, _used_ocr = _extract_report_text(report.get("file_path") or "")
+    if not (text or "").strip():
+        return {"ok": False, "report_id": report_id, "error": "无研报正文,无法重生成观点"}
+    try:
+        structured = json.loads(report.get("structured_data") or "{}")
+    except (TypeError, ValueError):
+        structured = {}
+    varieties = [v for v in (structured.get("varieties") or []) if v.get("variety")]
+    if not varieties:
+        # 老行 structured 无 varieties 时的兜底:退回主品种单品种重跑
+        code = (report.get("variety") or "").upper().strip()
+        if code:
+            varieties = [{"variety": code, "direction": "中性", "confidence": 0.5}]
+    if not varieties:
+        return {"ok": False, "report_id": report_id, "error": "未识别出品种,无法生成观点"}
+    try:
+        if llm is None:
+            client = create_llm_client(
+                config["llm_provider"],
+                config.get("quick_think_llm", config["deep_think_llm"]),
+            )
+            llm = client.get_llm()
+        conclusions = _llm_opinion_conclusion(llm, text, varieties)
+        codes = [v["variety"] for v in varieties]
+        full_conclusion = "\n\n".join(
+            f"## {code} 结论\n{conclusions.get(code, '')}" for code in codes
+        ).strip()
+        db.update_research_report(report_id, status="done", conclusion_md=full_conclusion)
+        _write_research_aggregates(
+            report_id,
+            report.get("uploaded_at") or "",
+            report.get("title") or "",
+            report.get("source") or "",
+            codes,
+            varieties,
+            conclusions,
+        )
+        logger.info("Research report %s reconcluded, varieties=%s", report_id, codes)
+        return {"ok": True, "report_id": report_id, "codes": codes}
+    except Exception as e:
+        logger.exception("Reconclude failed for research report %s", report_id)
+        with contextlib.suppress(Exception):
+            db.update_research_report(report_id, error=str(e)[:2000])
+        return {"ok": False, "report_id": report_id, "error": str(e)}
+
+
+# 【功能】存量研报"结构化重提取":重跑第一步 _llm_extract_structured(修复后的提示词),
+# 把置信度语义/四键落地前入库的存量研报缺失字段补上并回写 DB 与聚合 JSON。
+# 【参数】report_id: research_reports 主键;llm: 可注入的模型客户端(默认按配置新建)。
+# 【返回】{"ok": bool, "report_id": …, "codes": [代码]};失败含 "error" 字段。
+# 【关键逻辑】1) 只重跑第一步(不动第二步,不重生成结论):重新逐品种提取,重点拿到
+#              · 真实置信度(旧提示词无语义区间 → 全部默认 0.5 / 抄示例 0.0);
+#              · 四类基本面(基差/交易所仓单/开工率/加工利润)——存量行此前根本没提取过,
+#                只在读时用启发式从总结里捞(2026-09-03 用户要求存量也重提取);
+#              重提取后仍缺的四键交给 _ingest_backfill_fund_metrics 从研报原文确定性补漏,
+#              与新研报入库路径完全一致(2026-09-03);
+#           2) 以已入库 varieties 的代码集为锚(结论是按它生成的,不能孤儿化):每个存储
+#              品种,新提取命中 → confidence 一律采用新值(新归一化:缺/非法给 None,
+#              前端显示"—(未给)",不再拿 0.5 冒充),四键有值才覆盖;方向/评级保留,
+#              避免与既有结论文本冲突;新提取未命中的代码原样保留;
+#           3) 回写 DB structured_data(varieties 段替换)与主行 variety/varieties/
+#              direction/confidence,并按品种覆盖聚合 JSON——各品种 conclusion 先从现有
+#              聚合按 id 取回、原样写回(不重跑第二步 → 观点文本不变);
+#           4) 异常只写 error 字段、不把已 done 行打成 error(同 reconclude)。
+def re_extract_research_report(report_id: int, llm=None) -> dict:
+    db = get_db()
+    report = db.get_research_report(report_id)
+    if not report:
+        return {"ok": False, "report_id": report_id, "error": "研报不存在"}
+    text = (report.get("extracted_text") or "").strip()
+    if not text:
+        text, _used_ocr = _extract_report_text(report.get("file_path") or "")
+    if not (text or "").strip():
+        return {"ok": False, "report_id": report_id, "error": "无研报正文,无法重提取结构化数据"}
+    try:
+        structured = json.loads(report.get("structured_data") or "{}")
+    except (TypeError, ValueError):
+        structured = {}
+    stored = [v for v in (structured.get("varieties") or []) if v.get("variety")]
+    if not stored:
+        # 老行 structured 无 varieties 时的锚:退回主品种单品种
+        code = (report.get("variety") or "").upper().strip()
+        if code:
+            stored = [{"variety": code}]
+    if not stored:
+        return {"ok": False, "report_id": report_id, "error": "未识别出品种,无法重提取"}
+    try:
+        if llm is None:
+            client = create_llm_client(
+                config["llm_provider"],
+                config.get("quick_think_llm", config["deep_think_llm"]),
+            )
+            llm = client.get_llm()
+        new_structured = _llm_extract_structured(llm, report.get("variety") or "", text)
+        fresh = {
+            v["variety"]: v for v in (new_structured.get("varieties") or []) if v.get("variety")
+        }
+
+        # 以存储品种代码集为锚合并:命中 → confidence 一律新值,四键有值才覆盖
+        merged = []
+        for ov in stored:
+            code = ov["variety"]
+            item = dict(ov)
+            nv = fresh.get(code)
+            if nv:
+                item["confidence"] = nv["confidence"]  # 修复后的真实置信度(可为 None=未给)
+                for k in ("basis", "warehouse_receipts", "operating_rate", "processing_margin"):
+                    if _fund_value(nv.get(k)) is not None:
+                        item[k] = nv[k]  # 四类基本面:存量行此前根本没提取
+            merged.append(item)
+        # 仍缺的四键用研报原文确定性补漏(同 _process_research_report 新研报路径)
+        _ingest_backfill_fund_metrics(merged, text)
+
+        codes = [v["variety"] for v in merged]
+        primary = (report.get("variety") or "").upper().strip()
+        if primary not in codes:
+            primary = codes[0]
+        primary_item = next(v for v in merged if v["variety"] == primary)
+        structured["varieties"] = merged  # 顶层标题/发行方/日期保留,仅替换 varieties 段
+
+        # 各品种结论先从现有聚合按 id 取回 → 原样写回(不重跑第二步,观点文本不变)
+        conclusions = {}
+        for code in codes:
+            conclusions[code] = _report_conclusion_for_variety(code, report_id)
+
+        db.update_research_report(
+            report_id,
+            status="done",
+            variety=primary,
+            varieties=",".join(codes),
+            structured_data=json.dumps(structured, ensure_ascii=False),
+            direction=primary_item.get("direction", "中性"),
+            confidence=primary_item.get("confidence"),
+        )
+        _write_research_aggregates(
+            report_id,
+            report.get("uploaded_at") or "",
+            report.get("title") or "",
+            report.get("source") or "",
+            codes,
+            merged,
+            conclusions,
+        )
+        logger.info("Research report %s re-extracted, varieties=%s", report_id, codes)
+        return {"ok": True, "report_id": report_id, "codes": codes}
+    except Exception as e:
+        logger.exception("Re-extract failed for research report %s", report_id)
+        with contextlib.suppress(Exception):
+            db.update_research_report(report_id, error=str(e)[:2000])
+        return {"ok": False, "report_id": report_id, "error": str(e)}
 
 
 @app.route("/api/research/upload", methods=["POST"])
@@ -2864,7 +3536,8 @@ def api_research_upload():
     f.save(str(file_path))
 
     report_id = get_db().insert_research_report(
-        variety=variety, title=title, source=source, filename=f.filename, file_path=str(file_path)
+        variety=variety, title=title, source=source, filename=f.filename,
+        file_path=str(file_path), ingest_source="manual",  # 【来源】网页人工上传
     )
     threading.Thread(target=_process_research_report, args=(report_id,), daemon=True).start()
     return jsonify({
@@ -2873,17 +3546,923 @@ def api_research_upload():
     })
 
 
+def _report_conclusion_for_variety(code: str, rid) -> str:
+    """读品种研报聚合 JSON,取该报告 id 的逐品种总结文本(启发式提取的兜底语料)。
+
+    【关键】存量研报 DB structured_data 无四键,但其结论总结文本在聚合 JSON 里有
+            (按品种拆分)。取同 id 报告的 conclusion;文件缺失/漂移删行 → 空串。
+    """
+    from tradingagents.dataflows.research_data import load_research_data  # 【调用包】聚合 JSON 读取
+
+    data = load_research_data(code) or {}
+    for rep in data.get("reports") or []:
+        if rep.get("id") == rid:
+            return rep.get("conclusion") or ""
+    return ""
+
+
+def _row_research_fund_metrics(r: dict, fallback_text: str = "") -> list[dict]:
+    """DB 研报行 → 该行主品种段的四类基本面指标(结构化优先 + 总结文本启发式兜底)。
+
+    【关键】多品种研报 structured_data.varieties[] 每品种一段;列表行显示的是 r["variety"]
+            主品种,故优先取匹配段的 data_points(段内嵌或顶层展平都兼容),取不到才回退首段;
+            四个键仍缺的,再交 _merge_fund_metrics 用 fallback_text(逐品种总结)启发式补齐。
+    """
+    try:
+        sd = json.loads(r.get("structured_data") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        sd = {}
+    items = sd.get("varieties")
+    if not isinstance(items, list) or not items:
+        items = [sd]
+    code = str(r.get("variety") or "").upper()
+    seg = next((i for i in items if str((i or {}).get("variety") or "").upper() == code), items[0] or {})
+    # 四类指标可能在段内 data_points(嵌套)或段顶层(旧行平铺);两处合并,嵌套优先。
+    dp = {}
+    if isinstance(seg, dict):
+        nested = seg.get("data_points")
+        if isinstance(nested, dict):
+            dp.update(nested)
+        for k, _, _ in _RESEARCH_FUND_METRICS:
+            if k in dp:
+                continue
+            v = seg.get(k)
+            if v is not None and v != "":
+                dp[k] = v
+    return _merge_fund_metrics(dp, fallback_text)
+
+
 @app.route("/api/research")
 def api_research():
-    """研报列表:按品种过滤;剔除超长字段(原文/结构化/结论/路径)只给列表元数据。"""
+    """研报列表:按品种/来源过滤;剔除超长字段(原文/结构化/结论/路径)只给列表元数据。"""
     variety = (request.args.get("variety") or "").strip().upper()
-    rows = get_db().list_research_reports(variety or None)
+    ingest_source = (request.args.get("ingest_source") or "").strip() or None
+    rows = get_db().list_research_reports(variety or None, ingest_source=ingest_source)
     for r in rows:
+        # 2026-09-04:总览/列表不再带四类基本面(列已换交易要素);指标仍随
+        # data_points 入库,数据看板 _research_dashboard_series 照常读 DB。
         r.pop("extracted_text", None)
         r.pop("structured_data", None)
         r.pop("conclusion_md", None)
         r.pop("file_path", None)
     return jsonify({"reports": rows})
+
+
+def _compact_md(seg: str) -> str:
+    """剥 markdown 装饰(标题符/粗斜体/行内码),换行并空并成单行文本。
+
+    【功能】供观点要点摘录把研报结论 markdown 段落转成适合表格单元格的单行短文本。
+    【参数】seg: 原始 markdown 片段。
+    【返回】str: 去装饰、压缩空白后的单行文本(上限 400 字符)。
+    【关键逻辑】先摘行首标题符,再摘 * _ ` 装饰符,段落内换行折成空格,连续空白并一个。
+    """
+    import re
+
+    seg = re.sub(r"^#{1,6}\s*", "", seg or "", flags=re.M)  # 标题符
+    seg = re.sub(r"(\*\*|__|\*|`|~~)", "", seg)  # 粗斜体/行内码
+    seg = seg.replace("\n", " ").strip()
+    return re.sub(r"\s{2,}", " ", seg)[:400]
+
+
+def _extract_key_opinion(conclusion: str, max_len: int = 360) -> str:
+    """逐品种结论 markdown → 观点表格"观点要点"单元格(首行交易要素,其后推理链多行要点)。
+
+    【功能】两段式口径(2026-09-03)结论正文 = 七个小节(## 供需格局/库存与结构/
+            成本与利润/现货与目标价/事件与驱动/观点与依据/交易要素与风险,合计
+            ~340 字)+ 尾部数据支撑/潜在分歧/建议权重。表格单元格要"先结论后论据":
+            命中 _TRADE_TITLE_HINTS 的「交易要素与风险」节(压缩后 ≤~110 字单行)
+            提到输出首行,其余按文档顺序逐节抽成 `小节名: 一句话` —— 供需/库存/
+            成本/现货/事件即推理链的"为什么",观点与依据收口方向。
+            空节("研报未披露该指标"占位)给「—」:结构完整、不编造。
+    【参数】conclusion: 该品种结论 markdown(聚合 JSON conclusion 字段)。
+            max_len: 总长软上限(超则 _fit_section_lines 结构性裁剪)。
+    【返回】str: 多行要点;无内容返回空串(前端显示 —)。
+    【关键逻辑】范围止于 ## 数据支撑 —— 数据支撑/潜在分歧是证据复述与回看,不进
+                单元格;点研报标题进详情弹层可看完整十节。旧四段式(## 核心观点 开头)
+                无 ## 供需格局 → 兜底取首个非标题段(保持旧行为)。
+    """
+    import re
+
+    text = conclusion or ""
+    if not text.strip():
+        return ""
+    start = text.find("## 供需格局")
+    if start == -1:  # 旧口径兜底:首个非标题段(以 # 开头的标题行不算正文)
+        para = next(
+            (p.strip() for p in text.splitlines() if p.strip() and not p.strip().startswith("#")),
+            "",
+        )
+        return _compact_md(para)
+    end = text.find("## 数据支撑", start)
+    seg = text[start: end if end != -1 else len(text)]
+    blocks = re.findall(r"## ([^\n]+)\n(.*?)(?=\n## |\Z)", seg, re.S)
+    out: list[str] = []
+    trade_rows: list[str] = []  # 【关键】交易要素行提到单元格首行(先结论后论据)
+    for title, body in blocks:
+        t = (title or "").strip().strip("#").strip() or "小节"
+        compact = _compact_md(body)
+        val = "—" if (not compact or "未披露" in compact) else compact
+        row = f"{t}：{val}"
+        if any(h in t for h in _TRADE_TITLE_HINTS):
+            trade_rows.append(row)
+        else:
+            out.append(row)
+    # 受保行 = 交易要素行(前置) + 供需格局行(推理链起点,原"首节"保护位被交易行
+    # 占走后必须显式点名,否则超预算时最长的供需行会先出局)+ 末行(观点与依据,
+    # _fit_section_lines 内置)。无交易行的旧文档退化为原首末保护。
+    keep = list(range(len(trade_rows)))
+    if out:
+        keep.append(len(trade_rows))
+    return _fit_section_lines(trade_rows + out, max_len, must_keep=tuple(keep))
+
+
+def _fit_section_lines(lines: list[str], max_len: int = 240, must_keep: tuple[int, ...] = ()) -> str:
+    """小节要点 → 单单元格文本;超预算时保证受保行完整(首行+末行+must_keep)。
+
+    【功能】视图表单元格内容一多就会挤破软上限。此前从尾部整行截断会把
+            收口方向的末节「观点与依据」砍掉 —— 恰是"为什么这么看"的落点。改为
+            结构性裁剪:非受保小节按「真实内容优先、短节优先」依次入位,预算不足时
+            最先让位的是纯占位行(「：—」,研报未披露无信息),其次才是较长的内容
+            行 —— 尽量保住更多小节维度;再极端才硬截到行尾补 …。首行(交易要素或
+            供需)、末行(观点与依据)及 must_keep 指定的行(如交易要素行)固定保全,
+            表格任意一行都能看到 交易要素 → 依据 → 方向。
+    【参数】lines: 逐行 `小节名：一句话`(顺序 = 输出顺序,交易要素行已前置)。
+            max_len: 总长软上限。
+            must_keep: 额外必须保全的行索引(与首末行并集;超预算时同样硬截兜底)。
+    【返回】str: 裁剪后多行文本。
+    【关键逻辑】占位行「：—」keep 优先级最低(放最后入位)故最先出局;内容行短节
+                优先入位、长节后入位故先出局。首末行索引固定必保。保序返回
+                (节顺序 = 输入顺序,不重排)。
+    """
+    joined = "\n".join(lines)
+    if len(joined) <= max_len:
+        return joined
+    protect = {0, len(lines) - 1} | set(must_keep)  # 首末行 + 调用方点名必保的行
+    if len(protect) >= len(lines):  # 全部受保:无让位空间,硬截兜底
+        return joined[:max_len].rsplit("\n", 1)[0] + "\n…"
+    other = [i for i in range(len(lines)) if i not in protect]
+    # 出局优先级:纯占位「：—」行先出局,内容行按长度短者先出(信息量小先让位)
+    other.sort(key=lambda i: (lines[i].rstrip().endswith("：—"), len(lines[i])))
+    used = sum(len(lines[i]) for i in protect) + (len(protect) - 1)  # 受保行 + 其间换行
+    keep = set()
+    for i in other:
+        cost = len(lines[i]) + 1  # 自身 + 前导换行
+        if used + cost <= max_len:
+            used += cost
+            keep.add(i)
+    trimmed = "\n".join(lines[i] for i in sorted(keep | protect))  # 恢复文档顺序
+    if len(trimmed) <= max_len:
+        return trimmed
+    return trimmed[:max_len].rsplit("\n", 1)[0] + "\n…"
+
+
+# 交易要素行五要素(观点总览「单边/区间」「头寸」列的解析口径):结论
+# 「## 交易要素与风险」节为单行分号分隔五要素 —— 方向:X;形态与区间:X;头寸:X;头寸范围:X;风险:X。
+# 2026-09-04 起,总览表的原四类基本面列(基差/仓单/开工率/加工利润)由这里取研报自己的
+# 交易表述替代(指标本身仍随 data_points 入库,数据看板照常展示)。
+_TRADE_ELEMENT_KEYS = ("方向", "形态与区间", "头寸", "头寸范围", "风险")
+
+
+def _parse_trade_elements(conclusion: str) -> dict:
+    """解析结论「交易要素与风险」节单行五要素 → {key: value}(未披露/「—」的键不返回)。
+
+    【功能】观点总览的交易要素列直接取研报自己的表述,不再走结构化四键。
+            兼容中英文冒号/分号(LLM 输出混用);值为「—」或「未披露」视为缺,不给键。
+    【参数】conclusion: 该品种结论 markdown(聚合 JSON conclusion 字段)。
+    【返回】dict: 如 {"方向": "反弹做多", "头寸": "轻仓试多"};无交易节/解析不出 → {}。
+    """
+    text = conclusion or ""
+    m = re.search(r"##\s*交易要素[^\n]*\n([^\n]+)", text)
+    if not m:
+        return {}
+    out: dict[str, str] = {}
+    for tok in re.split(r"[;；]", m.group(1)):
+        kv = re.match(r"\s*([^:：]{1,12})[:：](.*)", tok)
+        if not kv:
+            continue
+        k, v = kv.group(1).strip(), kv.group(2).strip()
+        if k and v and v not in ("—", "未披露"):
+            out[k] = v
+    return out
+
+
+def _extract_advice(conclusion: str, max_len: int = 120) -> str:
+    """取「## 建议权重」节正文(压缩单行,供观点总览「建议」列)。
+
+    【返回】str: 压缩后 ≤max_len 字符;无该节/纯占位 → ""(前端显示 —)。
+    """
+    text = conclusion or ""
+    m = re.search(r"##\s*建议权重\s*\n(.*?)(?=\n## |\Z)", text, re.S)
+    if not m:
+        return ""
+    compact = _compact_md(m.group(1))
+    if not compact or compact == "—" or "未披露" in compact[:12]:
+        return ""
+    return compact[:max_len]
+
+
+# 研报四类基本面指标(基差/交易所仓单/开工率·负荷率/加工利润·加工费)的
+# 键 → 表格列名/口径。数据来自研报结构化 data_points(研报没报则整项不出现)。
+_RESEARCH_FUND_METRICS = (  # 【变量】(键, 表格列名, tooltip 口径) —— 供总览表/列表行/详情展示
+    ("basis", "基差", "基差(现货价 − 近月合约价)"),
+    ("warehouse_receipts", "仓单", "交易所注册仓单"),
+    ("operating_rate", "开工率", "开工率/负荷率"),
+    ("processing_margin", "加工利润", "加工利润/加工费"),
+)
+
+
+def _fund_value(v):
+    """研报单个指标值归一化:{value,unit,date,note} 对象或标量都行;无值/空 → None。
+
+    【返回】None 或 {"value","unit","date","note"}。
+    """
+    if isinstance(v, dict):
+        val = v.get("value")
+        if val is None or val == "":
+            return None
+        return {
+            "value": val,
+            "unit": v.get("unit") or "",
+            "date": str(v.get("date") or "")[:10],
+            "note": v.get("note") or "",
+        }
+    if v is None or v == "":
+        return None
+    return {"value": v, "unit": "", "date": "", "note": ""}
+
+
+def _research_fund_metrics(dp) -> list[dict]:
+    """从研报 data_points dict 抽四类基本面指标,固定序、只含有值项(研报没报=留空)。
+
+    【返回】[{k,label,tip,value,unit,date,note}, ...];无任何一项 → 空列表(前端显示研报未披露)。
+    """
+    out = []
+    for k, label, tip in _RESEARCH_FUND_METRICS:
+        v = _fund_value((dp or {}).get(k))
+        if v is not None:
+            v["k"], v["label"], v["tip"] = k, label, tip
+            out.append(v)
+    return out
+
+
+def _heuristic_fund_from_text(text: str, source_label: str = "自总结") -> dict:
+    """从研报文本按规则提取四类基本面指标(仅 data_points 缺项时的兜底)。
+
+    Args:
+        text: 待扫描文本(存量研报的逐品种总结,或新研报入库时的研报原文)。
+        source_label: 命中项 note 的来源前缀;读时兜底默认"自总结",新研报入库
+            补漏用"研报原文",便于 UI 区分两条提取路径(都以『原文片段』结尾可识别)。
+
+    【背景】存量研报在四键结构化落地前处理 → data_points 无 basis/仓单/开工率/加工利润,
+            但这些数往往已写在 LLM 生成的逐品种结论总结里。用户要求"直接从总结中提取"
+            补进逐品种表,而非重跑 LLM。故用保守规则提取,只在 数值+单位 相邻、语义词匹配
+            时采信,并把命中原文片段写进 note("<source_label>『原文片段』")供前端悬停核对。
+    【防误】· 开工率只用"开工率/负荷率/产能利用率"(不用裸"开工",避免"新开工/竣工"地产词);
+            · 基差/加工利润要求紧跟 元/吨、元 等货币单位(否则"宁夏基差及1-5月价差"里的
+              日期数字 1/5 不会误采);仓单要求紧跟 手/张/吨/万吨 等量词;
+            · 逐句扫描(按。；;\\n 切句),只在同句内找"词+数值",避免跨句抓错数。
+    【返回】{k: {k,label,tip,value,unit,date:"",note:"<source_label>『原文片段』"}};没可靠命中则为空。
+    """
+    if not text:
+        return {}
+    text = re.sub(r"[#*`>]", "", text)  # 【关键】去 markdown 装饰,避免把 # 号当字符干扰切句
+    sentences = [s for s in re.split(r"[。；;\n]", text) if s.strip()]
+    out: dict[str, dict] = {}
+    # 统一模式: (?P<kw>语义词)\s*[:：为约达约]?\s*(?P<num>数值)\s*(?P<unit>单位)
+    _NUM = r"[+-]?\d+(?:\.\d+)?"
+
+    def _find(pat_kw: str, unit: str, name: str):
+        """逐句找首个命中;返回 metric obj 或 None。name 供单测定位防误报。"""
+        pattern = rf"(?P<kw>{pat_kw})\s*[:：为约达约]?\s*(?P<num>{_NUM})\s*(?P<unit>{unit})"
+        for s in sentences:
+            m = re.search(pattern, s)
+            if not m:
+                continue
+            start = max(0, m.start("kw") - 8)
+            snip = s[start:m.end() + 12].strip().replace("\n", " ")
+            if len(snip) > 40:
+                snip = snip[:40] + "…"
+            return m.group("kw"), m.group("num"), m.group("unit"), snip
+        return None
+
+    hit = _find("开工率|负荷率|产能利用率", r"%", "operating_rate")
+    if hit:
+        out["operating_rate"] = _fund_metric_obj(
+            "operating_rate", float(hit[1]), "%", f"{source_label}『{hit[3]}』")
+
+    hit = _find("仓单", r"(?:万手|手|万吨|张|吨)", "warehouse_receipts")
+    if hit:
+        out["warehouse_receipts"] = _fund_metric_obj(
+            "warehouse_receipts", hit[1], hit[2], f"{source_label}『{hit[3]}』")
+
+    hit = _find("加工利润|加工费|加工差|加工价差|毛利|盘面利润", r"(?:元/吨|美元/吨|元)", "processing_margin")
+    if hit:
+        out["processing_margin"] = _fund_metric_obj(
+            "processing_margin", float(hit[1]), hit[2], f"{source_label}『{hit[3]}』")
+
+    hit = _find("现货升水|现货贴水|对盘面升水|对盘面贴水|基差", r"(?:元/吨|元)", "basis")
+    if hit:
+        val = float(hit[1])
+        if "贴水" in hit[0]:  # 【关键】贴水 = 现货低于盘面 → 基差取负
+            val = -abs(val)
+        out["basis"] = _fund_metric_obj("basis", val, hit[2], f"{source_label}『{hit[3]}』")
+    return out
+
+
+def _fund_metric_obj(k: str, value, unit: str, note: str) -> dict:
+    """把启发式命中打包成与 _research_fund_metrics 同 schema 的指标对象。"""
+    label = tip = ""
+    for kk, lb, tp in _RESEARCH_FUND_METRICS:
+        if kk == k:
+            label, tip = lb, tp
+            break
+    return {"k": k, "label": label, "tip": tip, "value": value, "unit": unit or "", "date": "", "note": note}
+
+
+def _merge_fund_metrics(dp, text: str) -> list[dict]:
+    """四类基本面 = 结构化 data_points 优先;缺项用总结文本启发式兜底;固定序返回。"""
+    by_key = {m["k"]: m for m in _research_fund_metrics(dp)}
+    for k, v in _heuristic_fund_from_text(text).items():
+        by_key.setdefault(k, v)
+    return [by_key[k] for k, _, _ in _RESEARCH_FUND_METRICS if k in by_key]
+
+
+# 【功能】新研报入库补强:LLM 四键结构化提取后仍缺的键,用"研报原文"确定性补上。
+# 【背景】新研报走 _llm_extract_structured(rule 3b 已含 basis/仓单/开工率/加工利润),
+#         但 LLM 偶发漏填某键。用户在存量研报接受"从总结文本提取"的读时兜底,同时要求
+#         新研报在入库时就"直接提取出这些指标"(总结本身仍有遗漏 → 不能只靠读时从总结捞),
+#         故在此把仍缺的键用 _heuristic_fund_from_text 扫"该品种相关原文句子"补进结构化
+#         data_points(确定性、零额外 LLM 成本),入库即自带,读时不再需要 fallback。
+# 【防误】· 单品种研报扫全文;多品种研报只扫含该品种代码/中文名的句子,防止把另一子品种
+#          的开工率/基差串到本品种(找不到含本品种名的句子则放弃,不冒险);
+#         · 已有结构化值(LLM 给的)一律不动,只补真缺的键;
+#         · note 标"研报原文『…』"与 LLM 结构化值区分(UI 以 『 结尾识别为文本提取)。
+# 【返回】无;原地改 varieties 各元素(与 structured["varieties"] 同对象,DB/聚合同步落库)。
+def _ingest_backfill_fund_metrics(varieties: list[dict], text: str) -> None:
+    name_map = {k: v["name"] for k, v in VARIETY_METADATA.items()}
+    single = len(varieties) <= 1  # 单品种研报 → 扫全文最稳;多品种才需要按品种名划句
+
+    def _scope(code: str) -> str:
+        if single or not text:
+            return text or ""
+        toks = [t for t in (code, name_map.get(code, "")) if t]
+        return "\n".join(s for s in re.split(r"[。；;\n]", text) if s and any(t in s for t in toks))
+
+    for item in varieties:
+        found = _heuristic_fund_from_text(_scope(item.get("variety") or ""), source_label="研报原文")
+        if not found:
+            continue
+        for k in ("basis", "warehouse_receipts", "operating_rate", "processing_margin"):
+            if _fund_value(item.get(k)) is not None:
+                continue  # LLM 已给结构化值,不覆盖
+            m = found.get(k)
+            if not m:
+                continue
+            item[k] = {"value": m["value"], "unit": m.get("unit") or "",
+                       "date": m.get("date") or "", "note": m.get("note") or ""}
+
+
+def _fmt_avg(x) -> str:
+    """置信度均值格式化:None → '—',否则两位小数。"""
+    return "—" if x is None else f"{x:.2f}"
+
+
+# 【功能】确定性计算"机构(研报) vs 散户(社媒)"观点对比(无 LLM、无网络)。
+# 【参数】symbol: 品种代码。
+# 【返回】dict | None:两侧都无数据时返回 {"available": False};否则含
+#          institution(机构侧:在库研报计数/平均置信度/主要研报)与
+#          retail(散户侧:社媒多空占比/标签/avg_score/帖数/趋势)与
+#          judgement{kind: 共振|背离|分化|单边, detail}。
+# 【关键逻辑】机构侧 = research_data.summarize_research_views(按 direction 全量计数);
+#           散户侧 = load_sentiment_data 的 social_sentiment(以 bullish/bearish_ratio
+#           差 >5pp 判净方向);两侧同在→同向净=共振/反向净=背离/一侧中性=分化;
+#           仅一侧有数据→单边。全部确定性纯算术,不新增 LLM 调用。
+def _build_group_compare(symbol: str) -> dict:
+    """Build the institutional (research) vs retail (social) group-sentiment compare card."""
+    from tradingagents.dataflows.research_data import (
+        summarize_research_views,  # 【调用包】研报方向汇总(确定性)
+    )
+    from tradingagents.dataflows.sentiment_data import (
+        load_sentiment_data,  # 【调用包】社媒情绪数据(思路2 采集)
+    )
+
+    res = summarize_research_views(symbol)
+    inst_present = res["count"] > 0
+    inst_dir = res["net_dir"]
+
+    sd = load_sentiment_data(symbol) or {}
+    ss = (sd.get("data") or {}).get("social_sentiment") or {}
+    posts = int(ss.get("total_posts_analyzed", 0) or 0)
+    retail_present = posts > 0
+    b_r = float(ss.get("bullish_ratio") or 0.0)
+    e_r = float(ss.get("bearish_ratio") or 0.0)
+    n_r = float(ss.get("neutral_ratio") or 0.0)
+    if retail_present and b_r > e_r + 0.05:
+        retail_dir = "看多"
+    elif retail_present and e_r > b_r + 0.05:
+        retail_dir = "看空"
+    else:
+        retail_dir = "中性"
+
+    if not inst_present and not retail_present:
+        return {"available": False}
+
+    if inst_present and retail_present:
+        if inst_dir in ("看多", "看空") and inst_dir == retail_dir:
+            kind, detail = (
+                "共振",
+                f"机构研报净方向{inst_dir}(看多{res['counts']['bull']}/看空{res['counts']['bear']}份)"
+                f"与散户社媒{retail_dir}方向一致,趋势相互强化;若散户同时极度一边倒,警惕反向泡沫。",
+            )
+        elif inst_dir in ("看多", "看空") and retail_dir in ("看多", "看空"):
+            kind, detail = (
+                "背离",
+                f"机构研报净方向{inst_dir},而散户社媒{retail_dir},两群体方向相反——"
+                f"警惕反转/波动放大(机构有论据与置信度,散户是群体心理,注意权衡)。",
+            )
+        else:
+            kind, detail = (
+                "分化",
+                f"机构研报净方向{inst_dir},散户社媒{retail_dir},一方偏中性——"
+                f"既无强共振也无清晰背离,信号中性偏弱。",
+            )
+    else:
+        side = "仅机构(研报)" if inst_present else "仅散户(社媒)"
+        kind = "单边"
+        detail = f"另一方暂无数据:{side}。对比参考价值有限。"
+
+    return {
+        "available": True,
+        "symbol": symbol,
+        "updated": res["updated"] or (sd.get("updated") or ""),
+        "institution": {
+            "present": inst_present,
+            "count": res["count"],
+            "counts": res["counts"],
+            "conf_avg": res["conf_avg"],
+            "net_dir": inst_dir,
+            "items": res["items"][:6],
+        },
+        "retail": {
+            "present": retail_present,
+            "dir": retail_dir,
+            "label": ss.get("overall_sentiment_label", ""),
+            "bull_ratio": round(b_r, 4),
+            "bear_ratio": round(e_r, 4),
+            "neutral_ratio": round(n_r, 4),
+            "avg_score": ss.get("avg_score"),
+            "posts": posts,
+            "trend": ss.get("trend_label", ""),
+        },
+        "judgement": {"kind": kind, "detail": detail},
+    }
+
+
+# 【功能】把对比卡 dict → 持久化历史报告的 markdown(确定性)。
+# 【参数】gc: _build_group_compare 的返回值。
+# 【返回】str: 表格化文本;不可用返回空串(调用方守卫,不新增历史章节)。
+def _group_compare_markdown(gc: dict) -> str:
+    """Render the group-compare dict into markdown for the persisted report."""
+    if not gc or not gc.get("available"):
+        return ""
+    j = gc["judgement"]
+    inst = gc["institution"]
+    rt = gc["retail"]
+    lines = [
+        f"**判定: {j['kind']}** — {j['detail']}",
+        "",
+        "| 群体 | 净方向 | 多/空/中 计数 | 关键读数 |",
+        "|---|---|---|---|",
+    ]
+    lines.append(
+        f"| 机构(研报) | {inst.get('net_dir') or '—'} | "
+        f"看多 {inst['counts']['bull']} / 中性 {inst['counts']['neutral']} / 看空 {inst['counts']['bear']} "
+        f"({inst['count']} 份) | 平均置信度 多={_fmt_avg(inst['conf_avg']['bull'])} "
+        f"中性={_fmt_avg(inst['conf_avg']['neutral'])} 空={_fmt_avg(inst['conf_avg']['bear'])} |"
+    )
+    if rt.get("present"):
+        lines.append(
+            f"| 散户(社媒) | {rt['dir']} | 多 {rt['bull_ratio']:.0%} / 中性 {rt['neutral_ratio']:.0%} / "
+            f"空 {rt['bear_ratio']:.0%} | avg_score {rt.get('avg_score')}, {rt.get('posts')} 帖, "
+            f"趋势 {rt.get('trend') or '—'} |"
+        )
+    else:
+        lines.append("| 散户(社媒) | 无数据 | — | 暂无独立社媒数据 |")
+    top = "".join(
+        f"\n- [{i['direction']}] {i['title']} ({i['source']})" for i in (inst.get("items") or [])
+    )
+    if top:
+        lines.append("\n机构侧主要研报:" + top)
+    return "\n".join(lines)
+
+
+def _research_view_row(r: dict) -> dict:
+    """聚合 JSON 单条研报 → 观点表格行(只带表格要用的字段,剥离结论全文降载荷)。"""
+    conclusion = r.get("conclusion") or ""
+    te = _parse_trade_elements(conclusion)
+    return {
+        "id": r.get("id"),
+        "title": r.get("title") or "",
+        "source": r.get("source") or "",
+        "uploaded_at": r.get("uploaded_at") or "",
+        "direction": r.get("direction") or "中性",
+        "confidence": r.get("confidence"),
+        "covers": list(r.get("varieties") or []),  # 覆盖品种标注:多品种研报提示只展示当前品种部分
+        "key_opinion": _extract_key_opinion(conclusion),
+        # 交易要素列(2026-09-04 替换原四类基本面列):单边/区间=形态与区间、
+        # 头寸(头寸缺时回退头寸范围)、建议=「## 建议权重」节;均为研报原始表述。
+        "trade_range": te.get("形态与区间") or "",
+        "trade_position": te.get("头寸") or te.get("头寸范围") or "",
+        "advice": _extract_advice(conclusion),
+    }
+
+
+@app.route("/api/research/views")
+def api_research_views():
+    """逐品种观点总览:某品种某研报日期各发行方的 方向/置信度/观点要点。
+
+    【功能】观点表格后端:读品种聚合 JSON(external_data/{CODE}_research.json,字段
+            conclusion 即 2026-09-02 两段式逐品种观点),按研报当天(uploaded_at 前 10
+            位)列出各行。缺省取该品种最新研报日期;前端传 date 则切到对应日期。
+    【参数】URL query: variety(品种代码,必填); date(YYYY-MM-DD,可选)。
+    【返回】json: {variety, name, date, dates(可选日期倒序), rows[]}。
+    【关键逻辑】方向/置信度/观点均为该品种口径(聚合 JSON 本就是按品种拆的);
+                dates 由现有研报当天集合去重降序得出,无研报返回空数组。
+    """
+    code = (request.args.get("variety") or "").strip().upper()
+    date = (request.args.get("date") or "").strip()[:10]
+    if not code:
+        return jsonify({"variety": "", "name": "", "date": "", "dates": [], "rows": []})
+    from tradingagents.dataflows.research_data import load_research_data  # 【调用包】聚合 JSON 读取
+
+    data = load_research_data(code) or {}
+    reports = data.get("reports") or []
+
+    def _rdate(r: dict) -> str:
+        return str(r.get("uploaded_at") or "")[:10]
+
+    dates = sorted({_rdate(r) for r in reports if _rdate(r)}, reverse=True)
+    if not dates:
+        meta = VARIETY_METADATA.get(code, {})
+        return jsonify({"variety": code, "name": meta.get("name", code), "date": "", "dates": [], "rows": []})
+    if date in dates:
+        rows = [r for r in reports if _rdate(r) == date]
+    else:  # 传入日期不属于该品种(切换品种残留) → 回退最新研报日期
+        rows = [r for r in reports if _rdate(r) == dates[0]]
+        date = dates[0]
+    rows.sort(key=lambda r: str(r.get("uploaded_at") or ""), reverse=True)
+    meta = VARIETY_METADATA.get(code, {})
+    return jsonify({
+        "variety": code,
+        "name": meta.get("name", code),
+        "date": date,
+        "dates": dates,
+        "rows": [_research_view_row(r) for r in rows],
+    })
+
+
+# ---------------------------------------------------------------------
+# 研报每日总结(2026-09-04):把某一天(uploaded_at 前 10 位)在库全部研报的
+# 逐品种分析结论交 LLM 汇总成一份 markdown(各公司观点 / 观点对比与冲突 /
+# 可信程度分析 / 综合结论),落盘 ~/.tradingagents/research_daily/{date}.md,
+# 供前端"每日总结"卡随时调阅;已生成过的日期直接读文件,不重复烧 LLM。
+# ---------------------------------------------------------------------
+RESEARCH_DAILY_DIR = Path.home() / ".tradingagents" / "research_daily"
+
+
+def _research_daily_path(date: str) -> Path:
+    """某日期的每日总结 md 文件路径(research_daily/{date}.md)。"""
+    return RESEARCH_DAILY_DIR / f"{date}.md"
+
+
+def _research_daily_dates(db) -> list[str]:
+    """可用日期并集倒序 = 库内已有 done 结论的研报日期 ∪ 已生成总结文件的日期。"""
+    dates = {
+        d for d in (str(r.get("uploaded_at") or "").strip()[:10] for r in db.list_research_reports(limit=500))
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", d)  # 只认合法日期(剔除空/异常时间戳前缀)
+    }
+    if RESEARCH_DAILY_DIR.is_dir():
+        dates |= {p.stem for p in RESEARCH_DAILY_DIR.glob("????-??-??.md")}
+    return sorted(dates, reverse=True)
+
+
+def _daily_variety_segment(conclusion_md: str, code: str) -> str:
+    """多品种结论 md 里抠「## {code} 结论」段;没有(单品种/旧格式)→ 原文。
+
+    【关键】段内还有自己的 ## 小节(供需格局等),不能见到 \n## 就断 —— 前瞻只认
+            下一个「## <品种代码> 结论」块(品种代码为字母数字)或全文结束。
+    """
+    m = re.search(
+        rf"##\s*{re.escape(code)}\s*结论\s*\n(.*?)(?=\n##\s*[A-Za-z0-9]+\s*结论\b|\Z)",
+        conclusion_md or "", re.S,
+    )
+    return m.group(1).strip() if m else (conclusion_md or "").strip()
+
+
+def _collect_daily_report_items(rows: list[dict], date: str) -> list[dict]:
+    """某天全部 done 研报 → 逐品种结论条目(供总结 prompt,只带要用的字段)。
+
+    【关键】多品种研报按 conclusion_md 的「## {code} 结论」段拆成多条;每条的
+            方向优先取该段交易要素行的「方向」(_parse_trade_elements,逐品种口径),
+            取不到才回退 DB 行主方向;置信度只有主品种段沿用 DB 值,其余不标。
+    """
+    items: list[dict] = []
+    name_map = {k: v["name"] for k, v in VARIETY_METADATA.items()}
+    for r in rows:
+        if r.get("status") != "done" or str(r.get("uploaded_at") or "")[:10] != date:
+            continue
+        codes = [c for c in str(r.get("varieties") or "").split(",") if c] or [r.get("variety") or ""]
+        for code in dict.fromkeys(codes):  # 去重保序
+            seg = _daily_variety_segment(r.get("conclusion_md") or "", code)
+            opinion = _extract_key_opinion(seg, max_len=150)  # 单条短摘:一天全品种条目多,预算留给覆盖面
+            if not opinion:
+                continue
+            te = _parse_trade_elements(seg)
+            conf = r.get("confidence")
+            items.append({
+                "variety": f"{code}({name_map.get(code, '')})",
+                "source": r.get("source") or "未知",
+                "title": r.get("title") or "(未命名)",
+                "direction": te.get("方向") or r.get("direction") or "中性",
+                "confidence": f"{round(float(conf) * 100)}%" if conf is not None else "—",
+                "opinion": opinion,
+            })
+    return items
+
+
+def _build_daily_summary_md(items: list[dict], llm_body: str, generated_at: str) -> str:
+    """拼接落盘 md:元信息头(HTML 注释,渲染前剥掉)+ 标题 + LLM 正文。"""
+    head = (
+        f"<!-- AgentSense 每日总结 | generated_at:{generated_at} "
+        f"| reports:{len(items)} -->\n\n"
+    )
+    return head + llm_body.strip() + "\n"
+
+
+def _daily_summary_meta(md: str) -> dict:
+    """读 md 头部元信息 → {generated_at, reports};旧文件/缺标 → 空值兜底。"""
+    m = re.search(r"<!--.*?generated_at:([^;|]+).*?reports:(\d+).*?-->", md or "")
+    return {"generated_at": m.group(1).strip() if m else "", "reports": int(m.group(2)) if m else 0}
+
+
+def _generate_daily_summary(date: str, force: bool = False) -> dict:
+    """生成(或复用)某日研报总结;返回 {ok, date, content, generated_at, reports} 或 {ok: False, error}。"""
+    path = _research_daily_path(date)
+    if path.is_file() and not force:  # 已生成过 → 直接读文件,不重复烧 LLM(force 重跑覆盖)
+        content = path.read_text(encoding="utf-8")
+        meta = _daily_summary_meta(content)
+        return {"ok": True, "date": date, "content": content, "cached": True, **meta}
+
+    db = get_db()
+    items = _collect_daily_report_items(db.list_research_reports(limit=500), date)
+    if not items:
+        return {"ok": False, "error": f"{date} 在库没有已完成分析的研报"}
+
+    payload = "\n\n".join(
+        f"【{i['variety']}】{i['source']}《{i['title']}》 方向:{i['direction']}"
+        f"(置信度 {i['confidence']})\n要点: {i['opinion']}"
+        for i in items
+    )
+    prompt = (
+        "你是中国商品期货研究主管。下面是同一天各券商/机构研报的逐品种分析结论摘要。"
+        f"请输出一份「研报每日总结」(markdown, 全中文, 不写套话),固定四节:\n"
+        "## 一、当日观点总表\n"
+        "(markdown 表格逐条列出:品种 | 发行方 | 方向 | 置信度 | 一句话核心观点)\n"
+        "## 二、观点对比与冲突\n"
+        "(按品种对比各家方向与逻辑,指出明确分歧点及根源——数据口径/时间尺度/关注权重不同;"
+        "多家无分歧的品种一句话带过)\n"
+        "## 三、可信程度分析\n"
+        "(按置信度与论据扎实程度给各观点分层:可信度高/中/低,点明哪些依据有具体数字、"
+        "哪些只是定性判断;多空明显一边倒时提示拥挤风险)\n"
+        "## 四、综合结论与关注要点\n"
+        "(汇总当日净倾向,列出未来 1~2 周最值得跟踪的 2~3 个数据/事件)\n"
+        "写作要求:只依据下面材料,严禁编造数据;总篇幅 600~900 字;若条目过多,"
+        "总表优先覆盖方向有分歧/置信度高的品种,其余可并入一句话带过。\n"
+        f"---\n研报日期:{date}\n\n{payload[:28000]}"
+    )
+    try:
+        client = create_llm_client(
+            config["llm_provider"],
+            config.get("quick_think_llm", config["deep_think_llm"]),
+        )
+        result = client.get_llm().invoke(prompt)
+        body = str(result.content if hasattr(result, "content") else result).strip()
+    except Exception:
+        logger.warning("Daily research summary LLM call failed for %s", date, exc_info=True)
+        return {"ok": False, "error": "LLM 生成失败,请稍后重试"}
+    if not body:
+        return {"ok": False, "error": "LLM 返回为空,请重试"}
+
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    content = _build_daily_summary_md(items, body, generated_at)
+    RESEARCH_DAILY_DIR.mkdir(parents=True, exist_ok=True)
+    _research_daily_path(date).write_text(content, encoding="utf-8")
+    return {"ok": True, "date": date, "content": content, "cached": False,
+            "generated_at": generated_at, "reports": len(items)}
+
+
+@app.route("/api/research/daily")
+def api_research_daily_list():
+    """每日总结:可用日期列表(库内研报日期 ∪ 已生成文件),标注哪些已生成。"""
+    db = get_db()
+    generated = {p.stem for p in RESEARCH_DAILY_DIR.glob("????-??-??.md")}
+    return jsonify({
+        "dates": [
+            {"date": d, "generated": d in generated}
+            for d in _research_daily_dates(db)
+        ],
+    })
+
+
+@app.route("/api/research/daily/generate", methods=["POST"])
+def api_research_daily_generate():
+    """生成(或复用)某日总结:POST json {date};LLM 同步调用,前端需 loading 等待。"""
+    data = request.get_json(silent=True) or {}
+    date = str(data.get("date") or "").strip()[:10]
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        return jsonify({"ok": False, "error": "date 参数格式应为 YYYY-MM-DD"}), 400
+    return jsonify(_generate_daily_summary(date, force=bool(data.get("force"))))
+
+
+@app.route("/api/research/daily/<date>")
+def api_research_daily_get(date: str):
+    """读取已生成的某日总结 md;未生成 → {exists: False}(前端可再点生成)。"""
+    date = (date or "").strip()[:10]
+    path = _research_daily_path(date)
+    if not path.is_file():
+        return jsonify({"date": date, "exists": False})
+    content = path.read_text(encoding="utf-8")
+    return jsonify({"date": date, "exists": True, "content": content, **_daily_summary_meta(content)})
+
+
+# GTJA 观点信号进程内缓存:variety → (拉取时间戳, 视图 payload);TTL 内复用,防止前端
+# 切换品种/来回切研报 tab 时反复打国君接口(周度只回最新一帧,时效要求低)。
+_GTJA_VIEWS_CACHE: dict[str, tuple[float, dict]] = {}  # 【变量】GTJA 观点缓存
+GTJA_VIEWS_CACHE_TTL = 1800  # 【变量】GTJA 观点缓存有效期(秒)
+
+
+def _gtja_weekly_date(weekly) -> str:
+    """观点信号周度帧的 reportDate(YYYY-MM-DD);空返回空串。"""
+    d = (weekly or {}).get("reportDate") or ""
+    return str(d)[:10] if str(d)[:10] else ""
+
+
+@app.route("/api/gtja/views")
+def api_gtja_views():
+    """国君(国泰君安 GTJA)周度观点信号卡片后端。
+
+    【功能】研报 tab「国君周度观点」卡片取数:调国君 commodity.weekly.viewpoint
+            .queryByCode.do(2026-09-03 晨报日度下线,只留周度)。queryByCode 只回该
+            品种最新一帧(不分日期),故按品种返回单条 weekly"当前信号"。
+    【参数】URL query: variety(品种代码,必填)。
+    【返回】json: {variety, name, updated, signals:{weekly:{...}|None}, error: str|None,
+                   source}。
+    【关键逻辑】1) 未配置 GTJA key → error 提示,前端显示空态;2) 拉取失败只让
+                weekly 为 None;3) 进程内 1800s TTL 缓存,防切品种狂打接口;
+                4) 与研报观点并列独立卡片,不写研报聚合文件、不改研报数据。
+    """
+    code = (request.args.get("variety") or "").strip().upper()
+    empty = {"variety": "", "name": "", "updated": "",
+             "signals": {"weekly": None}, "error": "", "source": "国泰君安(GTJA)"}
+    if not code:
+        return jsonify(empty)
+    now = time.time()
+    cached = _GTJA_VIEWS_CACHE.get(code)
+    if cached and now - cached[0] < GTJA_VIEWS_CACHE_TTL:
+        payload = cached[1]
+    else:
+        try:  # 【调用包】GTJA 观点提供者(可选增强;缺依赖/导入失败按未配置降级)
+            from tradingagents.dataflows import gtja_api
+        except Exception:  # noqa: BLE001 - 可选模块,绝不影响其它研报路由
+            gtja_api = None
+        if gtja_api is not None and gtja_api.configured():
+            try:
+                res = gtja_api.fetch_viewpoint(code)
+            except Exception:  # noqa: BLE001 - 拉取异常不炸接口
+                res = {"weekly": None, "error": "国君观点接口暂不可用"}
+        else:
+            res = {"weekly": None, "error": "未配置国君观点数据源"}
+        meta = VARIETY_METADATA.get(code, {})
+        payload = {
+            "variety": code,
+            "name": meta.get("name", code),
+            "updated": _gtja_weekly_date(res.get("weekly")),
+            "signals": {"weekly": res.get("weekly")},
+            "error": res.get("error"),
+            "source": "国泰君安(GTJA)",
+        }
+        _GTJA_VIEWS_CACHE[code] = (now, payload)
+    return jsonify(payload)
+
+
+# ---------------------------------------------------------------------------
+# GTJA 数据集(数据仓库「国君数据集」卡): 基差 / 仓单, 按品种 + 可选日期区间
+# ---------------------------------------------------------------------------
+def _gtja_num(x):
+    """把行内数值清洗成 JSON 安全值:None 保持 None;float NaN → None;原样返回其它。"""
+    if x is None:
+        return None
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return x
+    return None if f != f else x  # NaN != NaN 判空,避免 JSON 序列化 NaN
+
+
+def _gtja_iso_date(v):
+    """归一化 date 字段 → YYYY-MM-DD:int 20260901 / 已带横杠字符串都兼容。"""
+    if isinstance(v, int):
+        s = str(int(v))
+        if len(s) == 8 and s.isdigit():
+            return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+        return s
+    return str(v)
+
+
+@app.route("/api/gtja/dataset/basis")
+def api_gtja_dataset_basis():
+    """国君基差/现货数据集(数据仓库卡): 品种 + 可选日期区间 → 多日归一化表。
+
+    【返回】成功 {ok:True, variety, name, source, count, start, end,
+      rows:[{date(YYYY-MM-DD), spot_price, dominant_contract, dominant_contract_price,
+            dom_basis, dom_basis_rate}]};空(SC 等无现货指数品种)→ ok:True + rows 空。
+      未配 key → {ok:False, error};缺参 400;start>end 400。
+    """
+    code = (request.args.get("variety") or "").strip().upper()
+    start = (request.args.get("start") or "").strip()
+    end = (request.args.get("end") or "").strip()
+    if not code:
+        return jsonify({"ok": False, "error": "缺少品种参数(variety)"}), 400
+    try:  # 可选增强:缺依赖/导入失败按未配置降级
+        from tradingagents.dataflows import gtja_api
+    except Exception:  # noqa: BLE001 - 可选模块,绝不影响其它路由
+        gtja_api = None
+    if gtja_api is None or not gtja_api.configured():
+        return jsonify({"ok": False, "error": "未配置国君(GTJA)数据源密钥"}), 200
+    if start and end and start > end:
+        return jsonify({"ok": False, "error": f"开始日期不能晚于结束日期({start} > {end})"}), 400
+    today = datetime.now().date()
+    start = start or (today - timedelta(days=180)).strftime("%Y-%m-%d")
+    end = end or today.strftime("%Y-%m-%d")
+    df = gtja_api.fetch_basis_df(code, start, end)
+    meta = VARIETY_METADATA.get(code, {})
+    rows = []
+    if df is not None and not df.empty:
+        keys = ["date", "spot_price", "dominant_contract", "dominant_contract_price",
+                "dom_basis", "dom_basis_rate"]
+        for rec in df.to_dict("records"):
+            row = {k: _gtja_num(rec.get(k)) for k in keys}
+            if row.get("date") is not None:
+                row["date"] = _gtja_iso_date(row["date"])
+            rows.append(row)
+    return jsonify({"ok": True, "variety": code, "name": meta.get("name", code),
+                    "source": "国泰君安(GTJA)", "count": len(rows),
+                    "start": start, "end": end, "rows": rows})
+
+
+@app.route("/api/gtja/dataset/inventory")
+def api_gtja_dataset_inventory():
+    """国君交易所仓单数据集(数据仓库卡): 品种 + 可选日期区间 → 多日表。
+
+    【返回】成功 {ok:True, variety, name, source, count, start, end,
+      rows:[{date(YYYY-MM-DD), inventory, change}]};空 → ok:True + rows 空。
+      未配 key → {ok:False, error};缺参 400;start>end 400。
+    【关键】两端都空 → fetch_inventory_df 近 240 天默认窗口(兼容 commodity_futures 下游)。
+    """
+    code = (request.args.get("variety") or "").strip().upper()
+    start = (request.args.get("start") or "").strip()
+    end = (request.args.get("end") or "").strip()
+    if not code:
+        return jsonify({"ok": False, "error": "缺少品种参数(variety)"}), 400
+    try:  # 可选增强:缺依赖/导入失败按未配置降级
+        from tradingagents.dataflows import gtja_api
+    except Exception:  # noqa: BLE001 - 可选模块,绝不影响其它路由
+        gtja_api = None
+    if gtja_api is None or not gtja_api.configured():
+        return jsonify({"ok": False, "error": "未配置国君(GTJA)数据源密钥"}), 200
+    if start and end and start > end:
+        return jsonify({"ok": False, "error": f"开始日期不能晚于结束日期({start} > {end})"}), 400
+    today = datetime.now().date()
+    if start and end:
+        s_arg, e_arg = start, end
+        s_disp, e_disp = start, end
+    else:  # 两端皆空/只给一端 → 交给 fetch_inventory_df(默认 240 天窗口)
+        s_arg = e_arg = None
+        s_disp = start or (today - timedelta(days=240)).strftime("%Y-%m-%d")
+        e_disp = end or today.strftime("%Y-%m-%d")
+    df = gtja_api.fetch_inventory_df(code, s_arg, e_arg)
+    meta = VARIETY_METADATA.get(code, {})
+    rows = []
+    if df is not None and not df.empty:
+        keys = ["date", "inventory", "change"]
+        for rec in df.to_dict("records"):
+            row = {k: _gtja_num(rec.get(k)) for k in keys}
+            if row.get("date") is not None:
+                row["date"] = _gtja_iso_date(row["date"])
+            rows.append(row)
+    return jsonify({"ok": True, "variety": code, "name": meta.get("name", code),
+                    "source": "国泰君安(GTJA)", "count": len(rows),
+                    "start": s_disp, "end": e_disp, "rows": rows})
 
 
 @app.route("/api/research/<int:report_id>")
@@ -2899,6 +4478,70 @@ def api_research_detail(report_id):
     return jsonify(r)
 
 
+@app.route("/api/research/<int:report_id>/download")
+def api_research_download(report_id):
+    """下载研报原件(PDF/图片/MD/TXT):仅服务本研报在 RESEARCH_UPLOAD_DIR 内的原始文件。
+
+    路径穿越防护:解析后的绝对路径必须落在研报上传基准目录内,否则 403;文件缺失 404。
+    自动接入(fxbaogao)研报无独立原件(file_path 即 .md 文本),前端『查看原文』直接展示 extracted_text。
+    """
+    r = get_db().get_research_report(report_id)
+    if not r:
+        return jsonify({"error": "研报不存在"}), 404
+    fp = r.get("file_path")
+    if not fp:
+        return jsonify({"error": "该研报无原件文件(自动接入研报请使用『查看原文』)"}), 404
+    p = Path(fp).resolve()
+    base = RESEARCH_UPLOAD_DIR.resolve()
+    if p != base and base not in p.parents:
+        return jsonify({"error": "非法文件路径"}), 403
+    if not p.is_file():
+        return jsonify({"error": "原件文件不存在(可能已被移动)"}), 404
+    mime = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".md": "text/markdown; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+    }.get(p.suffix.lower(), "application/octet-stream")
+    download_name = r.get("filename") or p.name
+    return send_file(str(p), mimetype=mime, as_attachment=True, download_name=download_name)
+
+
+@app.route("/api/research/<int:report_id>/file")
+def api_research_file(report_id):
+    """在线查看研报原件(浏览器内直接渲染 PDF/图片,不弹下载框)。
+
+    与 /download 同一套路径防护与缺文件兜底;区别仅 inlined=False —— 2026-09-04
+    上线"其他设备经网站直接查看 PDF":内网穿透(cloudflared)或局域网访问时,
+    新标签页即可原样翻阅研报原件。md/txt 自动接入研报无二进制原件,仍走『查看原文』。
+    """
+    r = get_db().get_research_report(report_id)
+    if not r:
+        return jsonify({"error": "研报不存在"}), 404
+    fp = r.get("file_path")
+    if not fp:
+        return jsonify({"error": "该研报无原件文件(自动接入研报请使用『查看原文』)"}), 404
+    p = Path(fp).resolve()
+    base = RESEARCH_UPLOAD_DIR.resolve()
+    if p != base and base not in p.parents:
+        return jsonify({"error": "非法文件路径"}), 403
+    if not p.is_file():
+        return jsonify({"error": "原件文件不存在(可能已被移动)"}), 404
+    mime = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".md": "text/markdown; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+    }.get(p.suffix.lower())
+    if not mime:  # 在线预览只放行可渲染类型,其余引导走下载
+        return jsonify({"error": "该格式不支持在线预览, 请使用『下载原件』"}), 415
+    return send_file(str(p), mimetype=mime, as_attachment=False)
+
+
 @app.route("/api/research/<int:report_id>", methods=["DELETE"])
 def api_research_delete(report_id):
     """删除研报:同步删聚合 JSON 记录 + 原始文件,再删数据库行。"""
@@ -2912,7 +4555,9 @@ def api_research_delete(report_id):
     if not varieties and r.get("variety"):
         varieties = [r["variety"]]
     try:
-        from tradingagents.dataflows.research_data import remove_research_report  # 【调用包】聚合 JSON 记录删除
+        from tradingagents.dataflows.research_data import (
+            remove_research_report,  # 【调用包】聚合 JSON 记录删除
+        )
 
         for v in varieties:
             remove_research_report(v, report_id)
@@ -5048,10 +6693,75 @@ def api_validation_status():
     return jsonify(_val_state)
 
 
+# ----【启动保护 2026-09-03】旧实例占用 :5000 时拒绝启动,避免 SO_REUSEADDR 双绑后浏览器跑旧代码 ----
+def _parse_netstat_listeners(output: str, port: int) -> list[int]:
+    """从 netstat -ano 文本解析"监听给定端口"的进程 PID 列表(纯函数,便于单测)。"""
+    pids: list[int] = []
+    seen: set[int] = set()
+    suffix = f":{port}"
+    for raw in output.splitlines():
+        parts = raw.split()
+        # 数据行形如: TCP    0.0.0.0:5000    0.0.0.0:0    LISTENING    258248
+        if len(parts) < 5 or not parts[0].startswith("TCP"):
+            continue
+        local, state = parts[1], parts[3]
+        if state != "LISTENING" or not local.endswith(suffix):
+            continue
+        try:
+            pid = int(parts[4])
+        except ValueError:
+            continue
+        if pid not in seen:
+            seen.add(pid)
+            pids.append(pid)
+    return pids
+
+
+def _listeners_on_port(port: int = 5000) -> list[int]:
+    """查询本机当前监听 port 的进程 PID(仅 Windows 有效;其它平台返回空=不拦截)。"""
+    if sys.platform != "win32":
+        return []
+    try:
+        import subprocess  # 【调用包】子进程调用(运行 netstat)
+
+        out = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        ).stdout or ""
+    except Exception:
+        return []
+    return _parse_netstat_listeners(out, port)
+
+
+def _prompt_and_exit(message: str, code: int = 1) -> None:
+    """打印提示并停留等待回车,再以 code 退出(让用户看清启动保护的原因)。"""
+    print(message, flush=True)
+    with contextlib.suppress(EOFError, KeyboardInterrupt):
+        input("    按回车键退出…")  # 非交互(后台/脚本)启动时没有输入,直接退出
+    raise SystemExit(code)
+
+
 # 主入口:以脚本方式运行时启动调度器 + Waitress 生产服务器。
 # · 调度器启动失败只打印警告,不影响看板启动。
 # · waitress.serve 以 8 个线程监听 0.0.0.0:5000,channel_timeout=600 秒。
 if __name__ == "__main__":
+    # 【启动保护】:换代码重启前,若旧实例仍占着 :5000,先停下再启(拒绝静默双绑)。
+    occupiers = _listeners_on_port(5000)
+    if occupiers:
+        pids = "、".join(str(p) for p in occupiers)
+        _prompt_and_exit(
+            "\n[启动保护] 检测到端口 :5000 正被进程 PID " + pids + " 监听——"
+            "通常是上一次启动的服务器实例还没停。\n"
+            "为避免再次\"重开网页却跑到旧代码\",本次不启动。\n"
+            "请先停止旧实例:双击项目目录下的 stop_web.bat,"
+            "或在旧服务器窗口按 Ctrl+C;然后重新启动本服务。\n"
+        )
+
     try:
         from scheduler import start_scheduler  # 【调用包】调度器启动
 
