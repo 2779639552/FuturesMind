@@ -56,6 +56,7 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_research_view_summary,
     get_variety_info,
     get_verified_quote,
+    research_macro_context,  # 【调用包】研报宏观事件上下文(确定性注入用,非 @tool)
 )  # 【调用包】商品期货情绪/行情/品种信息/核验报价工具;情绪数据由 get_futures_sentiment 读取(思路2 项目采集),机构群体由 get_research_view_summary 读取(研报方向聚合,2026-09-03)
 from tradingagents.dataflows.sentiment_data import load_sentiment_data, sentiment_quality  # 【调用包】情绪数据质量门控(等级/权重上限);节点产出报告前注入机器可读横幅,供辩论/综合节点读取并强制 cap
 
@@ -306,6 +307,11 @@ def create_commodity_sentiment_analyst(llm, label="Sentiment", progress_callback
      in-library reports are 看多/中性/看空, their average confidence, and each report's opinion.
    - Characterize the institutional NARRATIVE and how unanimous/conflicted it is. The objective
      numbers inside the reports are handled by the Fundamental analyst — do not reproduce them here.
+   - **研报事件驱动(2026-09-04)**: 本提示最前方注入的 "RESEARCH 宏观事件" 块(若非空)列出了
+     近期研报提取的宏观共性事件与本品种事件,每条挂该研报的方向/置信度 —— 把它当作机构群体的
+     "观点背后在交易什么"的叙事素材:机构一致看多时,是被哪些事件支撑;机构内部分歧时,是否因
+     对同一事件(如地缘冲突/政策)解读不同。事件影响票数是各家主观判定,引用注明「研报观点」;
+     该块为空则如实说明"近期研报无事件提取",不要编造。
 
 **9. 机构 vs 散户 背离/共振判定**:
    - Both groups net the same way (e.g. 机构净多 + 散户偏多) → 共振, trend strengthened; but if
@@ -356,6 +362,14 @@ End with:
         if evolution_ctx:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
+
+        # --- Research Report Macro Events Injection (2026-09-04) ---
+        # 【研报事件注入】近 3 天研报的宏观共性事件 + 本品种事件(挂研报方向/置信度),
+        # 供机构(研报)群体叙事刻画("机构在交易什么事件")。无事件时不注入。
+        research_macro = research_macro_context(symbol)
+        if research_macro:
+            system_message = research_macro + "\n\n" + system_message
+        # --- End Research Report Injection ---
 
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [

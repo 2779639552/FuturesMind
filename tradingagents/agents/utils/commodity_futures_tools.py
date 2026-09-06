@@ -287,6 +287,24 @@ def get_research_view_summary(
     return route_to_vendor("get_research_view_summary", symbol, "", "")  # 【调用函数】跨模块路由:机构(研报)方向聚合(确定性,无 LLM)
 
 
+# 【功能】研报宏观事件上下文(确定性,无 LLM,非 @tool)——宏观/情绪分析师系统提示前置注入用。
+# 【参数】symbol: 品种代码。
+# 【返回】str: 研报事件文本(宏观共性事件 + 本品种事件与观点);无事件/异常返回 ""。
+# 【关键逻辑】为什么不做成 @tool:工具调用由 LLM 自主决策,不保证发生;而研报事件是
+#           分析师提示的一部分,必须 100% 到位且不占用工具轮数,故节点在构造提示时
+#           确定性注入(与 past_context 进化记忆注入同通道)。底层读 research_data
+#           .summarize_research_macro_events(近 3 天聚合 JSON,零网络零 LLM)。
+def research_macro_context(symbol: str) -> str:
+    try:
+        from tradingagents.dataflows.research_data import (
+            summarize_research_macro_events,  # 【调用包】研报宏观事件确定性汇总
+        )
+
+        return summarize_research_macro_events(symbol)
+    except Exception:  # 上下文加载失败不影响分析主线,静默降级为无注入
+        return ""
+
+
 # 【功能】获取品种的社交媒体情绪数据(微博/知乎/小红书)。
 # 【参数】symbol: 品种代码。
 # 【返回】格式化情绪报告文本。

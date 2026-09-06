@@ -13,9 +13,10 @@
       basisPremiumRate/contractCode/codeName/sectionName/district/spotIndexName/unitName。
       覆盖子集:只有有现货指数的品种(铜/螺纹…),原油 SC 等返回 0 行 → 调用方须回退 AKShare。
     - 仓单 fut.warehouseStock.query.do:rows=tradingDay/onWarrant(注册仓单)/code/exchangeCode。
-    - 观点 commodity.weekly.viewpoint.queryByCode.do:queryByCode 只回最新一帧
-      (startReportDate/endReportDate 不影响;分页 page/size),weekly 偏 reason 长文
-      (2026-09-03 晨报日度已下线,只保留周度)。
+    - 观点 commodity.weekly.viewpoint.query.do:列表端点(必填 page/startReportDate/
+      endReportDate;code 过滤被服务端忽略须客户端筛),weekly 偏 reason 长文
+      (2026-09-03 晨报日度已下线,只保留周度;2026-09-05 自 queryByCode 迁移,因后者
+      只回最新一帧而 GTJA 提前建下期帧致多数品种查空)。
   【契约事实】真实调通(2026-09-03):POST `{base}/api/unicorn.cloudApi.{ep}.do`,
   业务码 code=0 成功;偶发瞬时 300004(网关 LB 抖动)与 404 已观察,内部自动重试。
   【可逆开关】未配置 GTJA_ACCESS_KEY_ID/GTJA_ACCESS_KEY_SECRET 时 configured()=False,
@@ -41,7 +42,8 @@ MAX_TRIES = 4  # 【变量】瞬时网关抖动(300004/404)重试次数
 # 端点名(拼接成 {API_BASE_URL}/api/unicorn.cloudApi.{ep}.do,ep 带点分节)
 EP_BASIS = "basisData.query"  # 【变量】品种基差/现货价
 EP_WAREHOUSE = "fut.warehouseStock.query"  # 【变量】交易所注册仓单
-EP_VIEW_WEEKLY = "commodity.weekly.viewpoint.queryByCode"  # 【变量】周度观点(晨报日度 2026-09-03 下线)
+EP_VIEW_WEEKLY = "commodity.weekly.viewpoint.query"  # 【变量】周度观点(列表端点,按日期区间)
+EP_RESEARCH = "researchReportAttachmentQuery"  # 【变量】研报附件查询(2026-09-04 开通):按发布日期区间拉研报列表+附件直链
 
 # 内部基差 DataFrame 的标准列序(与 commodity_futures 归一化后列序一致,含近月/主力两套)
 _BASIS_COLUMNS = [  # 【变量】基差 DataFrame 标准列(与 AKShare 东财路径 keep_cols 相同)
@@ -259,24 +261,65 @@ def fetch_inventory_df(
 
 
 def fetch_viewpoint(code: str) -> dict[str, Any]:
-    """拉国君周度观点信号(最新一帧;2026-09-03 晨报日度已下线)。
+    """拉国君周度观点信号(该品种最新一帧;2026-09-03 晨报日度已下线)。
 
     【返回】{weekly: {...}|None, error: str|None};失败只让 weekly 为 None、error 记
       首错供前端提示;无信号与失败在 UI 上可区分。
+
+    【关键逻辑】2026-09-05 实测:原 queryByCode 端点只回最新一帧,而 GTJA 提前建下期
+      帧后逐品种补内容,最新帧常只有个别品种有数据 → 其余品种全查空(前端一直"无")。
+      改走 .query 列表端点(必填 page/startReportDate/endReportDate;与研报接口一样
+      code 过滤被服务端忽略,必须客户端按 code 筛),取近 4 周窗口内该品种最新一帧;
+      end 放宽 +7 天以含提前发布的下期帧。
     """
     if not configured():
         return {"weekly": None, "error": "GTJA 未配置(缺密钥)"}
     result: dict[str, Any] = {"weekly": None, "error": None}
     try:
-        rows = _request(EP_VIEW_WEEKLY, {"code": code, "page": 1, "size": 5})
-        if rows:
-            row = dict(rows[0])  # 【关键】queryByCode 只回最新一帧,取首条即可
+        end = date.today()
+        rows = _request(
+            EP_VIEW_WEEKLY,
+            {
+                "page": 1,
+                "size": 1000,
+                "startReportDate": (end - timedelta(days=28)).strftime("%Y-%m-%d"),
+                "endReportDate": (end + timedelta(days=7)).strftime("%Y-%m-%d"),
+            },
+        )
+        mine = [
+            r for r in rows
+            if isinstance(r, dict) and str(r.get("code") or "").upper() == code.upper()
+        ]
+        if mine:  # 服务端不保证排序,客户端按 reportDate 降序取最新一帧
+            row = dict(max(mine, key=lambda r: str(r.get("reportDate") or "")))
             # 接口 score 偶发字符串("0")→ 统一成 int
             sc = row.get("score")
             if isinstance(sc, str) and sc.strip().lstrip("+-").isdigit():
                 row["score"] = int(sc)
             result["weekly"] = row
+        else:
+            result["error"] = f"近 4 周无 {code} 周度观点帧"
     except GTJAError as exc:
         logger.warning("GTJA weekly viewpoint fetch failed for %s: %s", code, exc)
         result["error"] = str(exc)
     return result
+
+
+def fetch_research_reports(start_date: str, end_date: str) -> list[dict[str, Any]]:
+    """按发布日期区间拉国君研报列表(researchReportAttachmentQuery,2026-09-04 开通)。
+
+    【参数】start_date / end_date: YYYY-MM-DD,均为**闭区间**(服务端含端点日)。
+    【返回】原始行列表,每行 {infoId, title, publishTime, author, summary,
+            riskLevel, infoTags:[{tagName,tagId}], attachments:[{name,type,address}]};
+            失败/未配置 → [](调用方记录告警,不抛)。
+    【关键逻辑】必填 publishTimeStart/publishTimeEnd(缺参报 300001);服务端**忽略
+              page/size 与一切过滤参数**,一次返回区间内全量 → 客户端自行过滤/限流。
+    """
+    if not configured():
+        return []
+    body: dict[str, Any] = {"publishTimeStart": start_date, "publishTimeEnd": end_date}
+    try:
+        return _request(EP_RESEARCH, body)
+    except GTJAError as exc:
+        logger.warning("GTJA research report fetch failed [%s ~ %s]: %s", start_date, end_date, exc)
+        return []

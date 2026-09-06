@@ -51,7 +51,11 @@ import argparse
 import json
 import re
 import sys
+import threading
 import time
+from concurrent.futures import (
+    ThreadPoolExecutor,  # 【调用包】线程池(多篇并行处理,LLM 同步调用是大头)
+)
 from datetime import datetime
 from html import unescape  # 【调用函数】HTML 实体还原(&amp;/&nbsp;/&lt;)
 from pathlib import Path
@@ -65,6 +69,8 @@ DETAIL_ITEM_DEFAULT = "10070"  # 【变量】详情默认 itemValue(实测列表
 PAGE_SIZE = 100  # 【变量】列表单次拉取条数(实测 curPage 不分页,大 pageSize 才覆盖当日)
 MIN_BODY_CHARS = 200  # 【变量】正文最小可见字符数(去标签后),低于则跳过不入库
 MAX_SEEN = 1000  # 【变量】状态文件 seen 列表上限(滚动丢弃最旧)
+PARALLEL_WORKERS = 4  # 【变量】并行处理线程数(LLM 账户并发上限 5,每篇同时只挂 1 个调用,4 并发安全;21 篇 ~15min)
+_STATE_LOCK = threading.Lock()  # 【变量】状态文件落盘互斥锁(并行线程逐篇 persist)
 
 # 【变量】21 个目标品种代码(能化 19 + LC 碳酸锂 + PG 液化石油气;PG 不在
 # VARIETY_METADATA 但消费端 external_data/PG_research.json 与 done 行均支持)。
@@ -375,6 +381,8 @@ def _ingest_one(item: dict, body: str, dry_run: bool = False) -> bool:
             filename=file_path.name,
             file_path=str(file_path),
             ingest_source="auto",  # 【来源】华泰天玑自动采集入库(数据仓库"研报库"徽标=自动)
+            publish_date=str(item.get("publishDateTime") or "")[:10],  # 【发布日期】接口自带,与目标日期一致
+            report_type=str(item.get("reportType") or "").strip(),  # 【类型】接口 reportType 字段现成(本采集器只采日报栏目,值为'日报')
         )
     _process_research_report(report_id)  # 【调用函数】复用 web_app 后台处理(LLM 提取 → 落库 → 写聚合)
     print(f"    + {item['id']} {item['title'][:50]} -> report_id={report_id}")
@@ -390,6 +398,10 @@ def ingest_today(target_date: str, requested: set[str] | None = None, dry_run: b
               跳过;3) 写库 + LLM;4) 无论成败都进 seen 且**逐篇落盘状态**(进程中断
               也能续跑不丢进度;入库幂等以"研报库是否已有该文件名"为准——见
               _ingest_one 对 processing 残留的自愈)。同行同品种重跑需 --reset-state。
+              5) 并行:线程池(PARALLEL_WORKERS=3)同时处理多篇(每篇大头是 LLM 同步
+              调用,~2-3 分钟/篇,3 并发把 21 篇从 ~1 小时压到 ~20 分钟;LLM 账户
+              并发上限 5,3 并发安全)。聚合 JSON 写盘由 research_data._FILE_LOCK
+              互斥;状态文件落盘由 _STATE_LOCK 互斥。
     """
     state = {} if reset_state else _load_state()
     seen = set(state.get("seen") or [])
@@ -399,33 +411,44 @@ def ingest_today(target_date: str, requested: set[str] | None = None, dry_run: b
     print(f"[{SOURCE_ORG}] {target_date} 当日日报 {len(items)} 篇,目标品种命中 "
           f"{len(chosen)} 篇(覆盖品种 {sorted({c for it in chosen for c in it['codes']})})")
 
-    collected = processed = skipped = 0
+    work = [it for it in chosen if it["id"] not in seen]  # 【变量】过滤 seen 后待处理列表
+    collected = len(work)
+    processed = skipped = 0
     errors: list[str] = []
     new_seen = set(seen)
-    for item in chosen:
-        if item["id"] in seen:
-            continue  # 【幂等】同日已处理/已跳过
-        collected += 1
-        if dry_run:
+
+    if dry_run:
+        for item in work:
             print(f"  [DRY] {item['id']} [{','.join(item['codes'])}] {item['title'][:50]}")
-            continue
-        try:
-            import htfc_api  # 【调用包】天玑 API(懒导入)
-            detail = htfc_api.data_of(htfc_api.get_report_info(item["id"], item["itemValue"]))
-            body = html_to_text(detail.get("content") or "")
-            if _ingest_one(item, body):
-                processed += 1
-            else:
-                skipped += 1
-        except Exception as e:  # 【异常】单篇失败:记录并继续,不影响其余
-            errors.append(f"{item['id']}: {e}")
-            print(f"    ! {item['id']} 处理异常: {e}")
-        new_seen.add(item["id"])
-        if not dry_run:
-            # 【崩溃续跑】逐篇落盘状态:进程中断/被杀也不丢已处理进度,重跑只接余量
-            state["seen"] = sorted(new_seen)[-MAX_SEEN:]
-            state["last_run"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            _save_state(state)
+    else:
+        # 【崩溃续跑】逐篇落盘状态(线程安全):进程中断/被杀也不丢已处理进度,重跑只接余量
+        def _persist_seen(item_id):
+            with _STATE_LOCK:
+                new_seen.add(item_id)
+                state["seen"] = sorted(new_seen)[-MAX_SEEN:]
+                state["last_run"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                _save_state(state)
+
+        def _handle(item):
+            """单篇完整处理:拉详情 → 正文 → 入库 + LLM;返回 (item, ok, err)。"""
+            try:
+                import htfc_api  # 【调用包】天玑 API(懒导入)
+                detail = htfc_api.data_of(htfc_api.get_report_info(item["id"], item["itemValue"]))
+                body = html_to_text(detail.get("content") or "")
+                return item, _ingest_one(item, body), None
+            except Exception as e:  # 【异常】单篇失败:记录并继续,不影响其余
+                return item, False, str(e)
+
+        with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as pool:
+            for item, ok, err in pool.map(_handle, work):
+                if err:
+                    errors.append(f"{item['id']}: {err}")
+                    print(f"    ! {item['id']} 处理异常: {err}")
+                elif ok:
+                    processed += 1
+                else:
+                    skipped += 1
+                _persist_seen(item["id"])
 
     print(f"Collected: {collected}")
     print(f"Processed: {processed}")

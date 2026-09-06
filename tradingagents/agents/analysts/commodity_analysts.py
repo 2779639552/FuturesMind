@@ -54,6 +54,7 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_research_report,
     get_variety_info,
     get_verified_quote,
+    research_macro_context,  # 【调用包】研报宏观事件上下文(确定性注入用,非 @tool)
 )  # 【调用包】商品期货行情/指标/库存/基差/宏观/新闻/供需/研报/品种信息/核验报价工具;由 LLM 通过 _run_tool_loop 调度取数
 
 logger = logging.getLogger(__name__)
@@ -572,6 +573,15 @@ def create_commodity_macro_analyst(llm, label="Macro/News", progress_callback=No
 
 **Analysis Framework**:
 
+**0. Research Report Macro Events (已注入到本提示最前方的 "RESEARCH 宏观事件" 块,零工具成本,优先阅读)**:
+- 该块是近期(默认 3 天)研报的原文事件提取:宏观共性事件(≥2 品种研报共同提及 = 宏观级驱动,
+  如地缘冲突/关税/政策)与本品种研报事件(每条挂该研报的方向/置信度)。
+- 这是机构一手跟踪信号,可信度高,但影响判定(利多/利空票数)是各家主观投票 — 引用时注明
+  「研报观点」,并与 `get_futures_news` 的新闻交叉核验:新闻能佐证的事件可加权,仅研报提及的
+  事件按单家机构观点对待。
+- 事件后面的"该研报方向/置信度"是机构主观观点,供你理解事件被如何解读,不是你的宏观 bias。
+- 该块为空表示近期研报无事件提取 — 如实说明,不要编造。
+
 **Data Availability (MUST follow — never fabricate data)**:
 - `get_futures_macro` returns Chinese domestic indicators (official, latest available release per series): GDP, PMI, FAI, Real Estate Climate Index, Industrial Production, Construction Index, plus CPI, PPI, Money Supply M2/M1/M0, LPR, and Social Financing flow. All rows are sorted ascending by period internally, so the values shown are the LATEST releases (a recent fix removed a bug that surfaced 2008/2006-era stale rows).
 - Snapshot semantics: if a section header says "快照 YYYY-MM-DD" or "接口暂不可用", that value is a LAST-GOOD snapshot from the stated date — treat its recency per that date, never present it as the current-period figure.
@@ -654,6 +664,15 @@ End with:
         if evolution_ctx:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
+
+        # --- Research Report Macro Events Injection (2026-09-04) ---
+        # 【研报宏观事件注入】近 3 天研报的 key_events(宏观共性事件 + 本品种事件与观点)
+        # 确定性前置到系统提示 —— 框架第 0 节会指引 LLM 直接引用该块。无事件时 research_
+        # macro_context 返回 ""(不注入,提示词里已教 LLM 如实说明"研报无事件")。
+        research_macro = research_macro_context(symbol)
+        if research_macro:
+            system_message = research_macro + "\n\n" + system_message
+        # --- End Research Report Injection ---
 
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [

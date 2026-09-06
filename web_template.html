@@ -1412,6 +1412,28 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
      分析时作为最高优先级数据源: 优先级 研报 RESEARCH > 外部 EXTERNAL > 免费 FREE_API;
      基本面/宏观分析师可调 get_research_report 工具, 基差/库存/供需自动并入研报数据点。 -->
 <div id="tab-research" class="tab">
+  <!-- 模块说明(默认折叠, 点击展开): 模块简介 + 置信度评分语义分档 -->
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 模块说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>本页做什么</b>：汇总多渠道自动采集（发现报告 2 家 + 华泰天玑 21 品种日报 + 国泰君安云 API）与手工上传的研报，
+      经 LLM 结构化提取（品种 / 方向 / 基差·库存·开工率等指标 / 关键事件）与结论生成，形成
+      「逐品种观点总览」「研报每日总结」「国君周度观点」三张视图；研报原件与逐篇明细在「数据仓库」页的研报库。<br>
+      <b>置信度（confidence）如何给出</b>：不是公式计算，而是提取模型对「该方向判断」的把握度评分（0~1 小数），
+      依据研报的方向倾向强度、数据与事件支撑是否充分、作者语气是否谨慎、证据间是否自洽，并按下列语义分档约束区间：
+      <table style="border-collapse:collapse;margin:6px 0;font-size:0.8rem">
+        <tr><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px"><b>研报情形</b></td><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px"><b>confidence 区间</b></td></tr>
+        <tr><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px">明确看多/看空，且数据与事件支撑充分强</td><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px">0.75 ~ 0.95</td></tr>
+        <tr><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px">方向倾向明确，但证据一般或语气谨慎</td><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px">0.55 ~ 0.75</td></tr>
+        <tr><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px">中性 / 区间 / 无明确倾向</td><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px">0.4 ~ 0.6</td></tr>
+        <tr><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px">几乎没给可判断方向的依据（方向宜判中性）；证据冲突取低档</td><td style="border:1px solid var(--border,#e0e0e0);padding:3px 10px">0.3 ~ 0.5</td></tr>
+      </table>
+      研报未给出置信度时显示「—(未给置信度)」，不拿 0.5 冒充；同一天的表内可横向比较，
+      数值是模型的判断把握度而非统计概率，仅供研究参考，非交易建议。
+    </div>
+  </div>
   <!-- 逐品种观点总览卡片(研报页收窄为"观点分析"专用; 资产管理已迁「数据仓库」tab) -->
   <div class="card" style="margin-bottom:16px">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:2px">
@@ -1476,6 +1498,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       <b>多品种</b>：一份研报若含多个品种的观点与数据, 会自动拆分并按品种分别入库; 分析某品种时只采信该品种的研报数据。<br>
       <b>消费方式</b>：运行分析时基本面/宏观分析师通过 <code>get_research_report</code> 工具读取; 基差/库存/供需数据自动并入研报数据点。<br>
       <b>来源徽标</b>: <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green)">上传</span> = 网页手动上传; <span class="badge" style="background:rgba(168,85,247,.18);color:#c084fc">自动</span> = fxbaogao/华泰/本地批量采集自动接入。<br>
+      <b>🔄 采集最新研报</b>: 手动拉取发现报告(2 家期货公司)+ 华泰天玑(能化 21 品种当日日报)+ 国泰君安云 API(官方研报,2026-09-04 开通);每篇走 LLM 提取,全量可能需数十分钟,期间按钮置灰可离开页面。永安期货与国泰君安(发现报告源)已剔除,国君研报只走官方云 API。<br>
       <span style="color:var(--amber)">注: 需本地 LLM 服务可用(Ollama/API 配置); OCR 不可用时图片研报会提示处理失败。</span>
     </div>
   </div>
@@ -1503,6 +1526,17 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
         <input type="file" id="res-upload-file" accept=".pdf,.png,.jpg,.jpeg,.md,.txt" style="width:100%">
       </div>
       <button class="btn btn-primary" onclick="App.uploadResearch()">上传</button>
+      <span style="position:relative;display:inline-flex;gap:8px">
+        <button class="btn btn-outline" id="res-collect-variety-btn" onclick="App.toggleCollectVarietyPanel(event)" title="选择要采集的品种(作用于华泰天玑+国君云API;按品种采集时自动排除发现报告)">🔬 品种: 全部</button>
+        <button class="btn btn-outline" id="res-collect-btn" onclick="App.collectResearch()" title="从发现报告(2家期货公司)+ 华泰天玑(21品种日报)+ 国泰君安云API拉取最新研报,后台 LLM 处理;可先点左侧选品种,只采指定品种更快">🔄 采集最新研报</button>
+        <div id="res-collect-variety-panel" style="display:none;position:absolute;right:0;top:110%;z-index:60;min-width:320px;max-height:340px;overflow:auto;background:var(--bg-card,#fff);border:1px solid var(--border,#e0e0e0);border-radius:8px;padding:12px;box-shadow:0 6px 20px rgba(0,0,0,.15)" onclick="event.stopPropagation()">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:600;border-bottom:1px solid var(--border,#eee);padding-bottom:6px;margin-bottom:6px">
+            <input type="checkbox" id="res-cv-all" checked onchange="App._onCollectVarietyAll(this.checked)"> 全部品种 <span style="font-weight:400;font-size:0.82rem;color:var(--text-secondary)">(按品种采集自动排除发现报告)</span>
+          </label>
+          <div id="res-cv-list" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px"></div>
+          <button class="btn btn-primary btn-sm" style="width:100%;margin-top:10px" onclick="App.collectResearch()">按所选品种开始采集</button>
+        </div>
+      </span>
     </div>
   </div>
 
@@ -1522,6 +1556,14 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
           <option value="">全部来源</option>
           <option value="manual">上传(网页人工)</option>
           <option value="auto">自动接入</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:120px">
+        <label>按类型筛选</label>
+        <select id="res-filter-type" onchange="App.refreshResearchList()">
+          <option value="">全部类型</option>
+          <option value="日报">日报</option>
+          <option value="周报">周报</option>
         </select>
       </div>
       <button class="btn btn-outline btn-sm" onclick="App.refreshResearchList()">刷新</button>
@@ -2858,6 +2900,8 @@ const App = {
   // ── 研报每日总结 ──
   // 【功能】拉取可用日期列表(库内研报日期 ∪ 已生成总结文件)填充日期下拉,
   //        已生成过的日期加 ✓ 标记;首次进入自动选中最新日期并尝试调阅。
+  //        采集期间由轮询反复调用:日期集合没变化时不重建下拉/不重载总结,
+  //        新日期出现时下拉就地长出新选项(不打断当前阅读)。
   // 【输入】无 【渲染】#res-daily-date 下拉 + 触发 loadDailySummary
   // 【后端】GET /api/research/daily
   async _loadDailyDates() {
@@ -2866,16 +2910,26 @@ const App = {
     try {
       const r = await fetch('/api/research/daily');
       const d = await r.json();
+      const dates = d.dates || [];
+      const sig = JSON.stringify(dates.map(x => `${x.date}${x.generated ? '✓' : ''}`));
       const prev = sel.value;
-      sel.innerHTML = '';
-      (d.dates || []).forEach(x => {
-        const o = document.createElement('option');
-        o.value = x.date;
-        o.textContent = x.date + (x.generated ? ' ✓' : '');
-        sel.appendChild(o);
-      });
-      sel.value = (d.dates || []).some(x => x.date === prev) ? prev : ((d.dates || [])[0] || {}).date || '';
-      await this.loadDailySummary();
+      if (sig !== this._dailyDatesSig) {  // 日期集合/✓标记有变化才重建下拉
+        this._dailyDatesSig = sig;
+        sel.innerHTML = '';
+        dates.forEach(x => {
+          const o = document.createElement('option');
+          o.value = x.date;
+          o.textContent = x.date + (x.generated ? ' ✓' : '');
+          sel.appendChild(o);
+        });
+      }
+      const next = dates.some(x => x.date === prev) ? prev : ((dates[0] || {}).date || '');
+      if (sel.value !== next) sel.value = next;
+      // 选中日期变化(或首次加载)才重载总结;轮询间日期没变就不动内容
+      if (sel.value !== prev || !this._dailyLoadedOnce) {
+        this._dailyLoadedOnce = true;
+        await this.loadDailySummary();
+      }
     } catch (e) { /* 日期列表失败不阻塞研报页 */ }
   },
 
@@ -2949,6 +3003,7 @@ const App = {
   // 【输入】无 【渲染】#res-list 【后端】GET /api/research?variety=&ingest_source=
   async loadWarehouse() {
     this._populateVarietySelects(['res-upload-variety', 'res-filter-variety', 'dwh-ds-variety']);
+    this._fillCollectVarietyList();  // 【采集品种面板】进入数据仓库页时懒填充勾选列表
     await this.refreshResearchList();
   },
 
@@ -2959,8 +3014,9 @@ const App = {
   },
 
   // 【功能】逐品种观点总览: 切换品种/日期, 拉取该品种该研报日期各家发行方的
-  //       方向/置信度/观点要点并渲染成表格。单元格观点要点 = 交易要素行前置 +
-  //       推理链浓缩(七小节两段式口径); 点击研报标题进详情看完整两段式结论。
+  //       方向/置信度/观点要点并渲染成表格。头寸列 = 单边/区间+头寸+研报建议
+  //       合并(后端语义去重); 单元格观点要点 = 推理链浓缩(七小节两段式口径,
+  //       不含交易要素行避免与头寸列重复); 点击研报标题进详情看完整两段式结论。
   // 【输入】无 (读取 #res-views-variety + #res-views-date)
   // 【渲染】#res-views-count 计数 + #res-views 表格(发行方/研报/方向/置信度/观点要点)
   // 【后端】GET /api/research/views?variety={code}&date={date}
@@ -3013,7 +3069,7 @@ const App = {
       const isNum = x => typeof x === 'number' && isFinite(x);
       const chipBg = x => x === '看多' ? 'var(--green-bg)' : x === '看空' ? 'var(--red-bg)' : 'var(--amber-bg)';
       const chipColor = x => x === '看多' ? 'var(--green)' : x === '看空' ? 'var(--red)' : 'var(--amber)';
-      // 交易要素列(单边/区间、头寸、建议):研报自己的表述(取自「## 交易要素与风险」/「## 建议权重」), 缺 → '—'
+      // 头寸列(2026-09-05 合并原 单边/区间+头寸+研报建议 三列, 后端已语义去重):研报自己的表述, 缺 → '—'; 建议(LLM) 列另见 th 说明
       const txtCell = (v, maxW) => v
         ? `<td style="max-width:${maxW}px;font-size:0.78rem;line-height:1.45;color:var(--text)" title="${esc(v)}">${esc(v)}</td>`
         : '<td><span style="color:var(--text-muted)">—</span></td>';
@@ -3029,10 +3085,9 @@ const App = {
           <th>研报</th>
           <th style="text-align:center">方向</th>
           <th>置信度</th>
-          <th title="研报「交易要素」中的形态与区间(单边/区间表述)">单边/区间</th>
-          <th title="研报「交易要素」中的头寸/头寸范围建议">头寸</th>
-          <th title="研报「建议权重」节的配置/关注权重建议">建议</th>
-          <th>观点要点(交易要素→推理链:头寸/方向/区间→依据→观点)</th>
+          <th title="研报的单边/区间表述 + 头寸/仓位建议 + 原文操作建议(语义去重合并为一列,未给为 —)">头寸</th>
+          <th title="系统 LLM 基于该研报观点生成的配置/关注权重建议(非研报原文)">建议 🤖<span style="font-weight:400;font-size:0.68rem;color:var(--text-muted)">LLM</span></th>
+          <th>观点要点(推理链:供需→库存→成本→现货→事件→观点依据)</th>
         </tr></thead>
         <tbody>${d.rows.map(rp => {
           const covers = (rp.covers || []).length > 1
@@ -3048,13 +3103,12 @@ const App = {
               </span>
             </td>
             <td style="max-width:200px">
-              <a href="javascript:void(0)" onclick="App.viewResearch(${rp.id})" title="查看完整结论" style="color:var(--blue);text-decoration:none;font-weight:600">${esc(rp.title)}</a>${covers}
-              ${rp.uploaded_at ? `<div style="color:var(--text-muted);font-size:0.7rem;margin-top:2px">${esc(String(rp.uploaded_at).slice(0, 10))}</div>` : ''}
+              <a href="javascript:void(0)" onclick="App.viewResearch(${rp.id})" title="查看完整结论" style="color:var(--blue);text-decoration:none;font-weight:600">${esc(rp.title)}</a>${rp.report_type === '周报' ? ' <span class="badge" style="background:rgba(245,158,11,.18);color:var(--amber);font-size:0.7rem">周报</span>' : ''}${covers}
+              ${(rp.publish_date || rp.uploaded_at) ? `<div style="color:var(--text-muted);font-size:0.7rem;margin-top:2px">${esc(String(rp.publish_date || rp.uploaded_at).slice(0, 10))}</div>` : ''}
             </td>
             <td style="text-align:center;white-space:nowrap"><span class="rv-chip" style="background:${chipBg(rp.direction)};color:${chipColor(rp.direction)}">${esc(rp.direction)}</span></td>
             <td style="white-space:nowrap">${confCell(rp.confidence)}</td>
-            ${txtCell(rp.trade_range, 130)}
-            ${txtCell(rp.trade_position, 120)}
+            ${txtCell(rp.trade, 220)}
             ${txtCell(rp.advice, 150)}
             <td title="${opinionFull}">
               <div id="rv-opinion-${rp.id}" class="rv-opinion">${opinionFull}</div>
@@ -3098,7 +3152,7 @@ const App = {
     const d = dat.d, code = dat.code;
     const dirCol = x => x === '看多' ? C.bull : x === '看空' ? C.bear : C.flat;
     const confColor = c => c >= 0.7 ? C.bull : c >= 0.4 ? C.flat : C.bear;
-    const legend = '— 研报未披露。交易要素列取自研报「交易要素与风险/建议权重」原文。仅供研究参考, 非交易建议。';
+    const legend = '— 研报未披露。头寸列 = 研报的单边/区间 + 头寸/仓位 + 原文操作建议合并(语义去重); 🤖LLM 建议列是系统 LLM 基于研报观点生成的权重建议(非研报原文)。仅供研究参考, 非交易建议。';
     const stamp = new Date().toLocaleString('zh-CN', { hour12: false });
     const head = `<div style="border-bottom:2px solid ${C.brand};padding-bottom:8px;margin-bottom:2px">
         <div style="font-size:19px;font-weight:800;color:${C.text};line-height:1.4">逐品种观点总览 · ${esc(d.name || code)}(${esc(code)}) · 研报日期 ${esc(d.date)}</div>
@@ -3121,19 +3175,19 @@ const App = {
         <td style="padding:6px 8px;color:${C.sub};font-size:10.5px;border-bottom:1px solid ${C.line}"><span style="color:#1d4ed8;font-weight:600">${esc(rp.title)}</span>${covers}</td>
         <td style="padding:6px 8px;white-space:nowrap;border-bottom:1px solid ${C.line}"><span style="font-weight:800;color:${dirCol(rp.direction)};font-size:11px">${esc(rp.direction)}</span></td>
         ${confTd}
-        ${txtTd(rp.trade_range)}${txtTd(rp.trade_position)}${txtTd(rp.advice)}
+        ${txtTd(rp.trade)}${txtTd(rp.advice)}
         <td style="padding:6px 8px;color:#374151;font-size:10px;line-height:1.55;white-space:pre-line;border-bottom:1px solid ${C.line}">${esc(rp.key_opinion) || '<span style="color:#c6cad1">(无观点摘要)</span>'}</td>
       </tr>`;
     }).join('');
     const table = `<table style="width:100%;table-layout:fixed;border-collapse:collapse">
       <colgroup>
-        <col style="width:8%"><col style="width:20%"><col style="width:6%"><col style="width:8%">
-        <col style="width:9%"><col style="width:8%"><col style="width:9%"><col style="width:32%">
+        <col style="width:9%"><col style="width:19%"><col style="width:6%"><col style="width:7%">
+        <col style="width:14%"><col style="width:9%"><col style="width:36%">
       </colgroup>
       <thead><tr>
         ${th('发行方')}${th('研报')}${th('方向', 'text-align:center')}${th('置信度')}
-        ${th('单边/区间')}${th('头寸')}${th('建议')}
-        ${th('观点要点(交易要素→推理链:头寸/方向/区间→依据→观点)')}
+        ${th('头寸')}${th('建议🤖LLM')}
+        ${th('观点要点(推理链:供需→库存→成本→现货→事件→观点依据)')}
       </tr></thead>
       <tbody>${trs}</tbody>
     </table>`;
@@ -3305,20 +3359,24 @@ const App = {
     } catch (e) { if (body) body.innerHTML = '<span style="color:var(--red)">加载失败</span>'; }
   },
 
-  // 【功能】按筛选品种/来源拉取研报列表并渲染(状态徽标/来源徽标/方向/置信度/查看/删除按钮)
-  // 【输入】无 (读取 #res-filter-variety 品种 + #res-filter-source 来源筛选值)
+  // 【功能】按筛选品种/来源/类型拉取研报列表并渲染(状态徽标/来源徽标/方向/置信度/查看/删除按钮)
+  // 【输入】无 (读取 #res-filter-variety 品种 + #res-filter-source 来源 + #res-filter-type 类型筛选值)
   // 【渲染】#res-count 计数 + #res-list 列表(处理中/已处理/失败三种状态)
-  // 【后端】GET /api/research?variety={variety}&ingest_source={manual|auto}
-  async _refreshResearch() {
+  // 【后端】GET /api/research?variety={variety}&ingest_source={manual|auto}&report_type={日报|周报}
+  async _refreshResearch(silent = false) {
     const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
     const v = document.getElementById('res-filter-variety')?.value || '';
     const src = document.getElementById('res-filter-source')?.value || '';
+    const rtype = document.getElementById('res-filter-type')?.value || '';
     const listEl = document.getElementById('res-list');
-    listEl.innerHTML = '加载中...';
+    if (!silent) listEl.innerHTML = '加载中...';  // 静默模式不闪"加载中", 原列表保持到新数据就绪
+    // 【后台采集态恢复】页面刷新后若采集仍在进行, 顺带把按钮置回轮询态(异步, 不阻塞列表)
+    this._checkResearchCollecting();
     try {
       const q = new URLSearchParams();
       if (v) q.set('variety', v);
       if (src) q.set('ingest_source', src);
+      if (rtype) q.set('report_type', rtype);
       const r = await fetch(`/api/research?${q.toString()}`);
       const d = await r.json();
       const rows = d.reports || [];
@@ -3328,6 +3386,10 @@ const App = {
         const srcBadge = rp.ingest_source === 'auto'
           ? '<span class="badge" style="background:rgba(168,85,247,.18);color:#c084fc;margin-right:6px">自动</span>'
           : '<span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);margin-right:6px">上传</span>';
+        // 类型徽标: 只标周报(橙色), 日报/未知不标(2026-09-05 日报/周报分口径)
+        const typeBadge = rp.report_type === '周报'
+          ? '<span class="badge" style="background:rgba(245,158,11,.18);color:var(--amber);margin-right:6px">周报</span>'
+          : '';
         const statusBadge = rp.status === 'done'
           ? '<span class="badge" style="background:rgba(34,197,94,.15);color:var(--green)">已处理</span>'
           : rp.status === 'error'
@@ -3344,11 +3406,11 @@ const App = {
           <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
             <div>
               <b>${esc(rp.title || '(未命名)')}</b>${multiBadge}
-              <span style="color:var(--text-muted);font-size:0.8rem"> — ${esc(rp.variety || '')} · ${esc(rp.source || '')} · ${esc(String(rp.uploaded_at || '').slice(0, 10))}</span>
+              <span style="color:var(--text-muted);font-size:0.8rem"> — ${esc(rp.variety || '')} · ${esc(rp.source || '')} · ${esc(String(rp.publish_date || rp.uploaded_at || '').slice(0, 10))}</span>
               <span style="color:${dirColor};font-weight:700">${esc(rp.direction || '中性')}</span>${conf}
             </div>
             <div style="display:flex;gap:8px;align-items:center">
-              ${srcBadge}${statusBadge}
+              ${typeBadge}${srcBadge}${statusBadge}
               <button class="btn btn-outline btn-sm" onclick="App.viewResearch(${rp.id})">查看</button>
               <button class="btn btn-outline btn-sm" onclick="App.viewResearchOriginal(${rp.id})" title="查看研报原文">原文</button>
               <button class="btn btn-red btn-sm" onclick="App.deleteResearch(${rp.id})">删除</button>
@@ -3386,6 +3448,131 @@ const App = {
       document.getElementById('res-upload-source').value = '';
       await this._refreshResearch();
     } catch (e) { this.toast('上传失败', 'error'); }
+  },
+
+  // ── 采集品种选择面板(按品种采集防全量 LLM 耗时过长) ──────────────────
+  // 【功能】开关面板; 打开时懒填充品种勾选列表(this._varieties, 只填一次)
+  toggleCollectVarietyPanel(e) {
+    if (e) e.stopPropagation();
+    const p = document.getElementById('res-collect-variety-panel');
+    if (!p) return;
+    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    if (p.style.display !== 'block') return;
+    this._fillCollectVarietyList();
+    const closer = (ev) => {  // 点面板外自动收起(面板自身 onclick 已 stopPropagation)
+      if (!p.contains(ev.target)) { p.style.display = 'none'; document.removeEventListener('click', closer); }
+    };
+    document.addEventListener('click', closer);
+  },
+
+  // 【功能】把品种列表填充进勾选面板; 已有内容则跳过, 避免重复
+  _fillCollectVarietyList() {
+    const box = document.getElementById('res-cv-list');
+    if (!box || box.childElementCount) return;
+    (this._varieties || []).forEach(v => {
+      const l = document.createElement('label');
+      l.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer';
+      const c = document.createElement('input');
+      c.type = 'checkbox'; c.className = 'res-cv-item'; c.value = v.code;
+      c.onchange = () => this._updateCollectVarietyLabel();
+      l.appendChild(c);
+      l.appendChild(document.createTextNode(`${v.code} ${v.name}`));
+      box.appendChild(l);
+    });
+  },
+
+  // 【功能】"全部品种"总开关: 勾/去勾所有单项
+  _onCollectVarietyAll(checked) {
+    document.querySelectorAll('.res-cv-item').forEach(c => { c.checked = checked; });
+    this._updateCollectVarietyLabel();
+  },
+
+  // 【功能】当前勾选的品种代码列表(空 = 全部)
+  _collectVarietyCodes() {
+    return [...document.querySelectorAll('.res-cv-item:checked')].map(c => c.value);
+  },
+
+  // 【功能】同步按钮文案(如 "🔬 品种: MA/TA 等3个")与总开关勾选态
+  _updateCollectVarietyLabel() {
+    const codes = this._collectVarietyCodes();
+    const total = (this._varieties || []).length;
+    const all = document.getElementById('res-cv-all');
+    if (all) all.checked = !codes.length || codes.length === total;
+    const btn = document.getElementById('res-collect-variety-btn');
+    if (btn) btn.textContent = (codes.length && codes.length < total)
+      ? `🔬 品种: ${codes.slice(0, 3).join('/')}${codes.length > 3 ? ` 等${codes.length}个` : ''}`
+      : '🔬 品种: 全部';
+  },
+
+  // 【功能】手动采集最新研报: 触发后台线程(发现报告 2 家 + 华泰天玑 21 品种日报 + 国君云API)
+  // 【输入】source:'all' + 可选 varieties(勾选面板所选品种, 空/全选=全部, 后端按品种
+  //         过滤华泰/国君并排除发现报告); 采集进行中后端返回 409, 同样进入轮询等它结束
+  // 【渲染】按钮置灰显示"采集进行中…", 每 5s 轮询状态, 结束后 toast + 刷新列表
+  // 【后端】POST /api/research/collect {source:'all', varieties:[...]} · GET /api/research/collect
+  _resCollectTimer: null,
+  async collectResearch() {
+    const codes = this._collectVarietyCodes();
+    const total = (this._varieties || []).length;
+    const payload = { source: 'all' };
+    if (codes.length && codes.length < total) payload.varieties = codes;
+    const panel = document.getElementById('res-collect-variety-panel');
+    if (panel) panel.style.display = 'none';
+    try {
+      const r = await fetch('/api/research/collect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 409) { this.toast('研报采集已在进行中, 请稍候', 'info'); this._watchResearchCollect(); return; }
+      if (!r.ok) { this.toast(d.error || '采集启动失败', 'error'); return; }
+      this.toast(d.message || '研报采集已启动, 后台处理中', 'success');
+      this._watchResearchCollect();
+    } catch (e) { this.toast('采集启动失败', 'error'); }
+  },
+
+  // 【功能】轮询采集状态直到结束(页面刷新后若仍在采集中, 经 _refreshResearch 也会进入此处恢复按钮态)
+  // 【体验】按钮实时显示已耗时(每篇走 LLM 提取, 全程可达数十分钟); 每 30s 静默刷新
+  //         一次列表, 让新入库的研报行陆续出现, 避免"只转圈不知进展"。
+  _watchResearchCollect() {
+    const btn = document.getElementById('res-collect-btn');
+    const t0 = Date.now();
+    if (btn) { btn.disabled = true; }
+    if (this._resCollectTimer) return;  // 已在轮询, 不重复起定时器
+    const fmt = s => (s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`);
+    let ticks = 0;
+    this._resCollectTimer = setInterval(async () => {
+      ticks++;
+      const b = document.getElementById('res-collect-btn');
+      if (b) b.textContent = `采集进行中… (已 ${fmt(Math.round((Date.now() - t0) / 1000))})`;
+      try {
+        const r = await fetch('/api/research/collect');
+        const d = await r.json();
+        if (d.collecting) {
+          if (ticks % 6 === 0) {  // 静默刷新: 新行渐进出现 + 日期下拉就地长出新日期
+            this._refreshResearch(true);
+            this._loadDailyDates();
+          }
+          return;
+        }
+        clearInterval(this._resCollectTimer);
+        this._resCollectTimer = null;
+        const c = document.getElementById('res-collect-btn');
+        if (c) { c.disabled = false; c.textContent = '🔄 采集最新研报'; }
+        this.toast('研报采集结束, 列表已刷新', 'success');
+        await this._refreshResearch();
+        await this._loadDailyDates();
+      } catch (e) { /* 网络抖动忽略, 下轮再查 */ }
+    }, 5000);
+  },
+
+  // 【功能】查询采集状态, 进行中则进入轮询恢复按钮态(页面加载/刷新时用, 静默失败)
+  async _checkResearchCollecting() {
+    try {
+      const r = await fetch('/api/research/collect');
+      const d = await r.json();
+      if (d.collecting) this._watchResearchCollect();
+    } catch (e) { /* 状态查询失败不影响列表加载 */ }
   },
 
   // 【功能】查看研报详情: 结构化 JSON 渲染为表格 + 结论 markdown, 用 marked 渲染后展示
@@ -3443,9 +3630,10 @@ const App = {
       const html = `
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
           <div><b style="font-size:1.15rem">${esc(d.title || '(未命名)')}</b>
-            <div style="color:var(--text-muted);font-size:0.82rem">覆盖: ${covered} · ${esc(d.source || '')} · ${esc(d.filename || '')} · 上传 ${esc(String(d.uploaded_at || '').slice(0, 10))}</div>
+            <div style="color:var(--text-muted);font-size:0.82rem">覆盖: ${covered} · ${esc(d.source || '')} · ${esc(d.filename || '')} · ${d.publish_date ? '发布' : '上传'} ${esc(String(d.publish_date || d.uploaded_at || '').slice(0, 10))}</div>
           </div>
           <div style="text-align:right">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:6px">${this._researchFileButtons(id, d.file_path)}</div>
             <span style="color:${dirColor};font-weight:900;font-size:1.2rem">${esc(d.direction || '中性')}</span>
             ${d.confidence != null ? `<div style="color:var(--text-muted);font-size:0.82rem">主品种置信度 ${d.confidence}</div>` : ''}
           </div>
@@ -3457,6 +3645,22 @@ const App = {
         </div>`;
       this.openResearchModal(html, esc(d.title || '研报详情'));
     } catch (e) { this.toast('查看失败', 'error'); }
+  },
+
+  // 【功能】按 file_path 生成原件按钮组: pdf/图片 → 在线查看+下载; .md → 下载
+  //       (研报详情弹层与原文弹层共用, 2026-09-04)
+  // 【输入】id: 研报主键; fp: file_path 字符串 【渲染】按钮 HTML(无原件返回空串)
+  _researchFileButtons(id, fp) {
+    const isBinary = /\.(pdf|png|jpe?g)$/i.test(fp || '');
+    const isMd = /\.md$/i.test(fp || '');
+    if (fp && isBinary) {
+      return `<a class="btn btn-primary btn-sm" href="/api/research/${id}/file" target="_blank" rel="noopener" style="text-decoration:none">📄 在线查看</a>
+              <a class="btn btn-outline btn-sm" href="/api/research/${id}/download" target="_blank" rel="noopener" style="text-decoration:none">⬇ 下载</a>`;
+    }
+    if (fp && isMd) {
+      return `<a class="btn btn-outline btn-sm" href="/api/research/${id}/download" target="_blank" rel="noopener" style="text-decoration:none" title="下载本地 .md 文本原件(自动接入研报无 PDF,接口只提供正文)">⬇ 下载</a>`;
+    }
+    return '';
   },
 
   // 【功能】查看研报原文: 展示该研报提取出的原文文本(extracted_text)。
@@ -3475,10 +3679,7 @@ const App = {
       const fp = d.file_path || '';
       const isBinary = /\.(pdf|png|jpe?g)$/i.test(fp);
       const isMd = /\.md$/i.test(fp);
-      const fileBtn = (fp && isBinary)
-        ? `<a class="btn btn-primary btn-sm" href="/api/research/${id}/file" target="_blank" rel="noopener" style="text-decoration:none">📄 在线查看</a>
-           <a class="btn btn-outline btn-sm" href="/api/research/${id}/download" target="_blank" rel="noopener" style="text-decoration:none">⬇ 下载</a>`
-        : '';
+      const fileBtn = this._researchFileButtons(id, fp);
       const kindNote = isMd
         ? '<span style="color:var(--text-muted);font-size:0.78rem">（自动接入研报，以下文本即为原文）</span>'
         : isBinary
@@ -3487,7 +3688,7 @@ const App = {
       const html = `
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center">
           <div><b style="font-size:1.05rem">${esc(d.title || '(未命名)')}</b>
-            <div style="color:var(--text-muted);font-size:0.8rem">${esc(d.source || '')} · ${esc(d.variety || '')} · 上传 ${esc(String(d.uploaded_at || '').slice(0, 10))}</div>
+            <div style="color:var(--text-muted);font-size:0.8rem">${esc(d.source || '')} · ${esc(d.variety || '')} · ${d.publish_date ? '发布' : '上传'} ${esc(String(d.publish_date || d.uploaded_at || '').slice(0, 10))}</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">${fileBtn}</div>
         </div>

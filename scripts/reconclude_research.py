@@ -58,7 +58,10 @@ def _is_final_fmt(conclusion_md: str) -> bool:
 
 
 def _eff_date(row: dict) -> str:
-    """研报"当天"语义:structured_data.publish_date(YYYY-MM-DD),缺则回退 uploaded_at 当天。"""
+    """研报"当天"语义:DB publish_date 列优先,缺则 structured_data.publish_date,再回退 uploaded_at 当天。"""
+    pub = (row.get("publish_date") or "").strip()
+    if pub:
+        return pub[:10]
     try:
         sd = json.loads(row.get("structured_data") or "{}")
         pub = (sd.get("publish_date") or "").strip()

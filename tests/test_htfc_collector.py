@@ -244,7 +244,7 @@ class TestIngestOneIdempotency:
         db, web = self._install(monkeypatch, tmp_path)
         if status is not None:
             db.row = {"id": 58, "status": status}
-        item = {"id": "RE17428", "title": "EB 日报", "publishDateTime": "2026-09-02 08:00:00"}
+        item = {"id": "RE17428", "title": "EB 日报", "reportType": "日报", "publishDateTime": "2026-09-02 08:00:00"}
         ok = rc._ingest_one(item, "。" * 300)  # body ≥ MIN_BODY_CHARS
         return db, web, ok
 
@@ -268,6 +268,8 @@ class TestIngestOneIdempotency:
         # 文件名以 articleId 为前缀,与 sanitize 后的标题拼出(即库内查询键)
         assert ins["filename"] == f"RE17428_{rc._sanitize_filename('EB 日报')}.md"
         assert ins["variety"] == ""
+        assert ins["publish_date"] == "2026-09-02"  # 接口 publishDateTime 真实发布日透传入库
+        assert ins["report_type"] == "日报"  # 接口 reportType 字段直接透传
         assert len(web.processed) == 1  # insert 返回的自增 id 被送去 LLM 处理
         assert web.processed[0] > 200
 

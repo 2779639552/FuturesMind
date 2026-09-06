@@ -1,8 +1,9 @@
-"""research_collector.py — 每日开盘前自动接入期货公司研报(发现报告 / 4 家统一源)
+"""research_collector.py — 每日开盘前自动接入期货公司研报(发现报告 / 2 家统一源)
 
 【模块角色】
-  从发现报告(fxbaogao.com)机构页批量抓取 4 家期货公司(永安/中信/国泰君安/
-  东证)的最新研报(华泰期货于 2026-09 改走官方天玑源 research_collector_htfc.py),
+  从发现报告(fxbaogao.com)机构页批量抓取 2 家期货公司(中信/东证)
+  的最新研报(华泰期货于 2026-09 改走官方天玑源 research_collector_htfc.py;
+  永安期货于 2026-09-04 起剔除——其研报数据质量差,不再自动接入),
   写入本机研报库并复用 web_app._process_research_report 的 LLM 提取链路(结构化
   数据 + 观点结论 → research_reports 表 + 按品种聚合 JSON),让基本面/宏观分析
   师每天开盘前就能读到最新机构观点。
@@ -32,8 +33,8 @@
   --max-per-org 限流),并把水位推进到该页最大 id——此后每天只接增量。
 
   用法:
-    python research_collector.py                          # 4 家全部接入
-    python research_collector.py --org 永安期货           # 只接一家
+    python research_collector.py                          # 2 家全部接入
+    python research_collector.py --org 中信期货           # 只接一家
     python research_collector.py --dry-run                # 只打印不写库
     python research_collector.py --max-per-org 2          # 每家最多接 2 份(首日限流)
 """
@@ -54,7 +55,7 @@ import requests  # 【调用包】HTTP 请求(fxbaogao 列表/详情抓取)
 
 BASE_URL = "https://www.fxbaogao.com"  # 【变量】发现报告站点根
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"  # 【变量】浏览器 UA(规避简单反爬)
-ORGS = ["永安期货", "中信期货", "国泰君安期货", "东证期货"]  # 【变量】接入的 4 家期货公司机构名(华泰期货已改走官方天玑源,见 research_collector_htfc.py)
+ORGS = ["中信期货", "东证期货"]  # 【变量】接入的 2 家期货公司机构名(华泰期货改走官方天玑源见 research_collector_htfc.py;永安期货 2026-09-04 剔除——数据质量问题;国泰君安期货 2026-09-04 起只走官方云 API 源 research_collector_gtja.py,发现报告源剔除)
 MIN_BODY_CHARS = 200  # 【变量】正文最小字符数(去空白),低于则跳过不入库(与 HTFC/研报暂存同阈值)
 REQUEST_TIMEOUT = 20  # 【变量】单次请求超时(秒)
 SLEEP_BETWEEN = 0.6  # 【变量】请求间间隔(秒,礼貌限速)
@@ -313,7 +314,10 @@ def _ingest_one(org: str, item: dict, detail: dict) -> bool:
         return False
 
     # 懒导入:复用 web_app 的存储目录与后台处理链路(避免模块加载重);get_db 落库。
-    from database import get_db  # 【调用包】数据库实例(落 research_reports 表)
+    from database import (  # 【调用包】数据库实例(落 research_reports 表) + 标题启发式类型判定
+        get_db,
+        guess_report_type,
+    )
     from web_app import (  # 【调用包】研报存储目录 + 后台处理函数
         RESEARCH_UPLOAD_DIR,
         _process_research_report,
@@ -339,6 +343,8 @@ def _ingest_one(org: str, item: dict, detail: dict) -> bool:
         filename=file_path.name,
         file_path=str(file_path),
         ingest_source="auto",  # 【来源】fxbaogao 自动采集入库(数据仓库"研报库"徽标=自动)
+        publish_date=(detail.get("date") or "")[:10],  # 【发布日期】详情页解析出的真实发布日(水位跨日采集,入库≠发布)
+        report_type=guess_report_type(item["title"]),  # 【类型】接口无类型字段,标题启发式(日报优先,防"日报…周度"误判)
     )
     _process_research_report(report_id)  # 【调用函数】复用 web_app 后台处理(LLM 提取 → 落库 → 写聚合 JSON)
     print(f"    + {item['id']} {item['title']} -> report_id={report_id}")
@@ -399,7 +405,7 @@ def ingest_org(org: str, dry_run: bool = False, max_per_org: int | None = None) 
 
 
 def ingest_all(dry_run: bool = False, max_per_org: int | None = None) -> dict:
-    """接入全部 5 家机构,聚合结果。
+    """接入全部 3 家机构,聚合结果。
 
     【返回】{"orgs": N, "collected": M, "processed": K, "errors": [..], "dry_run": bool}。
     【关键逻辑】单家失败(列表抓取异常)不影响其他家,记入 errors。
@@ -427,8 +433,8 @@ def ingest_all(dry_run: bool = False, max_per_org: int | None = None) -> dict:
 
 def main() -> int:
     """CLI 入口:--org 可重复;--dry-run 只打印;--max-per-org 限流首日。"""
-    ap = argparse.ArgumentParser(description="每日开盘前自动接入期货公司研报(发现报告 5 家统一源)")
-    ap.add_argument("--org", action="append", choices=ORGS, help="只接入指定机构(可重复),缺省全部 5 家")
+    ap = argparse.ArgumentParser(description="每日开盘前自动接入期货公司研报(发现报告 2 家统一源)")
+    ap.add_argument("--org", action="append", choices=ORGS, help="只接入指定机构(可重复),缺省全部 2 家")
     ap.add_argument("--dry-run", action="store_true", help="只打印候选报告,不写库不调用 LLM")
     ap.add_argument("--max-per-org", type=int, default=None, help="首次接入时每家最多处理份数(默认全部第 1 页)")
     args = ap.parse_args()
@@ -447,7 +453,7 @@ def main() -> int:
         print(f"Collected: {total_c}")
         print(f"Processed: {total_p}")
     else:
-        # 全部 5 家:走 ingest_all(内部已打印 Collected/Processed 汇总)
+        # 全部 2 家:走 ingest_all(内部已打印 Collected/Processed 汇总)
         ingest_all(dry_run=args.dry_run, max_per_org=args.max_per_org)
     print(f"Took: {time.time() - t0:.1f}s")
     return 0

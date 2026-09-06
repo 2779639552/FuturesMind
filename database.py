@@ -66,6 +66,18 @@ def get_db() -> "AgentSenseDB":
     return _local.db
 
 
+# 【功能】按标题启发式猜研报类型(日报/周报),给无类型信号的采集源与存量回填共用。
+# 【关键逻辑】顺序敏感:先判「日报」再判周报类 —— "碳酸锂日报…周度去库"这类日报
+#           标题含"周度"子串,先判日报才不会误判成周报;都不含 → ''(未知,待 LLM 自愈)。
+def guess_report_type(title: str) -> str:
+    t = title or ""
+    if "日报" in t:
+        return "日报"
+    if "周报" in t or "周度" in t or "周刊" in t:
+        return "周报"
+    return ""
+
+
 class AgentSenseDB:
     """AgentSense 数据库封装类。
 
@@ -104,6 +116,53 @@ class AgentSenseDB:
                 c.execute("ALTER TABLE research_reports ADD COLUMN varieties TEXT DEFAULT ''")
             if cols and "ingest_source" not in cols:
                 c.execute("ALTER TABLE research_reports ADD COLUMN ingest_source TEXT DEFAULT 'manual'")
+            if cols and "publish_date" not in cols:
+                c.execute("ALTER TABLE research_reports ADD COLUMN publish_date TEXT DEFAULT ''")
+                self._backfill_publish_date(c)
+            if cols and "report_type" not in cols:
+                c.execute("ALTER TABLE research_reports ADD COLUMN report_type TEXT DEFAULT ''")
+                self._backfill_report_type(c)
+
+    def _backfill_report_type(self, c):
+        """存量研报类型(日报/周报)回填(加列后立即执行,幂等可重跑)。
+
+        【为什么】report_type 列是后加的,历史行全为空;采集源里只有国君/天玑
+                带类型信号,发现报告与手动上传没有 —— 存量只能靠标题启发式。
+        【关键逻辑】顺序敏感:先判「日报」再判周报类,防止"碳酸锂日报…周度去库"
+                这类日报标题被子串"周度"误判成周报;都不含 → 留空待 LLM
+                第一步抽取自愈(_self_heal_report_type)。只扫空行,幂等。
+        """
+        rows = c.execute(
+            "SELECT id, title FROM research_reports WHERE report_type = ''"
+        ).fetchall()
+        for row in rows:
+            rt = guess_report_type(row["title"] or "")
+            if rt:
+                c.execute("UPDATE research_reports SET report_type=? WHERE id=?", (rt, row["id"]))
+
+    def _backfill_publish_date(self, c):
+        """存量研报发布日期回填(加列后立即执行,幂等可重跑)。
+
+        【为什么】publish_date 列是后加的,历史行全为空;structured_data 里 LLM
+                抽取的顶层 publish_date(YYYY-MM-DD)就是研报真实发布日期,
+                直接抄进列里,让"日期分组=发布日期"对存量立即生效。
+        【关键逻辑】只处理 publish_date='' 的行(每次启动重跑也只扫这批,幂等);
+                解析失败/格式不合法(非 YYYY-MM-DD)的行跳过,留空走 uploaded_at 回退。
+        """
+        import json  # 【调用包】structured_data JSON 解析
+        import re  # 【调用包】日期格式校验
+
+        rows = c.execute(
+            "SELECT id, structured_data FROM research_reports WHERE publish_date = ''"
+        ).fetchall()
+        for row in rows:
+            try:
+                sd = json.loads(row["structured_data"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            pd = str(sd.get("publish_date") or "").strip() if isinstance(sd, dict) else ""
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", pd):
+                c.execute("UPDATE research_reports SET publish_date=? WHERE id=?", (pd, row["id"]))
 
     @contextmanager
     def _conn(self):
@@ -275,6 +334,8 @@ class AgentSenseDB:
                     direction TEXT DEFAULT '',         -- 看多 / 看空 / 中性
                     confidence REAL,
                     error TEXT DEFAULT '',
+                    publish_date TEXT DEFAULT '',      -- 研报真实发布日期(YYYY-MM-DD,采集源接口/LLM 抽取回填;空则日期分组回退 uploaded_at)
+                    report_type TEXT DEFAULT '',       -- 研报类型:日报/周报(采集源 tag/reportType/标题启发式/LLM 抽取;空=未知)
                     uploaded_at TEXT DEFAULT (datetime('now')),
                     created_at TEXT DEFAULT (datetime('now'))
                 );
@@ -782,6 +843,8 @@ class AgentSenseDB:
         file_path: str = "",
         status: str = "processing",
         ingest_source: str = "manual",
+        publish_date: str = "",
+        report_type: str = "",
     ) -> int:
         """新增一条研报记录(状态默认 processing,由后台线程处理后更新)。
 
@@ -789,15 +852,19 @@ class AgentSenseDB:
         【参数】variety: 品种代码;title/source/filename/file_path: 元信息;
                 status: 初始状态('processing' 由上传接口写入);
                 ingest_source: 入库来源('manual'=网页人工上传 / 'auto'=采集器/
-                本地批量接入),数据仓库"研报库"据此打"上传/自动"来源徽标。
+                本地批量接入),数据仓库"研报库"据此打"上传/自动"来源徽标;
+                publish_date: 研报真实发布日期 YYYY-MM-DD(采集源接口自带;
+                空=未知,日期分组回退 uploaded_at 入库时间);
+                report_type: 研报类型('日报'/'周报',采集源 tag/reportType/标题
+                启发式;空=未知,LLM 第一步抽取后自愈补写)。
         【返回】int: 新研报的自增 id(后台线程据此处理并回写)。
         """
         with self._conn() as c:
             cur = c.execute(  # 【变量】cur:插入游标(lastrowid 取新记录自增 id)
                 "INSERT INTO research_reports "
-                "(variety, title, source, filename, file_path, status, ingest_source) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (variety, title, source, filename, file_path, status, ingest_source),
+                "(variety, title, source, filename, file_path, status, ingest_source, publish_date, report_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (variety, title, source, filename, file_path, status, ingest_source, publish_date, report_type),
             )
             return cur.lastrowid
 
@@ -813,7 +880,7 @@ class AgentSenseDB:
         allowed = {
             "title", "source", "variety", "filename", "file_path", "status",
             "extracted_text", "structured_data", "conclusion_md",
-            "direction", "confidence", "error", "varieties",
+            "direction", "confidence", "error", "varieties", "publish_date", "report_type",
         }
         sets, params = [], []
         for key, value in fields.items():
@@ -834,13 +901,15 @@ class AgentSenseDB:
         variety: str | None = None,
         limit: int = 50,
         ingest_source: str | None = None,
+        report_type: str | None = None,
     ) -> list[dict]:
-        """按品种/来源(可选)查询研报列表,按上传时间倒序。
+        """按品种/来源/类型(可选)查询研报列表,按上传时间倒序。
 
-        【功能】获取研报列表;可按品种与入库来源(manual/auto)组合过滤,
-                默认返回最近 50 条。
+        【功能】获取研报列表;可按品种、入库来源(manual/auto)与类型
+                (日报/周报)组合过滤,默认返回最近 50 条。
         【参数】variety: 品种代码(可选);limit: 条数上限,默认 50;
-                ingest_source: 入库来源('manual'/'auto',可选);None 不过滤。
+                ingest_source: 入库来源('manual'/'auto',可选);None 不过滤;
+                report_type: 研报类型('日报'/'周报',可选);None 不过滤。
         【返回】list[dict]: 研报记录字典列表(按 uploaded_at 倒序)。
         【关键逻辑】多品种研报的 varieties 列是逗号分隔列表;过滤时用
                    ','||varieties||',' 包裹后做 LIKE 精确匹配(避免 "RB"
@@ -856,6 +925,9 @@ class AgentSenseDB:
         if ingest_source:
             where.append("ingest_source = ?")
             params.append(ingest_source)
+        if report_type:
+            where.append("report_type = ?")
+            params.append(report_type)
         sql = "SELECT * FROM research_reports"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -892,6 +964,21 @@ class AgentSenseDB:
                 "SELECT * FROM research_reports WHERE filename=?", (filename,)
             ).fetchone()
         return dict(row) if row else None
+
+    def list_research_reports_since(self, since: str) -> list[dict]:
+        """查询 uploaded_at >= since 的研报行(同名日报跨日去重用)。
+
+        【功能】返回入库时间不早于 since 的全部研报记录(uploaded_at 为
+                'YYYY-MM-DD HH:MM:SS' 本地时间字符串,可直接字符串比较)。
+        【参数】since: 截止时间下界 'YYYY-MM-DD HH:MM:SS'。
+        【返回】list[dict]: 研报记录列表(按 id 升序)。
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM research_reports WHERE uploaded_at >= ? ORDER BY id",
+                (since,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def delete_research_report(self, report_id: int) -> bool:
         """按 id 删除一条研报记录。

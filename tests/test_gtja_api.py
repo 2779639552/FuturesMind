@@ -104,6 +104,36 @@ def test_fetch_viewpoint_failure(monkeypatch):
     assert res["error"] and "周度接口不可用" in res["error"]
 
 
+def test_fetch_viewpoint_picks_latest_frame_for_code(monkeypatch):
+    """.query 列表端点忽略 code 过滤(2026-09-05 契约)→ 客户端按 code 筛最新帧;
+    同品种多帧取 reportDate 最大者,score 字符串仍归一 int。"""
+    monkeypatch.setattr(gtja_api, "configured", lambda: True)
+    frames = [
+        {"code": "sc", "reportDate": "2026-08-30", "score": "1", "reason": "上一帧"},
+        {"code": "M", "reportDate": "2026-09-06", "score": 0, "reason": "别人家"},
+        {"code": "SC", "reportDate": "2026-08-23", "score": "-1", "reason": "更早"},
+    ]
+
+    def fake_request(endpoint, body):
+        assert endpoint == gtja_api.EP_VIEW_WEEKLY
+        assert "startReportDate" in body and "endReportDate" in body  # .query 必填区间
+        return frames
+
+    monkeypatch.setattr(gtja_api, "_request", fake_request)
+    res = gtja_api.fetch_viewpoint("SC")
+    assert res["error"] is None
+    assert res["weekly"]["reportDate"] == "2026-08-30"   # 大小写不敏感匹配 + 取最新
+    assert res["weekly"]["score"] == 1 and isinstance(res["weekly"]["score"], int)
+
+
+def test_fetch_viewpoint_no_frame_for_code(monkeypatch):
+    """窗口内该品种无帧 → weekly None + error 说明(前端灰字,不是红错)。"""
+    monkeypatch.setattr(gtja_api, "configured", lambda: True)
+    monkeypatch.setattr(gtja_api, "_request", lambda ep, body: [{"code": "A", "reportDate": "2026-09-06"}])
+    res = gtja_api.fetch_viewpoint("CU")
+    assert res["weekly"] is None and "CU" in res["error"]
+
+
 # ---------------------------------------------------------------------------
 # fetch_inventory_df: 显式区间覆盖 / 默认近 240 天窗口(2026-09-03 数据仓库数据集)
 # ---------------------------------------------------------------------------

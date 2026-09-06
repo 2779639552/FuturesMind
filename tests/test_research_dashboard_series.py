@@ -11,10 +11,10 @@ import database
 import web_app
 
 
-def _row(rid, sd, uploaded_at, status="done", variety="RB"):
+def _row(rid, sd, uploaded_at, status="done", variety="RB", publish_date=None):
     return {
         "id": rid, "variety": variety, "title": "早报", "source": "华泰期货",
-        "status": status, "uploaded_at": uploaded_at,
+        "status": status, "uploaded_at": uploaded_at, "publish_date": publish_date or "",
         "structured_data": json.dumps(sd, ensure_ascii=False),
     }
 
@@ -67,6 +67,18 @@ def test_series_dedup_same_day_keeps_latest_uploaded():
     assert len(out["overlay"]["basis"]) == 1  # (键,日期) 去重
     assert out["overlay"]["basis"][0]["value"] == -40.0  # 留 uploaded_at 最新一份
     assert out["overlay"]["basis"][0]["report_id"] == 2
+
+
+def test_series_db_publish_date_beats_structured_and_uploaded():
+    """日期归键优先级:DB publish_date 列 > structured_data.publish_date > uploaded_at。"""
+    rows = [_row(1, _sd("2026-08-02", {"basis": {"value": -35, "unit": "元/吨"}}),
+                 "2026-08-05 08:00:00", publish_date="2026-08-03")]
+    out = web_app._research_dashboard_series(_FakeDB(rows), "RB")
+    assert out["overlay"]["basis"][0]["date"] == "2026-08-03"  # DB 列赢过 sd 与 uploaded_at
+    # DB 列缺 → 用 sd.publish_date(而非 uploaded_at)
+    rows2 = [_row(2, _sd("2026-08-02", {"basis": {"value": -35, "unit": "元/吨"}}), "2026-08-05 08:00:00")]
+    out2 = web_app._research_dashboard_series(_FakeDB(rows2), "RB")
+    assert out2["overlay"]["basis"][0]["date"] == "2026-08-02"
 
 
 def test_series_date_falls_back_to_uploaded_at():

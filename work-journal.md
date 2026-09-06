@@ -56,3 +56,49 @@
 
 **下一步**:
 - 浏览器验收;全部改动待 commit(等指示)。
+
+## 2026-09-04 — 国君同名日报重复根因+删旧迎新去重落地,web_app 重启
+
+**状态**:✅ 完成
+
+**做了什么**:
+- **查清"两篇一样研报"根因**:国君日报标题不带日期且观点不变则连日同名(如《尿素：区间运行》),采集窗口 `days=1` 实为 `now-1d~now` 两天闭区间,昨日版+今日版都拉回;infoId 不同 → seen/文件名两层防重均不命中,run_titles 只防同日。逐对比对正文:2 组真重复(#105 纯碱逐字节同 #81(我 E2E 验证篇+正式采集各进一次)、#114 橡胶只差日期戳),其余为跨日两版(相似度 0.87~0.97,只差一天数据);#111/#104 短纤、#55/#77 华泰标题自带日期,非重复。
+- **删旧迎新去重**:web_app 删除路由抽成 `_delete_research_report_full()`(聚合 JSON+原件+DB 行+孤儿清扫,路由与采集器共用);database.py 新增 `list_research_reports_since(since)`;research_collector_gtja 新增 `_norm_title`+`_supersede_same_title`(近 SUPERSEDE_TITLE_DAYS=3 天同归一化标题 → 删旧迎新),挂 `_ingest_one` 新入库分支,processing 自愈分支不受影响。
+- **清理**:删 #105/#114(含原件+聚合 JSON),/api/research 实测纯碱/橡胶各剩 1 行;#117/#118(processing 残留)infoId 不在 seen,18:00 定时采集会走 filename 幂等自愈补跑。
+- **测试**:test_research_collector_gtja 新增 4 用例(_norm_title/同名删旧/空白归一命中/DB 故障容错,桩打 web_app 侧因懒导入);全量 1097 passed+1 skip(基线 1093+4);ruff 4 文件 0。test_deepseek_reasoning 1 个实况用例 402 失败=DeepSeek 余额耗尽(已知环境问题,与改动无关,已 deselect 计入。
+- **重启**:发现 5000 端口无监听(上一后台重启任务 exit 127 实际未起)→ 重新后台启动;错峰时刻表核实生效(18:00/18:15/18:30、明日 08:10/08:25/08:40)。
+
+**下一步**:
+- 18:00 错峰首跑观察:fxbaogao→HTFC(+15min)→GTJA(+30min) 依次执行,GTJA 应触发同名删旧迎新+#117/#118 自愈。
+- 全部改动待 commit(等指示,不带 Co-Authored-By)。
+
+## 2026-09-04 (下午) — 研报采集支持按品种筛选(防全量 LLM 耗时过长)
+
+**状态**:✅ 完成(等采集空闲后自动重启生效)
+
+**做了什么**:
+- **后端** /api/research/collect POST 新增可选 `varieties`(品种代码列表):大写归一后按 TARGET_VARIETIES(21品种,与华泰同源)白名单校验,未知代码 400;requested 透传 `ingest_today(requested=)`(华泰)与 `ingest_recent(requested=)`(国君);**按品种采集时排除发现报告源**(用户明确要求——它按机构抓取、入库前无法预判品种,筛了也白跑),响应 message/label 同步标注。空/缺省/全空白串 = 全部品种,行为不变。
+- **前端** 采集按钮旁新增 "🔬 品种" 下拉面板(checkbox 双列,this._varieties 填充,只填一次;"全部品种"总开关;按钮文案同步如 "🔬 品种: MA/TA 等3个");collectResearch 把所选品种随 body 提交,面板外点击自动收起。web_template.html 按请求即时生效,路由部分待重启。
+- **测试**:test_research_collect_route fake 采集器记录 requested + gtja fake 带 TARGET_VARIETIES;新增 3 用例(品种透传且排除 fxbaogao/未知代码 400/空白串=全部)。全量 **1100 passed + 1 skip**(deselect DeepSeek 402 实况用例=余额耗尽环境问题);ruff 0。
+- **重启**:用户手动触发的采集尚在运行 → 挂后台哨兵 _restart_when_idle.sh 轮询 collecting 标志,空闲后 taskkill + PowerShell Start-Process 分离进程重启(venv 转发器 run_in_background 方式会随任务壳退出 127 带走进程树,弃用)。
+
+**下一步**:
+- 哨兵重启后验证 /api/research/collect 存活;用户浏览器 Ctrl+F5 验收品种面板。
+- 全部改动待 commit(等指示,不带 Co-Authored-By)。
+- **收口(13:3x)**:哨兵在采集结束后自动重启成功(停 288892 → 分离进程新起);POST {"varieties":["XX"]} 实测 400「未知品种代码」=新路由已生效;错峰调度表(18:00/18:15/18:30)正常注册。按品种采集功能全链路上线。
+- **研报页模块说明(下午)**:tab-research 顶部新增折叠"📖 模块说明"(复用 expander 组件,默认收起点击展开):模块简介(三源采集→LLM 结构化提取→三张视图)+ 置信度评分语义分档表(0.75~0.95/0.55~0.75/0.4~0.6/0.3~0.5+证据冲突取低档)与"—(未给)"口径说明;模板即时生效无需重启,已验证线上。
+- **研报弹层直达原件(下午)**:抽 `_researchFileButtons(id,fp)` 助手(pdf/图片→在线查看+下载,md→下载),viewResearch 总结弹层头部右侧注入按钮组(详情接口本就返回 file_path),viewResearchOriginal 原文弹层改为复用同一助手;研报页点研报名称即可在线查看/下载原件,无需绕数据仓库。模板即时生效,线上验证 3 处引用。
+
+## 2026-09-04 (傍晚) — 研报宏观事件注入宏观/情绪分析师,全量回归+重启收口
+
+**状态**:✅ 完成
+
+**做了什么**:
+- **数据层**:research_data.py 新增 `summarize_research_macro_events(variety, days=3)`——扫 RESEARCH_DIR 全品种聚合 JSON 的 `data_points.key_events`,产出两段确定性文本:①宏观共性事件(同一归一化事件被 ≥2 品种研报提及=宏观级驱动,按利多/利空/中性票数排序,最多 8 条);②本品种研报事件与观点(事件+影响+细节截断 80 字,关联该研报方向/置信度,最多 10 条);无数据返回空串。database.py 补 `list_research_reports_since(since)`。
+- **注入链路**:`research_macro_context(symbol)` 桥接函数放 commodity_futures_tools.py(遵守"分析师不直调 dataflows"分层,注释注明这是有意例外;不用 @tool 因工具调用不保证发生,确定性前置=100% 可靠零工具轮成本);宏观分析师提示新增"第 0 节"使用指引(研报观点是主观票数须交叉验证/方向置信度是卖方观点不作自己偏见/空块如实说明不要编造),情绪分析师第 8 节(机构群体)扩研报事件驱动条目;两节点在 evolution_ctx 注入块之后同通道前置注入,空串不注入。
+- **测试**:test_research_module 追加 4 用例(共性事件聚合/天数过滤/无数据空串/桥接静默降级);新增 test_research_macro_injection.py 4 用例(宏/情注入到位且先于第 0 节/无事件不注入/第 0 节常驻)。踩坑:①ChatPromptTemplate 包前言→不能断言 startswith,改 index 比较位置;②第 0 节指引文字本身含 "RESEARCH 宏观事件" 字样→无事件断言用块标记头 "# RESEARCH 宏观事件"。ruff 4 个 I001 经 stash 对比=存量(长中文注释超行宽),改动集外。
+- **收口**:全量 **1108 passed + 1 skip + 1 deselected**(DeepSeek 402 实况用例继续 deselect);web_app 停旧重启(PowerShell 分离进程,venv 转发器 run_in_background 会 127 带走进程树,弃用),scheduler 18:00 错峰三任务完好。探测插曲:误 POST `{}` 触发一次采集,`collecting:false` 秒回=今日源已采过空跑无副作用。
+- 待办观察:18:00/18:15/18:30 错峰采集应触发国君同名删旧迎新+#117/#118 自愈。
+
+**下一步**:
+- 用户下一次分析运行即可看到研报事件进入宏观/情绪报告;全部改动待 commit(等指示,不带 Co-Authored-By)。

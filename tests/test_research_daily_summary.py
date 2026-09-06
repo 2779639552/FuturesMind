@@ -24,7 +24,7 @@ class _FakeDB:
 
 
 def _row(rid=1, date="2026-09-02", codes="SC", status="done", direction="看多",
-         confidence=0.7, conclusion=None):
+         confidence=0.7, conclusion=None, publish_date=None, report_type=""):
     return {
         "id": rid,
         "title": f"研报{rid}",
@@ -32,6 +32,8 @@ def _row(rid=1, date="2026-09-02", codes="SC", status="done", direction="看多"
         "variety": codes.split(",")[0],
         "varieties": codes,
         "uploaded_at": f"{date} 08:00:00",
+        "publish_date": publish_date or "",
+        "report_type": report_type,
         "status": status,
         "direction": direction,
         "confidence": confidence,
@@ -84,6 +86,51 @@ def test_collect_items_skips_not_done_and_other_dates():
         _row(rid=3, conclusion="## 交易要素与风险\n方向:看多;"),  # 命中
     ]
     assert [i["title"] for i in web_app._collect_daily_report_items(rows, "2026-09-02")] == ["研报3"]
+
+
+def test_report_date_prefers_publish_date():
+    """有效日期:发布日期优先,缺则回退入库日期(uploaded_at 前 10 位)。"""
+    assert web_app._report_date({"publish_date": "2026-09-03", "uploaded_at": "2026-09-04 08:00:00"}) == "2026-09-03"
+    assert web_app._report_date({"publish_date": "", "uploaded_at": "2026-09-04 08:00:00"}) == "2026-09-04"
+    assert web_app._report_date({}) == ""
+
+
+def test_collect_items_groups_by_publish_date_not_uploaded_at():
+    """9.3 发布、9.4 入库(隔夜回看窗口)的研报应归 9.3 的每日总结,不混进 9.4。"""
+    row = _row(rid=5, date="2026-09-04", conclusion=_TRED, publish_date="2026-09-03")
+    assert web_app._collect_daily_report_items([row], "2026-09-03")
+    assert web_app._collect_daily_report_items([row], "2026-09-04") == []
+
+
+def test_collect_items_skips_weekly():
+    """每日总结只收日报(2026-09-05 定):周报行即便当天 done 也不进总结条目。"""
+    rows = [
+        _row(rid=1, conclusion=_TRED, report_type="周报"),   # 周报 → 跳过
+        _row(rid=2, conclusion=_TRED, report_type="日报"),   # 日报 → 收
+        _row(rid=3, conclusion=_TRED, report_type=""),       # 未知类型不排斥(启发式兜底前)
+    ]
+    assert [i["title"] for i in web_app._collect_daily_report_items(rows, "2026-09-02")] == ["研报2", "研报3"]
+
+
+def test_research_daily_dates_excludes_weekly(tmp_path, monkeypatch):
+    """纯周报日期(周末桶)不出现在可用日期并集;日报日期照常。"""
+    monkeypatch.setattr(web_app, "RESEARCH_DAILY_DIR", tmp_path)
+    db = _FakeDB([
+        _row(rid=1, date="2026-08-30", report_type="周报"),  # 周六纯周报 → 排除
+        _row(rid=2, date="2026-09-02", report_type="日报"),  # 日报 → 保留
+        _row(rid=3, date="2026-09-01"),                      # 未知类型 → 保留
+    ])
+    assert web_app._research_daily_dates(db) == ["2026-09-02", "2026-09-01"]
+
+
+def test_research_daily_dates_uses_publish_date(tmp_path, monkeypatch):
+    """日期并集按发布日期归键:9.3 发布/9.4 入库 → 并集出现 09-03 而非 09-04。"""
+    monkeypatch.setattr(web_app, "RESEARCH_DAILY_DIR", tmp_path)
+    db = _FakeDB([
+        _row(rid=1, date="2026-09-04", publish_date="2026-09-03"),
+        _row(rid=2, date="2026-09-02"),  # 无发布日期 → 回退 uploaded_at
+    ])
+    assert web_app._research_daily_dates(db) == ["2026-09-03", "2026-09-02"]
 
 
 def test_daily_summary_meta_roundtrip():

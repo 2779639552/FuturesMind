@@ -46,6 +46,7 @@ File format (~/.tradingagents/external_data/RB_research.json):
 
 import json  # 【调用包】JSON 读写(研报聚合文件解析/写盘)
 import logging  # 【调用包】日志输出(读取失败/缓存失效告警)
+import threading  # 【调用包】互斥锁(并行采集线程同时写同品种聚合文件防丢更新)
 import time  # 【调用包】缓存 TTL 计时(60 秒缓存窗口)
 from datetime import datetime  # 【调用包】时间戳生成(updated 字段)
 from pathlib import Path  # 【调用包】路径对象与文件操作
@@ -58,6 +59,7 @@ MAX_REPORTS = 10  # 【变量】每品种聚合文件最多保留最近 MAX_REPO
 
 _research_cache: dict[str, tuple[float, dict]] = {}  # 【变量】内存缓存:variety → (缓存时间, 聚合 dict);60 秒内复用避免反复读盘
 RESEARCH_CACHE_TTL = 60  # 【变量】缓存有效期(秒):研报更新不频繁,60 秒足够
+_FILE_LOCK = threading.Lock()  # 【变量】聚合 JSON 读改写互斥锁(并行采集线程/清扫同品种文件防丢更新)
 
 
 # 【功能】读取某品种的研报聚合 dict(带 60 秒内存缓存)。
@@ -140,9 +142,11 @@ def get_research_report_text(variety: str) -> str:
         # 其它品种的数据点误当成当前品种的)。
         covers = r.get("varieties") or []
         cov_str = f" · 覆盖品种: {', '.join(covers)}" if len(covers) > 1 else ""
+        # 有效日期:发布日期(publish_date)优先,老记录无此键回退 uploaded_at(入库日)
+        eff_date = (r.get("publish_date") or "").strip()[:10] or str(r.get("uploaded_at") or "")[:10]
         lines.append(
             f"- [{direction} · 置信度 {conf_str}] {title}{cov_str} "
-            f"(来源: {r.get('source', 'N/A')}, 上传: {r.get('uploaded_at', 'N/A')})"
+            f"(来源: {r.get('source', 'N/A')}, 日期: {eff_date})"
         )
         conclusion = (r.get("conclusion") or "").strip()
         if conclusion:
@@ -232,6 +236,133 @@ def _plain_first_line(text: str) -> str:
             continue  # 【…】整行标记是结构说明(第几部分), 不是观点内容
         return ln[:120]
     return fallback[:120]
+
+
+# ===========================================================================
+# 【研报宏观事件确定性汇总 —— 无 LLM】
+#   用途: 宏观/新闻分析师与情绪面分析师的系统提示前置注入(2026-09-04)。
+#   背景: 研报第一步 LLM 结构化提取产出 key_events(事件/详情/多空影响判定),
+#         此前只落库与前端展示,从未进任何分析师 —— 宏观面缺"机构近期在跟踪
+#         什么事件"的一手信号,情绪面缺"机构观点背后的驱动事件"。
+#   口径: 1) 宏观共性事件 = 同一归一化事件文本被 ≥2 个品种的近期研报提及
+#            (品种日报只写本品种,多品种共提 → 大概率是宏观级驱动);
+#         2) 本品种事件 = 目标品种聚合文件里近期研报的 key_events 全量,
+#            并挂上该研报的方向/置信度(事件与观点绑定)。
+# ===========================================================================
+
+_MACRO_EVENT_MAX_COMMON = 8  # 【变量】宏观共性事件条数上限(防提示词膨胀)
+_MACRO_EVENT_MAX_VARIETY = 10  # 【变量】本品种事件条数上限
+_MACRO_EVENT_DETAIL_LEN = 80  # 【变量】事件详情截断长度(字符)
+_IMPACT_CN = {"bullish": "利多", "bearish": "利空", "neutral": "中性"}  # 【变量】事件影响 → 中文
+
+
+# 【功能】扫描聚合目录里现存的品种代码(宏观共性事件的跨品种扫描用)。
+# 【返回】list[str]: 品种代码列表(如 ["MA","RB",...]);目录不存在/异常返回 []。
+def _research_varieties_on_disk() -> list[str]:
+    try:
+        return sorted(
+            p.name[: -len("_research.json")]
+            for p in RESEARCH_DIR.glob("*_research.json")
+            if p.name.endswith("_research.json")
+        )
+    except OSError:
+        return []
+
+
+def _norm_event_key(event: str) -> str:
+    """事件文本归一(去空白),跨品种同事件判定用。"""
+    return "".join((event or "").split())
+
+
+def summarize_research_macro_events(variety: str, days: int = 3) -> str:
+    """Deterministically summarize macro events + views from recent research reports.
+
+    【参数】variety: 品种代码(如 "SC");days: 回看天数(按研报 uploaded_at 过滤,默认 3)。
+    【返回】str: 注入用文本(含使用说明);无任何事件返回 ""(调用方不注入)。
+    【关键逻辑】1) 扫全部品种聚合文件,收集 days 天内研报的 key_events;
+              2) 归一化事件文本按跨品种计数,≥2 品种 → 宏观共性事件(多空票数);
+              3) 目标品种研报事件逐条列出并挂该研报方向/置信度(事件与观点绑定);
+              4) 全程读缓存化聚合 JSON,无 LLM、零网络,失败吞掉返回 ""。
+    """
+    code = (variety or "").upper().strip()
+    try:
+        cutoff = (datetime.now().timestamp()) - days * 86400
+    except Exception:  # 时间计算失败按"不过滤"处理
+        cutoff = 0.0
+
+    # event_key → {"event", "impacts": Counter, "varieties": set, "latest": (uploaded_at, source, title)}
+    common: dict[str, dict] = {}
+    # 本品种事件: [{event, detail, impact, source, uploaded_at, title, direction, confidence}]
+    variety_events: list[dict] = []
+
+    for v in _research_varieties_on_disk():
+        data = _load_research(v)
+        for r in (data or {}).get("reports") or []:
+            # 回看窗口与"最近提及"比较都用有效日期(发布日 publish_date 优先,
+            # 老聚合记录无此键回退 uploaded_at 入库日)——按真实发布日判定时效
+            uploaded = (r.get("publish_date") or "").strip()[:10] or str(r.get("uploaded_at") or "")
+            try:
+                if uploaded and datetime.strptime(uploaded[:10], "%Y-%m-%d").timestamp() < cutoff:
+                    continue
+            except ValueError:
+                pass  # 日期异常的研报不过滤(宁多勿漏)
+            dps = r.get("data_points") or {}
+            events = dps.get("key_events")
+            if not isinstance(events, list):
+                continue
+            for ev in events:
+                if not isinstance(ev, dict) or not str(ev.get("event") or "").strip():
+                    continue
+                item = {
+                    "event": str(ev.get("event")).strip(),
+                    "detail": str(ev.get("detail") or "").strip(),
+                    "impact": _IMPACT_CN.get(str(ev.get("impact") or "neutral").lower(), "中性"),
+                    "source": str(r.get("source") or ""),
+                    "uploaded_at": uploaded[:10],
+                    "title": str(r.get("title") or ""),
+                    "direction": str(r.get("direction") or "中性"),
+                    "confidence": r.get("confidence"),
+                }
+                if v == code:
+                    variety_events.append(item)
+                key = _norm_event_key(item["event"])
+                bucket = common.setdefault(key, {"event": item["event"], "impacts": {}, "varieties": set(), "latest": item})
+                bucket["impacts"][item["impact"]] = bucket["impacts"].get(item["impact"], 0) + 1
+                bucket["varieties"].add(v)
+                if item["uploaded_at"] >= bucket["latest"]["uploaded_at"]:
+                    bucket["latest"] = item
+
+    if not variety_events and not common:
+        return ""
+
+    lines = [
+        f"# RESEARCH 宏观事件(近{days}天研报确定性提取,无 LLM 加工)",
+        "# 事件与影响判定来自各家期货公司研报的原文提取,属机构一手跟踪信号;",
+        "# 影响票数是各研报的主观判定投票,不是客观数据 —— 引用时注明「研报观点」。",
+    ]
+    macro_common = [b for b in common.values() if len(b["varieties"]) >= 2]
+    macro_common.sort(key=lambda b: -sum(b["impacts"].values()))
+    if macro_common:
+        lines.append("## 宏观共性事件(≥2 个品种的研报共同提及,宏观级驱动)")
+        for b in macro_common[:_MACRO_EVENT_MAX_COMMON]:
+            votes = "/".join(f"{k}x{n}" for k, n in sorted(b["impacts"].items(), key=lambda x: -x[1]))
+            latest = b["latest"]
+            lines.append(
+                f"- {b['event']}({votes}; 提及品种: {','.join(sorted(b['varieties']))};"
+                f" 最近: {latest['source']} {latest['uploaded_at']})"
+            )
+    if variety_events:
+        lines.append(f"## {code} 品种研报事件与观点(事件 ↔ 该研报方向/置信度)")
+        for e in variety_events[:_MACRO_EVENT_MAX_VARIETY]:
+            conf = e["confidence"]
+            conf_s = f"{conf:.2f}" if isinstance(conf, (int, float)) else "未给"
+            detail = e["detail"][:_MACRO_EVENT_DETAIL_LEN]
+            lines.append(
+                f"- {e['event']}[{e['impact']}] {detail}"
+                f"(研报: {e['source']} {e['uploaded_at']}《{e['title'][:40]}》;"
+                f" 该研报方向: {e['direction']} · 置信度 {conf_s})"
+            )
+    return "\n".join(lines)
 
 
 # 【功能】确定性汇总某品种在库研报的方向/置信度(机构/研报群体视角)。
@@ -336,19 +467,20 @@ def format_research_views_text(variety: str) -> str:
 def upsert_research_report(variety: str, record: dict):
     """Insert (or refresh) one report record at the head of the variety's
     aggregated research JSON, trimming to the most recent MAX_REPORTS."""
-    data = _load_research(variety) or {}
-    reports = data.get("reports") or []
-    # 同 id 更新(覆盖),否则新插入头部
-    reports = [r for r in reports if r.get("id") != record.get("id")]
-    reports.insert(0, record)
-    data.update(
-        {
-            "variety": variety.upper(),
-            "updated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-            "reports": reports[:MAX_REPORTS],
-        }
-    )
-    _save_research(variety, data)
+    with _FILE_LOCK:  # 【关键】并行采集线程同时 upsert 同品种 → 读改写必须互斥,否则丢更新
+        data = _load_research(variety) or {}
+        reports = data.get("reports") or []
+        # 同 id 更新(覆盖),否则新插入头部
+        reports = [r for r in reports if r.get("id") != record.get("id")]
+        reports.insert(0, record)
+        data.update(
+            {
+                "variety": variety.upper(),
+                "updated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "reports": reports[:MAX_REPORTS],
+            }
+        )
+        _save_research(variety, data)
 
 
 # 【功能】从聚合文件中删除某份研报摘要(按 id)。
@@ -359,27 +491,65 @@ def upsert_research_report(variety: str, record: dict):
 #           由 web_app 的删除接口调用,保证聚合 JSON 与数据库记录同步。
 def remove_research_report(variety: str, report_id: int):
     """Remove one report record from the variety's aggregated research JSON."""
-    data = _load_research(variety)
-    if not data or not data.get("reports"):
-        return
-    reports = [r for r in data["reports"] if r.get("id") != report_id]
-    if len(reports) == len(data["reports"]):
-        return  # id 不存在,无需改动
-    if reports:
-        data.update(
-            {
-                "variety": variety.upper(),
-                "updated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                "reports": reports,
-            }
-        )
-        _save_research(variety, data)
-    else:
-        # 删空了 → 移除整个聚合文件并清缓存
-        filepath = RESEARCH_DIR / f"{variety.upper()}_research.json"
-        if filepath.exists():
-            filepath.unlink()
-        _research_cache.pop(variety, None)
+    with _FILE_LOCK:  # 【关键】与 upsert/sweep 互斥,防并行读改写丢更新
+        data = _load_research(variety)
+        if not data or not data.get("reports"):
+            return
+        reports = [r for r in data["reports"] if r.get("id") != report_id]
+        if len(reports) == len(data["reports"]):
+            return  # id 不存在,无需改动
+        if reports:
+            data.update(
+                {
+                    "variety": variety.upper(),
+                    "updated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "reports": reports,
+                }
+            )
+            _save_research(variety, data)
+        else:
+            # 删空了 → 移除整个聚合文件并清缓存
+            filepath = RESEARCH_DIR / f"{variety.upper()}_research.json"
+            if filepath.exists():
+                filepath.unlink()
+            _research_cache.pop(variety, None)
+
+
+# 【功能】全量清扫聚合 JSON 里的孤儿研报条目(DB 已删但聚合未同步的残留)。
+# 【参数】valid_ids: 数据库 research_reports 现存主键集合。
+# 【返回】int: 清掉的孤儿条目数。
+# 【关键逻辑】逐个 *_research.json 过滤 reports 里 id 不在 valid_ids 的条目;
+#           还有剩余则写盘(刷新 updated),删空则移除整个文件;变更的品种
+#           清内存缓存,保证下一次读到干净数据。由 web_app 启动时与删除
+#           研报后调用 —— 根治"研报删了还出现在观点总览/分析师取数"的漂移。
+def sweep_orphan_reports(valid_ids: set[int]) -> int:
+    """Drop aggregate-JSON entries whose report id is no longer in the DB."""
+    removed = 0
+    if not RESEARCH_DIR.is_dir() or not valid_ids:
+        return 0
+    for filepath in RESEARCH_DIR.glob("*_research.json"):
+        with _FILE_LOCK:  # 【关键】与 upsert/remove 互斥,防并行读改写丢更新
+            try:
+                data = json.loads(filepath.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue  # 损坏文件交给读取路径的 warning,不动它
+            reports = data.get("reports") if isinstance(data, dict) else None
+            if not isinstance(reports, list) or not reports:
+                continue
+            kept = [r for r in reports if r.get("id") in valid_ids]
+            if len(kept) == len(reports):
+                continue  # 无孤儿,不写盘
+            removed += len(reports) - len(kept)
+            variety = (data.get("variety") or filepath.stem.replace("_research", "")).upper()
+            if kept:
+                data["reports"] = kept
+                data["updated"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                _save_research(variety, data)
+            else:
+                # 删空了 → 移除整个聚合文件并清缓存(与 remove_research_report 同口径)
+                filepath.unlink(missing_ok=True)
+                _research_cache.pop(variety, None)
+    return removed
 
 
 # 【功能】给一段 API 文本加"研报数据源"标注头,供 merge_* 拼接使用。

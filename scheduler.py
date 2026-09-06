@@ -17,9 +17,15 @@
 #     4. 研报接入(_run_research_collection):每天开盘前 08:10 与 18:00 各执行
 #        一次,通过启动 research_collector.py 子进程抓取发现报告 4 家期货公司
 #        最新研报,复用研报模块的 LLM 提取链路入库,结果与异常写入告警。
-#     5. 华泰天玑研报接入(_run_htfc_collection):同一 research_times 时刻再跑
-#        research_collector_htfc.py 子进程(华泰官方源,能化 21 品种日报),与
-#        fxbaogao 4 家并跑;job id 前缀 research_htfc_,告警前缀 htfc_*。
+#     5. 华泰天玑研报接入(_run_htfc_collection):research_times 时刻 +15 分钟跑
+#        research_collector_htfc.py 子进程(华泰官方源,能化 21 品种日报);
+#        job id 前缀 research_htfc_,告警前缀 htfc_*。
+#     6. 国君云 API 研报接入(_run_gtja_collection):research_times 时刻 +30 分钟跑
+#        research_collector_gtja.py 子进程(researchReportAttachmentQuery 官方源,
+#        默认 21 目标品种/近 2 天/单次 ≤30 篇);job id 前缀 research_gtja_,
+#        告警前缀 gtja_*。
+#        三源错峰(0/15/30min)的原因:并跑峰值 LLM 并发 9 > 账户上限 5 会撞 429,
+#        错峰后任一时刻全局并发 ≤4。
 #
 #   所有任务都通过数据库(get_db())记录状态与告警,便于 Web 前端展示;
 #   start_scheduler() 返回的调度器对象由调用方(通常是 web_app/main)持有。
@@ -365,6 +371,74 @@ def _run_htfc_collection():
         )
 
 
+def _run_gtja_collection():
+    """每日接入国泰君安官方研报:子进程跑 research_collector_gtja.py 并记录告警。
+
+    【功能】与 _run_htfc_collection 同模式,跑国君云 API 采集器
+            (research_collector_gtja.py,researchReportAttachmentQuery,
+            默认 21 目标品种、近 2 天窗口、单次 ≤30 篇)。job id 前缀
+            research_gtja_,告警前缀 gtja_*。
+    【关键逻辑】子进程 + 90 分钟超时(timeout=5400,与 HTFC 同兜底);从 stdout
+              解析 "Collected: N" / "Processed: M";失败/超时写告警。
+    """
+    db = get_db()  # 【调用函数】取数据库实例(写采集日志/告警)
+    db.create_alert(  # 【调用函数】写入"国君研报接入启动"信息告警
+        "gtja_started",
+        "GTJA research collection started",
+        f"Automated GTJA research ingest at {datetime.now():%H:%M}",
+        severity="info",
+    )
+    try:
+        venv_py = os.path.join(os.path.dirname(sys.executable), "python")  # 【变量】venv_py:当前虚拟环境解释器路径
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # 【变量】script_dir:AgentSense 根(research_collector_gtja.py 同目录)
+        cmd = [venv_py, "research_collector_gtja.py"]
+        result = subprocess.run(  # 【调用函数】启动国君研报接入子进程(90 分钟超时)
+            cmd,
+            cwd=script_dir,
+            capture_output=True,
+            text=True,
+            timeout=5400,  # 90 min timeout:单次 ≤30 篇 × LLM ~110s,与 HTFC 同兜底
+        )
+        output = (result.stdout or "") + (result.stderr or "")  # 【变量】output:子进程输出(合并 stdout+stderr)
+        collected = processed = 0  # 【变量】解析出的接入统计(默认 0)
+        for line in output.splitlines():
+            if line.startswith("Collected:"):
+                with suppress(Exception):
+                    collected = int(line.split(":", 1)[1].strip())
+            elif line.startswith("Processed:"):
+                with suppress(Exception):
+                    processed = int(line.split(":", 1)[1].strip())
+
+        if result.returncode != 0:
+            db.create_alert(  # 【调用函数】写入"国君研报接入失败"告警
+                "gtja_error",
+                "GTJA research collection failed",
+                output[-500:] or "Unknown error",
+                severity="error",
+            )
+        else:
+            db.create_alert(  # 【调用函数】写入"国君研报接入完成"信息告警
+                "gtja_complete",
+                "GTJA research collection complete",
+                f"Collected {collected}, processed {processed} reports",
+                severity="info",
+            )
+    except subprocess.TimeoutExpired:
+        db.create_alert(  # 【调用函数】写入"国君研报接入超时"告警
+            "gtja_timeout",
+            "GTJA research collection timeout",
+            "GTJA research ingest exceeded 90 minutes",
+            severity="error",
+        )
+    except Exception as e:
+        db.create_alert(  # 【调用函数】写入"国君研报接入异常"告警
+            "gtja_error",
+            "GTJA research collection error",
+            str(e)[:300],
+            severity="error",
+        )
+
+
 def start_scheduler(schedule_times: list[str] = None, research_times: list[str] = None):
     """启动后台调度器(每日定时管道 + 开盘前研报接入 + 30 分钟健康检查)。
 
@@ -412,18 +486,22 @@ def start_scheduler(schedule_times: list[str] = None, research_times: list[str] 
 
     for time_str in research_times:
         hour, minute = time_str.split(":")
-        _scheduler.add_job(  # 【调用函数】注册开盘前研报接入任务(fxbaogao 4 家,与管道任务相互独立)
-            _run_research_collection,
-            CronTrigger(hour=int(hour), minute=int(minute)),
-            id=f"research_{time_str}",
-            name=f"Research collection {time_str}",
-        )
-        _scheduler.add_job(  # 【调用函数】注册开盘前天玑研报接入任务(华泰官方源,90 分钟超时兜底)
-            _run_htfc_collection,
-            CronTrigger(hour=int(hour), minute=int(minute)),
-            id=f"research_htfc_{time_str}",
-            name=f"HTFC research collection {time_str}",
-        )
+        # 【关键】三源错峰注册(0/15/30 分钟偏移):若同一时刻并跑,峰值 LLM 并发 =
+        # 1(fxbaogao 串行)+4(HTFC)+4(GTJA)=9 > 账户并发上限 5 → 429。错峰后任一
+        # 时刻全局并发 ≤4;job id 仍用原 time_str 保持唯一/可读。
+        base_minutes = int(hour) * 60 + int(minute)
+        for offset, fn, prefix, name in (  # 【变量】(偏移分钟, 任务函数, job id 前缀, 任务名)
+            (0, _run_research_collection, "research_", "Research collection"),
+            (15, _run_htfc_collection, "research_htfc_", "HTFC research collection"),
+            (30, _run_gtja_collection, "research_gtja_", "GTJA research collection"),
+        ):
+            h, m = divmod(base_minutes + offset, 60)
+            _scheduler.add_job(  # 【调用函数】注册错峰研报接入任务
+                fn,
+                CronTrigger(hour=h, minute=m),
+                id=f"{prefix}{time_str}",
+                name=f"{name} {time_str}+{offset}min",
+            )
 
     _scheduler.start()  # 【调用函数】启动调度器(任务开始按时触发)
 
