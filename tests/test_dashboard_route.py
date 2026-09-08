@@ -1,12 +1,15 @@
 """数据看板路由 /api/dashboard/<品种> 装配与降级测试(不联网,全 mock)。
 
-覆盖 2026-09-01 的并行化重构与 2026-09-03 的研报指标第 4 数据源:
-  1. 四数据源(价格/库存/基差/研报指标)都发起请求(并行线程池装配正确);
+覆盖 2026-09-01 的并行化重构、2026-09-03 的研报指标第 4 数据源、
+2026-09-08 的盘面利润第 5 数据源:
+  1. 各数据源(价格/库存/基差/研报指标/盘面利润)都发起请求(并行线程池装配正确);
   2. 任一数据源异常只降级该项,接口整体不 500 —— 尤其价格分支(原来裸调用会 500,
-     现改为 price_note + 空序列优雅降级,与库存/基差/研报指标同口径)。
+     现改为 price_note + 空序列优雅降级,与库存/基差/研报指标/盘面利润同口径);
+  3. 盘面利润无配方品种(如 CU)→ available=false + MARGIN_NO_FORMULA note。
 """
 
 import web_app
+from tradingagents.dataflows import futures_margin as fm
 
 _PRICE = [{"date": f"2026-08-{i+1:02d}", "close": 100.0 + i} for i in range(8)]
 _INV = [{"date": f"2026-08-{i+1:02d}", "inventory": 1000.0 + i, "change": 0} for i in range(8)]
@@ -16,6 +19,16 @@ _BASIS = [
 ]
 # 研报指标第 4 源的空态结构(与 _research_dashboard_series 降级返回一致)
 _RES_EMPTY = {"available": False, "note": "", "overlay": {}, "standalone": {}}
+# 盘面利润第 5 源:mock compute_margin_series 的返回(compute 口径:points 键;
+# web_app._load_margin 把它转成 margin.series + margin.stats),默认有数据
+_MARGIN_COMPUTE_OK = {
+    "code": "RB", "name": "螺纹钢盘面利润",
+    "note": "1吨螺纹≈1.6吨铁矿石+0.5吨焦炭(长流程简化配比,未含合金/加工费)",
+    "points": [{"date": "2026-08-12", "value": 3220.0}],
+    "latest": 3220.0, "latest_date": "2026-08-12", "pct_rank": 0.42,
+    "mean": 3000.0, "min": 2500.0, "max": 3600.0, "wow": 120.0,
+    "legs": {"RB": 5000.0, "I": 800.0, "J": 2000.0},
+}
 
 
 def _mock_all_sources(monkeypatch, price_fail: bool = False):
@@ -45,6 +58,9 @@ def _mock_all_sources(monkeypatch, price_fail: bool = False):
     # 研报指标第 4 源:默认置空(不碰真实 dev DB;空态与 price/inv/basis 同口径)
     monkeypatch.setattr(web_app, "get_db", lambda: object())
     monkeypatch.setattr(web_app, "_research_dashboard_series", lambda *a, **k: _RES_EMPTY.copy())
+    # 盘面利润第 5 源:mock compute_margin_series(_load_margin 内懒导入,call 时才解析
+    # 模块属性,patch futures_margin 模块即可),默认有数据;真实函数会走网络拉腿价格
+    monkeypatch.setattr(fm, "compute_margin_series", lambda *a, **k: dict(_MARGIN_COMPUTE_OK))
     return calls
 
 
@@ -141,3 +157,43 @@ def test_dashboard_route_research_failure_is_graceful(monkeypatch):
     # 其余三源不受拖累
     assert set(calls) == {"price", "inv", "basis"}
     assert d["_meta"]["price_note"] == ""
+
+
+def test_dashboard_route_margin_passthrough(monkeypatch):
+    # 盘面利润第 5 源:RB 有配方 → margin 结构透传 + meta.margin_available
+    _mock_all_sources(monkeypatch)
+    c = web_app.app.test_client()
+    r = c.get("/api/dashboard/RB")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["_meta"]["margin_available"] is True
+    assert d["margin"]["available"] is True
+    assert d["margin"]["series"][0]["value"] == 3220.0
+    assert d["margin"]["stats"]["pct_rank"] == 0.42
+    assert d["margin"]["stats"]["legs"] == {"RB": 5000.0, "I": 800.0, "J": 2000.0}
+
+
+def test_dashboard_route_margin_no_formula_is_graceful(monkeypatch):
+    # CU 无盘面利润配方 → available=false + MARGIN_NO_FORMULA note,整体不 500
+    _mock_all_sources(monkeypatch)
+    c = web_app.app.test_client()
+    r = c.get("/api/dashboard/CU")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["_meta"]["margin_available"] is False
+    assert d["margin"]["available"] is False
+    assert d["margin"]["series"] == []
+    assert "MARGIN_NO_FORMULA" in d["_meta"]["margin_note"]
+    assert "RB" in d["_meta"]["margin_note"]  # note 里带当前支持品种列表
+
+
+def test_dashboard_route_margin_leg_missing_is_graceful(monkeypatch):
+    # 配方腿价格缺失(compute_margin_series 返回 None)→ available=false + 哨兵 note
+    _mock_all_sources(monkeypatch)
+    monkeypatch.setattr(fm, "compute_margin_series", lambda *a, **k: None)
+    c = web_app.app.test_client()
+    r = c.get("/api/dashboard/RB")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["_meta"]["margin_available"] is False
+    assert "NO_DATA_AVAILABLE" in d["_meta"]["margin_note"]

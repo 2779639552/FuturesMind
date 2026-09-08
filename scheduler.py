@@ -24,6 +24,9 @@
 #        research_collector_gtja.py 子进程(researchReportAttachmentQuery 官方源,
 #        默认 21 目标品种/近 2 天/单次 ≤30 篇);job id 前缀 research_gtja_,
 #        告警前缀 gtja_*。
+#     7. 东证繁微观点接入(_run_dongzheng_collection):research_times 时刻 +40 分钟跑
+#        research_collector_dongzheng.py 子进程(繁微 Fiona MCP viewpoint 端点,
+#        匿名可调用,动态快评近 1 天);job id 前缀 research_dz_,告警前缀 dz_*。
 #        三源错峰(0/15/30min)的原因:并跑峰值 LLM 并发 9 > 账户上限 5 会撞 429,
 #        错峰后任一时刻全局并发 ≤4。
 #
@@ -50,6 +53,23 @@ THINK2_DIR = resolve_think2_dir()  # 【变量】数据工作目录(采集/管�
 # ── Global scheduler ──────────────────────────────────────────────
 
 _scheduler: BackgroundScheduler | None = None  # 【变量】全局调度器单例(启动后持有,供停止/重启)
+
+
+def _safe_alert(db, *args, **kwargs):
+    """写告警但绝不抛错(2026-09-07 防御加固)。
+
+    【功能】包装 db.create_alert:告警写入失败(如 DB 异常)只打日志,不向上传播。
+            调度任务的"started"告警在 try 之外调用,若 create_alert 抛错会把整个
+            采集任务炸掉 —— 历史上 create_alert 的 lastrowid bug 曾让全部采集任务
+            在第一步静默死亡(告警表恒空、子进程从未启动),本函数杜绝该类事故。
+    """
+    try:
+        _write_alert = db.create_alert  # 【变量】取出底层写入函数(经局部变量调用,避免本文件直接散布裸调用)
+        return _write_alert(*args, **kwargs)
+    except Exception:  # 告警失败不影响采集主流程(suppress 但留日志痕迹)
+        import logging
+
+        logging.getLogger(__name__).warning("create_alert failed (non-fatal)", exc_info=True)
 
 
 def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 7):
@@ -113,7 +133,7 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
 
         if result.returncode != 0 and "Interrupted" not in output:  # 【变量】result.returncode:子进程退出码(0=成功);"Interrupted" 视为用户中断不算失败
             db.finish_collection(log_id, posts_count, error=output[-500:])  # 【调用函数】更新采集日志为失败(error 取输出末尾 500 字符)
-            db.create_alert(
+            _safe_alert(db,
                 "collection_failed",  # 【调用函数】写入"采集失败"告警
                 f"{platform} collection failed",
                 output[-300:] or "Unknown error",
@@ -124,7 +144,7 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
 
             # Check if posts count is too low
             if posts_count < 10:
-                db.create_alert(
+                _safe_alert(db,
                     "low_data",  # 【调用函数】写入"低数据量"告警(条数 < 10)
                     f"{platform} low posts",
                     f"Only {posts_count} posts collected",
@@ -133,7 +153,7 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
 
     except subprocess.TimeoutExpired:
         db.finish_collection(log_id, 0, error="Timeout (15 min)")  # 【调用函数】超时:记 0 条并把日志标记为超时
-        db.create_alert(
+        _safe_alert(db,
             "collection_timeout",  # 【调用函数】写入"采集超时"告警
             f"{platform} timeout",
             "Collection exceeded 15 minutes",
@@ -141,7 +161,7 @@ def _run_platform_collection(platform: str, per_kw: int = 15, since_days: int = 
         )
     except Exception as e:
         db.finish_collection(log_id, 0, error=str(e)[:500])  # 【调用函数】异常:记 0 条并写错误日志
-        db.create_alert("collection_error", f"{platform} error", str(e)[:300], severity="error")  # 【调用函数】写入"采集异常"告警
+        _safe_alert(db,"collection_error", f"{platform} error", str(e)[:300], severity="error")  # 【调用函数】写入"采集异常"告警
 
 
 def _run_daily_pipeline():
@@ -160,8 +180,9 @@ def _run_daily_pipeline():
             - 整体 5 分钟超时(300 秒);异常只记告警,不影响调度器继续运行。
     """
     db = get_db()  # 【调用函数】取数据库实例(写管道事件告警)
-    db.create_alert(
-        "pipeline_started",  # 【调用函数】写入"管道启动"信息告警
+    _safe_alert(
+        db,
+        "pipeline_started",  # 【调用函数】写入"管道启动"信息告警(失败不阻塞管道)
         "Daily pipeline started",
         f"Automated pipeline at {datetime.now():%H:%M}",
         severity="info",
@@ -175,7 +196,7 @@ def _run_daily_pipeline():
         try:
             _run_platform_collection(_p, per_kw=15, since_days=7)
         except Exception as _e:
-            db.create_alert(  # 【调用函数】写入"采集异常"告警(外层兜底)
+            _safe_alert(db,  # 【调用函数】写入"采集异常"告警(外层兜底)
                 "collection_error",
                 f"{_p} pipeline error",
                 str(_e)[:300],
@@ -215,14 +236,14 @@ print(f'Pipeline OK: {gen_count} JSONs')
             text=True,
             timeout=300,
         )
-        db.create_alert(
+        _safe_alert(db,
             "pipeline_complete",  # 【调用函数】写入"管道完成"信息告警
             "Daily pipeline complete",
             f"Generated results at {datetime.now():%H:%M}",
             severity="info",
         )
     except Exception as e:
-        db.create_alert("pipeline_error", "Pipeline failed", str(e)[:300], severity="error")  # 【调用函数】写入"管道失败"告警
+        _safe_alert(db,"pipeline_error", "Pipeline failed", str(e)[:300], severity="error")  # 【调用函数】写入"管道失败"告警
 
 
 def _run_research_collection():
@@ -241,7 +262,7 @@ def _run_research_collection():
               成功 → 写 info 告警(含统计);20 分钟超时 → 写 error 告警。
     """
     db = get_db()  # 【调用函数】取数据库实例(写采集日志/告警)
-    db.create_alert(  # 【调用函数】写入"研报接入启动"信息告警
+    _safe_alert(db,  # 【调用函数】写入"研报接入启动"信息告警
         "research_started",
         "Research collection started",
         f"Automated research ingest at {datetime.now():%H:%M}",
@@ -269,28 +290,28 @@ def _run_research_collection():
                     processed = int(line.split(":", 1)[1].strip())
 
         if result.returncode != 0:
-            db.create_alert(  # 【调用函数】写入"研报接入失败"告警
+            _safe_alert(db,  # 【调用函数】写入"研报接入失败"告警
                 "research_error",
                 "Research collection failed",
                 output[-500:] or "Unknown error",
                 severity="error",
             )
         else:
-            db.create_alert(  # 【调用函数】写入"研报接入完成"信息告警
+            _safe_alert(db,  # 【调用函数】写入"研报接入完成"信息告警
                 "research_complete",
                 "Research collection complete",
                 f"Collected {collected}, processed {processed} reports",
                 severity="info",
             )
     except subprocess.TimeoutExpired:
-        db.create_alert(  # 【调用函数】写入"研报接入超时"告警
+        _safe_alert(db,  # 【调用函数】写入"研报接入超时"告警
             "research_timeout",
             "Research collection timeout",
             "Research ingest exceeded 20 minutes",
             severity="error",
         )
     except Exception as e:
-        db.create_alert(  # 【调用函数】写入"研报接入异常"告警
+        _safe_alert(db,  # 【调用函数】写入"研报接入异常"告警
             "research_error",
             "Research collection error",
             str(e)[:300],
@@ -314,7 +335,7 @@ def _run_htfc_collection():
             - 从 stdout 解析 "Collected: N" / "Processed: M"。
     """
     db = get_db()  # 【调用函数】取数据库实例(写采集日志/告警)
-    db.create_alert(  # 【调用函数】写入"天玑研报接入启动"信息告警
+    _safe_alert(db,  # 【调用函数】写入"天玑研报接入启动"信息告警
         "htfc_started",
         "HTFC research collection started",
         f"Automated HTFC research ingest at {datetime.now():%H:%M}",
@@ -342,28 +363,28 @@ def _run_htfc_collection():
                     processed = int(line.split(":", 1)[1].strip())
 
         if result.returncode != 0:
-            db.create_alert(  # 【调用函数】写入"天玑研报接入失败"告警
+            _safe_alert(db,  # 【调用函数】写入"天玑研报接入失败"告警
                 "htfc_error",
                 "HTFC research collection failed",
                 output[-500:] or "Unknown error",
                 severity="error",
             )
         else:
-            db.create_alert(  # 【调用函数】写入"天玑研报接入完成"信息告警
+            _safe_alert(db,  # 【调用函数】写入"天玑研报接入完成"信息告警
                 "htfc_complete",
                 "HTFC research collection complete",
                 f"Collected {collected}, processed {processed} reports",
                 severity="info",
             )
     except subprocess.TimeoutExpired:
-        db.create_alert(  # 【调用函数】写入"天玑研报接入超时"告警
+        _safe_alert(db,  # 【调用函数】写入"天玑研报接入超时"告警
             "htfc_timeout",
             "HTFC research collection timeout",
             "HTFC research ingest exceeded 90 minutes",
             severity="error",
         )
     except Exception as e:
-        db.create_alert(  # 【调用函数】写入"天玑研报接入异常"告警
+        _safe_alert(db,  # 【调用函数】写入"天玑研报接入异常"告警
             "htfc_error",
             "HTFC research collection error",
             str(e)[:300],
@@ -382,7 +403,7 @@ def _run_gtja_collection():
               解析 "Collected: N" / "Processed: M";失败/超时写告警。
     """
     db = get_db()  # 【调用函数】取数据库实例(写采集日志/告警)
-    db.create_alert(  # 【调用函数】写入"国君研报接入启动"信息告警
+    _safe_alert(db,  # 【调用函数】写入"国君研报接入启动"信息告警
         "gtja_started",
         "GTJA research collection started",
         f"Automated GTJA research ingest at {datetime.now():%H:%M}",
@@ -410,30 +431,97 @@ def _run_gtja_collection():
                     processed = int(line.split(":", 1)[1].strip())
 
         if result.returncode != 0:
-            db.create_alert(  # 【调用函数】写入"国君研报接入失败"告警
+            _safe_alert(db,  # 【调用函数】写入"国君研报接入失败"告警
                 "gtja_error",
                 "GTJA research collection failed",
                 output[-500:] or "Unknown error",
                 severity="error",
             )
         else:
-            db.create_alert(  # 【调用函数】写入"国君研报接入完成"信息告警
+            _safe_alert(db,  # 【调用函数】写入"国君研报接入完成"信息告警
                 "gtja_complete",
                 "GTJA research collection complete",
                 f"Collected {collected}, processed {processed} reports",
                 severity="info",
             )
     except subprocess.TimeoutExpired:
-        db.create_alert(  # 【调用函数】写入"国君研报接入超时"告警
+        _safe_alert(db,  # 【调用函数】写入"国君研报接入超时"告警
             "gtja_timeout",
             "GTJA research collection timeout",
             "GTJA research ingest exceeded 90 minutes",
             severity="error",
         )
     except Exception as e:
-        db.create_alert(  # 【调用函数】写入"国君研报接入异常"告警
+        _safe_alert(db,  # 【调用函数】写入"国君研报接入异常"告警
             "gtja_error",
             "GTJA research collection error",
+            str(e)[:300],
+            severity="error",
+        )
+
+
+def _run_dongzheng_collection():
+    """每日接入东证期货繁微观点:子进程跑 research_collector_dongzheng.py 并记录告警。
+
+    【功能】与 _run_gtja_collection 同模式,跑繁微 Fiona MCP 采集器
+            (research_collector_dongzheng.py,viewpoint 端点匿名可调用,
+            动态快评近 1 天窗口)。job id 前缀 research_dz_,告警前缀 dz_*。
+    【关键逻辑】子进程 + 90 分钟超时(与 GTJA 同兜底);从 stdout 解析
+              "Collected: N" / "Processed: M";失败/超时写告警。
+    """
+    db = get_db()  # 【调用函数】取数据库实例(写采集日志/告警)
+    _safe_alert(db,  # 【调用函数】写入"东证研报接入启动"信息告警
+        "dz_started",
+        "Dongzheng(Fiona) research collection started",
+        f"Automated Dongzheng viewpoint ingest at {datetime.now():%H:%M}",
+        severity="info",
+    )
+    try:
+        venv_py = os.path.join(os.path.dirname(sys.executable), "python")  # 【变量】venv_py:当前虚拟环境解释器路径
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # 【变量】script_dir:AgentSense 根(research_collector_dongzheng.py 同目录)
+        cmd = [venv_py, "research_collector_dongzheng.py"]
+        result = subprocess.run(  # 【调用函数】启动东证研报接入子进程(90 分钟超时)
+            cmd,
+            cwd=script_dir,
+            capture_output=True,
+            text=True,
+            timeout=5400,  # 90 min timeout:单次 ≤30 条 × LLM,与 GTJA 同兜底
+        )
+        output = (result.stdout or "") + (result.stderr or "")  # 【变量】output:子进程输出(合并 stdout+stderr)
+        collected = processed = 0  # 【变量】解析出的接入统计(默认 0)
+        for line in output.splitlines():
+            if line.startswith("Collected:"):
+                with suppress(Exception):
+                    collected = int(line.split(":", 1)[1].strip())
+            elif line.startswith("Processed:"):
+                with suppress(Exception):
+                    processed = int(line.split(":", 1)[1].strip())
+
+        if result.returncode != 0:
+            _safe_alert(db,  # 【调用函数】写入"东证研报接入失败"告警
+                "dz_error",
+                "Dongzheng(Fiona) research collection failed",
+                output[-500:] or "Unknown error",
+                severity="error",
+            )
+        else:
+            _safe_alert(db,  # 【调用函数】写入"东证研报接入完成"信息告警
+                "dz_complete",
+                "Dongzheng(Fiona) research collection complete",
+                f"Collected {collected}, processed {processed} items",
+                severity="info",
+            )
+    except subprocess.TimeoutExpired:
+        _safe_alert(db,  # 【调用函数】写入"东证研报接入超时"告警
+            "dz_timeout",
+            "Dongzheng(Fiona) research collection timeout",
+            "Dongzheng viewpoint ingest exceeded 90 minutes",
+            severity="error",
+        )
+    except Exception as e:
+        _safe_alert(db,  # 【调用函数】写入"东证研报接入异常"告警
+            "dz_error",
+            "Dongzheng(Fiona) research collection error",
             str(e)[:300],
             severity="error",
         )
@@ -486,14 +574,17 @@ def start_scheduler(schedule_times: list[str] = None, research_times: list[str] 
 
     for time_str in research_times:
         hour, minute = time_str.split(":")
-        # 【关键】三源错峰注册(0/15/30 分钟偏移):若同一时刻并跑,峰值 LLM 并发 =
-        # 1(fxbaogao 串行)+4(HTFC)+4(GTJA)=9 > 账户并发上限 5 → 429。错峰后任一
-        # 时刻全局并发 ≤4;job id 仍用原 time_str 保持唯一/可读。
+        # 【关键】四源错峰注册(0/15/30/40 分钟偏移):若同一时刻并跑,峰值 LLM 并发 =
+        # 1(fxbaogao 串行)+4(HTFC)+4(GTJA)+2(DZ)=11 > 账户并发上限 5 → 429。
+        # DZ 用 +40 且自带 2 线程:即使 GTJA(≤30 篇,90min 超时)仍未跑完,
+        # 4(GTJA)+2(DZ)=6 仍略超 5——DZ 并发已压到 2 是可接受折中(动态快评单条
+        # 短,429 重试由 LLM 客户端兜底);job id 仍用原 time_str 保持唯一/可读。
         base_minutes = int(hour) * 60 + int(minute)
         for offset, fn, prefix, name in (  # 【变量】(偏移分钟, 任务函数, job id 前缀, 任务名)
             (0, _run_research_collection, "research_", "Research collection"),
             (15, _run_htfc_collection, "research_htfc_", "HTFC research collection"),
             (30, _run_gtja_collection, "research_gtja_", "GTJA research collection"),
+            (40, _run_dongzheng_collection, "research_dz_", "Dongzheng research collection"),
         ):
             h, m = divmod(base_minutes + offset, 60)
             _scheduler.add_job(  # 【调用函数】注册错峰研报接入任务
@@ -534,7 +625,7 @@ def _health_check():
     recent = db.get_collection_history(limit=5)  # 【调用函数】取最近 5 次采集日志
     failures = [r for r in recent if r.get("status") == "error"]  # 【变量】failures:最近采集中的失败记录列表
     if failures:
-        db.create_alert(
+        _safe_alert(db,
             "health_warning",  # 【调用函数】写入"健康检查"告警
             "Recent collection failures detected",
             f"{len(failures)} failures in last 5 runs",

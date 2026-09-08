@@ -1,0 +1,113 @@
+{
+  "说明": [
+    "研报 RAG 黄金问答集:批量跑 scripts/eval_research_rag.py 出 recall/faithfulness/relevance 等指标。",
+    "question: 提问原文;variety/report_type: 传给 /api/research/ask 的可选过滤(与前端同参)。",
+    "expect_varieties: 答案应引用的品种代码(任一命中=检索命中,空=不校验)。",
+    "expect_keywords: 应出现在检索片段全文中的关键词(上下文 Recall 的分母;2026-09-08 对照实测片段标注)。",
+    "expect_date_min: 应引用的最早发布日期(空=不校验)。",
+    "should_refuse: true=库内无材料,模型应拒答(以拒答正确性代替 faithfulness/relevance)。",
+    "note: 人工复核备注,脚本不读。规模 10 题(2026-09-08):8 品种 + 2 拒答;再扩先补品种再补拒答。"
+  ],
+  "cases": [
+    {
+      "question": "近期螺纹钢供需与成本端怎么看?",
+      "variety": "RB",
+      "report_type": "",
+      "expect_varieties": ["RB"],
+      "expect_keywords": ["库存去化", "成本", "钢厂利润"],
+      "expect_date_min": "2026-08-01",
+      "should_refuse": false,
+      "note": "黑色日报有成本主导/库存去化表述"
+    },
+    {
+      "question": "原油市场最新的库存与减产观点是什么?",
+      "variety": "SC",
+      "report_type": "",
+      "expect_varieties": ["SC"],
+      "expect_keywords": ["库存", "SPR", "霍尔木兹"],
+      "expect_date_min": "",
+      "should_refuse": false,
+      "note": "库存追踪报告+地缘供应情景"
+    },
+    {
+      "question": "碳酸锂近期供需与库存情况如何?",
+      "variety": "LC",
+      "report_type": "",
+      "expect_varieties": ["LC"],
+      "expect_keywords": ["库存", "正极", "仓单"],
+      "expect_date_min": "",
+      "should_refuse": false,
+      "note": "库存去化/SMM 库存统计/仓单表述均在库"
+    },
+    {
+      "question": "黄金价格近期的主要驱动因素是什么?",
+      "variety": "AU",
+      "report_type": "",
+      "expect_varieties": ["AU"],
+      "expect_keywords": ["加息", "CPI", "地缘"],
+      "expect_date_min": "",
+      "should_refuse": false,
+      "note": "加息预期/CPI 数据/地缘政治均为实际驱动叙述"
+    },
+    {
+      "question": "天胶近期基本面与产区天气影响如何?",
+      "variety": "RU",
+      "report_type": "",
+      "expect_varieties": ["RU"],
+      "expect_keywords": ["泰国", "割胶", "降雨"],
+      "expect_date_min": "",
+      "should_refuse": false,
+      "note": "泰国产区降雨扰动/割胶作业为实际内容"
+    },
+    {
+      "question": "高硫燃料油裂解价差后期怎么看?",
+      "variety": "FU",
+      "report_type": "",
+      "expect_varieties": ["FU"],
+      "expect_keywords": ["裂解价差", "月差", "发电"],
+      "expect_date_min": "",
+      "should_refuse": false,
+      "note": "高硫裂解价差/月差/发电经济性均在库"
+    },
+    {
+      "question": "尿素近期供需与价格支撑因素?",
+      "variety": "UR",
+      "report_type": "",
+      "expect_varieties": ["UR"],
+      "expect_keywords": ["库存", "港口"],
+      "expect_date_min": "",
+      "should_refuse": false,
+      "note": "基本面小幅改善/港口库存积累为实际内容"
+    },
+    {
+      "question": "玻璃近期供需与库存现状如何?",
+      "variety": "FG",
+      "report_type": "",
+      "expect_varieties": ["FG"],
+      "expect_keywords": ["库存", "产销", "旺季"],
+      "expect_date_min": "",
+      "should_refuse": false,
+      "note": "产销过百/高库存压力/传统旺季均在库"
+    },
+    {
+      "question": "外汇市场美元指数下周会怎么走?",
+      "variety": "",
+      "report_type": "",
+      "expect_varieties": [],
+      "expect_keywords": [],
+      "expect_date_min": "",
+      "should_refuse": true,
+      "note": "拒答题:库内没有外汇研报"
+    },
+    {
+      "question": "美国股市纳斯达克指数近期走势如何?",
+      "variety": "",
+      "report_type": "",
+      "expect_varieties": [],
+      "expect_keywords": [],
+      "expect_date_min": "",
+      "should_refuse": true,
+      "note": "拒答题:库内没有美股研报(宏观要闻提美联储≠美股行情)"
+    }
+  ]
+}

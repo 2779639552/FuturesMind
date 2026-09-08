@@ -21,3 +21,8 @@ fpdf2>=2.7
 
 # Research report PDF text extraction (/api/research/upload, web_app.py uses fitz)
 pymupdf>=1.24
+
+# Research report RAG (tradingagents/rag, 检索增强; torch 建议 CPU 轮子:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu)
+chromadb>=0.5
+sentence-transformers>=3.0

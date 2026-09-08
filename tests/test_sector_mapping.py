@@ -49,13 +49,13 @@ def test_empty_sector_cn_skipped():
 
 
 def test_real_metadata_merges_four_buckets():
-    # Locks the 52-pool reverse-map used by the sector-composite fallback.
+    # Locks the pool reverse-map used by the sector-composite fallback.
     sector_map = build_sector_to_varieties()  # default: real VARIETY_METADATA
     assert sorted(sector_map["黑色系"]) == ["HC", "I", "J", "JM", "RB", "SF", "SM", "WR"]
-    # 2026-09-01:能化 6 → 19(扩 12 能化 + 烧碱 SH)
+    # 2026-09-01:能化 6 → 19(扩 12 能化 + 烧碱 SH);2026-09-08:+BR/PG/BZ/PR/SP
     assert sorted(sector_map["能化"]) == [
-        "BU", "EB", "EG", "FG", "FU", "L", "LU", "MA", "NR",
-        "PF", "PP", "PX", "RU", "SA", "SC", "SH", "TA", "UR", "V",
+        "BR", "BU", "BZ", "EB", "EG", "FG", "FU", "L", "LU", "MA", "NR",
+        "PF", "PG", "PP", "PR", "PX", "RU", "SA", "SC", "SH", "SP", "TA", "UR", "V",
     ]
     # 2026-09-01:农产品 8 → 14(扩 C/CS/JD/LH/P/Y)
     assert sorted(sector_map["农产品"]) == [
@@ -65,22 +65,30 @@ def test_real_metadata_merges_four_buckets():
     assert sorted(sector_map["有色"]) == [
         "AG", "AL", "AO", "AU", "CU", "LC", "NI", "PB", "SI", "SN", "ZN",
     ]
+    # 2026-09-08 新增桶:EC 航运 + IF/TS/TL 金融
+    assert sector_map["航运"] == ["EC"]
+    assert sorted(sector_map["金融"]) == ["IF", "TL", "TS"]
 
 
-def test_real_metadata_covers_all_52_pool_varieties():
+def test_real_metadata_covers_all_61_pool_varieties():
     sector_map = build_sector_to_varieties()
     pooled = (
         set(sector_map["黑色系"])
         | set(sector_map["能化"])
         | set(sector_map["农产品"])
         | set(sector_map["有色"])
+        | set(sector_map["航运"])
+        | set(sector_map["金融"])
     )
     assert pooled == {
         "RB", "HC", "I", "JM", "J", "SM", "SF", "WR",                             # 黑色系(8)
         "TA", "MA", "FG", "SA", "UR", "PF",                                        # 能化(原6)
         "SC", "LU", "FU", "BU", "RU", "NR", "EB", "V", "PP", "L", "EG", "PX",      # 能化(+12)
         "SH",                                                                      # 能化(+烧碱)
+        "PG", "BZ", "PR", "SP", "BR",                                              # 能化(2026-09-08 +5)
         "AG", "AL", "AO", "AU", "CU", "NI", "PB", "SN", "ZN", "LC", "SI",          # 有色(11)
         "M", "CF", "SR", "OI", "RM", "AP", "CJ", "PK",                             # 农产品(原8)
         "C", "CS", "JD", "LH", "P", "Y",                                           # 农产品(+6)
+        "EC",                                                                      # 航运(2026-09-08)
+        "IF", "TS", "TL",                                                          # 金融(2026-09-08)
     }

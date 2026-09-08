@@ -69,6 +69,27 @@ def _isolate_config():
     config_module._config = copy.deepcopy(default_config.DEFAULT_CONFIG)
 
 
+@pytest.fixture(autouse=True)
+def _disable_rag(monkeypatch):
+    """默认禁用研报 RAG 挂点(web_app 薄适配层),令离线单测零依赖确定性。
+
+    RAG 依赖(chromadb/sentence-transformers)体积大且首跑要下载本地 embedding
+    模型,不允许既有测试隐式触发。本机依赖已装时,_rag_context_for_variety 若不
+    禁用会在注入点真检索;三个挂点全部 no-op 后,研报主链路测试与 RAG 无关。
+    位图图表视觉重述挂点(_vision_describe_safely,本地 Ollama)同理:把
+    ollama_available 桩成 False,真实钩子代码照跑但经"Ollama 不可达 → 返回空串"
+    兜底路径毫秒级放行(不替换 web_app 函数本身,适配层自身可测)。
+    RAG 自身测试(tests/test_rag_*.py)直接测 tradingagents.rag 包或在用例内
+    monkeypatch 覆盖,不走本 fixture 的桩。
+    """
+    import tradingagents.dataflows.chart_vision as _chart_vision
+
+    monkeypatch.setattr("web_app._rag_context_for_variety", lambda *a, **k: "")
+    monkeypatch.setattr("web_app._rag_index_report_safely", lambda *a, **k: None)
+    monkeypatch.setattr("web_app._rag_delete_vectors_safely", lambda *a, **k: None)
+    monkeypatch.setattr(_chart_vision, "ollama_available", lambda timeout=2.0: False)
+
+
 @pytest.fixture()
 def mock_llm_client():
     client = MagicMock()

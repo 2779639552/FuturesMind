@@ -31,8 +31,15 @@ from .errors import (  # 【调用包】供应商错误类型体系(路由层按
     VendorNotConfiguredError,
     VendorRateLimitError,
 )
-from .fred import get_macro_data as get_fred_macro_data  # 【调用包】FRED 宏观数据供应商(Fed 经济数据库)
-from .polymarket import get_prediction_markets as get_polymarket_prediction_markets  # 【调用包】Polymarket 预测市场供应商(事件概率)
+from .fred import (
+    get_macro_data as get_fred_macro_data,  # 【调用包】FRED 宏观数据供应商(Fed 经济数据库)
+)
+from .futures_margin import (
+    get_futures_margin,  # 【调用包】盘面利润供应商(期货价格合成的产业链利润+历史分位)
+)
+from .polymarket import (
+    get_prediction_markets as get_polymarket_prediction_markets,  # 【调用包】Polymarket 预测市场供应商(事件概率)
+)
 from .y_finance import (  # 【调用包】yfinance 供应商实现(股票数据/基本面/技术指标窗口)
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -42,7 +49,10 @@ from .y_finance import (  # 【调用包】yfinance 供应商实现(股票数据
     get_stock_stats_indicators_window,
     get_YFin_data_online,
 )
-from .yfinance_news import get_global_news_yfinance, get_news_yfinance  # 【调用包】yfinance 新闻接口(全球/个股新闻)
+from .yfinance_news import (  # 【调用包】yfinance 新闻接口(全球/个股新闻)
+    get_global_news_yfinance,
+    get_news_yfinance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +124,12 @@ TOOLS_CATEGORIES = {  # 【变量】工具分类注册表:分类→(描述, 工�
         "description": "Supply-demand indicators (production, transaction volume, inventory)",
         "tools": [
             "get_futures_supply_demand",
+        ],
+    },
+    "futures_margin": {
+        "description": "Synthetic chain margin from futures prices (e.g. rebar profit = RB - 1.6*I - 0.5*J) with history percentile",
+        "tools": [
+            "get_futures_margin",
         ],
     },
     "futures_research": {
@@ -226,6 +242,9 @@ VENDOR_METHODS = {  # 【变量】方法→各供应商实现函数映射表(路
     },
     "get_futures_supply_demand": {
         "commodity_futures": get_futures_supply_demand,
+    },
+    "get_futures_margin": {
+        "commodity_futures": get_futures_margin,
     },
     "get_research_report": {
         "commodity_futures": get_research_report,

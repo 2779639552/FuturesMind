@@ -50,8 +50,9 @@ _TRED = (
 
 @pytest.fixture
 def daily_dir(tmp_path, monkeypatch):
-    """把每日总结目录隔离到临时目录。"""
+    """把每日/周报总结目录隔离到临时目录。"""
     monkeypatch.setattr(web_app, "RESEARCH_DAILY_DIR", tmp_path / "research_daily")
+    monkeypatch.setattr(web_app, "RESEARCH_WEEKLY_DIR", tmp_path / "research_weekly")
     return tmp_path / "research_daily"
 
 
@@ -77,6 +78,36 @@ def test_collect_items_splits_multivariety_and_per_variety_direction():
     rows = [_row(rid=9, codes="SC,LU", direction="看多", conclusion=md)]
     items = web_app._collect_daily_report_items(rows, "2026-09-02")
     assert [(i["variety"].split("(")[0], i["direction"]) for i in items] == [("SC", "看空"), ("LU", "看多")]
+
+
+def test_collect_items_confidence_per_variety(monkeypatch):
+    """置信度逐品种口径(2026-09-07 修复):双品种研报的次品种不再冒用主品种 DB 行值
+    (曾导致每日总结总表 LU=45% 与观点总览 LU=50% 不一致)。
+    聚合 JSON 有逐品种值 → 各用各的;缺该品种 → 主品种回退 DB 值,次品种不标(—)。"""
+    import tradingagents.dataflows.research_data as rd
+
+    md = (
+        "## SC 结论\n## 交易要素与风险\n方向:看空;形态与区间:—;头寸:—;头寸范围:—;风险:—\n\n"
+        "## LU 结论\n## 交易要素与风险\n方向:看多;形态与区间:—;头寸:—;头寸范围:—;风险:—\n"
+    )
+    rows = [_row(rid=9, codes="SC,LU", confidence=0.45, conclusion=md)]
+    agg = {
+        "SC": {"reports": [{"id": 9, "confidence": 0.45}]},
+        "LU": {"reports": [{"id": 9, "confidence": 0.5}]},
+    }
+    monkeypatch.setattr(rd, "load_research_data", lambda code: agg.get(code))
+    confs = {
+        i["variety"].split("(")[0]: i["confidence"]
+        for i in web_app._collect_daily_report_items(rows, "2026-09-02")
+    }
+    assert confs == {"SC": "45%", "LU": "50%"}
+
+    monkeypatch.setattr(rd, "load_research_data", lambda code: None)  # 聚合缺失 → 回退
+    confs2 = {
+        i["variety"].split("(")[0]: i["confidence"]
+        for i in web_app._collect_daily_report_items(rows, "2026-09-02")
+    }
+    assert confs2 == {"SC": "45%", "LU": "—"}
 
 
 def test_collect_items_skips_not_done_and_other_dates():
@@ -112,15 +143,38 @@ def test_collect_items_skips_weekly():
     assert [i["title"] for i in web_app._collect_daily_report_items(rows, "2026-09-02")] == ["研报2", "研报3"]
 
 
+def test_collect_items_weekly_mode_only_weekly():
+    """周报口径只收周报行(2026-09-07 拆分):日报/未知行不混入,两类总结互不混收。"""
+    rows = [
+        _row(rid=1, conclusion=_TRED, report_type="周报"),   # 周报 → 收
+        _row(rid=2, conclusion=_TRED, report_type="日报"),   # 日报 → 跳过
+        _row(rid=3, conclusion=_TRED, report_type=""),       # 未知类型 → 跳过
+    ]
+    assert [i["title"] for i in web_app._collect_daily_report_items(rows, "2026-09-02", "周报")] == ["研报1"]
+
+
 def test_research_daily_dates_excludes_weekly(tmp_path, monkeypatch):
-    """纯周报日期(周末桶)不出现在可用日期并集;日报日期照常。"""
+    """纯周报日期(周末桶)不出现在日报口径可用日期并集;日报日期照常。"""
     monkeypatch.setattr(web_app, "RESEARCH_DAILY_DIR", tmp_path)
+    monkeypatch.setattr(web_app, "RESEARCH_WEEKLY_DIR", tmp_path / "w")
     db = _FakeDB([
-        _row(rid=1, date="2026-08-30", report_type="周报"),  # 周六纯周报 → 排除
+        _row(rid=1, date="2026-08-30", report_type="周报"),  # 周六纯周报 → 日报口径排除
         _row(rid=2, date="2026-09-02", report_type="日报"),  # 日报 → 保留
         _row(rid=3, date="2026-09-01"),                      # 未知类型 → 保留
     ])
     assert web_app._research_daily_dates(db) == ["2026-09-02", "2026-09-01"]
+
+
+def test_research_daily_dates_weekly_mode(tmp_path, monkeypatch):
+    """周报口径日期并集只含周报行(2026-09-07 拆分):与日报口径互斥,前端下拉分开。"""
+    monkeypatch.setattr(web_app, "RESEARCH_DAILY_DIR", tmp_path / "d")
+    monkeypatch.setattr(web_app, "RESEARCH_WEEKLY_DIR", tmp_path / "w")
+    db = _FakeDB([
+        _row(rid=1, date="2026-08-30", report_type="周报"),  # 周六纯周报 → 周报口径出现
+        _row(rid=2, date="2026-09-02", report_type="日报"),  # 日报 → 周报口径排除
+    ])
+    assert web_app._research_daily_dates(db, "周报") == ["2026-08-30"]
+    assert web_app._research_daily_dates(db) == ["2026-09-02"]
 
 
 def test_research_daily_dates_uses_publish_date(tmp_path, monkeypatch):
@@ -198,6 +252,31 @@ def test_generate_llm_failure_degrades(daily_dir, monkeypatch):
     out = web_app._generate_daily_summary("2026-09-02")
     assert not out["ok"] and "LLM 生成失败" in out["error"]
     assert not web_app._research_daily_path("2026-09-02").exists()  # 失败不留半截文件
+
+
+def test_generate_weekly_writes_weekly_dir(daily_dir, monkeypatch):
+    """周报口径生成:落盘 research_weekly,标题用「研报周报总结」;同日日报口径收不到该行。"""
+    monkeypatch.setattr(web_app, "get_db", lambda: _FakeDB([_row(rid=1, date="2026-09-06", conclusion=_TRED, report_type="周报")]))
+
+    class _FakeClient:
+        def get_llm(self):
+            class _L:
+                def invoke(self, prompt):
+                    assert "研报周报总结" in prompt  # 周报口径标题进 prompt
+                    class _R:
+                        content = "## 一、当日观点总表\n(周报复盘)"
+                    return _R()
+            return _L()
+
+    monkeypatch.setattr(web_app, "create_llm_client", lambda *a, **k: _FakeClient())
+    out = web_app._generate_daily_summary("2026-09-06", rtype="周报")
+    assert out["ok"] and out["reports"] == 1
+    saved = web_app._research_daily_path("2026-09-06", "周报")
+    assert saved.is_file() and "周报复盘" in saved.read_text(encoding="utf-8")
+    assert "research_weekly" in str(saved)
+    # 日报口径同日无日报行 → 报错,不串味
+    out2 = web_app._generate_daily_summary("2026-09-06", force=True)
+    assert not out2["ok"] and "没有已完成分析的日报" in out2["error"]
 
 
 # ---------------------------------------------------------------------------

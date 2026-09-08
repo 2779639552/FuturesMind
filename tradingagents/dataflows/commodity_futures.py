@@ -447,7 +447,9 @@ def _fetch_exchange_inventory(code: str, meta: dict) -> pd.DataFrame | None:
     Returns:
         DataFrame(date, inventory, change) 升序;任何一步失败/无数据 → None。
     """
-    varid = meta["inv_code"].lower()
+    varid = (meta.get("inv_code") or "").lower()
+    if not varid:  # inv_code 为空 = 该品种无仓单库存数据源(如 BZ/PR 新品种),直接放弃
+        return None
     cutoff_s = _find_exchange_cutoff()
     if cutoff_s is None:
         return None
@@ -1732,6 +1734,216 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         ],
         "related_varieties": ["LC", "AL"],
     },
+    # ── 2026-09-08 补齐 9 个库内已有研报但缺元信息的品种 ──
+    # 缺失后果:meta.get("name", code) 回退裸代码,/api/varieties 下拉漏品种,
+    # 界面上同一品种中文名与代码混出(用户实测反馈)。
+    "PG": {
+        "name": "LPG",
+        "name_en": "Liquefied Petroleum Gas",
+        "exchange": "DCE",
+        "exchange_cn": "大连商品交易所",
+        "main_contract": "PG0",
+        "spot_code": "PG",
+        "inv_code": "pg",
+        "unit": "20吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "9%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(燃料)",
+        "description": "液化石油气，炼厂副产与进口为主，燃烧(民用/工业)与化工(CPD/烷基化)双需求",
+        "key_factors": [
+            "CP/FEI 进口成本",
+            "炼厂与港口库存",
+            "民用燃烧季节性",
+            "PDH/烷基化装置利润与开工",
+            "甲醇/原油价格联动",
+        ],
+        "related_varieties": ["MA", "SC", "PP"],
+    },
+    "BZ": {
+        "name": "纯苯",
+        "name_en": "Pure Benzene",
+        "exchange": "DCE",
+        "exchange_cn": "大连商品交易所",
+        "main_contract": "BZ0",
+        "spot_code": "BZ",
+        "inv_code": "",  # 东财仓单表暂无 BZ(2025-07 新品种),空=显式声明无库存数据源
+        "unit": "30吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "9%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(化工)",
+        "description": "纯苯，芳烃链首个期货品种(2025-07 大商所上市)，下游为苯乙烯/己内酰胺/酚酮",
+        "key_factors": [
+            "石油苯/加氢苯开工与价差",
+            "苯乙烯等下游装置负荷",
+            "港口库存(华东)",
+            "纯苯-石脑油价差",
+            "进口量(韩美来源)",
+        ],
+        "related_varieties": ["EB", "PX", "TA"],
+    },
+    "PR": {
+        "name": "瓶片",
+        "name_en": "PET Bottle Chip",
+        "exchange": "CZCE",
+        "exchange_cn": "郑州商品交易所",
+        "main_contract": "PR0",
+        "spot_code": "PR",
+        "inv_code": "",  # 东财仓单表暂无 PR(2024-08 新品种),空=显式声明无库存数据源
+        "unit": "15吨/手",
+        "price_limit": "±7%",
+        "margin_rate": "8%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(纺织)",
+        "description": "PET瓶片，聚酯链末端品种(2024-08 郑商所上市)，饮料/食用油包装出口占比高",
+        "key_factors": [
+            "PTA/乙二醇成本",
+            "瓶片加工价差",
+            "软饮料/出口订单季节性",
+            "瓶片工厂库存与开工",
+            "海外需求(全球贸易量占比约50%)",
+        ],
+        "related_varieties": ["TA", "PF", "EG"],
+    },
+    "SP": {
+        "name": "纸浆",
+        "name_en": "Bleached Kraft Pulp",
+        "exchange": "SHFE",
+        "exchange_cn": "上海期货交易所",
+        "main_contract": "SP0",
+        "spot_code": "SP",
+        "inv_code": "sp",
+        "unit": "10吨/手",
+        "price_limit": "±6%",
+        "margin_rate": "8%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(轻工)",
+        "description": "漂白针叶浆为主，进口依存度高(芬兰/加拿大/智利)，下游文化纸/生活用纸/白卡",
+        "key_factors": [
+            "外盘报价与进口成本",
+            "港口库存(青岛/常熟)",
+            "纸厂开工与成品纸价格",
+            "智利/芬兰供应扰动",
+            "人民币汇率",
+        ],
+        "related_varieties": ["PP", "V"],
+    },
+    "BR": {
+        "name": "丁二烯橡胶",
+        "name_en": "Butadiene Rubber",
+        "exchange": "SHFE",
+        "exchange_cn": "上海期货交易所",
+        "main_contract": "BR0",
+        "spot_code": "BR",
+        "inv_code": "br",
+        "unit": "5吨/手",
+        "price_limit": "±8%",
+        "margin_rate": "9%",
+        "trading_hours": "9:00-11:30, 13:30-15:00, 21:00-23:00",
+        "sector_cn": "能化(橡胶)",
+        "description": "顺丁/合成橡胶，原料丁二烯，下游轮胎(与天胶天胶/NR部分替代)，2023 上期所上市",
+        "key_factors": [
+            "丁二烯价格与开工",
+            "轮胎厂开工与出口",
+            "顺丁-天胶价差(替代关系)",
+            "炼厂乙烯装置负荷",
+            "库存(厂库/社会库)",
+        ],
+        "related_varieties": ["RU", "NR", "EB"],
+    },
+    "EC": {
+        "name": "集运指数(欧线)",
+        "name_en": "SCFIS (Europe)",
+        "exchange": "INE",
+        "exchange_cn": "上海国际能源交易中心",
+        "main_contract": "EC0",
+        "spot_code": "EC",
+        "inv_code": "ec",
+        "unit": "50元/点",
+        "price_limit": "±10%",
+        "margin_rate": "18%",
+        "trading_hours": "9:00-11:30, 13:30-15:00",
+        "sector_cn": "航运(集运)",
+        "description": "上海出口集装箱结算运价指数(欧洲航线)现金交割品种，无实物交割",
+        "key_factors": [
+            "红海/苏伊士通行与地缘局势",
+            "船司运力投放与停航(空白 sailings)",
+            "欧线舱位利用率与订舱价(FEK/FAK)",
+            "长协与即期运价比例",
+            "欧洲消费与补库需求",
+        ],
+        "related_varieties": ["SC", "FU"],
+    },
+    "IF": {
+        "name": "沪深300股指",
+        "name_en": "CSI 300 Index Futures",
+        "exchange": "CFFEX",
+        "exchange_cn": "中国金融期货交易所",
+        "main_contract": "IF0",
+        "spot_code": "IF",
+        "inv_code": "IF",  # 中金所同 ZCE 约定:akshare 仓单表内仅大写
+        "unit": "300元/点",
+        "price_limit": "±10%",
+        "margin_rate": "12%",
+        "trading_hours": "9:30-11:30, 13:00-15:00",
+        "sector_cn": "金融(股指)",
+        "description": "沪深300指数股指期货，A股大盘蓝筹 beta 工具，四倍杠杆现货等值",
+        "key_factors": [
+            "A股大盘风险偏好(成交/两融)",
+            "宏观政策与流动性",
+            "IC/IM 贴水与对冲盘",
+            "外资流向与北向情绪",
+            "股指期权波动率",
+        ],
+        "related_varieties": ["TL", "TS"],
+    },
+    "TS": {
+        "name": "2年期国债",
+        "name_en": "2-Year Treasury Futures",
+        "exchange": "CFFEX",
+        "exchange_cn": "中国金融期货交易所",
+        "main_contract": "TS0",
+        "spot_code": "TS",
+        "inv_code": "TS",  # 中金所同 ZCE 约定:akshare 仓单表内仅大写
+        "unit": "面值200万元",
+        "price_limit": "±0.5%",
+        "margin_rate": "1.2%",
+        "trading_hours": "9:30-11:30, 13:00-15:15",
+        "sector_cn": "金融(国债)",
+        "description": "2年期国债期货，短端利率工具，票面利率3%名义标准券",
+        "key_factors": [
+            "资金面(DR007/央行投放)",
+            "短端政策利率预期",
+            "银行/基金配置需求",
+            "曲线套利(2-10Y利差)",
+            "IRR 与正套空间",
+        ],
+        "related_varieties": ["TL", "IF"],
+    },
+    "TL": {
+        "name": "30年期国债",
+        "name_en": "30-Year Treasury Futures",
+        "exchange": "CFFEX",
+        "exchange_cn": "中国金融期货交易所",
+        "main_contract": "TL0",
+        "spot_code": "TL",
+        "inv_code": "TL",  # 中金所同 ZCE 约定:akshare 仓单表内仅大写
+        "unit": "面值100万元",
+        "price_limit": "±2%",
+        "margin_rate": "3.5%",
+        "trading_hours": "9:30-11:30, 13:00-15:15",
+        "sector_cn": "金融(国债)",
+        "description": "30年期国债期货，超长端利率工具，久期长波动大，2023 上市",
+        "key_factors": [
+            "长端利率与基本面预期",
+            "超长特别国债供给节奏",
+            "保险/农商行配置力量",
+            "股市风险偏好(跷跷板)",
+            "央行国债借入与监管态度",
+        ],
+        "related_varieties": ["TS", "IF"],
+    },
 }
 
 
@@ -2391,7 +2603,8 @@ def get_futures_inventory(
             logger.info("Inventory for %s via GTJA warehouse receipts (%d pts).", code, len(df))
 
     # --- 回退源1:东财仓单库存(AKShare;GTJA 空/未配置时) ---
-    if df is None or df.empty:
+    # inv_code 为空 = 该品种不在东财仓单表内(如 BZ/PR 新品种),跳过直接走交易所回退
+    if (df is None or df.empty) and inv_code:
         try:
             from akshare import futures_inventory_em  # 【调用包】AKShare 仓单库存接口(东方财富)
 
@@ -2822,6 +3035,16 @@ def get_futures_news(
         "SH": ["烧碱", "氢氧化钠", "液碱", "氯碱", "片碱"],
         "LC": ["碳酸锂", "锂", "锂矿", "盐湖", "电碳", "工碳", "氢氧化锂", "锂电"],
         "SI": ["工业硅", "多晶硅", "有机硅", "枯水期", "云南硅", "硅石"],
+        # 2026-09-08 补齐 9 个库内已有研报但缺元信息的品种(与 VARIETY_METADATA 同步)
+        "PG": ["LPG", "液化石油气", "丙烷", "CP", "PDH", "民用气", "醚后碳四"],
+        "BZ": ["纯苯", "石油苯", "加氢苯", "苯乙烯", "己内酰胺", "酚酮", "石脑油"],
+        "PR": ["瓶片", "PET", "聚酯瓶片", "软饮", "包材", "出口"],
+        "SP": ["纸浆", "针叶浆", "阔叶浆", "文化纸", "生活用纸", "白卡", "外盘"],
+        "BR": ["丁二烯橡胶", "顺丁橡胶", "合成橡胶", "丁二烯", "轮胎"],
+        "EC": ["集运", "欧线", "运价", "SCFIS", "苏伊士", "红海", "停航", "舱位"],
+        "IF": ["沪深300", "股指", "A股", "北向", "两融", "大盘"],
+        "TS": ["国债期货", "2年期国债", "短端利率", "资金面", "DR007", "IRR"],
+        "TL": ["国债期货", "30年期国债", "超长端", "长端利率", "特别国债", "久期"],
     }
     extra_kw = symbol_specific.get(symbol.upper(), [])
     all_kw = commodity_kw + extra_kw

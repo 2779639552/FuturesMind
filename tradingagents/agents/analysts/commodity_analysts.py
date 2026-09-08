@@ -48,6 +48,7 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_indicators,
     get_futures_inventory,
     get_futures_macro,
+    get_futures_margin,
     get_futures_news,
     get_futures_price,
     get_futures_supply_demand,
@@ -55,7 +56,8 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_variety_info,
     get_verified_quote,
     research_macro_context,  # 【调用包】研报宏观事件上下文(确定性注入用,非 @tool)
-)  # 【调用包】商品期货行情/指标/库存/基差/宏观/新闻/供需/研报/品种信息/核验报价工具;由 LLM 通过 _run_tool_loop 调度取数
+    user_data_context,  # 【调用包】用户自传数据上下文(确定性注入用,非 @tool)
+)  # 【调用包】商品期货行情/指标/库存/基差/宏观/新闻/供需/盘面利润/研报/品种信息/核验报价工具;由 LLM 通过 _run_tool_loop 调度取数
 
 logger = logging.getLogger(__name__)
 
@@ -355,7 +357,7 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
     # 【立场/关注点】供需平衡、库存周期（重点看库存"速度"而非绝对值）、基差结构、
     #               产业链成本传导与利润分配。不看价格图形，也不看新闻情绪。
     # 【工具清单】get_variety_info, get_futures_price, get_futures_basis, get_futures_inventory,
-    #            get_futures_supply_demand, get_verified_quote
+    #            get_futures_supply_demand, get_futures_margin, get_verified_quote
     # 【输出结构】报告第一行必须是
     #            "BIAS: 看多/偏多/中性/偏空/看空 | CONFIDENCE: 高/中/低"（机器解析用）；
     #            末尾附关键信号汇总表；节点返回
@@ -378,6 +380,7 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
             get_futures_basis,
             get_futures_inventory,
             get_futures_supply_demand,
+            get_futures_margin,  # 【工具】盘面利润读数(配方合成+历史分位;成本/利润框架取数)
             get_research_report,  # 【工具】人工上传研报摘要(最高优先级数据源)
             get_verified_quote,
         ]
@@ -429,6 +432,11 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
    - From `get_variety_info`, check the `related_varieties` field for upstream raw materials.
    - For each key upstream variety, call `get_futures_price` to get recent price trends.
      - Example for RB: call `get_futures_price` for I (iron ore) and J (coke) to understand cost drivers.
+   - **Quantified chain margin** (call `get_futures_margin` when the variety is supported — RB/HC/J):
+     it returns the synthetic margin (e.g. RB − 1.6×I − 0.5×J), its 5-day change and the
+     HISTORY PERCENTILE of the current value. Cite the exact value and percentile, e.g.
+     "盘面利润 180 元/吨, 处于近 1 年 12% 分位(极低)". Low percentile → profit squeeze has priced in
+     → supply-cut pressure builds (bullish medium-term); high percentile → margin has room to compress.
    - **Cost structure**: Iron ore (~50% of BF cost) + coke/coal (~30%) + scrap + others.
    - **Margin analysis**: Compare rebar price trend vs raw material price trends.
      - If rebar falls but raw materials fall faster → margins IMPROVE (bearish rebar — room to cut prices further)
@@ -443,6 +451,8 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
    - Map profit at each node: mine → steel mill → trader → end user
    - Identify bottlenecks: which node is absorbing the most pressure?
    - BF profit vs EAF profit divergence is a key arb signal
+   - Anchor your margin narrative on `get_futures_margin` numbers when available
+     (quantified + percentile-ranked), NOT on eyeballed price ratios.
 
 **Key Principles**:
 - Basis + inventory = most reliable short-medium term signal
@@ -466,10 +476,10 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
 - Where research rows (`# RESEARCH ...` / 研报-*) disagree with EXTERNAL / FREE_API rows, prefer
   the research value (RESEARCH > EXTERNAL > FREE_API).
 
-**Workflow**: Call `get_variety_info` → `get_futures_price` (for target variety AND key upstream varieties from related_varieties) → `get_futures_basis` → `get_futures_inventory` → `get_futures_supply_demand` → (optionally `get_research_report` when you need the research house's objective figures/typed rows — read only the data-backed rows, not its bare direction).
+**Workflow**: Call `get_variety_info` → `get_futures_price` (for target variety AND key upstream varieties from related_varieties) → `get_futures_basis` → `get_futures_inventory` → `get_futures_supply_demand` → `get_futures_margin` (when the variety has a supported formula: RB/HC/J) → (optionally `get_research_report` when you need the research house's objective figures/typed rows — read only the data-backed rows, not its bare direction).
 
 Write a comprehensive fundamental analysis (450-650 words) with specific data points.
-Include: (a) inventory velocity calculation, (b) upstream cost transmission analysis, (c) margin direction.
+Include: (a) inventory velocity calculation, (b) upstream cost transmission analysis, (c) margin direction — cite `get_futures_margin` value + history percentile when the variety is supported.
 
 **CRITICAL — First line after your title MUST be exactly:**
 ```
@@ -673,6 +683,16 @@ End with:
         if research_macro:
             system_message = research_macro + "\n\n" + system_message
         # --- End Research Report Injection ---
+
+        # --- User Uploaded Data Injection (2026-09-07) ---
+        # 【用户自传数据注入】放在研报事件块之后追加 → 拼接后位于研报块**之上**
+        # (最高优先级置顶)。块内自带权重规则:覆盖范围内以用户数据为准,高于
+        # akshare 与研报数据。仅在与上传电脑相同客户端发起的分析中注入
+        # (state["client_tag"]=请求者 IP;后台跑批无 tag → 不注入)。
+        user_data = user_data_context(symbol, state.get("client_tag") or "")
+        if user_data:
+            system_message = user_data + "\n\n" + system_message
+        # --- End User Data Injection ---
 
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [

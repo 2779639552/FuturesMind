@@ -285,6 +285,114 @@ class TestIngestOneIdempotency:
         assert len(web.processed) == 1
 
 
+class TestWeeklyChannel:
+    """周报频道(10075)接入:7 天回看窗口 + 两频道独立选品合并(2026-09-07)。
+
+    fetch_* 里的 htfc_api 是懒导入 → 用 stub 顶掉 sys.modules,不联网。
+    """
+
+    def _stub_htfc_api(self, monkeypatch, result_list):
+        import sys
+        import types
+
+        calls = []
+
+        def search_reports(item_value, cur_page=1, page_size=10):
+            calls.append(item_value)
+            resp = types.SimpleNamespace(raw={"resultList": result_list})
+            return resp
+
+        def data_of(resp):
+            return resp.raw
+
+        mod = types.ModuleType("htfc_api")
+        mod.search_reports = search_reports
+        mod.data_of = data_of
+        monkeypatch.setitem(sys.modules, "htfc_api", mod)
+        return calls
+
+    @staticmethod
+    def _feed_item(id_, pub, subclass="甲醇", rtype="周报"):
+        return {"id": id_, "itemValue": "10070", "reportType": rtype,
+                "publishDateTime": f"{pub} 08:00:00", "subclassCodeName": subclass,
+                "title": f"华泰期货{subclass}{rtype}{id_}"}
+
+    def test_weekly_window_inclusive_last10(self, monkeypatch):
+        # 窗口 = [target-(WEEKLY_WINDOW_DAYS-1), target] 闭区间:
+        # 周报集中在周日/周一发布,"上周日→本周一"最大跨 8 天 ⇒ 窗口 10 天留裕量
+        self._stub_htfc_api(monkeypatch, [
+            self._feed_item("RE1", "2026-09-07"),   # 当日
+            self._feed_item("RE2", "2026-08-29"),   # 窗口首日(target-9)
+            self._feed_item("RE3", "2026-08-28"),   # 窗口外(target-10)
+            self._feed_item("RE4", "2026-09-08"),   # 未来日期剔除
+        ])
+        items = rc.fetch_weekly_items("2026-09-07")
+        assert [i["id"] for i in items] == ["RE1", "RE2"]
+        # 周报项的 reportType 原样透传(入库即接上周报总结口径)
+        assert all(i["reportType"] == "周报" for i in items)
+
+    def test_weekly_window_covers_sunday_to_monday_gap(self, monkeypatch):
+        # 实际场景回归:周一(09-07)跑,必须覆盖上周日(08-30,跨 8 天)发布的周报
+        self._stub_htfc_api(monkeypatch, [
+            self._feed_item("RE-SUN", "2026-08-30", subclass="原油"),
+        ])
+        items = rc.fetch_weekly_items("2026-09-07")
+        assert [i["id"] for i in items] == ["RE-SUN"]
+
+    def test_weekly_channel_hits_api_10075(self, monkeypatch):
+        calls = self._stub_htfc_api(monkeypatch, [])
+        rc.fetch_weekly_items("2026-09-07")
+        assert calls == [rc.FEED_CHANNEL_WEEKLY]
+
+    def test_daily_still_exact_date_on_10074(self, monkeypatch):
+        calls = self._stub_htfc_api(monkeypatch, [
+            self._feed_item("RE1", "2026-09-07", rtype="日报"),
+            self._feed_item("RE2", "2026-09-06", rtype="日报"),
+        ])
+        items = rc.fetch_today_items("2026-09-07")
+        assert [i["id"] for i in items] == ["RE1"]
+        assert calls == [rc.FEED_CHANNEL_DAILY]
+
+    def test_ingest_merges_both_channels_independently(self, monkeypatch):
+        # 同品种日报+周报都命中:两频道独立选品,两篇都进(dry_run 不落库)
+        daily = [dict(self._feed_item("RE-D", "2026-09-07", rtype="日报"))]
+        weekly = [dict(self._feed_item("RE-W", "2026-09-06", rtype="周报"))]
+        monkeypatch.setattr(rc, "fetch_today_items", lambda d: daily)
+        monkeypatch.setattr(rc, "fetch_weekly_items", lambda d: weekly)
+        monkeypatch.setattr(rc, "_load_state", lambda: {"seen": []})
+        res = rc.ingest_today("2026-09-07", dry_run=True)
+        assert res["collected"] == 2
+        assert res["items"] == 2
+
+    def test_ingest_daily_only_channel_filter(self, monkeypatch):
+        daily = [dict(self._feed_item("RE-D", "2026-09-07", rtype="日报"))]
+        weekly = [dict(self._feed_item("RE-W", "2026-09-06", rtype="周报"))]
+        monkeypatch.setattr(rc, "fetch_today_items", lambda d: daily)
+        monkeypatch.setattr(rc, "fetch_weekly_items", lambda d: weekly)
+        monkeypatch.setattr(rc, "_load_state", lambda: {"seen": []})
+        res = rc.ingest_today("2026-09-07", dry_run=True, channels={"日报"})
+        assert res["collected"] == 1
+        assert res["items"] == 1
+
+    def test_ingest_dedupes_cross_channel_ids(self, monkeypatch):
+        # 防御兜底:同一 articleId 跨频道重复只保留首个
+        same = dict(self._feed_item("RE-SAME", "2026-09-07"))
+        monkeypatch.setattr(rc, "fetch_today_items", lambda d: [same])
+        monkeypatch.setattr(rc, "fetch_weekly_items", lambda d: [dict(same)])
+        monkeypatch.setattr(rc, "_load_state", lambda: {"seen": []})
+        res = rc.ingest_today("2026-09-07", dry_run=True)
+        assert res["collected"] == 1
+
+    def test_ingest_seen_filters_rerun(self, monkeypatch):
+        # 周报窗口跨次重跑:seen 里已有的不再进 work
+        daily = [dict(self._feed_item("RE-D", "2026-09-07", rtype="日报"))]
+        monkeypatch.setattr(rc, "fetch_today_items", lambda d: daily)
+        monkeypatch.setattr(rc, "fetch_weekly_items", lambda d: [])
+        monkeypatch.setattr(rc, "_load_state", lambda: {"seen": ["RE-D"]})
+        res = rc.ingest_today("2026-09-07", dry_run=True)
+        assert res["collected"] == 0
+
+
 class TestModuleConstants:
     def test_target_varieties_is_21(self):
         assert len(rc.TARGET_VARIETIES) == 21

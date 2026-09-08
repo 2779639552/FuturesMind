@@ -32,11 +32,15 @@ Wraps the commodity_futures data vendor functions as @tool-decorated callables.
 
 from typing import Annotated  # 【调用包】类型注解:给工具参数附加描述,供 LangChain 生成工具说明
 
-from langchain_core.tools import tool  # 【调用包】LangChain 工具装饰器:把普通函数注册为 Agent 可调用的 Tool
+from langchain_core.tools import (
+    tool,  # 【调用包】LangChain 工具装饰器:把普通函数注册为 Agent 可调用的 Tool
+)
 
 # route_to_vendor: 路由函数,按"方法名 -> 配置的供应商"找到实现并调用。
 # 这里只传方法名和参数,真正的取数逻辑在 dataflows 层(commodity_futures.py)。
-from tradingagents.dataflows.interface import route_to_vendor  # 【调用包】路由函数:按方法名把取数请求分派到配置的数据供应商
+from tradingagents.dataflows.interface import (
+    route_to_vendor,  # 【调用包】路由函数:按方法名把取数请求分派到配置的数据供应商
+)
 
 
 # 【功能】获取商品期货日线行情(OHLCV + 持仓量)。Agent 需要历史价格时调用。
@@ -287,6 +291,39 @@ def get_research_view_summary(
     return route_to_vendor("get_research_view_summary", symbol, "", "")  # 【调用函数】跨模块路由:机构(研报)方向聚合(确定性,无 LLM)
 
 
+# 【功能】盘面利润读数(用主力合约期货价格按产业配比合成的产业链利润+历史分位)。
+# 【参数】symbol: 品种代码。
+# 【返回】格式化利润读数文本;无配方返回 MARGIN_NO_FORMULA 哨兵(附当前支持的品种)。
+# 【关键逻辑】转发给 route_to_vendor("get_futures_margin", symbol);底层
+#           futures_margin.compute_margin_series 复用 get_futures_price 缓存按日
+#           对齐各腿收盘价,输出最新值/近5日变动/窗口统计/历史分位。替代此前
+#           "分析师自己拉 RB+I+J 三个价格定性心算"——配比系数与分位必须确定性计算。
+@tool
+def get_futures_margin(
+    symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
+) -> str:
+    """
+    Get the synthetic CHAIN MARGIN for a commodity variety, computed from main
+    continuous futures prices with industry-standard ratios, plus its history
+    percentile. Examples: rebar margin = RB - 1.6*I - 0.5*J; coking margin = J - 1.3*JM.
+
+    Returns: latest margin value (元/吨), 5-day change, window mean/min/max, and
+    the percentile of the latest value within the lookback window (e.g. "10% 极低"
+    → historically cheap chain profit → supply-cut pressure builds).
+
+    Use this for COST/MARGIN analysis (fundamental framework section on upstream
+    cost transmission & profit distribution). Supported varieties currently:
+    RB, HC, J. For other varieties the response is "MARGIN_NO_FORMULA: ..." —
+    fall back to qualitative cost comparison via `get_futures_price` instead of
+    inventing numbers.
+    Args:
+        symbol: Variety code like RB, HC, J
+    Returns:
+        Formatted margin readout (or MARGIN_NO_FORMULA / NO_DATA_AVAILABLE sentinel).
+    """
+    return route_to_vendor("get_futures_margin", symbol)  # 【调用函数】跨模块路由:盘面利润读数(配方合成+历史分位,确定性计算)
+
+
 # 【功能】研报宏观事件上下文(确定性,无 LLM,非 @tool)——宏观/情绪分析师系统提示前置注入用。
 # 【参数】symbol: 品种代码。
 # 【返回】str: 研报事件文本(宏观共性事件 + 本品种事件与观点);无事件/异常返回 ""。
@@ -301,6 +338,21 @@ def research_macro_context(symbol: str) -> str:
         )
 
         return summarize_research_macro_events(symbol)
+    except Exception:  # 上下文加载失败不影响分析主线,静默降级为无注入
+        return ""
+
+
+# 【功能】用户自传数据上下文(确定性,无 LLM,非 @tool)——宏观/情绪分析师注入用
+#           (2026-09-07)。与 research_macro_context 同模式:不做 @tool(工具调用不
+#           保证发生),节点构造提示时确定性前置;空数据/DB 异常静默降级为 ""。
+# 【参数】symbol: 品种代码;client_tag: 发起分析的客户端标识(IP)—— 自传数据仅
+#           在上传电脑上使用,tag 为空(批量回测/校验等后台跑批)不注入。
+# 【返回】str: "# 用户自传数据(最高优先级)" 注入块或 ""。
+def user_data_context(symbol: str, client_tag: str = "") -> str:
+    try:
+        from tradingagents.dataflows.user_data import render_user_data_context
+
+        return render_user_data_context(symbol, client_tag=client_tag)
     except Exception:  # 上下文加载失败不影响分析主线,静默降级为无注入
         return ""
 
@@ -396,7 +448,10 @@ def get_realtime_price(
     import json  # 【调用包】JSON 序列化:构造返回给 Agent 的实时行情 JSON
 
     try:
-        from price_fetcher import NAME_TO_CODE, get_cached_prices  # 【调用包】实时行情模块(web_app 上下文):品种名映射 + 60 秒缓存行情
+        from price_fetcher import (  # 【调用包】实时行情模块(web_app 上下文):品种名映射 + 60 秒缓存行情
+            NAME_TO_CODE,
+            get_cached_prices,
+        )
     except ImportError:
         return "ERROR: price_fetcher module not available (web_app context only)"
 

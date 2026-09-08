@@ -53,10 +53,12 @@ def test_collect_busy_409():
 
 
 def _fake_collectors(monkeypatch, calls):
-    """注入 3 个采集器 fake 模块(记录调用,不触真实采集/LLM/网络)。
+    """注入 4 个采集器 fake 模块(记录调用,不触真实采集/LLM/网络)。
 
     记录元组含 requested(品种筛选集),校验路由透传;gtja fake 需带
-    TARGET_VARIETIES(路由用它做品种代码白名单校验)。
+    TARGET_VARIETIES(路由用它做品种代码白名单校验)。东证采集器也必须桩掉:
+    漏桩会在 source=all 分支触发真 MCP 网络 + 真 LLM(2026-09-08 全量回归
+    曾因此卡 20 分钟)。
     """
     fx = types.ModuleType("research_collector")
     fx.ingest_all = lambda dry_run=False: calls.append(("fx", dry_run)) or {"collected": 1}
@@ -71,13 +73,19 @@ def _fake_collectors(monkeypatch, calls):
         calls.append(("gtja", days, requested, dry_run)) or {"collected": 3}
     )
     gtja.TARGET_VARIETIES = ("MA", "TA", "UR", "SA", "FG")
+    dz = types.ModuleType("research_collector_dongzheng")
+    dz.ingest_recent = (
+        lambda days=1, dry_run=False, **kw:
+        calls.append(("dz", days, dry_run)) or {"collected": 4}
+    )
     monkeypatch.setitem(sys.modules, "research_collector", fx)
     monkeypatch.setitem(sys.modules, "research_collector_htfc", htfc)
     monkeypatch.setitem(sys.modules, "research_collector_gtja", gtja)
+    monkeypatch.setitem(sys.modules, "research_collector_dongzheng", dz)
 
 
 def test_collect_all_runs_both_collectors(monkeypatch):
-    """source=all(缺省):发现报告 ingest_all + 华泰天玑 ingest_today(今天) + 国君 ingest_recent 都被调用。"""
+    """source=all(缺省):发现报告 + 华泰天玑 + 国君 + 东证繁微 四源都被调用。"""
     calls = []
     _fake_collectors(monkeypatch, calls)
 
@@ -90,10 +98,11 @@ def test_collect_all_runs_both_collectors(monkeypatch):
     assert ("fx", False) in calls
     assert ("htfc", time.strftime("%Y-%m-%d"), None, False) in calls
     assert ("gtja", 1, None, False) in calls
+    assert ("dz", 1, False) in calls
 
 
 def test_collect_htfc_only_skips_fxbaogao(monkeypatch):
-    """source=htfc:只调华泰天玑,不碰发现报告/国君。"""
+    """source=htfc:只调华泰天玑,不碰发现报告/国君/东证。"""
     calls = []
     _fake_collectors(monkeypatch, calls)
 

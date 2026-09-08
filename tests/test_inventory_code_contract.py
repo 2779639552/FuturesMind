@@ -26,7 +26,9 @@ def test_all_inv_codes_valid_for_akshare():
     bad = {
         code: meta["inv_code"]
         for code, meta in VARIETY_METADATA.items()
-        if meta.get("inv_code") not in valid
+        # inv_code 允许显式空串 = 声明"该品种无仓单库存数据源"(如 BZ/PR 新品种),
+        # 非空则必须落在 akshare 合法表内
+        if meta.get("inv_code") and meta["inv_code"] not in valid
     }
     assert not bad, f"以下品种 inv_code 不在 akshare 表内: {bad}"
 

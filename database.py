@@ -122,6 +122,8 @@ class AgentSenseDB:
             if cols and "report_type" not in cols:
                 c.execute("ALTER TABLE research_reports ADD COLUMN report_type TEXT DEFAULT ''")
                 self._backfill_report_type(c)
+            if cols and "layout_text" not in cols:
+                c.execute("ALTER TABLE research_reports ADD COLUMN layout_text TEXT DEFAULT ''")
 
     def _backfill_report_type(self, c):
         """存量研报类型(日报/周报)回填(加列后立即执行,幂等可重跑)。
@@ -329,6 +331,7 @@ class AgentSenseDB:
                     file_path TEXT DEFAULT '',
                     status TEXT DEFAULT 'processing',  -- processing / done / error
                     extracted_text TEXT DEFAULT '',
+                    layout_text TEXT DEFAULT '',       -- 版面感知提取全文(2026-09-08 方案三:图表聚成【图】/【表】块;仅供 RAG 消费,前端不展示)
                     structured_data TEXT DEFAULT '',   -- LLM 提取的结构化数据 JSON
                     conclusion_md TEXT DEFAULT '',     -- LLM 观点分析结论(markdown)
                     direction TEXT DEFAULT '',         -- 看多 / 看空 / 中性
@@ -340,6 +343,21 @@ class AgentSenseDB:
                     created_at TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_research_variety ON research_reports(variety);
+                CREATE TABLE IF NOT EXISTS user_datasets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT DEFAULT '',          -- 原始文件名(展示用)
+                    file_path TEXT DEFAULT '',         -- 落盘路径(~/.tradingagents/user_datasets/)
+                    variety TEXT DEFAULT '',           -- 品种代码(上传表单指定或 LLM 识别;空=未能识别)
+                    client_tag TEXT DEFAULT '',        -- 上传者客户端标识(IP,2026-09-07):数据仅在与上传电脑相同的客户端发起的分析中注入(隔离多机访问)
+                    data_type TEXT DEFAULT '',         -- 数据类型(LLM 判断,如 供需基本面/开工率/库存)
+                    spec TEXT DEFAULT '',              -- LLM 产出的解析规格 JSON(date_column/columns[]/frequency/notes)
+                    data TEXT DEFAULT '',              -- 归一化数据行 JSON(list[dict],截断上限 MAX_USER_DATASET_ROWS)
+                    row_count INTEGER DEFAULT 0,       -- 归一化后行数
+                    status TEXT DEFAULT 'processing',  -- processing / done / error
+                    error TEXT DEFAULT '',             -- 失败原因(status=error 时)
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_user_datasets_variety ON user_datasets(variety);
             """)
 
     # ── Posts ──────────────────────────────────────────────────────────
@@ -547,7 +565,7 @@ class AgentSenseDB:
         【返回】int: 新告警的自增 id(c.lastrowid)。
         """
         with self._conn() as c:
-            c.execute(
+            cur = c.execute(
                 "INSERT INTO alerts (alert_type, variety, title, message, severity, data) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     alert_type,
@@ -558,7 +576,10 @@ class AgentSenseDB:
                     json.dumps(data or {}, ensure_ascii=False),  # 【调用函数】把附加数据字典序列化为 JSON 文本存库
                 ),
             )
-            return c.lastrowid
+            # 【关键 2026-09-07】lastrowid 在 cursor 上,Connection 没有 —— 旧写法
+            # `return c.lastrowid` 每次必抛 AttributeError,导致所有调度任务在第一步
+            # 写"started"告警时炸掉,采集静默停摆(告警表恒空)。
+            return cur.lastrowid
 
     def get_alerts(self, limit=50, unacknowledged_only=False) -> list[dict]:
         """查询告警列表。
@@ -879,7 +900,7 @@ class AgentSenseDB:
         """
         allowed = {
             "title", "source", "variety", "filename", "file_path", "status",
-            "extracted_text", "structured_data", "conclusion_md",
+            "extracted_text", "layout_text", "structured_data", "conclusion_md",
             "direction", "confidence", "error", "varieties", "publish_date", "report_type",
         }
         sets, params = [], []
@@ -989,4 +1010,73 @@ class AgentSenseDB:
         """
         with self._conn() as c:
             cur = c.execute("DELETE FROM research_reports WHERE id=?", (report_id,))
+            return cur.rowcount > 0
+
+    # ── User Datasets(自传数据,2026-09-07) ─────────────────────────────
+
+    def insert_user_dataset(self, filename: str, file_path: str, variety: str = "",
+                            client_tag: str = "") -> int:
+        """新建一条自传数据记录(初始 processing,等待后台 LLM 解析)。"""
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO user_datasets (filename, file_path, variety, client_tag) VALUES (?, ?, ?, ?)",
+                (filename, str(file_path), (variety or "").upper(), client_tag or ""),
+            )
+            return cur.lastrowid  # lastrowid 在 cursor 上(勿犯 create_alert 旧错)
+
+    def update_user_dataset(self, dataset_id: int, **fields):
+        """按 id 更新自传数据记录的任意字段(status/spec/data/variety/...)。"""
+        if not fields:
+            return
+        sets = ", ".join(f"{k}=?" for k in fields)
+        with self._conn() as c:
+            c.execute(
+                f"UPDATE user_datasets SET {sets} WHERE id=?",
+                (*fields.values(), dataset_id),
+            )
+
+    def list_user_datasets(self, variety: str | None = None,
+                           client_tag: str | None = None) -> list[dict]:
+        """自传数据列表(元数据,不含 data/spec 大字段);variety/client_tag 过滤可选。"""
+        sql = ("SELECT id, filename, variety, client_tag, data_type, row_count, status, error, created_at"
+               " FROM user_datasets")
+        conds = []
+        params: list = []
+        if variety:
+            conds.append("variety=?")
+            params.append(variety.upper())
+        if client_tag is not None:
+            conds.append("client_tag=?")
+            params.append(client_tag)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY id DESC"
+        with self._conn() as c:
+            rows = c.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_user_dataset(self, dataset_id: int) -> dict | None:
+        """按 id 取自传数据全字段(含 spec/data JSON 文本);不存在返回 None。"""
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM user_datasets WHERE id=?", (dataset_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_active_user_datasets(self, variety: str, client_tag: str = "") -> list[dict]:
+        """取某品种某客户端全部 done 状态的自传数据(全字段,分析师注入用)。
+
+        【关键】client_tag 精确匹配 —— 自传数据只在与上传电脑相同客户端发起的
+                分析中注入(用户要求:仅在上传电脑上使用);空 tag 不匹配任何行。
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM user_datasets WHERE variety=? AND client_tag=? AND status='done'"
+                " ORDER BY id DESC",
+                ((variety or "").upper(), client_tag or ""),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_user_dataset(self, dataset_id: int) -> bool:
+        """按 id 删除自传数据记录;删除成功返回 True,不存在返回 False。"""
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM user_datasets WHERE id=?", (dataset_id,))
             return cur.rowcount > 0

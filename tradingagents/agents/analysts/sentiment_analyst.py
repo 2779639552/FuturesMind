@@ -57,6 +57,7 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_variety_info,
     get_verified_quote,
     research_macro_context,  # 【调用包】研报宏观事件上下文(确定性注入用,非 @tool)
+    user_data_context,  # 【调用包】用户自传数据上下文(确定性注入用,非 @tool)
 )  # 【调用包】商品期货情绪/行情/品种信息/核验报价工具;情绪数据由 get_futures_sentiment 读取(思路2 项目采集),机构群体由 get_research_view_summary 读取(研报方向聚合,2026-09-03)
 from tradingagents.dataflows.sentiment_data import load_sentiment_data, sentiment_quality  # 【调用包】情绪数据质量门控(等级/权重上限);节点产出报告前注入机器可读横幅,供辩论/综合节点读取并强制 cap
 
@@ -281,7 +282,7 @@ def create_commodity_sentiment_analyst(llm, label="Sentiment", progress_callback
 **4. Platform Consistency Check**:
    - Multi-platform agreement (e.g., Weibo + Zhihu + XHS all bullish) → higher signal confidence.
    - Platform divergence (e.g., Weibo bullish but Zhihu bearish) → market is divided → higher uncertainty → wider range expected.
-   - Zhihu tends to attract more analytical/institutional-adjacent voices; Weibo is more retail. Divergence between them is informative.
+   - Zhihu tends to attract more analytical/institutional-adjacent voices; Weibo is more retail. Douyin comment text (抖音评论) captures the shortest-attention retail crowd. Divergence between them is informative.
 
 **5. Retail Positioning as Contrarian Indicator**:
    - Social media sentiment is inherently RETAIL-skewed. Treat strong consensus as a contrarian signal.
@@ -333,7 +334,7 @@ Write a detailed sentiment analysis report (350-500 words). Structure it as TWO 
 - **① 散户(社媒)群体·情绪概况**: direction, strength, trend, key stats (bullish/bearish/neutral ratios, score).
 - **② 散户·极端信号检测**: Any extreme readings (>70% one side)? Contrarian implications?
 - **③ 散户·情绪-价格背离分析**: Cross-reference social sentiment with price. Any divergences?
-- **④ 散户·平台一致性**: Are platforms (Weibo/Zhihu/XHS) agreeing or diverging?
+- **④ 散户·平台一致性**: Are platforms (Weibo/Zhihu/XHS/抖音评论) agreeing or diverging?
 - **⑤ 散户·关键叙事**: Dominant narratives driving the retail crowd.
 - **⑥ 机构(研报)群体**: 机构方向计数(看多/中性/看空各几份)、平均置信度、主要研报叙事与一致性;
   若 RESEARCH_VIEW_NO_DATA 则如实写"机构侧暂无在库研报",不要编造。
@@ -370,6 +371,15 @@ End with:
         if research_macro:
             system_message = research_macro + "\n\n" + system_message
         # --- End Research Report Injection ---
+
+        # --- User Uploaded Data Injection (2026-09-07) ---
+        # 【用户自传数据注入】追加在研报块之后 → 拼接后位于其**之上**(最高优先级
+        # 置顶)。块内自带权重规则(覆盖范围内以用户数据为准)。仅在与上传电脑
+        # 相同客户端发起的分析中注入(state["client_tag"];后台跑批无 tag 不注入)。
+        user_data = user_data_context(symbol, state.get("client_tag") or "")
+        if user_data:
+            system_message = user_data + "\n\n" + system_message
+        # --- End User Data Injection ---
 
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [

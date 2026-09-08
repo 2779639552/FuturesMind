@@ -576,14 +576,17 @@ class TestOpinionConclusionPromptShape:
             [{"variety": "RB", "direction": "看多", "confidence": 0.8}],
         )
         p = llm.prompt
-        # 第一部分:七固定小节齐备(2026-09-03 交易要素化,新增 交易要素与风险)
+        # 第一部分:八固定小节齐备(2026-09-03 交易要素化;2026-09-07 新增 多空要点)
         for sec in ("## 供需格局", "## 库存与结构", "## 成本与利润",
                     "## 现货与目标价", "## 事件与驱动", "## 观点与依据",
-                    "## 交易要素与风险"):
+                    "## 多空要点", "## 交易要素与风险"):
             assert sec in p
-        # 篇幅要求(第一部分 340 字左右)+ 未披露明说(严禁编造)
-        assert "340 字左右" in p
+        # 篇幅要求(第一部分 360 字左右)+ 未披露明说(严禁编造)
+        assert "360 字左右" in p
         assert "研报未披露该指标" in p
+        # 多空要点节格式(2026-09-07 观点要点新口径:综述+利多/利空带逻辑/风险)
+        for hint in ("综述：", "利多：", "利空：", "逻辑：", "风险："):
+            assert hint in p
         # 五要素引导词(交易行硬约束:单行分号分隔,缺失写 —)
         for hint in ("方向", "形态与区间", "单边", "区间震荡", "头寸", "头寸范围", "风险"):
             assert hint in p
@@ -924,6 +927,70 @@ class TestResearchViewsHelpers:
         assert "\n" in out                            # 按节换行成多行要点
         assert "数据支撑" not in out                  # 节边界:不混入数据支撑/建议权重
         assert "##" not in out                        # 装饰符已剥
+
+    # ── 新口径(2026-09-07):『多空要点』节 → 综述 → 利多/利空(逻辑/风险) ──
+    _NEW_FMT = (
+        "## 供需格局\n"
+        "9 月 1 日美伊互袭后供应风险溢价抬升,SC 强势。\n"
+        "\n"
+        "## 观点与依据\n"
+        "SC 看多:地缘供应扰动是本轮核心驱动,跟踪霍尔木兹海峡通航。\n"
+        "\n"
+        "## 多空要点\n"
+        "综述：地缘溢价支撑,SC 短期单边看多(540~560)\n"
+        "利多：地缘供应扰动(逻辑：美伊互袭推升风险溢价；风险：停火协议快速落地)\n"
+        "利空：OPEC 增产(逻辑：增产节奏加快压制价格；风险：实际执行不及声明)\n"
+        "\n"
+        "## 交易要素与风险\n"
+        "方向:看多;形态与区间:单边看多, 运行区间 540~560;头寸:轻仓;头寸范围:—;"
+        "风险:OPEC 增产超预期。\n"
+        "\n"
+        "## 数据支撑\n"
+        "- 9/1 布伦特 78.2 美元/桶。\n"
+    )
+
+    def test_extract_new_format_overview_then_duo_points(self):
+        # 新口径:综述居首,其后利多/利空条目各带逻辑/风险;推理链小节不再进单元格
+        out = web_app._extract_key_opinion(self._NEW_FMT, include_trade=False)
+        assert out.startswith("综述：地缘溢价支撑")      # 综述第一
+        lines = out.split("\n")
+        assert any(ln.startswith("利多：") for ln in lines)
+        assert any(ln.startswith("利空：") for ln in lines)
+        assert "逻辑：美伊互袭推升风险溢价" in out       # 看法附逻辑支持
+        assert "风险：停火协议快速落地" in out           # 看法附风险来源
+        assert "供需格局" not in out                     # 推理链行被多空要点取代
+        assert "交易要素" not in out                     # include_trade=False 剔除交易行
+        assert "数据支撑" not in out
+
+    def test_extract_new_format_trade_row_last(self):
+        # 新口径 + include_trade=True(每日总结):综述→利多/利空→交易行收尾
+        out = web_app._extract_key_opinion(self._NEW_FMT)
+        lines = out.split("\n")
+        assert lines[0].startswith("综述：")              # 综述优先于 09-04 的交易行前置
+        assert lines[-1].startswith("交易要素与风险：")   # 交易行让位到末行
+        assert "头寸:轻仓" in out
+
+    def test_parse_duo_points_noise_tolerant(self):
+        # 解析器容错:半角冒号/markdown 装饰/条目折行照常切分;无前缀正文降级为综述
+        body = "**综述：SC 短期看多**\n利多:低库存(逻辑：港口去库；风险：到港回升)"
+        out = web_app._parse_duo_points(body)
+        assert out[0].startswith("综述：SC 短期看多")
+        assert out[1] == "利多：低库存(逻辑：港口去库；风险：到港回升)"
+        # 整段无任何前缀 → 整体降级为综述一行
+        assert web_app._parse_duo_points("供应偏紧,震荡偏强。") == ["综述：供应偏紧,震荡偏强。"]
+        # 未披露占位 → 空列表(调用方回落旧口径渲染)
+        assert web_app._parse_duo_points("研报未披露该指标。") == []
+        # LLM 违规写成 markdown 表格(实测 id=164)→ 表格行还原为条目行
+        table = (
+            "| 方向 | 要点 |\n|------|------|\n"
+            "| 综述 | 供需弱稳,期价或区间震荡。 |\n"
+            "| 利多 | 检修预期（逻辑：9月供应或短暂下降；风险：检修不及预期） |\n"
+        )
+        out = web_app._parse_duo_points(table)
+        assert out == [
+            "综述：供需弱稳,期价或区间震荡。",
+            "利多：检修预期（逻辑：9月供应或短暂下降；风险：检修不及预期）",
+        ]
 
     def test_extract_trade_section_blank_uses_dash(self):
         # 交易要素节为占位/空 → 该行给 —,但仍前置为首行(结构完整、不编造)
@@ -1558,6 +1625,35 @@ def test_views_route_groups_by_publish_date(isolated_dirs):
     body2 = client.get("/api/research/views?variety=RB&date=2026-09-02").get_json()
     assert [r["id"] for r in body2["rows"]] == [2]
     assert body2["rows"][0]["publish_date"] == ""
+
+
+def test_views_route_filters_by_report_type(isolated_dirs):
+    """日报/周报结论分开统计(2026-09-07):report_type 参数先按类型过滤再算日期并集,
+    纯周报日期不混进日报口径;不带参数保持全量兼容。
+    口径与每日/周报总结一致:「日报」=非周报行(未打类型也算日报口径)。"""
+    _write_research(isolated_dirs, "RB", [
+        {"id": 1, "title": "螺纹日报", "source": "国君", "uploaded_at": "2026-09-04 08:00:00",
+         "publish_date": "2026-09-04", "report_type": "日报", "direction": "看多",
+         "confidence": 0.7, "conclusion": "## 观点与依据\n偏强。", "data_points": {}},
+        {"id": 2, "title": "螺纹周报", "source": "国君", "uploaded_at": "2026-09-06 10:00:00",
+         "publish_date": "2026-09-05", "report_type": "周报", "direction": "中性",
+         "confidence": None, "conclusion": "## 观点与依据\n震荡。", "data_points": {}},
+        {"id": 3, "title": "未标注类型", "source": "国君", "uploaded_at": "2026-09-04 12:00:00",
+         "publish_date": "2026-09-04", "report_type": "", "direction": "中性",
+         "confidence": None, "conclusion": "## 观点与依据\n震荡。", "data_points": {}},
+    ])
+    client = web_app.app.test_client()
+    daily = client.get("/api/research/views?variety=RB&report_type=日报").get_json()
+    assert daily["dates"] == ["2026-09-04"]          # 周报的 09-05 桶不进日报口径
+    assert [r["id"] for r in daily["rows"]] == [3, 1]  # 未打类型行也算日报口径(行按入库时间倒序)
+    weekly = client.get("/api/research/views?variety=RB&report_type=周报").get_json()
+    assert weekly["dates"] == ["2026-09-05"]
+    assert [r["id"] for r in weekly["rows"]] == [2]
+    # 不带类型 → 全量口径(旧行为不变):日期并集含两种类型,缺省仍取最新日期桶
+    both = client.get("/api/research/views?variety=RB").get_json()
+    assert both["dates"] == ["2026-09-05", "2026-09-04"]  # 日期倒序(最新在前)
+    assert both["date"] == "2026-09-05"
+    assert [r["id"] for r in both["rows"]] == [2]
 
 
 def test_write_aggregates_carries_report_type(isolated_dirs):

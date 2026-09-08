@@ -5,15 +5,15 @@
      页面角色: AgentSense 前端单页应用 (SPA)
      —— 项目约 80% 的业务逻辑都集中在页面底部 script 代码块中的 App 对象里，
         本页只是 1 个 HTML 文件, 用 CSS 变量实现暗/亮主题, 用 ECharts 画图。
-     9 个标签页 (由顶部导航 <nav id="nav"> 的 9 个按钮切换, 见 App.switchTab):
+     6 个标签页 (由顶部导航 <nav id="nav"> 的 6 个按钮切换, 见 App.switchTab):
          tab-run       运行分析   —— 10 节点多智能体分析管线
-         tab-sentiment 情绪数据   —— 情绪得分/价格走势叠加图 + 采集帖子 + 情绪信号回测(并入)
-         tab-analysis  分析工具   —— 异常检测/分歧度/领先滞后/作者/事件/Agent验证等
+         tab-research  研报       —— 每日总结/研报问答/国君周度观点/逐品种观点总览(2026-09-08 调序)
+         tab-sentiment 情绪数据   —— 情绪得分/价格走势叠加图 + 采集帖子 + 情绪信号回测 +
+                                    分析工具(2026-09-07 并入) + 数据更新(2026-09-08 并入)
          tab-trading   模拟交易   —— 各种策略的单卡回测 + 多策略对比
-         tab-update    数据更新   —— 一键触发多平台采集更新
-         tab-history   历史报告   —— 历史分析报告列表与查看/下载
-         tab-system    系统       —— 定时调度/数据概览/告警/采集历史
          tab-dashboard 数据看板   —— 仓单/库存/价格/基差展示与关联分析(2026-09-01 新增)
+         tab-warehouse 数据仓库   —— 研报上传/研报库/国君基差仓单数据集 +
+                                    历史分析报告(2026-09-08 并入; 原系统页同日删除)
      图表库: ECharts (/static/echarts.min.js), 所有图表容器见 _initChart。
      Markdown 渲染: marked.js (/static/marked.min.js), 用于展示报告正文。
      主题: 暗色为主, 品牌色 #ff5a1f (橙色), 支持亮/暗切换 (localStorage 记忆)。
@@ -498,6 +498,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 .platform-tag.xhs { background: rgba(255,90,31,0.2); color: var(--brand); }
 .platform-tag.xueqiu { background: rgba(14,165,233,0.2); color: #0ea5e9; }
 .platform-tag.eastmoney_guba { background: rgba(245,158,11,0.2); color: #f59e0b; }
+.platform-tag.douyin { background: rgba(254,44,85,0.2); color: #fe2c55; }
 
 /* ============================================================
    COLLAPSIBLE / EXPANDER
@@ -654,21 +655,19 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <h1><span class="brand-orange">Agent</span><span class="brand-white">Sense</span></h1>
     <span class="header-badge">v2.5</span>
   </div>
-  <!-- 顶部导航: 10 个按钮对应 10 个标签页, data-tab 值 = 各 <div id="tab-xxx"> 的 xxx。
+  <!-- 顶部导航: 6 个按钮对应 6 个标签页, data-tab 值 = 各 <div id="tab-xxx"> 的 xxx。
        App._bindNav 会给每个按钮绑定点击事件 → App.switchTab(t) 完成切换(含懒加载)。
        2026-09-01: 回测并入情绪数据页, 新增数据看板(仓单/库存/价格关联分析)。
        2026-09-02: 新增研报页(上传 PDF/图片/MD 研报 → LLM 结构化, 最高优先级数据源)。
        2026-09-03: 新增数据仓库页(研报资产上传/研报库带来源徽标 + 国君基差/仓单数据集);
-                   研报页收窄为观点分析(逐品种观点总览 + 国君周度观点); 国君晨报日度下线。 -->
+                   研报页收窄为观点分析(逐品种观点总览 + 国君周度观点); 国君晨报日度下线。
+       2026-09-08: 数据更新并入情绪数据页; 历史报告并入数据仓库页; 系统页删除(备份:
+                   backup/web_template_pre_tab_merge_2026-09-08.html)。 -->
   <nav id="nav">
     <button class="active" data-tab="run">运行分析</button>
     <button data-tab="research">研报</button>
     <button data-tab="sentiment">情绪数据</button>
-    <button data-tab="analysis">分析工具</button>
     <button data-tab="trading">模拟交易</button>
-    <button data-tab="update">数据更新</button>
-    <button data-tab="history">历史报告</button>
-    <button data-tab="system">系统</button>
     <button data-tab="dashboard">数据看板</button>
     <button data-tab="warehouse">数据仓库</button>
   </nav>
@@ -873,86 +872,16 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <div class="card"><h3>品种级方向准确率</h3><div class="chart-container" id="chart-varieties"></div></div>
   </div>
   <div class="grid grid-3" id="backtest-stats"></div>
-</div>
 
-<!-- ================================================================
-     TAB: Data Update
-     ================================================================ -->
-<!-- ============ 标签页 6: 数据更新 ============
-     做什么: 配置各平台采集参数(每关键词条数/最低帖数/起始日期/勾选平台),
-     点击「一键更新」通过 SSE 实时日志展示 多平台采集→粉丝解析→情绪聚合→回测→生成JSON 的流水线进度。 -->
-<div id="tab-update" class="tab">
-  <div class="expander" style="margin-bottom:14px">
-    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
-      📖 说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
-    </div>
-    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
-      <b>流水线</b>：多平台采集→粉丝解析→情绪聚合(作者加权)→回测调优→生成JSON→平台统计。<br>
-      <b>每关键词条数</b>：每个品种关键词搜索多少条帖子。微博API每词最多约20条。<br>
-      <b>最低帖数阈值</b>：品种帖子数少于此值则不生成情绪JSON。<br>
-      <b>收集起始日期</b>：只保留该日期之后的帖子。注意：平台API本身只返回近1-3个月数据。<br>
-      <b>平台</b>：微博(快,3min) | 知乎(慢,10min) | 小红书(反爬) | 雪球(Playwright,5min) | 东财股吧(免登录,2min)。
-    </div>
+  <!-- ============ 分析工具 (2026-09-07 由独立 tab-analysis 并入本页) ============
+       做什么: 情绪数据衍生分析工具, 子导航切换 7 个子模块:
+       综合分析(异常检测/分歧度/领先滞后/排名/对比)、作者影响力、事件提取、
+       图谱、框架说明(架构介绍)、Agent验证、Agent回测。 -->
+  <div style="display:flex;align-items:center;gap:10px;margin:26px 0 12px">
+    <h2 style="margin:0">🧰 分析工具</h2>
+    <span style="font-size:0.75rem;color:var(--text-muted)">情绪衍生分析 · 子导航切换</span>
   </div>
-  <div class="grid grid-2" style="margin-bottom:16px">
-    <div class="card">
-      <h3>数据更新配置</h3>
-      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
-        <div style="flex:1;min-width:110px"><label>每关键词条数</label><input type="number" id="update-perkw" value="15" min="5" max="50"></div>
-        <div style="flex:1;min-width:110px"><label>最低帖数阈值</label><input type="number" id="update-minnotes" value="3" min="1" max="20"></div>
-        <div style="flex:1;min-width:140px"><label>收集起始日期 (可选)</label><input type="date" id="update-since" value="" onchange="App.updatePlatformHint()" placeholder="不限"></div>
-        <button class="btn btn-green" id="btn-update" onclick="App.runDataUpdate()">一键更新</button>
-      </div>
-      <div style="margin-top:8px;font-size:0.82rem">
-        <label style="cursor:pointer;margin-right:14px;display:inline"><input type="checkbox" id="plat-weibo" checked onchange="App.updatePlatformHint()"> 微博</label>
-        <label style="cursor:pointer;margin-right:14px;display:inline"><input type="checkbox" id="plat-zhihu" onchange="App.updatePlatformHint()"> 知乎</label>
-        <label style="cursor:pointer;display:inline"><input type="checkbox" id="plat-xhs" onchange="App.updatePlatformHint()"> 小红书</label>
-        <label style="cursor:pointer;display:inline;margin-left:14px"><input type="checkbox" id="plat-xueqiu" onchange="App.updatePlatformHint()"> 雪球</label>
-        <label style="cursor:pointer;display:inline;margin-left:14px"><input type="checkbox" id="plat-emg" onchange="App.updatePlatformHint()"> 东财股吧</label>
-      </div>
-      <div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)" id="platform-hint">流程: 多平台采集 → 粉丝解析 → 情绪聚合 → 回测 → 生成JSON</div>
-      <div style="margin-top:4px;font-size:0.72rem;color:var(--amber)">
-        ⚠ 平台搜索API通常只返回近1-3个月数据。「收集起始日期」用于过滤结果，不能突破平台API的时间限制。
-      </div>
-    </div>
-    <div class="card">
-      <h3>当前数据概览 <span class="badge badge-info" id="update-stats"></span></h3>
-      <div id="update-summary" style="font-size:0.84rem;color:var(--text-secondary)">点击更新后显示</div>
-    </div>
-  </div>
-  <div class="card"><h3>更新日志</h3><div class="progress-log" id="update-log" style="min-height:280px"></div></div>
-</div>
 
-<!-- ================================================================
-     TAB: History
-     ================================================================ -->
-<!-- ============ 标签页 7: 历史报告 ============
-     做什么: 列出所有历史分析报告(品种/时间/大小), 点击查看详细内容(含 RATING 信号横幅),
-     可下载 Markdown 或 PDF 版本。 -->
-<div id="tab-history" class="tab">
-  <div class="card"><h3>历史分析报告</h3><div id="history-list"></div></div>
-  <div class="card" id="report-viewer" style="display:none;margin-top:16px">
-    <h3>
-      报告内容
-      <span style="margin-left:auto;display:flex;gap:8px">
-        <button class="btn btn-outline btn-sm" onclick="App.openReportHtml()">↗ 网页版</button>
-        <button class="btn btn-outline btn-sm" id="btn-download-md" onclick="App.downloadReport('md')">📥 MD</button>
-        <button class="btn btn-outline btn-sm" id="btn-download-pdf" onclick="App.downloadReport('pdf')">📄 PDF</button>
-      </span>
-    </h3>
-    <div class="report-content" id="report-content"></div>
-  </div>
-</div>
-
-
-<!-- ================================================================
-     TAB: Analysis Tools (P1)
-     ================================================================ -->
-<!-- ============ 标签页 3: 分析工具 ============
-     做什么: 一套情绪数据衍生分析工具, 顶部子导航切换 6 个子模块:
-     综合分析(异常检测/分歧度/领先滞后/排名/对比)、作者影响力、事件提取、
-     框架说明(架构介绍)、Agent验证、Agent回测。 -->
-<div id="tab-analysis" class="tab">
   <!-- Info -->
   <div class="expander" style="margin-bottom:14px">
     <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
@@ -1162,6 +1091,54 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       </div>
     </div>
   </div>
+
+  <!-- ============ 数据更新(2026-09-08 由独立 tab-update 并入情绪数据页) ============
+       做什么: 配置各平台采集参数(每关键词条数/最低帖数/起始日期/勾选平台),
+       点击「一键更新」通过 SSE 实时日志展示 多平台采集→粉丝解析→情绪聚合→回测→生成JSON 的流水线进度。 -->
+  <div style="display:flex;align-items:center;gap:10px;margin:26px 0 12px">
+    <h2 style="margin:0">🔄 数据更新</h2>
+    <span style="font-size:0.75rem;color:var(--text-muted)">多平台情绪数据采集流水线</span>
+  </div>
+  <div class="expander" style="margin-bottom:14px">
+    <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
+      📖 说明 <span style="font-size:0.7rem;color:var(--text-muted)">点击展开</span><span class="arrow">▶</span>
+    </div>
+    <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
+      <b>流水线</b>：多平台采集→粉丝解析→情绪聚合(作者加权)→回测调优→生成JSON→平台统计。<br>
+      <b>每关键词条数</b>：每个品种关键词搜索多少条帖子。微博API每词最多约20条。<br>
+      <b>最低帖数阈值</b>：品种帖子数少于此值则不生成情绪JSON。<br>
+      <b>收集起始日期</b>：只保留该日期之后的帖子。注意：平台API本身只返回近1-3个月数据。<br>
+      <b>平台</b>：微博(快,3min) | 知乎(慢,10min) | 小红书(反爬) | 雪球(Playwright,5min) | 东财股吧(免登录,2min)。
+    </div>
+  </div>
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <h3>数据更新配置</h3>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div style="flex:1;min-width:110px"><label>每关键词条数</label><input type="number" id="update-perkw" value="15" min="5" max="50"></div>
+        <div style="flex:1;min-width:110px"><label>最低帖数阈值</label><input type="number" id="update-minnotes" value="3" min="1" max="20"></div>
+        <div style="flex:1;min-width:140px"><label>收集起始日期 (可选)</label><input type="date" id="update-since" value="" onchange="App.updatePlatformHint()" placeholder="不限"></div>
+        <button class="btn btn-green" id="btn-update" onclick="App.runDataUpdate()">一键更新</button>
+      </div>
+      <div style="margin-top:8px;font-size:0.82rem">
+        <label style="cursor:pointer;margin-right:14px;display:inline"><input type="checkbox" id="plat-weibo" checked onchange="App.updatePlatformHint()"> 微博</label>
+        <label style="cursor:pointer;margin-right:14px;display:inline"><input type="checkbox" id="plat-zhihu" onchange="App.updatePlatformHint()"> 知乎</label>
+        <label style="cursor:pointer;display:inline"><input type="checkbox" id="plat-xhs" onchange="App.updatePlatformHint()"> 小红书</label>
+        <label style="cursor:pointer;display:inline;margin-left:14px"><input type="checkbox" id="plat-xueqiu" onchange="App.updatePlatformHint()"> 雪球</label>
+        <label style="cursor:pointer;display:inline;margin-left:14px"><input type="checkbox" id="plat-emg" onchange="App.updatePlatformHint()"> 东财股吧</label>
+        <label style="cursor:pointer;display:inline;margin-left:14px"><input type="checkbox" id="plat-douyin" onchange="App.updatePlatformHint()"> 抖音</label>
+      </div>
+      <div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)" id="platform-hint">流程: 多平台采集 → 粉丝解析 → 情绪聚合 → 回测 → 生成JSON</div>
+      <div style="margin-top:4px;font-size:0.72rem;color:var(--amber)">
+        ⚠ 平台搜索API通常只返回近1-3个月数据。「收集起始日期」用于过滤结果，不能突破平台API的时间限制。
+      </div>
+    </div>
+    <div class="card">
+      <h3>当前数据概览 <span class="badge badge-info" id="update-stats"></span></h3>
+      <div id="update-summary" style="font-size:0.84rem;color:var(--text-secondary)">点击更新后显示</div>
+    </div>
+  </div>
+  <div class="card"><h3>更新日志</h3><div class="progress-log" id="update-log" style="min-height:280px"></div></div>
 </div>
 
 <!-- ================================================================
@@ -1316,33 +1293,6 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
   <div class="card"><h3>最近交易明细</h3><div id="trading-detail" style="overflow-x:auto"></div></div>
 </div>
 
-<!-- ================================================================
-     TAB: System (P0 status)
-     ================================================================ -->
-<!-- ============ 标签页 8: 系统 ============
-     做什么: 运维监控 —— 定时采集调度的启停、数据库帖子总量与各平台概况、
-     告警列表(可确认)、采集历史表格。 -->
-<div id="tab-system" class="tab">
-  <div class="grid grid-3" style="margin-bottom:14px">
-    <div class="card">
-      <h3>定时采集调度</h3>
-      <div id="scheduler-status">加载中...</div>
-      <div style="margin-top:10px;display:flex;gap:8px">
-        <button class="btn btn-primary btn-sm" onclick="App.schedulerControl('start')">启动</button>
-        <button class="btn btn-red btn-sm" onclick="App.schedulerControl('stop')">停止</button>
-      </div>
-    </div>
-    <div class="card">
-      <h3>数据概览</h3><div id="db-stats">加载中...</div>
-    </div>
-    <div class="card">
-      <h3>告警 <span class="badge badge-bear" id="alert-count"></span></h3>
-      <div id="alerts-list" style="max-height:250px;overflow-y:auto;font-size:0.82rem"></div>
-    </div>
-  </div>
-  <div class="card"><h3>采集历史</h3><div id="collection-history" style="overflow-x:auto"></div></div>
-</div>
-
 <!-- ============ 标签页 8: 数据看板 (2026-09-01 新增) ============
      做什么: 集中展示品种的 价格/仓单库存/基差 三类基本面数据, 并自动计算它们之间的关联
      (价格-库存 Pearson R / 库存趋势 / 最新基差率 / 近 5 日背离检测);
@@ -1396,6 +1346,9 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
   </div>
   <div class="card"><h3>仓单库存日变化</h3><div class="chart-container" id="chart-dash-inv-chg" style="height:300px"></div></div>
 
+  <!-- 盘面利润(独立卡, 由 _renderMarginSection 动态填充; 仅 RB/HC/J 有配方, 其余品种隐藏) -->
+  <div id="dash-margin"></div>
+
   <!-- 研报基本面指标(独立卡, 由 _renderResearchSection 动态填充; 基差走上方叠加) -->
   <div id="dash-research"></div>
 
@@ -1420,7 +1373,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
       <b>本页做什么</b>：汇总多渠道自动采集（发现报告 2 家 + 华泰天玑 21 品种日报 + 国泰君安云 API）与手工上传的研报，
       经 LLM 结构化提取（品种 / 方向 / 基差·库存·开工率等指标 / 关键事件）与结论生成，形成
-      「逐品种观点总览」「研报每日总结」「国君周度观点」三张视图；研报原件与逐篇明细在「数据仓库」页的研报库。<br>
+      「研报每日总结」「研报问答」「国君周度观点」「逐品种观点总览」四张视图；研报原件与逐篇明细在「数据仓库」页的研报库。<br>
       <b>置信度（confidence）如何给出</b>：不是公式计算，而是提取模型对「该方向判断」的把握度评分（0~1 小数），
       依据研报的方向倾向强度、数据与事件支撑是否充分、作者语气是否谨慎、证据间是否自洽，并按下列语义分档约束区间：
       <table style="border-collapse:collapse;margin:6px 0;font-size:0.8rem">
@@ -1434,7 +1387,63 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       数值是模型的判断把握度而非统计概率，仅供研究参考，非交易建议。
     </div>
   </div>
-  <!-- 逐品种观点总览卡片(研报页收窄为"观点分析"专用; 资产管理已迁「数据仓库」tab) -->
+  <!-- 研报每日总结卡片(全品种口径: 某天在库全部研报结论的 LLM 汇总, 落盘 md 随时调阅; 2026-09-08 用户调整为研报页首卡) -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:2px">
+      <h3 style="margin-bottom:0">🗓 研报<span id="res-daily-kind">每日</span>总结 <span class="badge badge-info" id="res-daily-tag"></span></h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="res-daily-type" onchange="App.onDailyTypeChange()" style="min-width:90px" title="日报与周报总结分开:各看各的日期与落盘文件">
+          <option value="">日报</option>
+          <option value="周报">周报</option>
+        </select>
+        <select id="res-daily-date" onchange="App.loadDailySummary()" style="min-width:140px"></select>
+        <button class="btn btn-outline btn-sm" id="res-daily-gen" onclick="App.generateDailySummary()" title="把当天全部研报结论汇总成 md(各公司观点/对比冲突/可信程度);已生成过则直接调阅,按住重跑点「重新生成」">✨ 生成</button>
+        <button class="btn btn-outline btn-sm" id="res-daily-regen" onclick="App.generateDailySummary(true)" title="忽略已有总结,重新调 LLM 生成并覆盖">↻ 重新生成</button>
+      </div>
+    </div>
+    <div style="margin-bottom:10px;color:var(--text-muted);font-size:0.82rem;line-height:1.6" id="res-daily-note"></div>
+    <div id="res-daily" style="font-size:0.88rem">选择日期查看当天全部研报的汇总; 未生成过的日期点「生成」。</div>
+  </div>
+
+  <!-- 研报问答卡片(RAG: 本地向量检索研报片段 → LLM 引用原文作答; 2026-09-08) -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <h3 style="margin-bottom:0">💬 研报问答 <span class="badge badge-info" id="res-ask-tag"></span></h3>
+      <div style="color:var(--text-muted);font-size:0.8rem">检索全部在库研报(本地向量索引),模型只依据片段作答;引用可点开原件</div>
+    </div>
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0">
+      <div style="flex:3;min-width:220px">
+        <label>问题</label>
+        <input id="res-ask-question" placeholder="如:近期螺纹钢供需与成本端怎么看?" onkeydown="if(event.key==='Enter')App.askResearch()">
+      </div>
+      <div style="flex:1;min-width:130px">
+        <label>品种(可选)</label>
+        <select id="res-ask-variety"><option value="">全部品种</option></select>
+      </div>
+      <div style="flex:1;min-width:100px">
+        <label>类型(可选)</label>
+        <select id="res-ask-type">
+          <option value="">全部</option>
+          <option value="日报">日报</option>
+          <option value="周报">周报</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" id="res-ask-btn" onclick="App.askResearch()">🔍 提问</button>
+      <button class="btn btn-outline" id="res-ask-clear" onclick="App.clearAskHistory()" title="清空本页问答历史(仅影响显示, 不影响索引)" style="display:none">🧹 清空</button>
+    </div>
+    <div id="res-ask-hist" style="display:flex;flex-direction:column;gap:12px;color:var(--text-muted);font-size:0.84rem">输入问题开始提问; 问答历史仅保留在本页, 刷新即清。</div>
+  </div>
+
+  <!-- 国君(GTJA)周度观点卡片(品种与下方逐品种观点总览共用同一联动下拉 #res-views-variety;晨报日度 2026-09-03 下线) -->
+  <div class="card">
+    <h3>📡 国君周度观点 <span class="badge badge-info" id="gtja-views-tag"></span></h3>
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:10px">
+      <div style="flex:2;color:var(--text-muted);font-size:0.82rem;line-height:1.6" id="gtja-views-note"></div>
+    </div>
+    <div id="gtja-views" style="overflow-x:auto">与逐品种观点总览共用品种选择; 显示国泰君安最新一帧周度观点信号。信号仅供研究参考, 非交易建议。</div>
+  </div>
+
+  <!-- 逐品种观点总览卡片(研报页收窄为"观点分析"专用; 资产管理已迁「数据仓库」tab; 2026-09-08 用户调整为研报页末卡) -->
   <div class="card" style="margin-bottom:16px">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:2px">
       <h3 style="margin-bottom:0">📋 逐品种观点总览 <span class="badge badge-info" id="res-views-count"></span></h3>
@@ -1452,32 +1461,17 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
         <label>研报日期</label>
         <select id="res-views-date" onchange="App.loadResearchViews()"></select>
       </div>
+      <div style="flex:1;min-width:110px">
+        <label>类型(分开统计)</label>
+        <select id="res-views-type" onchange="App.loadResearchViews()">
+          <option value="">全部</option>
+          <option value="日报">日报</option>
+          <option value="周报">周报</option>
+        </select>
+      </div>
       <div style="flex:2;color:var(--text-muted);font-size:0.82rem;line-height:1.6" id="res-views-note"></div>
     </div>
     <div id="res-views" style="overflow-x:auto">选择品种后, 显示该研报日期各家发行方对它的方向与观点要点。</div>
-  </div>
-
-  <!-- 研报每日总结卡片(全品种口径: 某天在库全部研报结论的 LLM 汇总, 落盘 md 随时调阅) -->
-  <div class="card" style="margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:2px">
-      <h3 style="margin-bottom:0">🗓 研报每日总结 <span class="badge badge-info" id="res-daily-tag"></span></h3>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <select id="res-daily-date" onchange="App.loadDailySummary()" style="min-width:140px"></select>
-        <button class="btn btn-outline btn-sm" id="res-daily-gen" onclick="App.generateDailySummary()" title="把当天全部研报结论汇总成 md(各公司观点/对比冲突/可信程度);已生成过则直接调阅,按住重跑点「重新生成」">✨ 生成</button>
-        <button class="btn btn-outline btn-sm" id="res-daily-regen" onclick="App.generateDailySummary(true)" title="忽略已有总结,重新调 LLM 生成并覆盖">↻ 重新生成</button>
-      </div>
-    </div>
-    <div style="margin-bottom:10px;color:var(--text-muted);font-size:0.82rem;line-height:1.6" id="res-daily-note"></div>
-    <div id="res-daily" style="font-size:0.88rem">选择日期查看当天全部研报的汇总; 未生成过的日期点「生成」。</div>
-  </div>
-
-  <!-- 国君(GTJA)周度观点卡片(品种与上方逐品种观点总览共用同一联动下拉;晨报日度 2026-09-03 下线) -->
-  <div class="card">
-    <h3>📡 国君周度观点 <span class="badge badge-info" id="gtja-views-tag"></span></h3>
-    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:10px">
-      <div style="flex:2;color:var(--text-muted);font-size:0.82rem;line-height:1.6" id="gtja-views-note"></div>
-    </div>
-    <div id="gtja-views" style="overflow-x:auto">与逐品种观点总览共用品种选择; 显示国泰君安最新一帧周度观点信号。信号仅供研究参考, 非交易建议。</div>
   </div>
 </div>
 
@@ -1540,6 +1534,31 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     </div>
   </div>
 
+  <!-- 自传数据卡片(2026-09-07):Excel/CSV/MD/TXT → LLM 格式识别 → 分析师最高权重注入 -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>📤 自传数据(个人数据接口) <span class="badge badge-info" id="ud-count"></span></h3>
+    <div style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7;margin-bottom:10px">
+      上传表格数据文件(Excel/CSV/MD/TXT, ≤20MB),LLM 自动识别<b>品种/数据类型/列含义/频率</b>并解析入库;
+      运行分析时宏观与情绪分析师将<b>确定性注入</b>该品种的自传数据,权重规则:数据覆盖范围内<b>以自传数据为准</b>(优先级高于 akshare 实时数据,不低于研报渠道),冲突时采用自传数据并说明差异。
+      <br><b>隐私与隔离:</b>原文件解析完成后<b>立即从服务器删除</b>(服务器只保留解析出的数据行,不留原件);自传数据<b>仅在上传电脑上使用</b> —— 换一台电脑打开看不到这些数据,运行分析时也不会注入。
+    </div>
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+      <div style="flex:1;min-width:150px">
+        <label>品种(留空自动识别)</label>
+        <select id="ud-upload-variety">
+          <option value="">自动识别</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:200px">
+        <label>文件(Excel/CSV/MD/TXT, ≤20MB)</label>
+        <input type="file" id="ud-upload-file" accept=".xlsx,.xls,.csv,.md,.txt" style="width:100%">
+      </div>
+      <button class="btn btn-primary" onclick="App.uploadUserData()">上传数据</button>
+      <button class="btn btn-outline" onclick="App.loadUserDatasets()">刷新</button>
+    </div>
+    <div id="ud-list" style="margin-top:12px"></div>
+  </div>
+
   <!-- 研报库列表卡片(网页上传 + 自动接入统一列表, 来源徽标可筛选) -->
   <div class="card" style="margin-bottom:16px">
     <h3>研报库(上传 + 自动接入) <span class="badge badge-info" id="res-count"></span></h3>
@@ -1599,6 +1618,26 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <div style="color:var(--text-muted);font-size:0.82rem;line-height:1.6" id="dwh-ds-note"></div>
     <div id="dwh-ds-table" style="overflow-x:auto;margin-top:8px">选择品种与日期区间后查询。</div>
   </div>
+
+  <!-- ============ 历史分析报告(2026-09-08 由独立 tab-history 并入数据仓库页) ============
+       做什么: 列出所有历史分析报告(品种/时间/大小), 点击查看详细内容(含 RATING 信号横幅),
+       可下载 Markdown 或 PDF 版本。 -->
+  <div style="display:flex;align-items:center;gap:10px;margin:26px 0 12px">
+    <h2 style="margin:0">📜 历史分析报告</h2>
+    <span style="font-size:0.75rem;color:var(--text-muted)">运行分析的历史产物 · 查看/下载</span>
+  </div>
+  <div class="card" style="margin-bottom:16px"><h3>历史分析报告</h3><div id="history-list"></div></div>
+  <div class="card" id="report-viewer" style="display:none;margin-top:16px">
+    <h3>
+      报告内容
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="App.openReportHtml()">↗ 网页版</button>
+        <button class="btn btn-outline btn-sm" id="btn-download-md" onclick="App.downloadReport('md')">📥 MD</button>
+        <button class="btn btn-outline btn-sm" id="btn-download-pdf" onclick="App.downloadReport('pdf')">📄 PDF</button>
+      </span>
+    </h3>
+    <div class="report-content" id="report-content"></div>
+  </div>
 </div>
 
 </main>
@@ -1610,7 +1649,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
 // ================================================================
 // 前端核心逻辑入口。所有业务逻辑封装在全局单例 App 对象中 (下方 const App = {...})。
 // 页面加载流程: 底部 DOMContentLoaded 事件 → App.init()。
-//   1. 绑定顶部导航按钮 (9 个标签页切换)
+//   1. 绑定顶部导航按钮 (6 个标签页切换)
 //   2. 读取本地主题设置 (亮/暗)
 //   3. 从后端加载品种列表 (GET /api/varieties)
 // 与后端 Flask 服务通信全部走 /api/* JSON 接口 (每个方法里的 fetch 调用即后端端点)。
@@ -1628,7 +1667,7 @@ marked.setOptions({ breaks: true, gfm: true });  // 【调用函数】marked.js 
 //   ── Toast / Theme / Varieties ── 提示、主题切换、品种下拉
 //   ── Run Analysis ── runAnalysis 主分析(轮询进度) + 反馈/对比图
 //   ── Charts ── _initChart 图表生命周期(创建/复用/dispose) + 各图表加载
-//   ── History / Data Update / Analysis Tab / Trading Tab / System Tab ── 各标签页逻辑
+//   ── History / Data Update / Analysis Tab / Trading Tab ── 各标签页逻辑
 // 关键方法: runAnalysis / runTradingBacktest / runMultiCompare / startAgentValidation
 const App = {
   // State
@@ -1642,7 +1681,7 @@ const App = {
   // ── Init ──
   // 【功能】页面初始化入口, DOMContentLoaded 后由底部事件调用一次
   // 【输入】无
-  // 【渲染】触发品种下拉填充、主题图标、多策略计数徽标; 注册窗口 resize 与 Ctrl+1~8 快捷键
+  // 【渲染】触发品种下拉填充、主题图标、多策略计数徽标; 注册窗口 resize 与 Ctrl+1~6 快捷键
   // 【后端】GET /api/varieties (经 _loadVarieties)
   async init() {
     this._bindNav();
@@ -1652,11 +1691,11 @@ const App = {
     this.updateMultiCount();
     // Handle window resize for charts
     window.addEventListener('resize', () => this._resizeAllCharts());
-    // Keyboard nav: Ctrl+1-8 to switch tabs
+    // Keyboard nav: Ctrl+1-6 to switch tabs
     document.addEventListener('keydown', (e) => {
-      if (e.ctrlKey && e.key >= '1' && e.key <= '8') {
+      if (e.ctrlKey && e.key >= '1' && e.key <= '6') {
         e.preventDefault();
-        const tabs = ['run', 'sentiment', 'analysis', 'trading', 'update', 'history', 'system', 'dashboard'];  // 【变量】Ctrl+1~8 快捷键对应的标签页顺序(回测并入情绪数据, 新增数据看板)
+        const tabs = ['run', 'research', 'sentiment', 'trading', 'dashboard', 'warehouse'];  // 【变量】Ctrl+1~6 快捷键对应的标签页顺序(2026-09-08 与顶部导航 6 页对齐)
         this.switchTab(tabs[parseInt(e.key) - 1]);
       }
     });
@@ -1675,7 +1714,7 @@ const App = {
   // ── Tab switching ──
   // 【功能】切换标签页: 更新 .active 类(显示对应 tab + 高亮导航按钮), 并对各页做"懒加载"
   // 【输入】t: 标签页标识, 如 'run' / 'sentiment' / 'trading'
-  // 【渲染】显示/隐藏 8 个 <div class="tab">; 首次进入某页时拉取该页数据
+  // 【渲染】显示/隐藏 6 个 <div class="tab">; 首次进入某页时拉取该页数据
   // 【后端】视目标页而定, 见各 loadXxx 方法
   switchTab(t) {
     this._currentTab = t;
@@ -1687,15 +1726,11 @@ const App = {
     if (navBtn) navBtn.classList.add('active');
 
     // Lazy load
-    if (t === 'sentiment') { this.loadOverlayChart(); this.loadSentimentPosts(); this.loadBacktest(); }
-    if (t === 'analysis') this.initAnalysisTab();
+    if (t === 'sentiment') { this.loadOverlayChart(); this.loadSentimentPosts(); this.loadBacktest(); this.initAnalysisTab(); this.loadUpdateStats(); }  // 分析工具已并入本页(2026-09-07); 数据更新已并入本页(2026-09-08)
     if (t === 'trading') this.initTradingTab();
     if (t === 'dashboard') this.loadDashboard();
-    if (t === 'update') this.loadUpdateStats();
-    if (t === 'history') this.loadHistory();
-    if (t === 'system') this.loadSystemTab();
     if (t === 'research') this.loadResearch();
-    if (t === 'warehouse') this.loadWarehouse();
+    if (t === 'warehouse') { this.loadWarehouse(); this.loadHistory(); }  // 历史报告已并入本页(2026-09-08)
     this._resizeAllCharts();
   },
 
@@ -2891,24 +2926,125 @@ const App = {
   async loadResearch() {
     // 品种下拉首次进入才填充(重复进入只读不重填); res-views-variety 是研报页顶部
     // 共享品种选择 —— 逐品种观点总览与国君周度观点两卡都读它, 保证联动而不是各看各的。
-    this._populateVarietySelects(['res-views-variety']);
+    this._populateVarietySelects(['res-views-variety', 'res-ask-variety']);
     await this.loadResearchViews();
     await this.loadGtjaViews();
     this._loadDailyDates();  // 每日总结日期列表(后台填充, 不阻塞两卡)
+    this._loadRagStatus();   // 研报问答卡片:索引状态(后台, 不阻塞)
   },
 
-  // ── 研报每日总结 ──
-  // 【功能】拉取可用日期列表(库内研报日期 ∪ 已生成总结文件)填充日期下拉,
+  // ── 研报问答(RAG) ──
+  // 【功能】拉取 RAG 索引状态,渲染徽标;未启用时禁用提问按钮并给出安装/回填提示。
+  // 【输入】无 【渲染】#res-ask-tag 徽标 + #res-ask-hist 空态提示 + #res-ask-btn
+  // 【后端】GET /api/research/rag/status
+  async _loadRagStatus() {
+    const tag = document.getElementById('res-ask-tag');
+    if (!tag) return;
+    try {
+      const r = await fetch('/api/research/rag/status');  // 【调用函数】后端接口: RAG 索引状态
+      const d = await r.json();
+      if (!d.rag_enabled) {
+        tag.textContent = '未启用';
+        const hist = document.getElementById('res-ask-hist');
+        const btn = document.getElementById('res-ask-btn');
+        if (hist && !this._askHistory?.length) hist.innerHTML =
+          'RAG 未启用: 需安装 chromadb 与 sentence-transformers,并运行 <code>python scripts/backfill_rag_index.py</code> 回填存量研报索引。';
+        if (btn) btn.disabled = true;
+      } else {
+        tag.textContent = `${d.reports} 份研报 / ${d.chunks} 片段`;
+      }
+    } catch (e) { /* 状态拉取失败不影响卡片 */ }
+  },
+
+  // 【功能】研报问答:提问 → 检索片段 → LLM 引用作答;历史保存在内存(刷新即清)。
+  // 【输入】读 #res-ask-question / #res-ask-variety / #res-ask-type
+  // 【渲染】#res-ask-hist 追加问答气泡
+  // 【后端】POST /api/research/ask
+  async askResearch() {
+    const q = (document.getElementById('res-ask-question')?.value || '').trim();
+    if (!q) return;
+    const variety = document.getElementById('res-ask-variety')?.value || '';
+    const reportType = document.getElementById('res-ask-type')?.value || '';
+    const btn = document.getElementById('res-ask-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 检索中…'; }
+    this._askHistory = this._askHistory || [];
+    this._askHistory.push({ role: 'user', content: q });
+    this._renderAskHistory();
+    try {
+      const r = await fetch('/api/research/ask', {  // 【调用函数】后端接口: 研报问答
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, variety, report_type: reportType }),
+      });
+      const d = await r.json();
+      this._askHistory.push({ role: 'agent', data: d });
+    } catch (e) {
+      this._askHistory.push({ role: 'agent', data: { ok: false, error: '网络错误: ' + e } });
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 提问'; }
+    const input = document.getElementById('res-ask-question');
+    if (input) input.value = '';
+    this._renderAskHistory();
+  },
+
+  // 【渲染】#res-ask-hist:用户气泡右对齐,模型回答用 marked 渲染 + 可折叠引用列表
+  _renderAskHistory() {
+    const el = document.getElementById('res-ask-hist');
+    if (!el) return;
+    const hist = this._askHistory || [];
+    const clearBtn = document.getElementById('res-ask-clear');
+    if (clearBtn) clearBtn.style.display = hist.length ? '' : 'none';  // 有历史才显示清空按钮
+    if (!hist.length) return;
+    el.innerHTML = hist.map(h => {
+      if (h.role === 'user') {
+        return `<div style="align-self:flex-end;max-width:85%;background:var(--bg-elev,#eef2ff);border-radius:10px;padding:8px 12px;font-size:0.88rem">${h.content}</div>`;
+      }
+      const d = h.data || {};
+      if (!d.ok) {
+        return `<div style="max-width:95%;color:var(--text-muted);font-size:0.85rem">⚠️ ${d.error || '生成失败'}</div>`;
+      }
+      const cites = (d.citations || []).map(c =>
+        `<li value="${c.no}">[${c.no}] ${c.publish_date || '日期未知'} ${c.variety || ''} 《${c.title}》 相关度 ${(c.score * 100).toFixed(0)}% <a href="/api/research/${c.report_id}/file" target="_blank">原件</a></li>`
+      ).join('');
+      return `<div style="max-width:95%;border:1px solid var(--border,#e0e0e0);border-radius:10px;padding:10px 14px">
+        <div class="report-content" style="font-size:0.88rem">${marked.parse(d.answer || '_空回答_')}</div>
+        ${d.retrieved ? `<details style="margin-top:6px;font-size:0.8rem"><summary>引用来源(${d.retrieved} 片段)</summary><ol style="margin:6px 0 0 18px">${cites}</ol></details>` : ''}
+      </div>`;
+    }).join('');
+    el.scrollTop = el.scrollHeight;
+  },
+
+  // 【功能】清空研报问答历史:仅清前端显示与内存, 不影响 RAG 索引与后端。
+  clearAskHistory() {
+    this._askHistory = [];
+    const el = document.getElementById('res-ask-hist');
+    if (el) el.innerHTML = '输入问题开始提问; 问答历史仅保留在本页, 刷新即清。';
+    const clearBtn = document.getElementById('res-ask-clear');
+    if (clearBtn) clearBtn.style.display = 'none';
+  },
+
+  // ── 研报每日/周报总结 ──
+  // 【功能】切换总结口径(日报/周报):重置日期缓存,按新口径重拉日期下拉与内容。
+  // 【输入】无 (读 #res-daily-type) 【渲染】#res-daily-kind 标题字 + 触发 _loadDailyDates
+  onDailyTypeChange() {
+    this._dailyDatesSig = null;    // 口径变了,日期下拉强制重建
+    this._dailyLoadedOnce = false;
+    const kind = document.getElementById('res-daily-kind');
+    if (kind) kind.textContent = (document.getElementById('res-daily-type')?.value || '') === '周报' ? '周报' : '每日';
+    this._loadDailyDates();
+  },
+
+  // 【功能】拉取可用日期列表(库内对应类型研报日期 ∪ 已生成总结文件)填充日期下拉,
   //        已生成过的日期加 ✓ 标记;首次进入自动选中最新日期并尝试调阅。
   //        采集期间由轮询反复调用:日期集合没变化时不重建下拉/不重载总结,
   //        新日期出现时下拉就地长出新选项(不打断当前阅读)。
-  // 【输入】无 【渲染】#res-daily-date 下拉 + 触发 loadDailySummary
-  // 【后端】GET /api/research/daily
+  // 【输入】无 (读 #res-daily-type 口径) 【渲染】#res-daily-date 下拉 + 触发 loadDailySummary
+  // 【后端】GET /api/research/daily?report_type=
   async _loadDailyDates() {
     const sel = document.getElementById('res-daily-date');
     if (!sel) return;
+    const rtype = document.getElementById('res-daily-type')?.value || '';
     try {
-      const r = await fetch('/api/research/daily');
+      const r = await fetch(`/api/research/daily${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
       const d = await r.json();
       const dates = d.dates || [];
       const sig = JSON.stringify(dates.map(x => `${x.date}${x.generated ? '✓' : ''}`));
@@ -2934,27 +3070,29 @@ const App = {
   },
 
   // 【功能】调阅某日总结: 已生成 → 渲染 markdown;未生成 → 占位提示可点生成。
-  // 【输入】无 (读 #res-daily-date) 【渲染】#res-daily + #res-daily-tag/note
-  // 【后端】GET /api/research/daily/{date}
+  // 【输入】无 (读 #res-daily-date + #res-daily-type) 【渲染】#res-daily + #res-daily-tag/note
+  // 【后端】GET /api/research/daily/{date}?report_type=
   async loadDailySummary() {
     const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
     const el = document.getElementById('res-daily');
     const tag = document.getElementById('res-daily-tag');
     const note = document.getElementById('res-daily-note');
     const date = document.getElementById('res-daily-date')?.value || '';
+    const rtype = document.getElementById('res-daily-type')?.value || '';
+    const dir = rtype === '周报' ? 'research_weekly' : 'research_daily';
     if (!el) return;
     if (!date) { el.innerHTML = '<span style="color:var(--text-muted)">暂无研报日期。上传或采集研报后此处出现日期。</span>'; if (tag) tag.textContent = ''; if (note) note.textContent = ''; return; }
     try {
-      const r = await fetch(`/api/research/daily/${date}`);
+      const r = await fetch(`/api/research/daily/${date}${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
       const d = await r.json();
       if (!d.exists) {
-        el.innerHTML = `<span style="color:var(--text-muted)">${esc(date)} 的总结还没生成, 点右上「✨ 生成」调 LLM 汇总当天全部研报。</span>`;
+        el.innerHTML = `<span style="color:var(--text-muted)">${esc(date)} 的${rtype === '周报' ? '周报' : '每日'}总结还没生成, 点右上「✨ 生成」调 LLM 汇总当天全部${rtype === '周报' ? '周报' : '日报'}研报。</span>`;
         if (tag) tag.textContent = '未生成';
         if (note) note.textContent = '';
         return;
       }
       if (tag) tag.textContent = '已生成';
-      if (note) note.textContent = `生成于 ${d.generated_at || '—'} · 覆盖 ${d.reports || '—'} 条研报结论 · 原文落盘 ~/.tradingagents/research_daily/${date}.md`;
+      if (note) note.textContent = `生成于 ${d.generated_at || '—'} · 覆盖 ${d.reports || '—'} 条研报结论 · 原文落盘 ~/.tradingagents/${dir}/${date}.md`;
       const md = (d.content || '').replace(/^<!--.*?-->\s*/, '');
       el.innerHTML = `<div class="report-content">${marked.parse(md || '_空总结_')}</div>`;
     } catch (e) { el.innerHTML = '<span style="color:var(--red)">加载失败</span>'; }
@@ -2962,25 +3100,27 @@ const App = {
 
   // 【功能】生成(或重新生成)某日总结: 同步等 LLM(~10-40s), 完成后重渲染。
   // 【输入】force=true 忽略已有总结重跑并覆盖; false 时已生成过直接复用文件。
-  // 【后端】POST /api/research/daily/generate {date, force}
+  // 【后端】POST /api/research/daily/generate {date, report_type, force}
   async generateDailySummary(force = false) {
     const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
     const btn = document.getElementById(force ? 'res-daily-regen' : 'res-daily-gen');
     const el = document.getElementById('res-daily');
     const date = document.getElementById('res-daily-date')?.value || '';
+    const rtype = document.getElementById('res-daily-type')?.value || '';
+    const kind = rtype === '周报' ? '周报' : '每日';
     if (!date) { this.toast('没有可生成的日期: 先上传/采集研报', 'error'); return; }
     const old = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 生成中...'; }
-    if (el) el.innerHTML = `<span style="color:var(--text-muted)">正在调用 LLM 汇总 ${esc(date)} 全部研报结论, 视条目数约 1~4 分钟…</span>`;
+    if (el) el.innerHTML = `<span style="color:var(--text-muted)">正在调用 LLM 汇总 ${esc(date)} 全部${kind}研报结论, 视条目数约 1~4 分钟…</span>`;
     try {
       const r = await fetch('/api/research/daily/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date, force: !!force }),
+        body: JSON.stringify({ date, report_type: rtype, force: !!force }),
       });
       const d = await r.json();
       if (!d.ok) throw new Error(d.error || '生成失败');
-      this.toast(`✅ ${date} 每日总结${d.cached ? '已存在, 直接调阅' : '已生成并落盘'}`, 'success');
+      this.toast(`✅ ${date} ${kind}总结${d.cached ? '已存在, 直接调阅' : '已生成并落盘'}`, 'success');
       await this.loadDailySummary();
       this._loadDailyDates();  // 刷新日期下拉的 ✓ 标记
     } catch (e) {
@@ -3002,9 +3142,10 @@ const App = {
   //        并拉取研报库列表。列表的查看/删除入口在此页, 研报页已不承载。
   // 【输入】无 【渲染】#res-list 【后端】GET /api/research?variety=&ingest_source=
   async loadWarehouse() {
-    this._populateVarietySelects(['res-upload-variety', 'res-filter-variety', 'dwh-ds-variety']);
+    this._populateVarietySelects(['res-upload-variety', 'res-filter-variety', 'dwh-ds-variety', 'ud-upload-variety']);
     this._fillCollectVarietyList();  // 【采集品种面板】进入数据仓库页时懒填充勾选列表
     await this.refreshResearchList();
+    await this.loadUserDatasets();  // 【自传数据】进入数据仓库页时刷新列表
   },
 
   // 【功能】刷新「研报库」列表(别名: 供 HTML 按钮直呼语义化的方法名)。
@@ -3015,8 +3156,8 @@ const App = {
 
   // 【功能】逐品种观点总览: 切换品种/日期, 拉取该品种该研报日期各家发行方的
   //       方向/置信度/观点要点并渲染成表格。头寸列 = 单边/区间+头寸+研报建议
-  //       合并(后端语义去重); 单元格观点要点 = 推理链浓缩(七小节两段式口径,
-  //       不含交易要素行避免与头寸列重复); 点击研报标题进详情看完整两段式结论。
+  //       合并(后端语义去重); 单元格观点要点 = 综述→利多/利空条目(逻辑/风险,新口径 2026-09-07;
+  //       旧口径结论回落七小节推理链渲染; 不含交易要素行避免与头寸列重复); 点击研报标题进详情看完整两段式结论。
   // 【输入】无 (读取 #res-views-variety + #res-views-date)
   // 【渲染】#res-views-count 计数 + #res-views 表格(发行方/研报/方向/置信度/观点要点)
   // 【后端】GET /api/research/views?variety={code}&date={date}
@@ -3037,8 +3178,10 @@ const App = {
     if (el) el.innerHTML = '加载中...';
     try {
       const prevDate = document.getElementById('res-views-date')?.value || '';
+      const rtype = document.getElementById('res-views-type')?.value || '';
       const q = new URLSearchParams({ variety: code });
       if (prevDate) q.set('date', prevDate);
+      if (rtype) q.set('report_type', rtype);  // 日报/周报分开统计(后端按类型过滤日期并集+行)
       const r = await fetch(`/api/research/views?${q.toString()}`);
       const d = await r.json();
       this._lastViews = d;  // 供「导出 PDF / 导出图片」复用当前总览数据(无需再拉)
@@ -3053,9 +3196,9 @@ const App = {
         });
         dateSel.value = d.date || '';
       }
-      if (elCount) elCount.textContent = d.date ? `${d.rows.length} 份 · ${d.dates.length} 个日期` : '';
+      if (elCount) elCount.textContent = d.date ? `${rtype ? rtype + ' ' : ''}${d.rows.length} 份 · ${d.dates.length} 个日期` : '';
       if (elNote) elNote.textContent = d.date
-        ? `${d.name}(${d.variety}) · 研报日期 ${d.date}: 各发行方对它的方向与观点要点。同一品种同日可能多份(如覆盖多个子品种), 点标题看完整两段式结论。 —为研报未披露。`
+        ? `${d.name}(${d.variety}) · 研报日期 ${d.date}${rtype ? ` · 仅${rtype}结论` : ''}: 各发行方对它的方向与观点要点。同一品种同日可能多份(如覆盖多个子品种), 点标题看完整两段式结论。 —为研报未披露。`
         : '';
       if (!el) return;
       if (!d.date) {
@@ -3087,7 +3230,7 @@ const App = {
           <th>置信度</th>
           <th title="研报的单边/区间表述 + 头寸/仓位建议 + 原文操作建议(语义去重合并为一列,未给为 —)">头寸</th>
           <th title="系统 LLM 基于该研报观点生成的配置/关注权重建议(非研报原文)">建议 🤖<span style="font-weight:400;font-size:0.68rem;color:var(--text-muted)">LLM</span></th>
-          <th>观点要点(推理链:供需→库存→成本→现货→事件→观点依据)</th>
+          <th>观点要点(综述→利多/利空:逻辑/风险)</th>
         </tr></thead>
         <tbody>${d.rows.map(rp => {
           const covers = (rp.covers || []).length > 1
@@ -3187,7 +3330,7 @@ const App = {
       <thead><tr>
         ${th('发行方')}${th('研报')}${th('方向', 'text-align:center')}${th('置信度')}
         ${th('头寸')}${th('建议🤖LLM')}
-        ${th('观点要点(推理链:供需→库存→成本→现货→事件→观点依据)')}
+        ${th('观点要点(综述→利多/利空:逻辑/风险)')}
       </tr></thead>
       <tbody>${trs}</tbody>
     </table>`;
@@ -3448,6 +3591,72 @@ const App = {
       document.getElementById('res-upload-source').value = '';
       await this._refreshResearch();
     } catch (e) { this.toast('上传失败', 'error'); }
+  },
+
+  // ── 自传数据(个人数据接口) ─────────────────────────────────────────
+  // 【功能】上传 Excel/CSV/MD/TXT 数据文件 → 后台 LLM 识别格式解析入库;
+  //        列表展示处理状态;删除连同落盘文件。分析师注入由后端运行分析时自动完成。
+  // 【输入】#ud-upload-variety(品种,可自动识别) + #ud-upload-file
+  // 【渲染】toast + loadUserDatasets() 【后端】POST /api/userdata/upload
+  async uploadUserData() {
+    const variety = document.getElementById('ud-upload-variety')?.value || '';
+    const file = document.getElementById('ud-upload-file')?.files[0];
+    if (!file) { this.toast('请选择数据文件', 'error'); return; }
+    const fd = new FormData();
+    if (variety) fd.append('variety', variety);
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/userdata/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '上传失败', 'error'); return; }
+      this.toast('数据文件已接收, 后台解析中(LLM 识别格式)', 'success');
+      document.getElementById('ud-upload-file').value = '';
+      await this.loadUserDatasets();
+    } catch (e) { this.toast('上传失败', 'error'); }
+  },
+
+  // 【功能】拉取自传数据列表并渲染(状态徽标: processing 黄 / done 绿 / error 红)。
+  // 【后端】GET /api/userdata?variety=
+  async loadUserDatasets() {
+    const box = document.getElementById('ud-list');
+    if (!box) return;
+    const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
+    try {
+      const r = await fetch('/api/userdata');
+      const d = await r.json();
+      const list = d.datasets || [];
+      const countEl = document.getElementById('ud-count');
+      if (countEl) countEl.textContent = `${list.length} 个数据集`;
+      if (!list.length) { box.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem">暂无自传数据;上传后自动接入宏观/情绪分析。</div>'; return; }
+      const badge = (s) => s === 'done' ? '<span class="badge" style="background:rgba(34,197,94,.15);color:var(--green)">已接入</span>'
+        : s === 'error' ? '<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">解析失败</span>'
+        : '<span class="badge" style="background:rgba(245,158,11,.15);color:var(--amber)">解析中</span>';
+      box.innerHTML = `<table style="width:100%;font-size:0.85rem"><thead><tr>
+          <th style="text-align:left">文件</th><th style="text-align:left">品种</th><th style="text-align:left">数据类型</th>
+          <th>行数</th><th>状态</th><th style="text-align:left">上传时间</th><th></th>
+        </tr></thead><tbody>${list.map(x => `<tr>
+          <td>${esc(x.filename || '')}</td>
+          <td><b>${esc(x.variety || '?')}</b></td>
+          <td>${esc(x.data_type || '—')}</td>
+          <td style="text-align:center">${x.status === 'done' ? x.row_count : '—'}</td>
+          <td>${badge(x.status)}${x.status === 'error' ? `<div style="font-size:0.78rem;color:var(--red);max-width:260px;white-space:normal">${esc(x.error || '')}</div>` : ''}</td>
+          <td>${esc((x.created_at || '').slice(0, 19))}</td>
+          <td><button class="btn btn-outline btn-sm" onclick="App.deleteUserData(${x.id})">删除</button></td>
+        </tr>`).join('')}</tbody></table>`;
+    } catch (e) { box.innerHTML = '<div style="color:var(--red);font-size:0.85rem">列表加载失败</div>'; }
+  },
+
+  // 【功能】删除自传数据(DB 行 + 落盘文件);确认后调用。
+  // 【后端】DELETE /api/userdata/<id>
+  async deleteUserData(id) {
+    if (!confirm('删除该自传数据?删除后不再注入分析师。')) return;
+    try {
+      const r = await fetch(`/api/userdata/${id}`, { method: 'DELETE' });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '删除失败', 'error'); return; }
+      this.toast('已删除', 'success');
+      await this.loadUserDatasets();
+    } catch (e) { this.toast('删除失败', 'error'); }
   },
 
   // ── 采集品种选择面板(按品种采集防全量 LLM 耗时过长) ──────────────────
@@ -3796,6 +4005,7 @@ const App = {
       if (badge) badge.textContent = `${meta.name || sym} (${meta.sector || '其他'}) · 价格 ${meta.price_points} 点`;
 
       this._renderDashCharts(d);
+      this._renderMarginSection(d);    // 盘面利润独立卡(仅 RB/HC/J)
       this._renderResearchSection(d);  // 研报基本面指标独立卡(叠加在 _renderDashCharts 内处理)
     } catch (e) {
       console.error('Dashboard load error:', e);
@@ -3998,6 +4208,65 @@ const App = {
     });
   },
 
+  // 【功能】渲染盘面利润独立卡(#dash-margin): 期货价格按产业配比合成的产业链利润
+  //         折线(仅 RB/HC/J 有配方), 顶部统计条=最新值/历史分位/近5日变动/窗口统计,
+  //         tooltip 带配方腿收盘价。无配方或腿缺数据时整卡隐藏(降级 note 由后端给,
+  //         前端不展示避免误导)。容器 id 全页唯一(chart-dash-margin),
+  //         重渲染前先清理旧实例, 防品种切换留孤儿图。
+  // 【输入】d: GET /api/dashboard/{variety} 的完整响应(d.margin 由后端给出)。
+  // 【渲染】#dash-margin 单卡: 统计行 + _chartInstances 登记/清理的折线图。
+  // 【后端】无(数据由 loadDashboard 传入)。
+  _renderMarginSection(d) {
+    const host = document.getElementById('dash-margin');
+    if (!host) return;
+    const chartId = 'chart-dash-margin';
+    const old = this._chartInstances[chartId];
+    if (old) { try { old.dispose(); } catch (e) {} delete this._chartInstances[chartId]; }
+    const m = d.margin || {};
+    if (!m.available || !(m.series || []).length) { host.innerHTML = ''; return; }
+    const st = m.stats || {};
+    const pct = st.pct_rank == null ? null : (st.pct_rank * 100);
+    const pctColor = pct == null ? 'var(--text-secondary)' : pct < 10 ? 'var(--green)' : pct < 25 ? 'var(--green)' : pct <= 75 ? 'var(--amber)' : 'var(--red)';
+    const pctDesc = pct == null ? '—' : `${pct.toFixed(0)}%`;
+    const wow = st.wow == null ? null : st.wow;
+    const legs = Object.entries(st.legs || {}).map(([k, v]) => `${k} ${Number(v).toFixed(0)}`).join(' · ');
+    host.innerHTML = `
+      <div class="card" style="margin-top:16px">
+        <h3>${st.name || '盘面利润'} <span class="badge badge-info">${(m.series || []).length} 点</span></h3>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px">公式口径: ${st.note || ''} · 主力连续价合成, 换月日可能有台阶, 不等于真实现金利润</div>
+        <div class="grid grid-4" style="margin-bottom:10px">
+          <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem">${st.latest != null ? st.latest.toFixed(0) : '—'}</div><div class="stat-lbl">最新值(元/吨) ${st.latest_date || ''}</div></div>
+          <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem;color:${pctColor}">${pctDesc}</div><div class="stat-lbl">历史分位</div></div>
+          <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem;color:${wow == null ? 'inherit' : wow > 0 ? 'var(--red)' : wow < 0 ? 'var(--green)' : 'inherit'}">${wow == null ? '—' : (wow > 0 ? '+' : '') + wow.toFixed(0)}</div><div class="stat-lbl">近5交易日变动</div></div>
+          <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem">${st.min != null && st.max != null ? st.min.toFixed(0) + '~' + st.max.toFixed(0) : '—'}</div><div class="stat-lbl">窗口最小~最大(均值 ${st.mean != null ? st.mean.toFixed(0) : '—'})</div></div>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:6px">腿最新收盘: ${legs || '—'}</div>
+        <div class="chart-container" id="${chartId}" style="height:280px"></div>
+      </div>`;
+    const chart = this._initChart(chartId);
+    if (!chart) return;
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const gridColor = isDark ? '#1a1a1a' : '#eee';
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis', formatter: (ps) => {
+          const p = ps[0];
+          const it = p.data || {};
+          return `${p.name}<br/><b>${p.value != null ? p.value : ''} 元/吨</b>` +
+            (it.legs ? `<br/><span style="font-size:0.75rem;color:var(--text-muted)">腿收盘: ${it.legs}</span>` : '');
+        } },
+      grid: { left: 65, right: 30, top: 15, bottom: 35 },
+      xAxis: { type: 'category', data: m.series.map(p => p.date), axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: '#888', fontSize: 10, rotate: m.series.length > 60 ? 45 : 0 }, splitLine: { show: false } },
+      yAxis: { type: 'value', name: '元/吨', nameTextStyle: { color: '#888', fontSize: 10 }, axisLabel: { color: '#888', fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
+      series: [{
+        name: st.name || '盘面利润', type: 'line', smooth: true, showSymbol: false,
+        lineStyle: { color: '#f59e0b', width: 2 }, itemStyle: { color: '#f59e0b' },
+        areaStyle: { opacity: 0.08 },
+        data: m.series.map(p => p.value)
+      }]
+    });
+  },
+
   // 【功能】板块相关性总览: 拉取板块内各品种的价格-库存 Pearson R, 渲染横向条形图 + 表格
   // 【输入】无 (由当前 #dash-variety 反查所属板块)
   // 【渲染】#dash-sector-panel 条形图 + 表格; #dash-sector-label 板块提示
@@ -4149,6 +4418,7 @@ const App = {
     if (document.getElementById('plat-xhs').checked) { plats.push('小红书'); t += 3; }
     if (document.getElementById('plat-xueqiu').checked) { plats.push('雪球'); t += 5; }
     if (document.getElementById('plat-emg').checked) { plats.push('东财股吧'); t += 2; }
+    if (document.getElementById('plat-douyin').checked) { plats.push('抖音'); t += 10; }
     document.getElementById('platform-hint').textContent =
       '流程: 多平台采集 → 时间过滤 → 粉丝解析 → 情绪聚合(作者加权) → 回测调优 → 生成JSON | ' +
       (plats.length ? '平台: ' + plats.join(' + ') + ' | 预计: ' + t + 'min'
@@ -4175,6 +4445,7 @@ const App = {
     if (document.getElementById('plat-xhs').checked) platforms.push('xhs');
     if (document.getElementById('plat-xueqiu').checked) platforms.push('xueqiu');
     if (document.getElementById('plat-emg').checked) platforms.push('eastmoney_guba');
+    if (document.getElementById('plat-douyin').checked) platforms.push('douyin');
     if (!platforms.length) {
       this.toast('请至少选择一个平台', 'error');
       btn.disabled = false; btn.textContent = '一键更新';
@@ -4194,7 +4465,7 @@ const App = {
           // Render platform summary card
           const platforms = d.platforms || {};
           const pct = (count) => d.total ? (count / d.total * 100).toFixed(0) + '%' : '';
-          const platNames = { weibo: '微博', zhihu: '知乎', xhs: '小红书', xueqiu: '雪球', eastmoney_guba: '东财股吧' };
+          const platNames = { weibo: '微博', zhihu: '知乎', xhs: '小红书', xueqiu: '雪球', eastmoney_guba: '东财股吧', douyin: '抖音' };
           let cardsHTML = '<div class="grid grid-3" style="margin-top:12px">';
           for (const [plat, count] of Object.entries(platforms).sort((a,b) => b[1] - a[1])) {
             const name = platNames[plat] || plat;
@@ -4227,11 +4498,11 @@ const App = {
   },
 
   // ═══════════════════════════════════════════════════════
-  // ANALYSIS TAB — 分析工具页(6 个子模块)
+  // ANALYSIS SUB — 分析工具子区(2026-09-07 由独立分析工具页并入情绪数据页, 7 个子模块)
   // ═══════════════════════════════════════════════════════
-  _analysisSub: 'comprehensive',  // 【变量】分析工具页当前子模块(切换时记忆, 返回该页时恢复)
+  _analysisSub: 'comprehensive',  // 【变量】分析工具子区当前子模块(切换时记忆, 返回该页时恢复)
 
-  // 【功能】进入「分析工具」页时初始化: 填充 3 个品种下拉框, 切到上次的子模块, 加载事件列表
+  // 【功能】进入「情绪数据」页时初始化分析工具子区: 填充 3 个品种下拉框, 切到上次的子模块, 加载事件列表
   // 【输入】无 【渲染】各子模块面板 【后端】GET /api/analysis/events 等
   initAnalysisTab() {
     this._populateVarietySelects(['comp-variety', 'trade-variety', 'event-variety']);
@@ -4239,7 +4510,7 @@ const App = {
     this.loadEvents();
   },
 
-  // 【功能】分析工具页的子导航切换(综合分析/作者/事件/框架说明/Agent验证/Agent回测),
+  // 【功能】分析工具子区的子导航切换(综合分析/作者/事件/框架说明/Agent验证/Agent回测/图谱),
   //         切换后按需触发对应子模块的数据加载
   // 【输入】sub: 子模块标识, 如 'comprehensive' / 'agentval'
   // 【渲染】显示对应 .analysis-sub 面板并高亮子导航按钮
@@ -5471,91 +5742,9 @@ const App = {
   },
 
 
-  // ═══════════════════════════════════════════════════════
-  // SYSTEM TAB — 系统运维页
-  // ═══════════════════════════════════════════════════════
-  // 【功能】进入「系统」页时并行加载三块数据: 调度状态 / 数据库概览 / 告警列表
-  // 【输入】无 【渲染】#scheduler-status / #db-stats / #alerts-list 等
-  // 【后端】GET /api/scheduler/status、GET /api/db/stats、GET /api/db/alerts
-  async loadSystemTab() {
-    await Promise.all([this.loadSchedulerStatus(), this.loadDbStats(), this.loadAlerts()]);  // 【调用函数】并发加载系统页三块数据(调度/数据库/告警)
-  },
-
-  // 【功能】加载定时采集调度状态: 显示运行中/未启动, 运行中则列出每个任务的下次执行时间
-  // 【输入】无 【渲染】#scheduler-status 【后端】GET /api/scheduler/status
-  async loadSchedulerStatus() {
-    try {
-      const r = await fetch('/api/scheduler/status');  // 【调用函数】后端接口: 查询定时采集调度状态(运行中/下次执行时间)
-      const d = await r.json();
-      document.getElementById('scheduler-status').innerHTML = d.running
-        ? `<div style="color:var(--green);font-weight:600">● 运行中</div>
-           ${d.jobs.map(j => `<div style="font-size:0.8rem">${j.name}: 下次 ${j.next_run||'?'}</div>`).join('')}`
-        : '<div style="color:var(--text-muted)">○ 未启动</div>';
-    } catch(e) {}
-  },
-
-  // 【功能】启动/停止定时采集调度(每天 08:00 与 18:00 自动采集), 1 秒后刷新状态
-  // 【输入】action: 'start' 或 'stop'
-  // 【渲染】toast 提示 + 刷新 #scheduler-status 【后端】POST /api/scheduler/{action}
-  async schedulerControl(action) {
-    try {
-      const r = await fetch(`/api/scheduler/${action}`, {method:'POST',headers:{'Content-Type':'application/json'},  // 【调用函数】后端接口: 启动/停止定时调度(请求体携带每天两次采集时间)
-        body: JSON.stringify({schedule_times:['08:00','18:00']})});
-      this.toast(action==='start'?'调度已启动':'调度已停止', 'info');
-      setTimeout(() => this.loadSchedulerStatus(), 1000);
-    } catch(e) { this.toast('操作失败', 'error'); }
-  },
-
-  // 【功能】加载数据库概览: 帖子总数 + 各平台数量/时间范围 + 采集历史表格
-  // 【输入】无 【渲染】#db-stats、#collection-history 【后端】GET /api/db/stats
-  async loadDbStats() {
-    try {
-      const r = await fetch('/api/db/stats');  // 【调用函数】后端接口: 数据库帖子总量/各平台概况/采集历史
-      const d = await r.json();
-      const platforms = d.platforms || {};
-      document.getElementById('db-stats').innerHTML = `
-        <div style="font-size:1.5rem;font-weight:700">${d.total_posts}</div><div>帖子总数</div>
-        ${Object.entries(platforms).map(([p, pd]) =>
-          `<div style="font-size:0.82rem">${p}: ${pd.count} (${pd.earliest}~${pd.latest})</div>`
-        ).join('')}`;
-      document.getElementById('collection-history').innerHTML = `<table><thead><tr>
-        <th>时间</th><th>平台</th><th>收集</th><th>状态</th><th>错误</th></tr></thead><tbody>
-        ${(d.collection_history||[]).map(h => `
-          <tr><td>${(h.started_at||'').substring(0,16)}</td><td>${h.platform}</td>
-          <td>${h.posts_collected||0}</td><td>${h.status==='success'?'✅':'❌'}</td>
-          <td><small>${(h.error_msg||'').substring(0,50)}</small></td></tr>`
-        ).join('')}</tbody></table>`;
-    } catch(e) {}
-  },
-
-  // 【功能】确认某条告警(标记已读), 然后刷新告警列表
-  // 【输入】id: 告警 id 【渲染】#alerts-list 刷新 【后端】POST /api/db/alerts/{id}/ack
-  async ackAlert(id) {
-    try {
-      await fetch('/api/db/alerts/' + id + '/ack', {method:'POST'});  // 【调用函数】后端接口: 确认告警(标记已读)后刷新列表
-      this.loadAlerts();
-    } catch(e) {}
-  },
-
-  // 【功能】加载告警列表(最近 20 条): 标题/严重度配色/时间, 未确认的显示"确认"按钮;
-  //         同时在系统页顶部 #alert-count 徽标显示未读告警数
-  // 【输入】无 【渲染】#alerts-list、#alert-count 【后端】GET /api/db/alerts?limit=20
-  async loadAlerts() {
-    try {
-      const r = await fetch('/api/db/alerts?limit=20');  // 【调用函数】后端接口: 拉取最近 20 条告警(按严重度配色渲染)
-      const data = await r.json();
-      const unack = data.filter(a => !a.acknowledged).length;
-      document.getElementById('alert-count').textContent = unack || '';
-      document.getElementById('alerts-list').innerHTML = data.length === 0
-        ? '<div style="color:var(--text-muted)">暂无告警</div>'
-        : data.map(a => `
-          <div style="padding:6px 0;border-bottom:1px solid var(--border);${a.acknowledged?'opacity:0.5':''}">
-            <span style="font-weight:600;color:${a.severity==='error'?'var(--red)':a.severity==='warning'?'var(--amber)':'var(--blue)'}">${a.title}</span>
-            <small style="color:var(--text-muted);float:right">${(a.created_at||'').substring(0,16)}</small>
-            ${a.acknowledged ? '' : '<button class="btn btn-outline btn-sm" onclick="App.ackAlert(' + a.id + ')" style="font-size:0.65rem;padding:2px 6px">确认</button>'}
-          </div>`).join('');
-    } catch(e) {}
-  },
+  // (系统运维页已于 2026-09-08 删除: loadSystemTab/loadSchedulerStatus/schedulerControl/
+  //  loadDbStats/ackAlert/loadAlerts 随之移除, 备份见 backup/web_template_pre_tab_merge_2026-09-08.html;
+  //  后端 /api/scheduler/* 与 /api/db/* 接口保留, 定时调度仍由 scheduler.py 后台运行)
 
 };
 
