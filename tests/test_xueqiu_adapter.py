@@ -16,8 +16,6 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 _ADAPTER_DIR = Path(__file__).resolve().parents[1] / "data_collection" / "validate" / "platforms"
 
 

@@ -10,8 +10,6 @@ No subprocess is spawned and no database is touched — `get_db`,
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from scheduler import _run_daily_pipeline
 
 _PLATFORMS = ("weibo", "xueqiu", "zhihu", "eastmoney_guba")

@@ -40,10 +40,6 @@ _NER_BARE_METAL = {
 }
 
 # 新增 6 个采集关键词品种 → 东财股吧必须存在的核心词(带"期货"后缀)
-NEW_GUBA_KEYWORDS = [
-    "氧化铝期货", "沪铅期货", "沪锡期货", "烧碱期货", "线材期货", "淀粉期货",
-]
-
 # 板块预期(剥括号后):有色 11 / 黑色系含 WR / 能化含 SH / 农产品含 6
 NEW_SECTORS = {
     "有色": {"AG", "AL", "AO", "AU", "CU", "LC", "NI", "PB", "SI", "SN", "ZN"},
@@ -149,11 +145,19 @@ def test_new_19_have_ner_entries():
 
 
 # ---------------------------------------------------------------------------
-# 5) 东财股吧关键词覆盖新增的 6 个品种
+# 5) 东财股吧关键词覆盖 2026-09-09 新入池品种(PS/SI/BZ/BR 等)
 # ---------------------------------------------------------------------------
+POOL_GUBA_KEYWORDS = [
+    "碳酸锂期货", "多晶硅期货", "工业硅期货",      # 有色(新能源)
+    "纯苯期货", "丁二烯橡胶期货",                  # 能化(BZ/BR)
+    "豆粕期货", "红枣期货", "生猪期货",            # 农产品(M/CJ/LH)
+]
+
+
 @pytest.mark.unit
-def test_eastmoney_keywords_cover_new_6():
+def test_eastmoney_keywords_cover_pool_varieties():
+    """2026-09-09 品种池收缩:关键词表改为 20 池口径,新入池品种词必须齐全。"""
     em = _ast_assign(_VALIDATE / "batch_collect.py",
                      "DEFAULT_KEYWORDS_EASTMONEY_GUBA")
-    missing = [kw for kw in NEW_GUBA_KEYWORDS if kw not in em]
+    missing = [kw for kw in POOL_GUBA_KEYWORDS if kw not in em]
     assert not missing, f"东财股吧缺核心词: {missing}"

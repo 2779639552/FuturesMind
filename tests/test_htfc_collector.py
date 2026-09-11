@@ -49,22 +49,22 @@ class TestTokenMatching:
         [
             ("燃油,低硫燃油", {"FU", "LU"}),            # FU/LU 合并日报
             ("低硫燃油", {"LU"}),                        # 单 token 精确,不误拉 FU
-            ("橡胶,合成橡胶,20号胶", {"RU", "NR"}),       # 合成橡胶(BR)非目标 → 不产生 SH
-            ("烧碱,PVC", {"SH", "V"}),
-            ("对二甲苯,短纤,PTA,瓶片", {"PX", "PF", "TA"}),  # 聚酯链日报
+            ("橡胶,合成橡胶,20号胶", {"RU", "NR"}),       # 合成橡胶非目标 → 不产生 BR
+            ("纯苯,沥青", {"BZ", "BU"}),
+            ("对二甲苯,PTA,乙二醇", {"PX", "TA", "EG"}),  # 聚酯链日报
             ("塑料,聚丙烯", {"L", "PP"}),
+            ("烧碱,PVC", {"SH", "V"}),
             ("LPG", {"PG"}),
             ("碳酸锂", {"LC"}),
             ("原油", {"SC"}),
-            ("甲醇", {"MA"}),
-            ("乙二醇", {"EG"}),
-            ("沪铜,沪铅,沪锌", set()),                    # 有色不在 21 码内
-            ("多晶硅,工业硅", set()),                      # 广期所新品种不在目标
-            ("焦煤,焦炭,螺纹钢", set()),                   # 黑色不在目标
+            ("多晶硅,工业硅", {"PS", "SI"}),              # 2026-09-09 新入池
+            ("沪铜,沪铅,沪锌", set()),                    # 有色不在映射表
+            ("焦煤,焦炭,螺纹钢", set()),                   # 黑色不在映射表
             ("", set()),
         ],
     )
     def test_token_exact_match(self, subclass, expected):
+        # 注意:_match_tokens 只做映射不做池过滤(池过滤在 match_codes 里)
         assert rc._match_tokens(subclass) == expected
 
     def test_token_split_separators(self):
@@ -96,13 +96,13 @@ class TestTitleFallback:
 
 class TestMatchCodes:
     def test_filters_to_target_varieties(self):
-        item = _item("RE1", subclass="甲醇", title="华泰期货甲醇日报")
-        assert rc.match_codes(item) == {"MA"}
+        item = _item("RE1", subclass="PTA", title="华泰期货PTA日报")
+        assert rc.match_codes(item) == {"TA"}
 
     def test_subclass_primary_title_not_used_when_hit(self):
-        # subclass 已命中(SA)时标题里的无关词不追加命中
-        item = _item("RE2", subclass="纯碱", title="宏观与商品观察")
-        assert rc.match_codes(item) == {"SA"}
+        # subclass 已命中(FU)时标题里的无关词不追加命中
+        item = _item("RE2", subclass="燃料油", title="宏观与商品观察")
+        assert rc.match_codes(item) == {"FU"}
 
     def test_title_fallback_when_subclass_empty(self):
         item = _item("RE3", subclass="", title="华泰期货原油周度展望")
@@ -150,8 +150,8 @@ class TestSelectTodayItems:
         assert rc.select_today_items([]) == []
 
     def test_never_exceeds_requested_count(self):
-        many = [_item(f"RE-{i:03d}", subclass="甲醇") for i in range(30)]
-        res = rc.select_today_items(many, requested={"MA"})
+        many = [_item(f"RE-{i:03d}", subclass="原油") for i in range(30)]
+        res = rc.select_today_items(many, requested={"SC"})
         assert len(res) == 1  # 同品种只取最新一篇
 
 
@@ -312,7 +312,8 @@ class TestWeeklyChannel:
         return calls
 
     @staticmethod
-    def _feed_item(id_, pub, subclass="甲醇", rtype="周报"):
+    def _feed_item(id_, pub, subclass="原油", rtype="周报"):
+        # 2026-09-09 起默认用池内品种(原油 SC);甲醇已随品种池收缩出池
         return {"id": id_, "itemValue": "10070", "reportType": rtype,
                 "publishDateTime": f"{pub} 08:00:00", "subclassCodeName": subclass,
                 "title": f"华泰期货{subclass}{rtype}{id_}"}
@@ -394,11 +395,15 @@ class TestWeeklyChannel:
 
 
 class TestModuleConstants:
-    def test_target_varieties_is_21(self):
-        assert len(rc.TARGET_VARIETIES) == 21
-        # 能化 19 码齐备 + LC/PG 补充
-        for code in ["BU", "EB", "EG", "FG", "FU", "L", "LU", "MA", "NR", "PF", "PP", "PX", "RU", "SA", "SC", "SH", "TA", "UR", "V", "LC", "PG"]:
-            assert code in rc.TARGET_VARIETIES
+    def test_target_varieties_is_active_pool(self):
+        """2026-09-09 品种池收缩:TARGET 统一引用 ACTIVE_VARIETIES(20 品种)。"""
+        from tradingagents.dataflows.commodity_futures import ACTIVE_VARIETIES
+
+        assert set(rc.TARGET_VARIETIES) == set(ACTIVE_VARIETIES)
+        assert len(rc.TARGET_VARIETIES) == 20
+        # 池内新入品种的别名表必须齐备(标题兜底匹配依赖)
+        for code in ["M", "CF", "CJ", "LH", "BZ", "BR", "PS", "SI"]:
+            assert code in rc.CODE_ALIASES
 
     def test_sh_is_caustic_not_synthetic_rubber(self):
         # SH=烧碱(氯碱);合成橡胶=BR 非目标。若未来把 SH 映射错成合成橡胶会双漏

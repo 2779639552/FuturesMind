@@ -2,16 +2,17 @@
 
 历史事故:Database.create_alert 旧写法 `return c.lastrowid` 在 Connection 上取
 lastrowid 必抛 AttributeError,而调度任务的 "started" 告警写在 try 之外 ——
-结果全部定时采集任务(daily pipeline / 发现报告 / 华泰 / 国君)在第一步就炸掉,
+结果全部定时采集任务(daily pipeline / 华泰 / 国君 / 东证)在第一步就炸掉,
 子进程从未启动,告警表恒空,失败不留任何痕迹。
 
 本文件两道防线:
 1. 真库 roundtrip:证明 create_alert 真能写入并读回(旧 bug 在此必挂)。
 2. 韧性:_safe_alert 吞掉告警写入异常,采集任务绝不因告警而中断。
+   (2026-09-09 发现报告源剔除后,研报链路以 _run_htfc_collection 为代表。)
 """
 
 import database
-from scheduler import _run_research_collection, _safe_alert
+from scheduler import _run_htfc_collection, _safe_alert
 
 
 def test_create_alert_roundtrip_and_readback(tmp_path):
@@ -66,7 +67,7 @@ def test_research_job_survives_started_alert_failure(monkeypatch):
         "scheduler.subprocess.run", return_value=proc
     ) as mock_run:
         # 历史上这一步在 started 告警处直接 AttributeError,子进程从未启动
-        _run_research_collection()
+        _run_htfc_collection()
 
     assert mock_run.call_count == 1  # 子进程照常启动
     assert broken_db.create_alert.call_count >= 2  # started + complete 都尝试过(各被吞)

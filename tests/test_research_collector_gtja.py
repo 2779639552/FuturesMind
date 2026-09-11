@@ -45,7 +45,8 @@ def test_is_collection_keeps_single_variety_daily():
 
 
 def test_match_codes_exact_tag_mapping():
-    assert match_codes(_row(tags=["日报", "能源化工", "尿素"])) == {"UR"}
+    # 2026-09-09 品种池收缩:池外品种(尿素 UR)tag 不再命中
+    assert match_codes(_row(tags=["日报", "能源化工", "尿素"])) == set()
     # 多品种研报:对二甲苯/PTA/MEG 三个 tag 全命中
     assert match_codes(_row(tags=["PTA", "MEG", "对二甲苯"])) == {"TA", "EG", "PX"}
     # 低硫燃料油 vs 燃料油:枚举 token 精确匹配,不互相误命中
@@ -62,10 +63,12 @@ def test_match_codes_respects_requested_subset():
 
 
 def test_match_codes_all_target_codes_have_mapping():
+    """2026-09-09 品种池收缩后:TARGET=ACTIVE_VARIETIES(20),TAG_TO_CODE 保留池外
+    tag 映射(命中后被 TARGET 过滤),故只要求池内代码全部有映射(子集语义)。"""
     from research_collector_gtja import TARGET_VARIETIES
 
     mapped = set(TAG_TO_CODE.values())
-    assert mapped == set(TARGET_VARIETIES)
+    assert set(TARGET_VARIETIES) <= mapped
 
 
 def test_html_to_text_strips_tags():

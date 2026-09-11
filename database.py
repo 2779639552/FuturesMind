@@ -358,6 +358,34 @@ class AgentSenseDB:
                     created_at TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_user_datasets_variety ON user_datasets(variety);
+
+                CREATE TABLE IF NOT EXISTS qa_sessions (            -- 研报问答会话(2026-09-12 多轮智能知识库):一个会话=一次连续对话
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT DEFAULT '',             -- 会话标题(首问截 30 字,不加 LLM 调用)
+                    variety TEXT DEFAULT '',           -- 最近一次提问的筛选快照(回填前端筛选器)
+                    report_type TEXT DEFAULT '',
+                    date_from TEXT DEFAULT '',         -- 日期范围筛选快照(YYYY-MM-DD,空=不限)
+                    date_to TEXT DEFAULT '',
+                    message_count INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    updated_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_qa_sessions_updated ON qa_sessions(updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS qa_messages (            -- 研报问答消息:兼作审计日志(rewritten_query/retrieved/error/latency_ms 全落)
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,                -- 'user' / 'assistant'
+                    content TEXT DEFAULT '',           -- 用户原话 或 助理 markdown 回答(失败时存错误提示)
+                    citations TEXT DEFAULT '[]',       -- JSON [{no,report_id,title,publish_date,variety,chunk_index,snippet,score}]
+                    retrieved INTEGER DEFAULT 0,       -- 当轮检索命中片段数
+                    filters TEXT DEFAULT '{}',         -- JSON {variety,report_type,date_from,date_to}(当轮生效筛选快照,复盘可对账)
+                    rewritten_query TEXT DEFAULT '',   -- 上下文改写后的检索 query(空=首轮/改写失败回退原问题)
+                    error TEXT DEFAULT '',             -- 当轮失败原因(失败的 assistant 轮也落库,回放如实显示)
+                    latency_ms INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id);
             """)
 
     # ── Posts ──────────────────────────────────────────────────────────
@@ -627,11 +655,14 @@ class AgentSenseDB:
         【关键逻辑】status 初始为 'running',结束时由 finish_collection 改写。
         """
         with self._conn() as c:
-            c.execute(
+            cur = c.execute(  # 【关键 2026-09-10】lastrowid 在 cursor 上,Connection 没有 ——
+                # 旧写法 `return c.lastrowid` 必抛 AttributeError,导致调度管道四平台
+                # 采集在第一条日志写入即死(2026-09-07 10:00 同秒四错误,与本文件
+                # create_alert 旧错同款,当时漏改此处)
                 "INSERT INTO collection_log (platform, keywords_count, status) VALUES (?, ?, 'running')",
                 (platform, keywords_count),
             )
-            return c.lastrowid
+            return cur.lastrowid
 
     def finish_collection(
         self, log_id: int, posts_collected: int, posts_after_filter: int = 0, error: str = ""
@@ -1080,3 +1111,135 @@ class AgentSenseDB:
         with self._conn() as c:
             cur = c.execute("DELETE FROM user_datasets WHERE id=?", (dataset_id,))
             return cur.rowcount > 0
+
+    # ── QA 会话(研报问答多轮对话,2026-09-12) ───────────────────────────
+
+    def create_qa_session(self, title: str = "", variety: str = "", report_type: str = "",
+                          date_from: str = "", date_to: str = "") -> dict:
+        """新建问答会话(首问截 30 字作标题,不加 LLM 调用),返回会话 dict。"""
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO qa_sessions (title, variety, report_type, date_from, date_to)"
+                " VALUES (?, ?, ?, ?, ?)",
+                ((title or "")[:30], variety or "", report_type or "",
+                 date_from or "", date_to or ""),
+            )
+            sid = cur.lastrowid
+        return self.get_qa_session(sid)
+
+    def get_qa_session(self, session_id: int) -> dict | None:
+        """按 id 取问答会话;不存在返回 None。"""
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM qa_sessions WHERE id=?", (session_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_qa_sessions(self, limit: int = 50) -> list[dict]:
+        """问答会话列表(按最近活跃倒序,个人使用 50 条足够)。"""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM qa_sessions ORDER BY updated_at DESC, id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_qa_session(self, session_id: int, title: str | None = None,
+                          variety: str | None = None, report_type: str | None = None,
+                          date_from: str | None = None, date_to: str | None = None) -> None:
+        """更新会话筛选快照(传了才改),顺带触碰 updated_at 并重算 message_count。"""
+        sets, params = [], []
+        for col, val in (("title", title), ("variety", variety), ("report_type", report_type),
+                         ("date_from", date_from), ("date_to", date_to)):
+            if val is not None:
+                sets.append(f"{col}=?")
+                params.append((str(val) or "")[:30] if col == "title" else str(val or ""))
+        if not sets:
+            sets, params = ["updated_at=CURRENT_TIMESTAMP"], []
+        else:
+            sets.append("updated_at=CURRENT_TIMESTAMP")
+        params.append(session_id)
+        with self._conn() as c:
+            c.execute(f"UPDATE qa_sessions SET {', '.join(sets)} WHERE id=?", params)
+            # message_count 以消息表为准重算(避免双写不一致)
+            c.execute(
+                "UPDATE qa_sessions SET message_count="
+                "(SELECT COUNT(*) FROM qa_messages WHERE session_id=?) WHERE id=?",
+                (session_id, session_id),
+            )
+
+    def delete_qa_session(self, session_id: int) -> bool:
+        """删除会话及其全部消息(显式先删 messages,不依赖 CASCADE);不存在返回 False。"""
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM qa_sessions WHERE id=?", (session_id,))
+            if cur.rowcount == 0:
+                return False
+            c.execute("DELETE FROM qa_messages WHERE session_id=?", (session_id,))
+        return True
+
+    def get_qa_messages(self, session_id: int, limit: int = 200) -> list[dict]:
+        """会话消息回放(按 id 升序);citations/filters JSON 反序列化成 dict/list。"""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM qa_messages WHERE session_id=? ORDER BY id ASC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            for col in ("citations", "filters"):
+                try:
+                    d[col] = json.loads(d[col]) if d[col] else ([] if col == "citations" else {})
+                except (json.JSONDecodeError, TypeError):
+                    d[col] = [] if col == "citations" else {}
+            out.append(d)
+        return out
+
+    def insert_qa_message(self, session_id: int, role: str, content: str,
+                          citations: list | None = None, retrieved: int = 0,
+                          filters: dict | None = None, rewritten_query: str = "",
+                          error: str = "", latency_ms: int = 0) -> dict:
+        """插入一条问答消息(user 原话 / assistant 回答),落库即审计;返回该行 dict。"""
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO qa_messages (session_id, role, content, citations, retrieved,"
+                " filters, rewritten_query, error, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id, role, content or "",
+                    json.dumps(citations or [], ensure_ascii=False),
+                    int(retrieved or 0),
+                    json.dumps(filters or {}, ensure_ascii=False),
+                    rewritten_query or "", error or "", int(latency_ms or 0),
+                ),
+            )
+            mid = cur.lastrowid
+        return self.get_qa_message(mid)
+
+    def get_qa_message(self, message_id: int) -> dict | None:
+        """按 id 取单条问答消息(citations/filters 已反序列化);不存在返回 None。"""
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM qa_messages WHERE id=?", (message_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for col in ("citations", "filters"):
+            try:
+                d[col] = json.loads(d[col]) if d[col] else ([] if col == "citations" else {})
+            except (json.JSONDecodeError, TypeError):
+                d[col] = [] if col == "citations" else {}
+        return d
+
+    def get_qa_history_for_rewrite(self, session_id: int, max_turns: int = 3,
+                                   max_chars: int = 6000) -> list[dict]:
+        """取最近 N 轮 user/assistant 消息对(供检索 query 改写),总长截 max_chars。
+
+        【关键】按 id 倒序取 2*max_turns 条再反转为时序;截断从最旧的消息开始丢,
+                保证"最新一轮永远完整"。
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT role, content FROM qa_messages WHERE session_id=? ORDER BY id DESC LIMIT ?",
+                (session_id, max_turns * 2),
+            ).fetchall()
+        msgs = [{"role": r["role"], "content": r["content"] or ""} for r in reversed(rows)]
+        # 总长预算:超限时从最旧开始丢(最新一轮永远完整)
+        while msgs and sum(len(m["content"]) for m in msgs) > max_chars:
+            msgs.pop(0)
+        return msgs

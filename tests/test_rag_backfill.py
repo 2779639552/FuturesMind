@@ -28,7 +28,7 @@ class _FakeDB:
 
 
 def _row(status="done"):
-    return {"id": 55, "status": status, "variety": "RB", "title": "旧标题",
+    return {"id": 55, "status": status, "variety": "SC", "title": "旧标题",
             "source": "旧来源", "filename": "a.pdf", "file_path": "x.pdf",
             "publish_date": "", "report_type": "", "uploaded_at": "2026-09-08 10:00:00"}
 
@@ -41,11 +41,11 @@ def hooked_process(monkeypatch):
     monkeypatch.setattr(web_app, "_extract_report_text", lambda fp: ("甲" * 100, False))
     monkeypatch.setattr(web_app, "_llm_extract_structured", lambda llm, sel, text: {
         "report_title": "新标题", "publisher": "华泰期货", "publish_date": "2026-09-07",
-        "varieties": [{"variety": "RB", "direction": "看多", "confidence": 0.6}],
+        "varieties": [{"variety": "SC", "direction": "看多", "confidence": 0.6}],
     })
     monkeypatch.setattr(
         web_app, "_llm_opinion_conclusion",
-        lambda llm, text, varieties, report_id=None: {"RB": "## 观点与依据\n测试结论"},
+        lambda llm, text, varieties, report_id=None: {"SC": "## 观点与依据\n测试结论"},
     )
     monkeypatch.setattr(web_app, "_ingest_backfill_fund_metrics", lambda varieties, text: None)
     monkeypatch.setattr(web_app, "_write_research_aggregates", lambda *a, **k: None)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,11 @@ COLLECTION_NAME = "research_reports"
 
 _client = None
 _collection = None
+# chroma 0.5x 的 PersistentClient 全局注册表非线程安全:多线程同时首次建连会
+# 撞 _identifier_to_system KeyError,且其失败路径会 stop() 共享系统(rust bindings
+# 被删),并发使用下可拖垮整个进程(2026-09-09 web_app 首采 RAG 并发索引时复现)。
+# 这里用模块级锁把"首次建连+建 collection"串行化,之后 query/upsert 并发安全。
+_init_lock = threading.Lock()
 
 
 def chroma_dir() -> Path:
@@ -26,20 +32,22 @@ def chroma_dir() -> Path:
 
 
 def get_collection():
-    """懒加载 Chroma persistent client 与 collection(进程内单例)。"""
+    """懒加载 Chroma persistent client 与 collection(进程内单例,加锁防并发首连竞态)。"""
     global _client, _collection
     if _collection is None:
-        import chromadb
-        from chromadb.config import Settings
+        with _init_lock:
+            if _collection is None:  # 双检:等锁期间可能已被他线程建好
+                import chromadb
+                from chromadb.config import Settings
 
-        _client = chromadb.PersistentClient(
-            path=str(chroma_dir()),
-            settings=Settings(anonymized_telemetry=False),  # 单机自用,不上报
-        )
-        _collection = _client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+                _client = chromadb.PersistentClient(
+                    path=str(chroma_dir()),
+                    settings=Settings(anonymized_telemetry=False),  # 单机自用,不上报
+                )
+                _collection = _client.get_or_create_collection(
+                    name=COLLECTION_NAME,
+                    metadata={"hnsw:space": "cosine"},
+                )
     return _collection
 
 

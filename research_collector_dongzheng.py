@@ -97,7 +97,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _variety_name_map() -> dict[str, str]:
-    """中文/英文名 → 品种代码映射(来自 VARIETY_METADATA 61 品种 + 常用别名)。"""
+    """中文/英文名 → 品种代码映射(来自 VARIETY_METADATA 全部品种 + 常用别名)。"""
     from tradingagents.dataflows.commodity_futures import VARIETY_METADATA
 
     m: dict[str, str] = {}
@@ -111,12 +111,20 @@ def _variety_name_map() -> dict[str, str]:
 
 
 def report_variety_codes(row: dict) -> list[str]:
-    """研报行的品种代码:product_names(如 ["铁矿石"])逐一映射到品种代码。"""
+    """研报行的品种代码:product_names(如 ["铁矿石"])逐一映射到品种代码。
+
+    【品种池】2026-09-09 起只保留 ACTIVE_VARIETIES(20 品种)内的代码;池外品种
+    研报由 web_app._process_research_report 的池过滤兜底跳过(不烧 LLM)。
+    """
+    from tradingagents.dataflows.commodity_futures import (  # 【调用包】元数据 + 活跃池
+        ACTIVE_VARIETIES,
+    )
+
     name_map = _variety_name_map()
     codes: list[str] = []
     for name in row.get("product_names") or []:
         code = name_map.get(str(name).strip())
-        if code and code not in codes:
+        if code and code in ACTIVE_VARIETIES and code not in codes:
             codes.append(code)
     return codes
 
@@ -124,14 +132,14 @@ def report_variety_codes(row: dict) -> list[str]:
 def view_variety_code(row: dict) -> str:
     """观点行的品种代码:product_code 前缀(如 M.DCE → M)须命中品种元数据。
 
-    【返回】代码(如 "M");不在 VARIETY_METADATA(61 品种,宏观/股指/外盘不在内)
-            返回空串(调用方跳过该条)。
+    【返回】代码(如 "M");不在 ACTIVE_VARIETIES(20 品种池,宏观/股指/外盘及
+            池外商品不在内)返回空串(调用方跳过该条)。
     """
-    from tradingagents.dataflows.commodity_futures import VARIETY_METADATA
+    from tradingagents.dataflows.commodity_futures import ACTIVE_VARIETIES
 
     raw = str(row.get("product_code") or "")
     code = raw.split(".", 1)[0].strip().upper()
-    return code if code in VARIETY_METADATA else ""
+    return code if code in ACTIVE_VARIETIES else ""
 
 
 def _authors_text(row: dict) -> str:

@@ -390,6 +390,13 @@ class OpenAIClient(BaseLLMClient):
                 continue
             llm_kwargs[key] = self.kwargs[key]
 
+        # 【超时兜底】langchain ChatOpenAI 默认 timeout=None —— API 端偶发不响应
+        # 时调用线程会 ssl.read 永久挂起(2026-09-09 研报采集实测:单请求挂 20+ 分钟,
+        # 拖死整个采集流程)。默认给 300s(常规研报提取 ~110-140s,留足裕量),
+        # 用户显式传 timeout 时以用户值为准;超时抛 APITimeoutError 走既有 error 路径。
+        llm_kwargs.setdefault("timeout", 300)
+        llm_kwargs.setdefault("max_retries", 2)
+
         # The subclass (provider quirks) comes from the registry spec.
         return chat_cls(**llm_kwargs)  # 【调用函数】按注册表中的子类构造最终的 LLM 实例
 

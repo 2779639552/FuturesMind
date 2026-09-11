@@ -55,13 +55,13 @@ def _install_stubs(monkeypatch, tmp_path, *, existing=None):
 def _rpt_row():
     return {
         "report_id": 212914,
-        "title": "2026Q2铁矿季度运营报告：增量符合预期",
+        "title": "2026Q2原油季度运营报告：增量符合预期",
         "author": "许惠敏",
         "write_date": "2026-09-07",
         "type_name": "热点报告",
-        "industry_name": "黑色金属",
+        "industry_name": "能源化工",
         "summary": "★ 2026Q2运营：总量波澜不惊。" * 20,  # ≥ MIN_BODY_CHARS(摘要降级路径)
-        "product_names": ["铁矿石"],
+        "product_names": ["原油"],
     }
 
 
@@ -76,8 +76,10 @@ def test_variety_name_map_covers_metadata_and_aliases():
 
 @pytest.mark.unit
 def test_report_variety_codes_maps_product_names():
+    # 2026-09-09 品种池收缩:铁矿石/螺纹钢已出池 → 过滤为空;池内品种正常映射
     row = {"product_names": ["铁矿石", "螺纹钢", "美元指数"]}
-    assert dzc.report_variety_codes(row) == ["I", "RB"]  # 未知品种忽略,去重保序
+    assert dzc.report_variety_codes(row) == []  # 池外品种全部过滤
+    assert dzc.report_variety_codes({"product_names": ["原油", "豆粕", "美元指数"]}) == ["SC", "M"]
     assert dzc.report_variety_codes({"product_names": []}) == []
 
 
@@ -110,7 +112,7 @@ def test_ingest_report_downloads_pdf_and_inserts(_rpt_row, monkeypatch, tmp_path
     assert dzc._ingest_report(_rpt_row) is True
     assert len(inserted) == 1 and processed == [301]
     kw = inserted[0]
-    assert kw["variety"] == "I"  # product_names 首个映射代码作主品种提示
+    assert kw["variety"] == "SC"  # product_names 首个映射代码作主品种提示
     assert kw["publish_date"] == "2026-09-07"  # write_date 直接入库
     assert kw["report_type"] == ""  # 热点报告不在 TYPE_MAP → 留空 LLM 自愈
     assert kw["filename"].startswith("dzrpt212914_")

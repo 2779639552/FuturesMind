@@ -59,11 +59,13 @@ MAX_REPORTS_DEFAULT = 30  # 【变量】单次运行默认入库上限(LLM 用�
 PARALLEL_WORKERS = 4  # 【变量】并行处理线程数(LLM 账户并发上限 5,每篇同时只挂 1 个调用,4 并发安全)
 _STATE_LOCK = threading.Lock()  # 【变量】状态文件落盘互斥锁(并行线程逐篇 persist)
 
-# 【变量】目标品种代码(与 HTFC 同一组 21 品种;聚合 JSON 消费端一致)
-TARGET_VARIETIES = (
-    "TA", "MA", "FG", "BU", "SA", "EB", "V", "PP", "L", "EG",
-    "PX", "UR", "PF", "SC", "LU", "FU", "RU", "NR", "SH", "LC", "PG",
+# 【变量】目标品种代码:2026-09-09 起统一引用 ACTIVE_VARIETIES(20 品种池,与
+# HTFC/全项目同一口径),不再各自手抄清单;国君不发池内部分品种(如 M/CF)时自然无数据。
+from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】活跃品种池(延迟顶层导入,采集器子进程 cwd=仓库根)
+    ACTIVE_VARIETIES,
 )
+
+TARGET_VARIETIES = tuple(sorted(ACTIVE_VARIETIES))
 
 # 【变量】国君 infoTags.tagName(精确 token)→ 品种代码。tags 是枚举 token
 # (如"低硫燃料油"与"燃料油"是两个独立 tag),精确比对无子串误命中。
@@ -74,6 +76,8 @@ TAG_TO_CODE = {
     "沥青": "BU", "石油沥青": "BU",
     "纯碱": "SA", "重碱": "SA",
     "苯乙烯": "EB",
+    "纯苯": "BZ", "加氢苯": "BZ",
+    "丁二烯橡胶": "BR", "顺丁橡胶": "BR",
     "PVC": "V", "聚氯乙烯": "V",
     "PP": "PP", "聚丙烯": "PP",
     "LLDPE": "L", "塑料": "L", "聚乙烯": "L",
@@ -88,6 +92,11 @@ TAG_TO_CODE = {
     "20号胶": "NR",
     "烧碱": "SH",
     "碳酸锂": "LC",
+    "多晶硅": "PS", "硅料": "PS",
+    "工业硅": "SI",
+    "豆粕": "M", "棉花": "CF",
+    "红枣": "CJ",
+    "生猪": "LH",
     "LPG": "PG", "液化石油气": "PG",
 }
 

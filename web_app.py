@@ -133,6 +133,7 @@ from signal_analyzer import (  # noqa: E402  # 【调用包】情绪/价格信�
     run_turtle_strategy,
 )
 from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】品种元数据与 AKShare 行情获取
+    ACTIVE_VARIETIES,  # 【调用包】20 品种活跃池(2026-09-09 起 UI/采集/展示白名单)
     VARIETY_METADATA,
     get_futures_basis,
     get_futures_indicators,  # 【调用包】技术指标(MA/MACD/RSI/BOLL/ATR,CSV)供小看板技术面块
@@ -567,11 +568,14 @@ def test_page():
 # 【返回】[{code, name, exchange, sector, sentiment_posts}, ...]。
 # 【关键】sentiment_posts 从 SENTIMENT_DIR 下 "<品种>_sentiment.json" 读取;
 #   文件不存在或解析失败时记为 0。
+# 【品种池】2026-09-09 起只展示 ACTIVE_VARIETIES(20 品种);元数据其余键保留但隐藏。
 @app.route("/api/varieties")
 def api_varieties():
     """List all supported varieties with metadata."""
     result = []
     for code, meta in sorted(VARIETY_METADATA.items()):
+        if code not in ACTIVE_VARIETIES:
+            continue
         sent_path = SENTIMENT_DIR / f"{code}_sentiment.json"
         has_sentiment = sent_path.exists()
         if has_sentiment:
@@ -1974,7 +1978,7 @@ def api_dashboard_sector(sector):
     )
 
     sector_map = build_sector_to_varieties()  # 【调用函数】构建板块归并映射
-    codes = sector_map.get(sector, [])
+    codes = [c for c in sector_map.get(sector, []) if c in ACTIVE_VARIETIES]  # 【品种池】只展示池内品种
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
     rows = []
@@ -3392,6 +3396,11 @@ def _process_research_report(report_id: int):
                 varieties = [rec]
         if not varieties:
             raise ValueError("未能识别研报中的品种与数据,请确认研报内容或重新上传")
+        # 【品种池】2026-09-09 起只入库 ACTIVE_VARIETIES(20 品种)覆盖的研报;
+        # 池外品种研报(如 RB/I)标 error 跳过,不进总结/聚合(存量行保留不删)。
+        if not (set(codes_all := [str(v.get("variety", "")).upper() for v in varieties]) & ACTIVE_VARIETIES):
+            pool_hint = "、".join(sorted(ACTIVE_VARIETIES))
+            raise ValueError(f"识别品种 {','.join(codes_all)} 均不在当前品种池内(仅支持: {pool_hint}),已跳过入库")
         # 【入库即直接提取四类基本面】LLM 四键提取后仍缺的键,用研报原文确定性补上并
         # 随结构化 data_points 一起落库(新研报不靠读时兜底;总结遗漏也不丢数)。
         _ingest_backfill_fund_metrics(varieties, text)
@@ -4555,6 +4564,25 @@ def _daily_variety_segment(conclusion_md: str, code: str) -> str:
     return m.group(1).strip() if m else (conclusion_md or "").strip()
 
 
+def _variety_agg_conf(code: str, report_id, cache: dict) -> float | None:
+    """聚合 JSON {CODE}_research.json 内该研报对该品种的逐品种置信度;读不到返回 None。
+
+    【供】_collect_daily_report_items / _collect_variety_report_items 共用;cache 为
+    调用方传入的 {code: {report_id(str): conf}} 字典(每次收集一份,进程内不跨请求)。
+    """
+    if code not in cache:
+        try:
+            from tradingagents.dataflows.research_data import load_research_data
+            data = load_research_data(code) or {}
+            cache[code] = {
+                str(rr.get("id")): rr.get("confidence")
+                for rr in (data.get("reports") or [])
+            }
+        except Exception:
+            cache[code] = {}
+    return cache[code].get(str(report_id))
+
+
 def _collect_daily_report_items(rows: list[dict], date: str, rtype: str = "") -> list[dict]:
     """某天全部 done 的对应类型研报 → 逐品种结论条目(供总结 prompt,只带要用的字段)。
 
@@ -4572,37 +4600,27 @@ def _collect_daily_report_items(rows: list[dict], date: str, rtype: str = "") ->
     name_map = {k: v["name"] for k, v in VARIETY_METADATA.items()}
     agg_cache: dict[str, dict] = {}  # code → {report_id(str): 逐品种置信度}
 
-    def _agg_conf(code: str, report_id) -> float | None:
-        """聚合 JSON 里该研报对该品种的置信度;读不到返回 None(结果缓存按品种)。"""
-        if code not in agg_cache:
-            try:
-                from tradingagents.dataflows.research_data import load_research_data
-                data = load_research_data(code) or {}
-                agg_cache[code] = {
-                    str(rr.get("id")): rr.get("confidence")
-                    for rr in (data.get("reports") or [])
-                }
-            except Exception:
-                agg_cache[code] = {}
-        return agg_cache[code].get(str(report_id))
-
     for r in rows:
         if r.get("status") != "done" or _report_date(r) != date:
             continue
         if weekly_mode != ((r.get("report_type") or "").strip() == "周报"):
             continue  # 口径不匹配:日报口径跳周报行,周报口径跳日报/未知行
         codes = [c for c in str(r.get("varieties") or "").split(",") if c] or [r.get("variety") or ""]
+        codes = [c for c in codes if c in ACTIVE_VARIETIES]  # 【品种池】池外品种段隐藏(存量行保留)
+        if not codes:
+            continue
         for code in dict.fromkeys(codes):  # 去重保序
             seg = _daily_variety_segment(r.get("conclusion_md") or "", code)
             opinion = _extract_key_opinion(seg, max_len=150)  # 单条短摘:一天全品种条目多,预算留给覆盖面
             if not opinion:
                 continue
             te = _parse_trade_elements(seg)
-            conf = _agg_conf(code, r.get("id"))  # 逐品种置信度(聚合 JSON 口径,与观点总览一致)
+            conf = _variety_agg_conf(code, r.get("id"), agg_cache)  # 逐品种置信度(聚合 JSON 口径,与观点总览一致)
             if conf is None and code == codes[0]:
                 conf = r.get("confidence")  # 主品种/单品种回退 DB 行值;次品种取不到不标(—)
             items.append({
                 "variety": f"{code}({name_map.get(code, '')})",
+                "report_id": r.get("id"),  # 供单品种总结卡的来源观点对比跳转原件(/api/research/{id}/file)
                 "source": r.get("source") or "未知",
                 "title": r.get("title") or "(未命名)",
                 "direction": te.get("方向") or r.get("direction") or "中性",
@@ -4758,6 +4776,209 @@ def api_research_daily_get(date: str):
         return jsonify({"date": date, "exists": False})
     content = path.read_text(encoding="utf-8")
     return jsonify({"date": date, "exists": True, "content": content, **_daily_summary_meta(content)})
+
+
+# ---------------------------------------------------------------------
+# 研报单品种总结(2026-09-09):把某日在库研报中"涉及某品种"的全部逐品种结论
+# 交 LLM 汇总成一份注重逻辑的总结(多空驱动/分歧共识/倾向,数据仅作附录),
+# 落盘 ~/.tradingagents/research_variety/{daily|weekly}/{date}_{CODE}.md;
+# 已生成的品种直接读文件,不重复烧 LLM。前端在每日总结下方自动排队补齐未生成品种。
+# ---------------------------------------------------------------------
+RESEARCH_VARIETY_DIR = Path.home() / ".tradingagents" / "research_variety"
+
+
+def _variety_summary_path(date: str, code: str, rtype: str = "") -> Path:
+    """某日某品种总结 md 路径(research_variety/{daily|weekly}/{date}_{CODE}.md)。"""
+    sub = "weekly" if (rtype or "").strip() == "周报" else "daily"
+    return RESEARCH_VARIETY_DIR / sub / f"{date}_{code}.md"
+
+
+def _collect_variety_report_items(rows: list[dict], date: str, code: str, rtype: str = "") -> list[dict]:
+    """某天涉及 code 的全部 done 对应类型研报 → 逐篇条目(整段结论+四指标,供单品种总结)。
+
+    【与 _collect_daily_report_items 的区别】那边只留 150 字短摘(一天全品种要覆盖面),
+            这边保留整段「## {code} 结论」(单品种预算充足,LLM 要梳理完整逻辑链);
+            四指标用 _row_research_fund_metrics 取"该品种段"({**r, variety: code}
+            保证多品种研报不串到主品种段)。日期/类型/置信度口径与每日总结完全一致。
+    """
+    code = (code or "").strip().upper()
+    weekly_mode = (rtype or "").strip() == "周报"
+    name_map = {k: v["name"] for k, v in VARIETY_METADATA.items()}
+    agg_cache: dict[str, dict] = {}
+    items: list[dict] = []
+    for r in rows:
+        if r.get("status") != "done" or _report_date(r) != date:
+            continue
+        if weekly_mode != ((r.get("report_type") or "").strip() == "周报"):
+            continue  # 口径不匹配:日报口径跳周报行,周报口径跳日报/未知行
+        codes = [c.strip().upper() for c in str(r.get("varieties") or "").split(",") if c.strip()] \
+            or [str(r.get("variety") or "").upper()]
+        if code not in codes:
+            continue
+        seg = _daily_variety_segment(r.get("conclusion_md") or "", code)
+        te = _parse_trade_elements(seg)
+        conf = _variety_agg_conf(code, r.get("id"), agg_cache)
+        if conf is None and codes[0] == code:
+            conf = r.get("confidence")  # 主品种/单品种回退 DB 行值;次品种取不到不标(—)
+        items.append({
+            "code": code,
+            "name": name_map.get(code, ""),
+            "source": r.get("source") or "未知",
+            "title": r.get("title") or "(未命名)",
+            "direction": te.get("方向") or r.get("direction") or "中性",
+            "confidence": f"{round(float(conf) * 100)}%" if conf is not None else "—",
+            "segment": seg,
+            "metrics": _row_research_fund_metrics({**r, "variety": code}, fallback_text=seg),
+        })
+    return items
+
+
+def _generate_variety_summary(date: str, code: str, rtype: str = "", force: bool = False) -> dict:
+    """生成(或复用)某日某品种研报总结;返回 {ok, date, code, content, ...} 或 {ok: False, error}。
+
+    【口径】逻辑为主+数据附录(2026-09-09 用户定):正文写多空驱动/分歧共识/倾向,
+            数据一笔带过;末节固定「## 当日关键数据」;严禁表格、严禁编造。
+    """
+    code = (code or "").strip().upper()
+    if not re.match(r"^[A-Z0-9]{1,6}$", code):  # 单字母合法品种: I 铁矿 / J 焦炭 / T 国债
+        return {"ok": False, "error": f"品种代码不合法: {code!r}"}
+    path = _variety_summary_path(date, code, rtype)
+    if path.is_file() and not force:  # 已生成过 → 直接读文件,不重复烧 LLM(force 重跑覆盖)
+        content = path.read_text(encoding="utf-8")
+        meta = _daily_summary_meta(content)
+        return {"ok": True, "date": date, "code": code, "content": content, "cached": True, **meta}
+
+    db = get_db()
+    items = _collect_variety_report_items(db.list_research_reports(limit=500), date, code, rtype)
+    if not items:
+        return {"ok": False, "error": f"{date} 在库没有涉及 {code} 的已完成分析研报"}
+
+    payload = "\n\n".join(
+        f"【{i['source']}《{i['title']}》】方向:{i['direction']}(置信度 {i['confidence']})\n"
+        f"结论:\n{i['segment'][:1600]}"
+        for i in items
+    )
+    # 当日关键数据备查:研报结构化/启发式提取的四指标(有值才列),供 LLM 写附录节。
+    metric_lines = []
+    for i in items:
+        vals = "; ".join(
+            f"{m['label']}={m.get('value')}{' ' + m['unit'] if m.get('unit') else ''}"
+            for m in (i.get("metrics") or [])
+        )
+        if vals:
+            metric_lines.append(f"- {i['source']}《{i['title']}》: {vals}")
+    metrics_block = ("\n\n【当日关键数据备查(研报结构化提取,仅供「当日关键数据」节参考)】\n"
+                     + "\n".join(metric_lines)) if metric_lines else ""
+    name = {k: v["name"] for k, v in VARIETY_METADATA.items()}.get(code, "")
+    # 【RAG 增强】同品种近期历史研报片段作背景参考(非当日材料),与每日总结同款、失败零影响。
+    hist_ctx = _rag_context_for_variety(f"{code} {name} 基本面 观点", variety=code, limit=2)
+    prompt = (
+        f"你是{code}({name})期货研究员。下面是同一天多家机构关于该品种研报的逐品种结论。"
+        f"请输出一份「{date} {code}({name})单品种研报总结」(markdown, 全中文, 不写套话, 500~800 字),"
+        "以逻辑为主线,固定小节:\n"
+        "## 多空驱动与逻辑链\n"
+        "(提炼各家研报的核心逻辑:供给/需求/成本/库存/宏观等驱动如何传导到价格,"
+        "各家因果链条是否一致;数据只作逻辑支撑一笔带过,严禁罗列数据)\n"
+        "## 分歧与共识\n"
+        "(各家观点的分歧点及根源——数据口径/时间尺度/关注权重不同;无分歧就写共识逻辑;"
+        "材料里没有的方面不要硬写,只写有依据的)\n"
+        "## 倾向与跟踪要点\n"
+        "(综合当日净倾向(偏多/偏空/震荡)与未来 1~2 周值得跟踪的数据或事件)\n"
+        "## 当日关键数据\n"
+        "(无序列表,列材料中出现的基差/仓单/开工率/加工利润等关键数据,数值+出处机构;"
+        "材料没有就写「当日材料未提供」)\n"
+        "写作要求:只依据下面材料,严禁编造;严禁使用 markdown 表格;严禁写套话。\n"
+    )
+    if hist_ctx:
+        prompt += (
+            "---\n【历史背景参考(其他日期历史研报片段,非当日材料)】\n"
+            + hist_ctx
+            + "\n上述历史参考仅可在「倾向与跟踪要点」中引用并标注发布日期,"
+            "严禁与当日材料混写。\n"
+        )
+    prompt += f"---\n研报日期:{date}\n\n{payload[:28000]}{metrics_block[:4000]}"
+    try:
+        client = create_llm_client(
+            config["llm_provider"],
+            config.get("quick_think_llm", config["deep_think_llm"]),
+        )
+        result = client.get_llm().invoke(prompt)
+        body = str(result.content if hasattr(result, "content") else result).strip()
+    except Exception:
+        logger.warning("Variety research summary LLM call failed for %s %s", date, code, exc_info=True)
+        return {"ok": False, "error": "LLM 生成失败,请稍后重试"}
+    if not body:
+        return {"ok": False, "error": "LLM 返回为空,请重试"}
+
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    content = (
+        f"<!-- AgentSense 单品种总结 | code:{code} | generated_at:{generated_at} "
+        f"| reports:{len(items)} -->\n\n{body}\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return {"ok": True, "date": date, "code": code, "content": content, "cached": False,
+            "generated_at": generated_at, "reports": len(items)}
+
+
+@app.route("/api/research/variety-summary/<date>")
+def api_research_variety_summary_list(date: str):
+    """某日单品种总结列表:按当日逐品种条目聚合品种,标注哪些已生成(前端据此自动排队)。
+
+    【返回】{date, report_type, varieties: [{code, name, report_count, directions,
+            report_rows(逐份研报 来源/方向/置信度/id, 供来源观点对比表),
+            summary_md|None, generated_at, reports(条数, 缓存元信息), cached}]}。
+    """
+    date = (date or "").strip()[:10]
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        return jsonify({"ok": False, "error": "date 参数格式应为 YYYY-MM-DD"}), 400
+    rtype = (request.args.get("report_type") or "").strip()
+    db = get_db()
+    # 品种聚合直接复用每日总结的逐品种条目(同日期/类型/方向口径),按 code 前缀分组;
+    # 同时攒逐份研报的来源/方向/置信度,供前端单品种卡渲染"来源观点对比"表(2026-09-09)。
+    items = _collect_daily_report_items(db.list_research_reports(limit=500), date, rtype)
+    groups: dict[str, dict] = {}
+    for it in items:
+        code = (it.get("variety") or "").split("(")[0].strip().upper()
+        if not code:
+            continue
+        g = groups.setdefault(code, {"code": code, "report_count": 0, "directions": [], "report_rows": []})
+        g["report_count"] += 1
+        d = it.get("direction") or "中性"
+        if d not in g["directions"]:
+            g["directions"].append(d)
+        g["report_rows"].append({
+            "report_id": it.get("report_id"),
+            "source": it.get("source") or "未知",
+            "title": it.get("title") or "(未命名)",
+            "direction": d,
+            "confidence": it.get("confidence") or "—",
+        })
+    name_map = {k: v["name"] for k, v in VARIETY_METADATA.items()}
+    out = []
+    for code in sorted(groups):
+        g = groups[code]
+        path = _variety_summary_path(date, code, rtype)
+        if path.is_file():
+            content = path.read_text(encoding="utf-8")
+            g.update(summary_md=content, cached=True, **_daily_summary_meta(content))
+        else:
+            g.update(summary_md=None, cached=False, generated_at="", reports=0)
+        g["name"] = name_map.get(code, "")
+        out.append(g)
+    return jsonify({"date": date, "report_type": rtype, "varieties": out})
+
+
+@app.route("/api/research/variety-summary/generate", methods=["POST"])
+def api_research_variety_summary_generate():
+    """生成(或复用)某日某品种总结:POST json {date, code, report_type, force};LLM 同步调用。"""
+    data = request.get_json(silent=True) or {}
+    date = str(data.get("date") or "").strip()[:10]
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        return jsonify({"ok": False, "error": "date 参数格式应为 YYYY-MM-DD"}), 400
+    rtype = str(data.get("report_type") or "").strip()
+    code = str(data.get("code") or "").strip()
+    return jsonify(_generate_variety_summary(date, code, rtype=rtype, force=bool(data.get("force"))))
 
 
 # GTJA 观点信号进程内缓存:variety → (拉取时间戳, 视图 payload);TTL 内复用,防止前端
@@ -5176,6 +5397,250 @@ def api_research_ask():
     })
 
 
+# ── 研报问答·多轮智能知识库(2026-09-12):会话持久化 + 上下文改写 + 日期筛选 ──
+# 旧 /api/research/ask 保持单轮无状态契约不动;多轮版走 /api/research/qa/*。
+# 并发:账户 LLM 并发经验上限 5(>5 撞 429),QA 单请求最多占 2 次调用(改写+作答),
+# 信号量包整段(两次调用一起抢,避免请求间交错占用)。
+
+_QA_LLM_SEM = threading.BoundedSemaphore(3)
+_QA_REWRITE_TURNS = 3  # 送入改写的历史轮数上限(3 轮=6 条消息)
+_QA_REWRITE_CHAR_BUDGET = 6000
+_QA_REWRITE_QUERY_MAX = 120  # 改写产物长度钳制
+
+
+def _rewrite_query_for_retrieval(history: list[dict], question: str) -> str:
+    """把追问+历史改写成独立检索 query;失败/无历史返回 ""(调用方回退原问题)。
+
+    【为什么】多轮 RAG 关键步骤:用户追问"那成本端呢?"直接拿去向量检索命中率
+            极低,需结合历史补全省略主语/代词成独立 query。
+    【降级】history 空(首轮)跳过 LLM 返回 "";改写 LLM 抛异常/产物为空同样
+            返回 "" —— 检索质量降一档,但问答链路永不被改写卡死。
+            返回值同时就是落库的 rewritten_query("" = 首轮或回退,审计可辨)。
+    """
+    if not history:
+        return ""
+    try:
+        lines = []
+        for m in history:
+            tag = "用户" if m.get("role") == "user" else "助理"
+            content = m.get("content") or ""
+            if m.get("role") != "user":
+                content = content[:400]  # 助理回答截断,历史只供理解意图
+            lines.append(f"{tag}:{content}")
+        hist_text = "\n".join(lines)[:_QA_REWRITE_CHAR_BUDGET]
+        prompt = (
+            "你是检索查询改写器。根据对话历史,把用户最新问题改写成一个不依赖上下文、"
+            "可独立用于向量检索的中文查询。要求:\n"
+            "- 补全省略主语与代词(如\"它\"\"这个品种\"→具体品种名),保留最新问题的真实意图;\n"
+            "- 若最新问题已切换话题,以最新问题为准,不要强行拼接历史;\n"
+            "- 只输出一行查询文本,不要解释、不要加引号。\n\n"
+            f"对话历史(供参考):\n{hist_text}\n\n"
+            f"用户最新问题:{question}\n改写后的检索查询:"
+        )
+        client = create_llm_client(
+            config["llm_provider"],
+            config.get("quick_think_llm", config["deep_think_llm"]),
+        )
+        result = client.get_llm().invoke(prompt)
+        rewritten = str(result.content if hasattr(result, "content") else result).strip()
+        rewritten = rewritten.splitlines()[0].strip().strip("\"'“”")[:_QA_REWRITE_QUERY_MAX]
+        return rewritten
+    except Exception as e:
+        logger.warning("QA query rewrite failed, fallback to raw question: %s", e)
+        return ""
+
+
+def _qa_build_citations(hits: list[dict], include_ctx: bool = False) -> list[dict]:
+    """检索结果 → citations 列表(与旧 ask 路由同一构造,保持前端渲染兼容)。"""
+    citations = []
+    for i, h in enumerate(hits, 1):
+        c = {
+            "no": i,
+            "report_id": int(h["metadata"].get("report_id", 0)),
+            "title": h["metadata"].get("title") or "无标题",
+            "publish_date": h["metadata"].get("publish_date") or "",
+            "variety": h["metadata"].get("variety") or "",
+            "chunk_index": h["metadata"].get("chunk_index", 0),
+            "snippet": (h["text"] or "")[:200],
+            "score": round(float(h.get("score", 0.0)), 4),
+        }
+        if include_ctx:
+            c["text"] = h["text"] or ""
+        citations.append(c)
+    return citations
+
+
+@app.route("/api/research/qa/sessions", methods=["GET"])
+def api_qa_sessions_list():
+    """问答会话列表(最近活跃倒序)。"""
+    limit = request.args.get("limit", 50, type=int)
+    return jsonify({"ok": True, "sessions": get_db().list_qa_sessions(limit=max(1, min(limit, 200)))})
+
+
+@app.route("/api/research/qa/sessions", methods=["POST"])
+def api_qa_sessions_create():
+    """显式建会话(前端一般不调,首轮 ask 自动建)。"""
+    body = request.get_json(silent=True) or {}
+    s = get_db().create_qa_session(title=str(body.get("title") or ""))
+    return jsonify({"ok": True, "session": s})
+
+
+@app.route("/api/research/qa/sessions/<int:sid>", methods=["DELETE"])
+def api_qa_session_delete(sid):
+    """删除会话(连消息一起删);不存在返回 404。"""
+    if not get_db().delete_qa_session(sid):
+        return jsonify({"error": "会话不存在"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/research/qa/sessions/<int:sid>/messages", methods=["GET"])
+def api_qa_session_messages(sid):
+    """会话消息回放(刷新页面后找回历史)。"""
+    session = get_db().get_qa_session(sid)
+    if not session:
+        return jsonify({"error": "会话不存在"}), 404
+    messages = get_db().get_qa_messages(sid)
+    return jsonify({"ok": True, "session": session, "messages": messages})
+
+
+@app.route("/api/research/qa/ask", methods=["POST"])
+def api_qa_ask():
+    """多轮研报问答:会话持久化 + 上下文改写检索 + 引用作答。
+
+    【入参】{"question"必填, "session_id"?(缺省自动建), "variety"?, "report_type"?,
+            "date_from"?(YYYY-MM-DD), "date_to"?, "top_k"?(1~12,默认 6)}。
+    【返回】{"ok", "session_id", "message_id", "answer", "citations", "retrieved",
+            "rewritten_query", "rag_enabled"};失败矩阵同旧 ask(HTTP 200 + ok:false)。
+    【关键逻辑】前端不回传历史,后端按 session_id 自取最近 3 轮做改写(口径单点);
+            每次问答 user/assistant 两条落库(qa_messages 即审计日志),失败轮也落。
+    """
+    body = request.get_json(silent=True) or {}
+    question = str(body.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "question 必填"}), 400
+    variety = str(body.get("variety") or "").strip().upper() or None
+    report_type = str(body.get("report_type") or "").strip() or None
+    date_from = str(body.get("date_from") or "").strip() or None
+    date_to = str(body.get("date_to") or "").strip() or None
+    try:
+        top_k = max(1, min(int(body.get("top_k") or 6), 12))
+    except (TypeError, ValueError):
+        top_k = 6
+    filters = {"variety": variety or "", "report_type": report_type or "",
+               "date_from": date_from or "", "date_to": date_to or ""}
+
+    db = get_db()
+    session = None
+    session_id = int(body.get("session_id") or 0)
+    if session_id:
+        session = db.get_qa_session(session_id)
+        if not session:
+            return jsonify({"ok": False, "error": "会话不存在"})
+    if session is None:
+        session = db.create_qa_session(title=question)  # 首问截 30 字作标题
+        session_id = session["id"]
+    # user 消息先落库(任何后续失败都不丢用户原话)
+    db.insert_qa_message(session_id, "user", question, filters=filters)
+
+    from tradingagents.rag import is_available  # 【调用包】懒导入
+
+    if not is_available():
+        err = "RAG 未启用:需安装 chromadb 与 sentence-transformers,并回填索引"
+        db.insert_qa_message(session_id, "assistant", "", filters=filters, error=err)
+        db.update_qa_session(session_id, variety=variety, report_type=report_type,
+                             date_from=date_from, date_to=date_to)
+        return jsonify({"ok": False, "rag_enabled": False, "session_id": session_id, "error": err})
+
+    from tradingagents.rag import service  # 【调用包】懒导入重依赖
+
+    history = db.get_qa_history_for_rewrite(session_id, max_turns=_QA_REWRITE_TURNS,
+                                            max_chars=_QA_REWRITE_CHAR_BUDGET)
+    prior_history = history[:-1] if history else []  # 末条是刚插入的当前问题,排除
+    t0 = time.monotonic()
+    with _QA_LLM_SEM:
+        rewritten = _rewrite_query_for_retrieval(prior_history, question)
+        search_query = rewritten or question  # ""(首轮/改写失败)回退原问题
+        try:
+            hits = service.retrieve_hits(
+                search_query, top_k=top_k, variety=variety, report_type=report_type,
+                date_from=date_from, date_to=date_to,
+            )
+        except Exception as e:
+            logger.warning("QA retrieve failed: %s", e)
+            err = "检索失败,请稍后重试"
+            db.insert_qa_message(session_id, "assistant", "", filters=filters, error=err)
+            db.update_qa_session(session_id, variety=variety, report_type=report_type,
+                                 date_from=date_from, date_to=date_to)
+            return jsonify({"ok": False, "error": err, "rag_enabled": True,
+                            "session_id": session_id})
+    if not hits:
+        err = "未检索到相关研报片段,试试放宽品种/类型/日期过滤"
+        db.insert_qa_message(session_id, "assistant", "", filters=filters, error=err)
+        db.update_qa_session(session_id, variety=variety, report_type=report_type,
+                             date_from=date_from, date_to=date_to)
+        return jsonify({
+            "ok": True, "answer": "", "citations": [], "retrieved": 0,
+            "rag_enabled": True, "session_id": session_id, "error": err,
+            "rewritten_query": rewritten or "",
+        })
+
+    citations = _qa_build_citations(hits)
+    context = service.format_context(hits)
+    # 新鲜度提示:让模型自知材料边界,回答"截至 X 日"
+    latest_date = max((c["publish_date"] for c in citations if c["publish_date"]), default="未知")
+    try:
+        with _QA_LLM_SEM:
+            client = create_llm_client(
+                config["llm_provider"],
+                config.get("quick_think_llm", config["deep_think_llm"]),
+            )
+            prompt = (
+                "你是中国商品期货研究助理。下面给出用户问题与若干研报片段(带编号,来自不同"
+                "日期的历史研报)。请只依据片段内容用中文回答,回答中用 [n] 标注所引用的片段"
+                "编号,引用观点/数据时注明其发布日期;片段不足以回答的部分明确说明,严禁编造。"
+                "若问题涉及多个方面(如技术面/基本面/宏观面),请逐方面作答;某方面片段未覆盖时"
+                "只说明该方面不足,不要因部分缺失而整体拒答。\n"
+                "用 markdown 组织回答,结构清晰,一般 600~1200 字,数据对比适合用表格;"
+                "按问题复杂度伸缩,不凑字数也不偷懒。\n"
+                f"这是一次多轮对话中的回答;检索查询已根据对话历史改写完成,你只需针对当前"
+                f"问题独立作答。\n"
+                f"检索片段最新发布日期:{latest_date}\n\n"
+                f"用户问题:{question}\n\n"
+                f"{context}\n\n"
+                "回答(markdown):"
+            )
+            result = client.get_llm().invoke(prompt)
+            answer = str(result.content if hasattr(result, "content") else result).strip()
+    except Exception as e:
+        logger.warning("QA answer generation failed: %s", e)
+        err = "已检索到片段,但生成回答失败,请稍后重试"
+        mid = db.insert_qa_message(
+            session_id, "assistant", "", citations=citations, retrieved=len(hits),
+            filters=filters, rewritten_query=rewritten or "", error=err,
+        )["id"]
+        db.update_qa_session(session_id, variety=variety, report_type=report_type,
+                             date_from=date_from, date_to=date_to)
+        return jsonify({
+            "ok": False, "citations": citations, "retrieved": len(hits),
+            "rag_enabled": True, "session_id": session_id, "message_id": mid,
+            "error": err,
+        })
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    mid = db.insert_qa_message(
+        session_id, "assistant", answer, citations=citations, retrieved=len(hits),
+        filters=filters, rewritten_query=rewritten or "",
+        latency_ms=latency_ms,
+    )["id"]
+    db.update_qa_session(session_id, variety=variety, report_type=report_type,
+                         date_from=date_from, date_to=date_to)
+    return jsonify({
+        "ok": True, "session_id": session_id, "message_id": mid,
+        "answer": answer, "citations": citations, "retrieved": len(hits),
+        "rewritten_query": rewritten or "", "rag_enabled": True,
+    })
+
+
 # 【变量】研报自动接入并发标志(防止手动/定时并发重复接入)。
 _research_collecting = False
 
@@ -5210,14 +5675,15 @@ def api_research_collect_status():
     return jsonify({"collecting": _research_collecting})
 
 
-# 【功能】手动触发"研报自动接入":发现报告 2 家期货公司 + 华泰天玑 21 品种日报
+# 【功能】手动触发"研报自动接入":华泰天玑 20 品种池日报
 #           + 国泰君安云 API 研报(2026-09-04 开通)+ 东证繁微观点(2026-09-08 接入)。
-# 【请求体】可选 {"dry_run": true, "source": "all"|"fxbaogao"|"htfc"|"gtja"|"dongzheng",
-#           "varieties": ["MA","TA",...](品种代码白名单,只采指定品种,防止全量
-#           采集 LLM 耗时过长;华泰/国君生效,发现报告按机构抓取无法预判品种;
-#           缺省/空 = 全部品种)};缺省 source=all 四源都跑。
+#           (发现报告源 2026-09-09 剔除:三家 API 源已覆盖,重复度高。)
+# 【请求体】可选 {"dry_run": true, "source": "all"|"htfc"|"gtja"|"dongzheng",
+#           "varieties": ["SC","TA",...](品种代码白名单,只采指定品种,防止全量
+#           采集 LLM 耗时过长;华泰/国君生效;
+#           缺省/空 = 全部品种)};缺省 source=all 三源都跑。
 # 【返回】{"status": "started"} / 进行中 409 / source 或品种非法 400 / 异常 500。
-# 【关键逻辑】daemon 线程按 source 顺序跑 research_collector.ingest_all(发现报告)、
+# 【关键逻辑】daemon 线程按 source 顺序跑
 #           research_collector_htfc.ingest_today(华泰天玑,日报当日+周报近10天,requested=品种集)、
 #           research_collector_gtja.ingest_recent(国君云 API,近 2 天,requested=品种集)、
 #           research_collector_dongzheng.ingest_recent(东证繁微,动态快评近 1 天,
@@ -5233,19 +5699,20 @@ def api_research_collect():
     body = request.json or {}
     dry_run = bool(body.get("dry_run"))
     source = str(body.get("source") or "all").lower()
-    if source not in ("all", "fxbaogao", "htfc", "gtja", "dongzheng"):
-        return jsonify({"error": "source 须为 all / fxbaogao / htfc / gtja"}), 400
+    # 【源裁撤】2026-09-09 起发现报告(fxbaogao)源剔除:三家 API 源(华泰天玑/国君/
+    # 东证繁微)已覆盖,fxbaogao 按机构抓取、品种无法预判且重复度高;source 兼容值
+    # 移除,历史 research_{time} 调度 job 一并下线(research_collector.py 文件保留)。
+    if source not in ("all", "htfc", "gtja", "dongzheng"):
+        return jsonify({"error": "source 须为 all / htfc / gtja / dongzheng"}), 400
     # 【品种筛选】可选 varieties 代码列表,非空时只采指定品种(采集器内部按
     # 品种 tag/代码过滤);非法代码直接 400,避免静默采到 0 篇。
     requested: set[str] | None = None
     raw_varieties = body.get("varieties")
     if isinstance(raw_varieties, list) and raw_varieties:
-        from research_collector_gtja import (  # 【调用包】21 品种代码白名单(与华泰同一组)
-            TARGET_VARIETIES,
-        )
-
+        # 【品种池】2026-09-09 起校验基准改为 ACTIVE_VARIETIES(20 品种池),
+        # 不再引用 gtja 采集器的 TARGET_VARIETIES(后者也统一 import 同一常量)。
         requested = {str(v).strip().upper() for v in raw_varieties if str(v).strip()}
-        unknown = requested - set(TARGET_VARIETIES)
+        unknown = requested - ACTIVE_VARIETIES
         if unknown:
             return jsonify({"error": f"未知品种代码: {', '.join(sorted(unknown))}"}), 400
         requested = requested or None  # 全空白串 → 视为全部品种
@@ -5255,15 +5722,8 @@ def api_research_collect():
         # 懒导入:避免 web_app 顶部 import 块进一步膨胀;本地作用域内排序保持 ruff 干净。
         from contextlib import suppress  # 【调用包】忽略告警写入失败的异常
 
-        from research_collector import ingest_all  # 【调用包】研报采集器(懒导入)
-
         today = datetime.now().strftime("%Y-%m-%d")
         try:
-            if source in ("all", "fxbaogao") and requested is None:
-                # 【按品种时排除发现报告】它按机构抓取、入库前无法预判品种,
-                # 品种筛选下跑了也是全量白跑 → requested 非空时跳过。
-                result = ingest_all(dry_run=dry_run)
-                logger.info("Research auto-collect (fxbaogao) done: %s", result)
             if source in ("all", "htfc"):
                 from research_collector_htfc import ingest_today  # 【调用包】华泰天玑采集器(懒导入)
 
@@ -5300,11 +5760,11 @@ def api_research_collect():
 
     _research_collecting = True
     threading.Thread(target=_run, daemon=True).start()  # 【调用函数】后台线程执行接入(不阻塞响应)
-    label = {"all": "发现报告(2家) + 华泰天玑 + 国君云API + 东证繁微", "fxbaogao": "发现报告(2家)",
+    label = {"all": "华泰天玑 + 国君云API + 东证繁微",
              "htfc": "华泰天玑", "gtja": "国君云API", "dongzheng": "东证繁微"}[source]
     vlabel = "全部品种" if not requested else "品种 " + "/".join(sorted(requested))
     if requested and source == "all":
-        label = "华泰天玑 + 国君云API(发现报告/东证繁微已排除)"
+        label = "华泰天玑 + 国君云API(东证繁微已排除)"
     return jsonify({"status": "started", "source": source, "dry_run": dry_run,
                     "varieties": sorted(requested) if requested else [],
                     "message": f"研报采集已启动({label},{vlabel}),后台处理中"})
@@ -6256,6 +6716,8 @@ def api_divergence_all():
     results = []
     for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
         var = f.stem.replace("_sentiment", "")
+        if var.upper() not in ACTIVE_VARIETIES:  # 【品种池】池外品种隐藏(存量文件保留)
+            continue
         div = compute_divergence(var)
         if div:
             results.append(div)
@@ -6302,8 +6764,9 @@ def api_compare_varieties():
     else:
         varieties = [
             f.stem.replace("_sentiment", "")
-            for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json"))[:10]
-        ]
+            for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json"))
+            if f.stem.replace("_sentiment", "").upper() in ACTIVE_VARIETIES  # 【品种池】
+        ][:10]
     return jsonify(compare_varieties(varieties))
 
 
@@ -7088,6 +7551,8 @@ def api_batch_start():
         vars_with_data = []
         for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
             v = f.stem.replace("_sentiment", "")
+            if v.upper() not in ACTIVE_VARIETIES:  # 【品种池】池外品种不进批量预测
+                continue
             price = _lp(v)
             sent = _predict_sentiment_only(v, trade_date)
             if price and sent and len(price.get("prices", [])) > 0:
@@ -7313,6 +7778,8 @@ def api_validation_start():
         vars_with_data = []
         for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
             v = f.stem.replace("_sentiment", "")
+            if v.upper() not in ACTIVE_VARIETIES:  # 【品种池】池外品种不进批量验证
+                continue
             p = _lpv(v)
             if p and len(p.get("prices", [])) > 10:
                 vars_with_data.append(v)

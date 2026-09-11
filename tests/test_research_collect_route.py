@@ -53,15 +53,12 @@ def test_collect_busy_409():
 
 
 def _fake_collectors(monkeypatch, calls):
-    """注入 4 个采集器 fake 模块(记录调用,不触真实采集/LLM/网络)。
+    """注入 3 个采集器 fake 模块(记录调用,不触真实采集/LLM/网络)。
 
-    记录元组含 requested(品种筛选集),校验路由透传;gtja fake 需带
-    TARGET_VARIETIES(路由用它做品种代码白名单校验)。东证采集器也必须桩掉:
+    记录元组含 requested(品种筛选集),校验路由透传。东证采集器也必须桩掉:
     漏桩会在 source=all 分支触发真 MCP 网络 + 真 LLM(2026-09-08 全量回归
-    曾因此卡 20 分钟)。
+    曾因此卡 20 分钟)。2026-09-09 发现报告源剔除,不再需要 research_collector 桩。
     """
-    fx = types.ModuleType("research_collector")
-    fx.ingest_all = lambda dry_run=False: calls.append(("fx", dry_run)) or {"collected": 1}
     htfc = types.ModuleType("research_collector_htfc")
     htfc.ingest_today = (
         lambda date, requested=None, dry_run=False:
@@ -78,14 +75,13 @@ def _fake_collectors(monkeypatch, calls):
         lambda days=1, dry_run=False, **kw:
         calls.append(("dz", days, dry_run)) or {"collected": 4}
     )
-    monkeypatch.setitem(sys.modules, "research_collector", fx)
     monkeypatch.setitem(sys.modules, "research_collector_htfc", htfc)
     monkeypatch.setitem(sys.modules, "research_collector_gtja", gtja)
     monkeypatch.setitem(sys.modules, "research_collector_dongzheng", dz)
 
 
-def test_collect_all_runs_both_collectors(monkeypatch):
-    """source=all(缺省):发现报告 + 华泰天玑 + 国君 + 东证繁微 四源都被调用。"""
+def test_collect_all_runs_all_collectors(monkeypatch):
+    """source=all(缺省):华泰天玑 + 国君 + 东证繁微 三源都被调用(2026-09-09 起)。"""
     calls = []
     _fake_collectors(monkeypatch, calls)
 
@@ -95,14 +91,24 @@ def test_collect_all_runs_both_collectors(monkeypatch):
     assert body["status"] == "started"
     assert body["source"] == "all"
     assert _wait_idle()
-    assert ("fx", False) in calls
     assert ("htfc", time.strftime("%Y-%m-%d"), None, False) in calls
     assert ("gtja", 1, None, False) in calls
     assert ("dz", 1, False) in calls
 
 
-def test_collect_htfc_only_skips_fxbaogao(monkeypatch):
-    """source=htfc:只调华泰天玑,不碰发现报告/国君/东证。"""
+def test_collect_fxbaogao_source_removed_400(monkeypatch):
+    """2026-09-09 发现报告源剔除:source=fxbaogao 直接 400,不启动任何采集。"""
+    calls = []
+    _fake_collectors(monkeypatch, calls)
+
+    resp = _client().post("/api/research/collect", json={"source": "fxbaogao"})
+    assert resp.status_code == 400
+    assert _wait_idle()
+    assert calls == []
+
+
+def test_collect_htfc_only(monkeypatch):
+    """source=htfc:只调华泰天玑,不碰国君/东证。"""
     calls = []
     _fake_collectors(monkeypatch, calls)
 
@@ -123,24 +129,24 @@ def test_collect_gtja_only_skips_others(monkeypatch):
     assert calls == [("gtja", 1, None, False)]
 
 
-def test_collect_varieties_filters_htfc_gtja_and_skips_fxbaogao(monkeypatch):
-    """带 varieties:requested 透传给华泰/国君;发现报告被排除(无法预判品种)。"""
+def test_collect_varieties_filters_htfc_gtja_and_skips_dz(monkeypatch):
+    """带 varieties:requested 透传给华泰/国君;东证被排除(无法预判品种)。"""
     calls = []
     _fake_collectors(monkeypatch, calls)
 
-    resp = _client().post("/api/research/collect", json={"varieties": ["MA", "ta", " UR "]})
+    resp = _client().post("/api/research/collect", json={"varieties": ["SC", "ta", " EG "]})
     assert resp.status_code == 200
     body = resp.get_json()
-    assert body["varieties"] == ["MA", "TA", "UR"]  # 大小写/空白归一后返回
+    assert body["varieties"] == ["EG", "SC", "TA"]  # 大小写/空白归一 + 排序后返回
     assert _wait_idle()
     assert calls == [
-        ("htfc", time.strftime("%Y-%m-%d"), {"MA", "TA", "UR"}, False),
-        ("gtja", 1, {"MA", "TA", "UR"}, False),
+        ("htfc", time.strftime("%Y-%m-%d"), {"SC", "TA", "EG"}, False),
+        ("gtja", 1, {"SC", "TA", "EG"}, False),
     ]
 
 
 def test_collect_unknown_variety_400(monkeypatch):
-    """未知品种代码直接 400,不启动采集。"""
+    """未知品种代码直接 400,不启动采集(MA 已随 2026-09-09 品种池收缩出池)。"""
     calls = []
     _fake_collectors(monkeypatch, calls)
 
@@ -151,12 +157,11 @@ def test_collect_unknown_variety_400(monkeypatch):
 
 
 def test_collect_blank_varieties_means_all(monkeypatch):
-    """varieties 全为空白串 → 视为全部品种(requested=None,发现报告照跑)。"""
+    """varieties 全为空白串 → 视为全部品种(requested=None)。"""
     calls = []
     _fake_collectors(monkeypatch, calls)
 
     resp = _client().post("/api/research/collect", json={"source": "all", "varieties": ["", "  "]})
     assert resp.status_code == 200
     assert _wait_idle()
-    assert ("fx", False) in calls
     assert ("htfc", time.strftime("%Y-%m-%d"), None, False) in calls

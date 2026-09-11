@@ -358,16 +358,16 @@ class TestProcessResearchReport:
             self.content = content
 
     class _FakeLLM:
-        """多品种研报模拟:第一步返回元数据 + RB/CU 两品种,第二步按品种返回结论。"""
+        """多品种研报模拟:第一步返回元数据 + SC/LC 两品种,第二步按品种返回结论。"""
         def invoke(self, prompt):
             if "只输出一个 JSON 对象" in prompt:
                 return TestProcessResearchReport._FakeResp(
                     '{"report_title":"黑色系月度展望","publisher":"华泰期货","publish_date":"2026-09-01",'
                     '"varieties":['
-                    '{"variety":"RB","spot_price":{"value":3200,"unit":"元/吨","date":"2026-09-01"},'
+                    '{"variety":"SC","spot_price":{"value":3200,"unit":"元/吨","date":"2026-09-01"},'
                     '"social_inventory":{"value":500,"unit":"万吨","date":"2026-09-01"},'
                     '"direction":"看多","confidence":0.85,"target_price":3400},'
-                    '{"variety":"CU","spot_price":{"value":76000,"unit":"元/吨","date":"2026-09-01"},'
+                    '{"variety":"LC","spot_price":{"value":76000,"unit":"元/吨","date":"2026-09-01"},'
                     '"direction":"看空","confidence":0.7,"target_price":75000}]}'
                 )
             m = re.search(r"只针对品种 (\w+)", prompt)
@@ -392,7 +392,7 @@ class TestProcessResearchReport:
         md_path = tmp_path / "r.md"
         md_path.write_text("## 研报\n黑色系与铜价展望。", encoding="utf-8")
         rid = db.insert_research_report(
-            variety="RB", title="", source="", filename="r.md", file_path=str(md_path)
+            variety="SC", title="", source="", filename="r.md", file_path=str(md_path)
         )
         monkeypatch.setattr(web_app, "get_db", lambda: db)
         monkeypatch.setattr(
@@ -403,33 +403,33 @@ class TestProcessResearchReport:
         return db, rid
 
     def test_multi_variety_split(self, monkeypatch, tmp_path):
-        """一份研报含 RB+CU → 两个品种聚合各自落数据;标题/发行方自动识别;结论按品种。"""
+        """一份研报含 SC+LC → 两个品种聚合各自落数据;标题/发行方自动识别;结论按品种。"""
         db, rid = self._run(monkeypatch, tmp_path, self._FakeLLM())
         got = db.get_research_report(rid)
         assert got["status"] == "done"
-        assert got["varieties"] == "RB,CU"
-        assert got["variety"] == "RB"            # 主品种:用户选 RB
-        assert got["direction"] == "看多"         # 主品种方向 = RB
+        assert got["varieties"] == "SC,LC"
+        assert got["variety"] == "SC"            # 主品种:用户选 SC
+        assert got["direction"] == "看多"         # 主品种方向 = SC
         assert got["title"] == "黑色系月度展望"    # 标题自动识别(未手填)
         assert got["source"] == "华泰期货"         # 发行方自动识别(未手填)
-        assert "## RB 结论" in got["conclusion_md"]
-        assert "## CU 结论" in got["conclusion_md"]
+        assert "## SC 结论" in got["conclusion_md"]
+        assert "## LC 结论" in got["conclusion_md"]
         structured = json.loads(got["structured_data"])
-        assert [v["variety"] for v in structured["varieties"]] == ["RB", "CU"]
+        assert [v["variety"] for v in structured["varieties"]] == ["SC", "LC"]
 
-        # RB 聚合:只含 RB 的数据点/方向/结论
-        rb = rd.load_research_data("RB")
+        # SC 聚合:只含 SC 的数据点/方向/结论
+        rb = rd.load_research_data("SC")
         assert rb and rb["reports"][0]["id"] == rid
         r0 = rb["reports"][0]
         assert r0["direction"] == "看多" and r0["confidence"] == 0.85
         assert r0["data_points"]["spot_price"]["value"] == 3200
-        assert r0["conclusion"].startswith("## 核心观点") and "RB" in r0["conclusion"]
-        # CU 聚合:只含 CU 的数据点/方向/结论
-        cu = rd.load_research_data("CU")
+        assert r0["conclusion"].startswith("## 核心观点") and "SC" in r0["conclusion"]
+        # LC 聚合:只含 LC 的数据点/方向/结论
+        cu = rd.load_research_data("LC")
         assert cu and cu["reports"][0]["direction"] == "看空"
         assert cu["reports"][0]["confidence"] == 0.7
         assert cu["reports"][0]["data_points"]["spot_price"]["value"] == 76000
-        assert "CU" in cu["reports"][0]["conclusion"]
+        assert "LC" in cu["reports"][0]["conclusion"]
         rd._research_cache.clear()
 
     def test_single_variety_backward_compat(self, monkeypatch, tmp_path):
@@ -437,17 +437,17 @@ class TestProcessResearchReport:
         db, rid = self._run(monkeypatch, tmp_path, self._FakeLLMSingle())
         got = db.get_research_report(rid)
         assert got["status"] == "done"
-        assert got["varieties"] == "RB"
+        assert got["varieties"] == "SC"
         assert got["direction"] == "看多" and got["confidence"] == 0.85
         structured = json.loads(got["structured_data"])
         assert structured["varieties"][0]["spot_price"]["value"] == 3200
-        agg = rd.load_research_data("RB")
+        agg = rd.load_research_data("SC")
         assert agg and agg["reports"][0]["data_points"]["spot_price"]["value"] == 3200
         rd._research_cache.clear()
 
     def test_failure_sets_error(self, monkeypatch, tmp_path):
         db = database.AgentSenseDB(tmp_path / "test.db")
-        rid = db.insert_research_report(variety="RB", title="T", source="", filename="", file_path="")
+        rid = db.insert_research_report(variety="SC", title="T", source="", filename="", file_path="")
         monkeypatch.setattr(web_app, "get_db", lambda: db)
 
         def _boom(fp):
@@ -464,7 +464,7 @@ class TestProcessResearchReport:
         md_path = tmp_path / "r.md"
         md_path.write_text("", encoding="utf-8")
         rid = db.insert_research_report(
-            variety="RB", title="T", source="", filename="r.md", file_path=str(md_path)
+            variety="SC", title="T", source="", filename="r.md", file_path=str(md_path)
         )
         monkeypatch.setattr(web_app, "get_db", lambda: db)
         web_app._process_research_report(rid)
@@ -528,8 +528,11 @@ class TestResearchHighPriorityConsumption:
 
     def test_inventory_external_without_research_no_empty_part0(self, isolated_dirs, tmp_path):
         # 无研报、有外部库存 → 不能输出空 Part 0 头(误导 LLM 以为有研报数据)
+        # updated 用相对当前时间的时间戳(2026-09-09 曾硬编码 09-01 导致日期漂移腐烂:超 168h 时效被判 stale)
+        fresh = datetime.now().isoformat(timespec="seconds")
         (tmp_path / "RB.json").write_text(
-            '{"variety":"RB","updated":"2026-09-01T16:00:00","source":"Mysteel","data":{"social_inventory":{"value":700,"unit":"万吨"}}}',
+            json.dumps({"variety": "RB", "updated": fresh, "source": "Mysteel",
+                        "data": {"social_inventory": {"value": 700, "unit": "万吨"}}}, ensure_ascii=False),
             encoding="utf-8",
         )
         m, used = ed.merge_inventory_data("RB", "API_INV\n9,8")

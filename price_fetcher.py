@@ -90,6 +90,11 @@ NAME_TO_CODE = {  # 【变量】中文品种名→内部代码映射表(实时�
     "氧化铝": "AO",
     "碳酸锂": "LC",
     "工业硅": "SI",
+    "LPG": "PG",
+    "液化石油气": "PG",
+    "丁二烯橡胶": "BR",
+    "纯苯": "BZ",
+    "多晶硅": "PS",
     "烧碱": "SH",
     "线材": "WR",
     "上证50": "IH",
@@ -103,37 +108,30 @@ NAME_TO_CODE = {  # 【变量】中文品种名→内部代码映射表(实时�
 }
 
 
-# 默认实时行情展示的主力品种清单(共 24 个)。
-# 注释 (keep < 24 for speed) 表示:为保证刷新速度,清单控制在 24 个以内。
-# 分组说明:黑色系(含合金)、有色/贵金属、能化、农产品四大板块各取代表性品种。
+# 默认实时行情展示的品种清单:2026-09-09 起跟随 20 品种活跃池(ACTIVE_VARIETIES)。
 # 首次进入页面只拉前 8 个以加快首屏,随后补全其余品种(见 get_cached_prices)。
-# Default major varieties for live ticker (keep < 24 for speed)
-DEFAULT_LIVE_VARIETIES = [  # 【变量】默认实时展示的 24 个主力品种清单(首屏只取前 8 个提速)
-    "RB",
-    "J",
-    "JM",
-    "I",
-    "HC",
-    "SM",
-    "SF",  # 黑色系(含合金)
-    "CU",
-    "AU",
-    "AG",  # 有色/贵金属
+# Default varieties for live ticker (keep < 24 for speed)
+DEFAULT_LIVE_VARIETIES = [  # 【变量】默认实时展示的 20 品种池清单(首屏只取前 8 个提速)
     "SC",
     "TA",
-    "MA",
-    "SA",
-    "FG",
-    "UR",
-    "RU",  # 能化
+    "PX",
+    "EG",
+    "FU",
+    "LU",
+    "PG",
+    "BU",  # 能化(油品)
+    "RU",
+    "NR",
+    "BR",
+    "BZ",
+    "EB",  # 能化(橡胶/芳烃链)
     "M",
-    "Y",
-    "P",
-    "SR",
     "CF",
-    "RM",
-    "OI",
-    "C",  # 农产品
+    "CJ",
+    "LH",  # 农产品
+    "LC",
+    "PS",
+    "SI",  # 有色(新能源)
 ]
 
 

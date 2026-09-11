@@ -14,21 +14,20 @@
 #        若有则在告警中心写入一条 warning 告警。
 #     3. 平台采集(_run_platform_collection):单个平台的采集任务,通过启动
 #        batch_collect.py 子进程实现,结果与异常都会写入数据库并生成告警。
-#     4. 研报接入(_run_research_collection):每天开盘前 08:10 与 18:00 各执行
-#        一次,通过启动 research_collector.py 子进程抓取发现报告 4 家期货公司
-#        最新研报,复用研报模块的 LLM 提取链路入库,结果与异常写入告警。
-#     5. 华泰天玑研报接入(_run_htfc_collection):research_times 时刻 +15 分钟跑
-#        research_collector_htfc.py 子进程(华泰官方源,能化 21 品种日报);
+#     4. 华泰天玑研报接入(_run_htfc_collection):research_times 时刻 +15 分钟跑
+#        research_collector_htfc.py 子进程(华泰官方源,20 品种池日报);
 #        job id 前缀 research_htfc_,告警前缀 htfc_*。
-#     6. 国君云 API 研报接入(_run_gtja_collection):research_times 时刻 +30 分钟跑
+#     5. 国君云 API 研报接入(_run_gtja_collection):research_times 时刻 +30 分钟跑
 #        research_collector_gtja.py 子进程(researchReportAttachmentQuery 官方源,
-#        默认 21 目标品种/近 2 天/单次 ≤30 篇);job id 前缀 research_gtja_,
+#        20 品种池/近 2 天/单次 ≤30 篇);job id 前缀 research_gtja_,
 #        告警前缀 gtja_*。
-#     7. 东证繁微观点接入(_run_dongzheng_collection):research_times 时刻 +40 分钟跑
+#     6. 东证繁微观点接入(_run_dongzheng_collection):research_times 时刻 +40 分钟跑
 #        research_collector_dongzheng.py 子进程(繁微 Fiona MCP viewpoint 端点,
 #        匿名可调用,动态快评近 1 天);job id 前缀 research_dz_,告警前缀 dz_*。
-#        三源错峰(0/15/30min)的原因:并跑峰值 LLM 并发 9 > 账户上限 5 会撞 429,
+#        三源错峰(15/30/40min)的原因:并跑峰值 LLM 并发 10 > 账户上限 5 会撞 429,
 #        错峰后任一时刻全局并发 ≤4。
+#        【源裁撤】发现报告源(_run_research_collection,job id research_{time})已于
+#        2026-09-09 剔除:三家 API 源已覆盖且重复度高(research_collector.py 保留)。
 #
 #   所有任务都通过数据库(get_db())记录状态与告警,便于 Web 前端展示;
 #   start_scheduler() 返回的调度器对象由调用方(通常是 web_app/main)持有。
@@ -246,86 +245,14 @@ print(f'Pipeline OK: {gen_count} JSONs')
         _safe_alert(db,"pipeline_error", "Pipeline failed", str(e)[:300], severity="error")  # 【调用函数】写入"管道失败"告警
 
 
-def _run_research_collection():
-    """每日开盘前自动接入研报:子进程跑 research_collector.py 并记录告警。
-
-    【功能】在开盘前(默认 08:10 / 18:00)抓取发现报告 5 家期货公司最新研报,
-            走研报模块的 LLM 提取链路入库;把开始/完成/失败写入数据库告警,
-            并解析子进程输出里的 Collected/Processed 计数。
-    【参数】无。
-    【返回】无。
-    【关键逻辑】
-            - 用当前虚拟环境解释器子进程运行 research_collector.py(与
-              _run_platform_collection 同模式,隔离崩溃)。
-            - 从 stdout 解析 "Collected: N" / "Processed: M" 得到接入统计。
-            - 返回码非 0 → 写 error 告警(带输出末尾 500 字符);
-              成功 → 写 info 告警(含统计);20 分钟超时 → 写 error 告警。
-    """
-    db = get_db()  # 【调用函数】取数据库实例(写采集日志/告警)
-    _safe_alert(db,  # 【调用函数】写入"研报接入启动"信息告警
-        "research_started",
-        "Research collection started",
-        f"Automated research ingest at {datetime.now():%H:%M}",
-        severity="info",
-    )
-    try:
-        venv_py = os.path.join(os.path.dirname(sys.executable), "python")  # 【变量】venv_py:当前虚拟环境解释器路径
-        script_dir = os.path.dirname(os.path.abspath(__file__))  # 【变量】script_dir:本脚本所在目录(即 AgentSense 根,research_collector.py 同目录)
-        cmd = [venv_py, "research_collector.py"]
-        result = subprocess.run(  # 【调用函数】启动研报接入子进程(20 分钟超时)
-            cmd,
-            cwd=script_dir,
-            capture_output=True,
-            text=True,
-            timeout=1200,  # 20 min timeout:接入含 LLM 提取,首日全量更久;超时视为失败
-        )
-        output = (result.stdout or "") + (result.stderr or "")  # 【变量】output:子进程输出(合并 stdout+stderr)
-        collected = processed = 0  # 【变量】解析出的接入统计(默认 0)
-        for line in output.splitlines():
-            if line.startswith("Collected:"):
-                with suppress(Exception):
-                    collected = int(line.split(":", 1)[1].strip())
-            elif line.startswith("Processed:"):
-                with suppress(Exception):
-                    processed = int(line.split(":", 1)[1].strip())
-
-        if result.returncode != 0:
-            _safe_alert(db,  # 【调用函数】写入"研报接入失败"告警
-                "research_error",
-                "Research collection failed",
-                output[-500:] or "Unknown error",
-                severity="error",
-            )
-        else:
-            _safe_alert(db,  # 【调用函数】写入"研报接入完成"信息告警
-                "research_complete",
-                "Research collection complete",
-                f"Collected {collected}, processed {processed} reports",
-                severity="info",
-            )
-    except subprocess.TimeoutExpired:
-        _safe_alert(db,  # 【调用函数】写入"研报接入超时"告警
-            "research_timeout",
-            "Research collection timeout",
-            "Research ingest exceeded 20 minutes",
-            severity="error",
-        )
-    except Exception as e:
-        _safe_alert(db,  # 【调用函数】写入"研报接入异常"告警
-            "research_error",
-            "Research collection error",
-            str(e)[:300],
-            severity="error",
-        )
-
-
 def _run_htfc_collection():
     """每日开盘前接入华泰官方天玑研报:子进程跑 research_collector_htfc.py 并记录告警。
 
-    【功能】与 _run_research_collection 同模式,但跑华泰期货官方天玑采集器
-            (research_collector_htfc.py,能化 21 品种日报)。单独函数 + 单独
-            job id(research_htfc_{time}),告警前缀 htfc_*,便于与 fxbaogao
-            4 家在 /api/scheduler/status 与告警中心里区分。
+    【功能】每日定时跑华泰期货官方天玑采集器
+            (research_collector_htfc.py,20 品种池日报)。单独函数 + 单独
+            job id(research_htfc_{time}),告警前缀 htfc_*,
+            在 /api/scheduler/status 与告警中心里与国君/东证区分。
+            (2026-09-09 发现报告源剔除后,_run_htfc_collection 是最早的研报接入点。)
     【参数】无。
     【返回】无。
     【关键逻辑】
@@ -539,8 +466,10 @@ def start_scheduler(schedule_times: list[str] = None, research_times: list[str] 
     【返回】BackgroundScheduler: 已启动的调度器对象(全局 _scheduler)。
     【关键逻辑】
             - 每个管道时间点注册一个 CronTrigger 触发的 _run_daily_pipeline 任务。
-            - 每个研报时间点注册两个 CronTrigger 任务:_run_research_collection
-              (fxbaogao 4 家)与 _run_htfc_collection(华泰天玑,id=research_htfc_{time})。
+            - 每个研报时间点注册三个 CronTrigger 任务(2026-09-09 起三源,发现报告
+              源已剔除):_run_htfc_collection(华泰天玑,research_htfc_{time})、
+              _run_gtja_collection(国君,research_gtja_{time})、
+              _run_dongzheng_collection(东证繁微,research_dz_{time})。
             - 另注册 _health_check 任务,每 30 分钟(minute="*/30")运行一次。
             - 启动后立即调用 get_db().ensure_default_user() 确保管理员存在。
             - daemon=True:调度器作为守护线程运行,不阻塞主进程退出。
@@ -574,14 +503,15 @@ def start_scheduler(schedule_times: list[str] = None, research_times: list[str] 
 
     for time_str in research_times:
         hour, minute = time_str.split(":")
-        # 【关键】四源错峰注册(0/15/30/40 分钟偏移):若同一时刻并跑,峰值 LLM 并发 =
-        # 1(fxbaogao 串行)+4(HTFC)+4(GTJA)+2(DZ)=11 > 账户并发上限 5 → 429。
+        # 【关键】三源错峰注册(15/30/40 分钟偏移):若同一时刻并跑,峰值 LLM 并发 =
+        # 4(HTFC)+4(GTJA)+2(DZ)=10 > 账户并发上限 5 → 429。
         # DZ 用 +40 且自带 2 线程:即使 GTJA(≤30 篇,90min 超时)仍未跑完,
         # 4(GTJA)+2(DZ)=6 仍略超 5——DZ 并发已压到 2 是可接受折中(动态快评单条
         # 短,429 重试由 LLM 客户端兜底);job id 仍用原 time_str 保持唯一/可读。
+        # 【源裁撤】2026-09-09 起发现报告源(fxbaogao,_run_research_collection,
+        # job id research_{time})剔除:三家 API 源已覆盖且重复度高。
         base_minutes = int(hour) * 60 + int(minute)
         for offset, fn, prefix, name in (  # 【变量】(偏移分钟, 任务函数, job id 前缀, 任务名)
-            (0, _run_research_collection, "research_", "Research collection"),
             (15, _run_htfc_collection, "research_htfc_", "HTFC research collection"),
             (30, _run_gtja_collection, "research_gtja_", "GTJA research collection"),
             (40, _run_dongzheng_collection, "research_dz_", "Dongzheng research collection"),

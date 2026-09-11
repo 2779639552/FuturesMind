@@ -112,7 +112,9 @@ def _load_trends(variety: str) -> dict | None:
 
     # Try looking up Chinese name from VARIETY_METADATA
     try:
-        from tradingagents.dataflows.commodity_futures import VARIETY_METADATA  # 【调用包】延迟导入品种元数据(取 meta 中文全称)
+        from tradingagents.dataflows.commodity_futures import (
+            VARIETY_METADATA,  # 【调用包】延迟导入品种元数据(取 meta 中文全称)
+        )
 
         meta = VARIETY_METADATA.get(variety, {})  # 【变量】该品种的元数据 dict(含 name 中文全称)
         chinese_name = meta.get("name", "")
@@ -159,7 +161,9 @@ def _load_price(variety: str) -> dict | None:
 
     # Try Chinese name
     try:
-        from tradingagents.dataflows.commodity_futures import VARIETY_METADATA  # 【调用包】延迟导入品种元数据(取 meta 中文全称)
+        from tradingagents.dataflows.commodity_futures import (
+            VARIETY_METADATA,  # 【调用包】延迟导入品种元数据(取 meta 中文全称)
+        )
 
         meta = VARIETY_METADATA.get(variety, {})  # 【变量】该品种的元数据 dict(含 name 中文全称)
         chinese_name = meta.get("name", "")
@@ -4464,8 +4468,12 @@ def get_all_variety_scores() -> list[dict]:
     百分比整数(bull*100)供前端画占比条。
     """
     varieties = []  # 【变量】全品种得分记录列表(按 |score| 降序)
+    # 【品种池】2026-09-09 起排行榜只出 ACTIVE_VARIETIES(20 品种);池外文件保留不删
+    from tradingagents.dataflows.commodity_futures import ACTIVE_VARIETIES  # 【调用包】活跃品种池
     for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
         var = f.stem.replace("_sentiment", "")  # 【变量】由文件名反推品种代码
+        if var.upper() not in ACTIVE_VARIETIES:
+            continue
         sent = _load_sentiment(var)  # 【调用函数】加载品种情绪数据(空则跳过)
         if not sent:
             continue

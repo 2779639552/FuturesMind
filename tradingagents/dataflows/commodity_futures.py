@@ -1944,7 +1944,43 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
         ],
         "related_varieties": ["TS", "IF"],
     },
+    # ── 2026-09-09 品种池收缩补入:多晶硅(用户指定 20 品种池,PS 此前无元数据) ──
+    "PS": {
+        "name": "多晶硅",
+        "name_en": "Polysilicon",
+        "exchange": "GFEX",
+        "exchange_cn": "广州期货交易所",
+        "main_contract": "PS0",
+        "spot_code": "PS",
+        # 东财仓单表暂无 PS(2024-12 上市新品种),空=显式声明无库存数据源,同 BZ/PR 先例
+        "inv_code": "",
+        "unit": "3吨/手",
+        "price_limit": "±9%",
+        "margin_rate": "20%",
+        "trading_hours": "9:00-11:30, 13:30-15:00",
+        "sector_cn": "有色(新能源)",
+        "description": "多晶硅，光伏硅料，太阳能级为主，与工业硅构成上下游，光伏装机节奏与产能过剩格局主导",
+        "key_factors": [
+            "光伏装机与组件排产",
+            "硅料产能利用率/库存",
+            "工业硅价格(成本端)",
+            "N/P 型技术路线与topcon占比",
+            "政策端(产能调控/行业自律)",
+        ],
+        "related_varieties": ["SI", "LC"],
+    },
 }
+
+# 【功能】当前活跃品种池(2026-09-09 起,用户指定):全项目 UI/采集/展示只保留这 20 个品种。
+# 【口径】SC TA PX EG FU LU PG M CF CJ LC RU NR BR LH BU PS SI BZ EB
+#        (能化13 + 农产品4 + 有色新能源3;MEG=EG、多晶硅=PS、工业硅=SI)
+# 【与 VARIETY_METADATA 的关系】池 ⊆ 元数据;元数据 62 键全部保留,池外品种仅在
+#        /api/varieties 与展示/采集白名单处被 ACTIVE_VARIETIES 过滤("保留但隐藏"),
+#        旧研报中文名回显、盘面利润配方腿(I/J)等历史链路不受影响。
+ACTIVE_VARIETIES = frozenset({
+    "SC", "TA", "PX", "EG", "FU", "LU", "PG", "M", "CF", "CJ",
+    "LC", "RU", "NR", "BR", "LH", "BU", "PS", "SI", "BZ", "EB",
+})
 
 
 # 【功能】校验并规范化品种代码:统一转大写;支持中文名(如"螺纹钢")转代码。
@@ -3045,6 +3081,8 @@ def get_futures_news(
         "IF": ["沪深300", "股指", "A股", "北向", "两融", "大盘"],
         "TS": ["国债期货", "2年期国债", "短端利率", "资金面", "DR007", "IRR"],
         "TL": ["国债期货", "30年期国债", "超长端", "长端利率", "特别国债", "久期"],
+        # 2026-09-09 品种池收缩补入:PS 多晶硅(与 VARIETY_METADATA 同步)
+        "PS": ["多晶硅", "硅料", "光伏", "N型料", "致密料", "菜花料"],
     }
     extra_kw = symbol_specific.get(symbol.upper(), [])
     all_kw = commodity_kw + extra_kw

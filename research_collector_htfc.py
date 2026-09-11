@@ -83,12 +83,13 @@ MAX_SEEN = 1000  # 【变量】状态文件 seen 列表上限(滚动丢弃最旧
 PARALLEL_WORKERS = 4  # 【变量】并行处理线程数(LLM 账户并发上限 5,每篇同时只挂 1 个调用,4 并发安全;21 篇 ~15min)
 _STATE_LOCK = threading.Lock()  # 【变量】状态文件落盘互斥锁(并行线程逐篇 persist)
 
-# 【变量】21 个目标品种代码(能化 19 + LC 碳酸锂 + PG 液化石油气;PG 不在
-# VARIETY_METADATA 但消费端 external_data/PG_research.json 与 done 行均支持)。
-TARGET_VARIETIES = (
-    "TA", "MA", "FG", "BU", "SA", "EB", "V", "PP", "L", "EG",
-    "PX", "UR", "PF", "SC", "LU", "FU", "RU", "NR", "SH", "LC", "PG",
+# 【变量】目标品种代码:2026-09-09 起统一引用 ACTIVE_VARIETIES(20 品种池,与
+# GTJA/全项目同一口径),不再各自手抄清单;华泰不发池内部分品种时自然无数据。
+from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】活跃品种池
+    ACTIVE_VARIETIES,
 )
+
+TARGET_VARIETIES = tuple(sorted(ACTIVE_VARIETIES))
 
 # 【变量】代码 → 命中别名(匹配用;拉丁别名词边界,中文子串)。
 # subclassCodeName 拆 token 后精确命中优先,标题兜底用同一张表。
@@ -99,6 +100,8 @@ CODE_ALIASES = {
     "BU": ("沥青", "BU", "石油沥青"),
     "SA": ("纯碱", "SA", "重碱"),
     "EB": ("苯乙烯", "EB"),
+    "BZ": ("纯苯", "石油苯", "加氢苯", "BZ"),
+    "BR": ("丁二烯橡胶", "顺丁橡胶", "BR"),
     "V": ("PVC", "V", "聚氯乙烯"),
     "PP": ("聚丙烯", "PP"),
     "L": ("塑料", "聚乙烯", "L"),
@@ -113,12 +116,19 @@ CODE_ALIASES = {
     "NR": ("20号胶", "20号", "NR"),
     "SH": ("烧碱", "SH"),
     "LC": ("碳酸锂", "LC"),
+    "PS": ("多晶硅", "硅料", "PS"),
+    "SI": ("工业硅", "SI"),
+    "M": ("豆粕", "M"),
+    "CF": ("棉花", "CF", "郑棉"),
+    "CJ": ("红枣", "CJ"),
+    "LH": ("生猪", "LH", "猪价"),
     "PG": ("LPG", "液化石油气", "PG"),
 }
 
-# 【变量】长别名遮蔽串(标题兜底用):子串重叠会误命中——'合成橡胶'(BR,非目标)
-# 含 '橡胶'(RU),'低硫燃料油' 含 '燃料油'(FU)。标题匹配前先把这些长 token 认出
-# 归位(归其所属码/非目标则仅屏蔽),再从标题里抹掉,挡短别名的子串 false positive。
+# 【变量】长别名遮蔽串(标题兜底用):子串重叠会误命中——'合成橡胶'是泛称(BR 走
+# 专用别名'丁二烯橡胶/顺丁橡胶',泛称仅屏蔽防误中 '橡胶'(RU)),'低硫燃料油' 含
+# '燃料油'(FU)。标题匹配前先把这些长 token 认出归位(归其所属码/非目标则仅屏蔽),
+# 再从标题里抹掉,挡短别名的子串 false positive。
 _OVERLAP_MASKS = ("合成橡胶", "低硫燃料油", "高硫燃料油", "低硫燃油", "高硫燃油")
 
 

@@ -7,7 +7,7 @@
         本页只是 1 个 HTML 文件, 用 CSS 变量实现暗/亮主题, 用 ECharts 画图。
      6 个标签页 (由顶部导航 <nav id="nav"> 的 6 个按钮切换, 见 App.switchTab):
          tab-run       运行分析   —— 10 节点多智能体分析管线
-         tab-research  研报       —— 每日总结/研报问答/国君周度观点/逐品种观点总览(2026-09-08 调序)
+         tab-research  研报       —— 研报问答/每日总结/单品种总结/国君周度观点/逐品种观点总览(2026-09-09 调序)
          tab-sentiment 情绪数据   —— 情绪得分/价格走势叠加图 + 采集帖子 + 情绪信号回测 +
                                     分析工具(2026-09-07 并入) + 数据更新(2026-09-08 并入)
          tab-trading   模拟交易   —— 各种策略的单卡回测 + 多策略对比
@@ -1373,7 +1373,7 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <div class="expander-body" style="font-size:0.84rem;color:var(--text-secondary);line-height:1.7">
       <b>本页做什么</b>：汇总多渠道自动采集（发现报告 2 家 + 华泰天玑 21 品种日报 + 国泰君安云 API）与手工上传的研报，
       经 LLM 结构化提取（品种 / 方向 / 基差·库存·开工率等指标 / 关键事件）与结论生成，形成
-      「研报每日总结」「研报问答」「国君周度观点」「逐品种观点总览」四张视图；研报原件与逐篇明细在「数据仓库」页的研报库。<br>
+      「研报问答」（页首）「研报每日总结」「单品种总结」（逐品种逻辑主线，未生成自动排队）「国君周度观点」「逐品种观点总览」五张视图；研报原件与逐篇明细在「数据仓库」页的研报库。<br>
       <b>置信度（confidence）如何给出</b>：不是公式计算，而是提取模型对「该方向判断」的把握度评分（0~1 小数），
       依据研报的方向倾向强度、数据与事件支撑是否充分、作者语气是否谨慎、证据间是否自洽，并按下列语义分档约束区间：
       <table style="border-collapse:collapse;margin:6px 0;font-size:0.8rem">
@@ -1387,7 +1387,50 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       数值是模型的判断把握度而非统计概率，仅供研究参考，非交易建议。
     </div>
   </div>
-  <!-- 研报每日总结卡片(全品种口径: 某天在库全部研报结论的 LLM 汇总, 落盘 md 随时调阅; 2026-09-08 用户调整为研报页首卡) -->
+  <!-- 研报问答卡片(RAG: 本地向量检索研报片段 → LLM 引用原文作答; 2026-09-08 建卡, 2026-09-09 用户调整为研报页首卡, 2026-09-12 升级多轮智能知识库:会话持久化+上下文改写+日期筛选) -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <h3 style="margin-bottom:0">💬 研报问答 <span class="badge badge-info" id="res-ask-tag"></span></h3>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="res-qa-session" style="max-width:260px" onchange="App.switchQaSession()" title="切换历史会话(会话已持久化, 刷新不丢)">
+          <option value="">— 选择历史会话 —</option>
+        </select>
+        <button class="btn btn-outline" id="res-qa-new" onclick="App.newQaSession()" title="开始新对话(不影响已有会话)">➕ 新对话</button>
+        <button class="btn btn-outline" id="res-qa-del" onclick="App.deleteQaSession()" title="删除当前会话及其全部消息">🗑</button>
+      </div>
+      <div style="color:var(--text-muted);font-size:0.8rem">检索全部在库研报(本地向量索引),模型只依据片段作答;引用可点开原件;支持追问</div>
+    </div>
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0">
+      <div style="flex:3;min-width:220px">
+        <label>问题</label>
+        <input id="res-ask-question" placeholder="如:近期螺纹钢供需与成本端怎么看? 可接着追问" onkeydown="if(event.key==='Enter')App.askResearch()">
+      </div>
+      <div style="flex:1;min-width:130px">
+        <label>品种(可选)</label>
+        <select id="res-ask-variety"><option value="">全部品种</option></select>
+      </div>
+      <div style="flex:1;min-width:100px">
+        <label>类型(可选)</label>
+        <select id="res-ask-type">
+          <option value="">全部</option>
+          <option value="日报">日报</option>
+          <option value="周报">周报</option>
+        </select>
+      </div>
+      <div style="min-width:140px">
+        <label>发布日期从(可选)</label>
+        <input type="date" id="res-qa-from">
+      </div>
+      <div style="min-width:140px">
+        <label>至(可选)</label>
+        <input type="date" id="res-qa-to">
+      </div>
+      <button class="btn btn-primary" id="res-ask-btn" onclick="App.askResearch()">🔍 提问</button>
+    </div>
+    <div id="res-ask-hist" style="display:flex;flex-direction:column;gap:12px;color:var(--text-muted);font-size:0.84rem;max-height:420px;overflow-y:auto;padding-right:4px">输入问题开始提问; 对话已按会话自动保存, 可从右上角下拉找回历史。</div>
+  </div>
+
+  <!-- 研报每日总结卡片(全品种口径: 某天在库全部研报结论的 LLM 汇总, 落盘 md 随时调阅; 2026-09-09 调整为第二卡) -->
   <div class="card" style="margin-bottom:16px">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:2px">
       <h3 style="margin-bottom:0">🗓 研报<span id="res-daily-kind">每日</span>总结 <span class="badge badge-info" id="res-daily-tag"></span></h3>
@@ -1405,33 +1448,26 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
     <div id="res-daily" style="font-size:0.88rem">选择日期查看当天全部研报的汇总; 未生成过的日期点「生成」。</div>
   </div>
 
-  <!-- 研报问答卡片(RAG: 本地向量检索研报片段 → LLM 引用原文作答; 2026-09-08) -->
+  <!-- 研报单品种总结卡片(逐品种口径: 当日每个有研报品种的逻辑主线总结; 未生成品种自动排队生成;
+       独立口径/日期筛选 + 品种多选下拉(只滤显示, 不影响生成队列); 2026-09-09) -->
   <div class="card" style="margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-      <h3 style="margin-bottom:0">💬 研报问答 <span class="badge badge-info" id="res-ask-tag"></span></h3>
-      <div style="color:var(--text-muted);font-size:0.8rem">检索全部在库研报(本地向量索引),模型只依据片段作答;引用可点开原件</div>
-    </div>
-    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0">
-      <div style="flex:3;min-width:220px">
-        <label>问题</label>
-        <input id="res-ask-question" placeholder="如:近期螺纹钢供需与成本端怎么看?" onkeydown="if(event.key==='Enter')App.askResearch()">
-      </div>
-      <div style="flex:1;min-width:130px">
-        <label>品种(可选)</label>
-        <select id="res-ask-variety"><option value="">全部品种</option></select>
-      </div>
-      <div style="flex:1;min-width:100px">
-        <label>类型(可选)</label>
-        <select id="res-ask-type">
-          <option value="">全部</option>
-          <option value="日报">日报</option>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <h3 style="margin-bottom:0">🧩 单品种总结 <span class="badge badge-info" id="res-vsum-tag"></span></h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="res-vsum-type" onchange="App.onVsumTypeChange()" style="min-width:90px" title="日报与周报总结分开落盘">
+          <option value="">日报</option>
           <option value="周报">周报</option>
         </select>
+        <select id="res-vsum-date" onchange="App.loadVarietySummaries()" style="min-width:140px"></select>
+        <div style="position:relative">
+          <button class="btn btn-outline btn-sm" id="res-vsum-vbtn" onclick="App.toggleVsumVarietyPanel()" title="勾选只看部分品种(只影响显示, 不影响后台生成)">品种: 全部 ▾</button>
+          <div id="res-vsum-vpanel" style="display:none;position:absolute;right:0;top:110%;z-index:30;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;max-height:300px;overflow:auto;min-width:200px;box-shadow:var(--shadow)"></div>
+        </div>
+        <button class="btn btn-outline btn-sm" id="res-vsum-stop" onclick="App.toggleVarietyQueue()" style="display:none">⏸ 暂停生成</button>
+        <button class="btn btn-outline btn-sm" id="res-vsum-regen" onclick="App.regenerateVarietySummaries()" title="忽略缓存, 当日全部品种逐个重新生成(烧 LLM, 并发 2)">↻ 重新生成全部</button>
       </div>
-      <button class="btn btn-primary" id="res-ask-btn" onclick="App.askResearch()">🔍 提问</button>
-      <button class="btn btn-outline" id="res-ask-clear" onclick="App.clearAskHistory()" title="清空本页问答历史(仅影响显示, 不影响索引)" style="display:none">🧹 清空</button>
     </div>
-    <div id="res-ask-hist" style="display:flex;flex-direction:column;gap:12px;color:var(--text-muted);font-size:0.84rem">输入问题开始提问; 问答历史仅保留在本页, 刷新即清。</div>
+    <div id="res-vsum-grid" class="grid grid-2" style="gap:12px">选择日期后自动加载各品种总结; 品种多时可用右上「品种 ▾」筛选。</div>
   </div>
 
   <!-- 国君(GTJA)周度观点卡片(品种与下方逐品种观点总览共用同一联动下拉 #res-views-variety;晨报日度 2026-09-03 下线) -->
@@ -2929,11 +2965,15 @@ const App = {
     this._populateVarietySelects(['res-views-variety', 'res-ask-variety']);
     await this.loadResearchViews();
     await this.loadGtjaViews();
-    this._loadDailyDates();  // 每日总结日期列表(后台填充, 不阻塞两卡)
-    this._loadRagStatus();   // 研报问答卡片:索引状态(后台, 不阻塞)
+    this._loadDailyDates();   // 每日总结日期列表(后台填充, 不阻塞两卡)
+    this._loadVsumDates();    // 单品种总结:独立日期下拉 + 品种多选面板(后台, 不阻塞)
+    this._loadRagStatus();    // 研报问答卡片:索引状态(后台, 不阻塞)
+    this._loadQaSessions();   // 研报问答:历史会话下拉(后台, 不阻塞)
   },
 
-  // ── 研报问答(RAG) ──
+  // ── 研报问答(RAG·多轮智能知识库, 2026-09-12) ──
+  // 会话持久化在后端(qa_sessions/qa_messages 表);前端 qaState 只存当前会话 id 与已加载消息。
+  // 追问由后端用 LLM 改写(补全省略主语/代词)后再检索,前端无需回传历史。
   // 【功能】拉取 RAG 索引状态,渲染徽标;未启用时禁用提问按钮并给出安装/回填提示。
   // 【输入】无 【渲染】#res-ask-tag 徽标 + #res-ask-hist 空态提示 + #res-ask-btn
   // 【后端】GET /api/research/rag/status
@@ -2947,7 +2987,7 @@ const App = {
         tag.textContent = '未启用';
         const hist = document.getElementById('res-ask-hist');
         const btn = document.getElementById('res-ask-btn');
-        if (hist && !this._askHistory?.length) hist.innerHTML =
+        if (hist && !this.qaState?.messages?.length) hist.innerHTML =
           'RAG 未启用: 需安装 chromadb 与 sentence-transformers,并运行 <code>python scripts/backfill_rag_index.py</code> 回填存量研报索引。';
         if (btn) btn.disabled = true;
       } else {
@@ -2956,43 +2996,113 @@ const App = {
     } catch (e) { /* 状态拉取失败不影响卡片 */ }
   },
 
-  // 【功能】研报问答:提问 → 检索片段 → LLM 引用作答;历史保存在内存(刷新即清)。
-  // 【输入】读 #res-ask-question / #res-ask-variety / #res-ask-type
-  // 【渲染】#res-ask-hist 追加问答气泡
-  // 【后端】POST /api/research/ask
+  // 【功能】拉取会话列表填下拉(进研报页时 + 每次提问后静默刷新)
+  // 【后端】GET /api/research/qa/sessions
+  async _loadQaSessions() {
+    const sel = document.getElementById('res-qa-session');
+    if (!sel) return;
+    try {
+      const r = await fetch('/api/research/qa/sessions?limit=50');
+      const d = await r.json();
+      const sessions = d.sessions || [];
+      const cur = this.qaState?.sessionId || '';
+      sel.innerHTML = '<option value="">— 选择历史会话 —</option>' + sessions.map(s =>
+        `<option value="${s.id}" ${s.id === cur ? 'selected' : ''}>${s.title || '(未命名)'} (${s.message_count}条)</option>`
+      ).join('');
+    } catch (e) { /* 下拉拉取失败不影响提问 */ }
+  },
+
+  // 【功能】切换会话:拉取该会话全部消息回放(含引用与失败轮)
+  // 【后端】GET /api/research/qa/sessions/<id>/messages
+  async switchQaSession(id) {
+    const sel = document.getElementById('res-qa-session');
+    const sid = id || sel?.value;
+    if (!sid) return;
+    try {
+      const r = await fetch(`/api/research/qa/sessions/${sid}/messages`);
+      if (!r.ok) { this.newQaSession(); return; }
+      const d = await r.json();
+      this.qaState = { sessionId: d.session.id, messages: d.messages.map(m => ({
+        role: m.role === 'user' ? 'user' : 'agent',
+        data: { ok: !m.error, answer: m.content, citations: m.citations || [],
+                retrieved: m.retrieved, error: m.error },
+      })) };
+      // 会话筛选快照回填前端筛选器
+      const s = d.session;
+      const setv = (eid, v) => { const e = document.getElementById(eid); if (e) e.value = v || ''; };
+      setv('res-ask-variety', s.variety); setv('res-ask-type', s.report_type);
+      setv('res-qa-from', s.date_from); setv('res-qa-to', s.date_to);
+      this._renderAskHistory();
+    } catch (e) { /* 切换失败保持现状 */ }
+  },
+
+  // 【功能】开新对话:重置本地状态与筛选器(不请求后端, 首次提问自动建会话)
+  newQaSession() {
+    this.qaState = { sessionId: null, messages: [] };
+    const sel = document.getElementById('res-qa-session');
+    if (sel) sel.value = '';
+    ['res-ask-question', 'res-ask-variety', 'res-ask-type', 'res-qa-from', 'res-qa-to']
+      .forEach(eid => { const e = document.getElementById(eid); if (e) e.value = ''; });
+    const el = document.getElementById('res-ask-hist');
+    if (el) el.innerHTML = '输入问题开始提问; 对话已按会话自动保存, 可从右上角下拉找回历史。';
+  },
+
+  // 【功能】删除当前会话(连消息一起), 删除后回到新对话状态
+  async deleteQaSession() {
+    const sid = this.qaState?.sessionId;
+    if (!sid) return;
+    if (!confirm('删除当前会话及其全部问答记录?')) return;
+    try { await fetch(`/api/research/qa/sessions/${sid}`, { method: 'DELETE' }); } catch (e) {}
+    this.newQaSession();
+    this._loadQaSessions();
+  },
+
+  // 【功能】多轮研报问答:提问 → (追问时后端改写检索) → LLM 引用作答 → 会话落库。
+  // 【输入】读 #res-ask-question / #res-ask-variety / #res-ask-type / #res-qa-from / #res-qa-to
+  // 【渲染】#res-ask-hist 追加问答气泡(先插"⏳"占位, 完整返回后替换, 等待 10~60s)
+  // 【后端】POST /api/research/qa/ask
   async askResearch() {
     const q = (document.getElementById('res-ask-question')?.value || '').trim();
     if (!q) return;
     const variety = document.getElementById('res-ask-variety')?.value || '';
     const reportType = document.getElementById('res-ask-type')?.value || '';
+    const dateFrom = document.getElementById('res-qa-from')?.value || '';
+    const dateTo = document.getElementById('res-qa-to')?.value || '';
     const btn = document.getElementById('res-ask-btn');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 检索中…'; }
-    this._askHistory = this._askHistory || [];
-    this._askHistory.push({ role: 'user', content: q });
+    this.qaState = this.qaState || { sessionId: null, messages: [] };
+    this.qaState.messages.push({ role: 'user', content: q });
+    const pending = { role: 'agent', data: { ok: false, error: '⏳ 检索与生成中…(最长可能等待一分钟)' } };
+    this.qaState.messages.push(pending);
     this._renderAskHistory();
     try {
-      const r = await fetch('/api/research/ask', {  // 【调用函数】后端接口: 研报问答
+      const r = await fetch('/api/research/qa/ask', {  // 【调用函数】后端接口: 多轮研报问答
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q, variety, report_type: reportType }),
+        body: JSON.stringify({
+          question: q, session_id: this.qaState.sessionId,
+          variety, report_type: reportType, date_from: dateFrom, date_to: dateTo,
+        }),
       });
       const d = await r.json();
-      this._askHistory.push({ role: 'agent', data: d });
+      if (d.session_id) this.qaState.sessionId = d.session_id;
+      pending.data = d.ok
+        ? { ok: true, answer: d.answer, citations: d.citations || [], retrieved: d.retrieved }
+        : { ok: false, error: d.error || '生成失败', citations: d.citations, retrieved: d.retrieved };
     } catch (e) {
-      this._askHistory.push({ role: 'agent', data: { ok: false, error: '网络错误: ' + e } });
+      pending.data = { ok: false, error: '网络错误: ' + e };
     }
     if (btn) { btn.disabled = false; btn.textContent = '🔍 提问'; }
     const input = document.getElementById('res-ask-question');
     if (input) input.value = '';
     this._renderAskHistory();
+    this._loadQaSessions();  // 静默刷新会话下拉(新会话就地长出来)
   },
 
   // 【渲染】#res-ask-hist:用户气泡右对齐,模型回答用 marked 渲染 + 可折叠引用列表
   _renderAskHistory() {
     const el = document.getElementById('res-ask-hist');
     if (!el) return;
-    const hist = this._askHistory || [];
-    const clearBtn = document.getElementById('res-ask-clear');
-    if (clearBtn) clearBtn.style.display = hist.length ? '' : 'none';  // 有历史才显示清空按钮
+    const hist = this.qaState?.messages || [];
     if (!hist.length) return;
     el.innerHTML = hist.map(h => {
       if (h.role === 'user') {
@@ -3011,15 +3121,6 @@ const App = {
       </div>`;
     }).join('');
     el.scrollTop = el.scrollHeight;
-  },
-
-  // 【功能】清空研报问答历史:仅清前端显示与内存, 不影响 RAG 索引与后端。
-  clearAskHistory() {
-    this._askHistory = [];
-    const el = document.getElementById('res-ask-hist');
-    if (el) el.innerHTML = '输入问题开始提问; 问答历史仅保留在本页, 刷新即清。';
-    const clearBtn = document.getElementById('res-ask-clear');
-    if (clearBtn) clearBtn.style.display = 'none';
   },
 
   // ── 研报每日/周报总结 ──
@@ -3081,7 +3182,11 @@ const App = {
     const rtype = document.getElementById('res-daily-type')?.value || '';
     const dir = rtype === '周报' ? 'research_weekly' : 'research_daily';
     if (!el) return;
-    if (!date) { el.innerHTML = '<span style="color:var(--text-muted)">暂无研报日期。上传或采集研报后此处出现日期。</span>'; if (tag) tag.textContent = ''; if (note) note.textContent = ''; return; }
+    if (!date) {
+      el.innerHTML = '<span style="color:var(--text-muted)">暂无研报日期。上传或采集研报后此处出现日期。</span>';
+      if (tag) tag.textContent = ''; if (note) note.textContent = '';
+      return;
+    }
     try {
       const r = await fetch(`/api/research/daily/${date}${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
       const d = await r.json();
@@ -3129,6 +3234,370 @@ const App = {
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = old; }
     }
+  },
+
+  // ── 研报单品种总结(2026-09-09) ──
+  // 【状态】_vsList 当日品种列表; _vsQueue 待生成队列; _vsActive 在途请求数;
+  //        _vsBusyCodes 防重入(在途品种不重复入队); _vsKey 当前口径|日期, 切换即作废旧队列;
+  //        _vsPaused 用户暂停开关; _vsConc 并发上限 2(账户 LLM 并发 5, 给其他链路留余量);
+  //        _vsSel 品种多选过滤(空集=全部, 只滤显示不影响生成队列); _vsDatesSig 日期下拉签名缓存。
+  _vsList: [], _vsQueue: [], _vsActive: 0, _vsBusyCodes: new Set(),
+  _vsKey: '', _vsPaused: false, _vsConc: 2, _vsSel: new Set(), _vsDatesSig: null,
+
+  // 【功能】单品种总结卡的口径切换:重置日期签名缓存并重拉日期下拉。
+  onVsumTypeChange() {
+    this._vsDatesSig = null;
+    this._loadVsumDates();
+  },
+
+  // 【功能】拉取可用日期填充单品种总结卡的独立日期下拉(口径随 #res-vsum-type),
+  //        首选最新日期;与每日总结卡互不干扰(2026-09-09 拆独立筛选)。
+  async _loadVsumDates() {
+    const sel = document.getElementById('res-vsum-date');
+    if (!sel) return;
+    const rtype = document.getElementById('res-vsum-type')?.value || '';
+    try {
+      const r = await fetch(`/api/research/daily${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
+      const d = await r.json();
+      const dates = d.dates || [];
+      const sig = JSON.stringify([rtype, dates.map(x => `${x.date}${x.generated ? '✓' : ''}`)]);
+      if (sig !== this._vsDatesSig) {
+        this._vsDatesSig = sig;
+        sel.innerHTML = '';
+        dates.forEach(x => {
+          const o = document.createElement('option');
+          o.value = x.date;
+          o.textContent = x.date + (x.generated ? ' ✓' : '');
+          sel.appendChild(o);
+        });
+      }
+      if (!dates.some(x => x.date === sel.value)) sel.value = (dates[0] || {}).date || '';
+      await this.loadVarietySummaries();
+    } catch (e) { /* 日期列表失败不阻塞研报页 */ }
+  },
+
+  // 【功能】品种多选下拉面板开合;打开后点面板外自动收起。
+  toggleVsumVarietyPanel() {
+    const panel = document.getElementById('res-vsum-vpanel');
+    if (!panel) return;
+    const opening = panel.style.display === 'none';
+    panel.style.display = opening ? '' : 'none';
+    if (opening) setTimeout(() => document.addEventListener('click', this._vsPanelOutside), 0);
+    else document.removeEventListener('click', this._vsPanelOutside);
+  },
+  _vsPanelOutside(e) {
+    const panel = document.getElementById('res-vsum-vpanel');
+    const btn = document.getElementById('res-vsum-vbtn');
+    if (panel && !panel.contains(e.target) && !(btn && btn.contains(e.target))) {
+      panel.style.display = 'none';
+      document.removeEventListener('click', this._vsPanelOutside);
+    }
+  },
+
+  // 【功能】品种筛选勾选(checked=false 即取消), 只影响卡片显示, 不影响生成队列。
+  onVsumVarietyPick(code, checked) {
+    if (checked) this._vsSel.add(code); else this._vsSel.delete(code);
+    this._renderVarietySummaries();
+    this._renderVsumVarietyPanel();
+  },
+
+  // 【功能】品种筛选 全选/清空。
+  onVsumVarietyAll(all) {
+    this._vsSel = all ? new Set((this._vsList || []).map(v => v.code)) : new Set();
+    this._renderVarietySummaries();
+    this._renderVsumVarietyPanel();
+  },
+
+  // 【功能】渲染品种多选面板(复选框列表 + 全选/清空)与按钮文案。
+  _renderVsumVarietyPanel() {
+    const panel = document.getElementById('res-vsum-vpanel');
+    const btn = document.getElementById('res-vsum-vbtn');
+    if (!panel || !btn) return;
+    const list = this._vsList || [];
+    if (!list.length) { panel.innerHTML = '<span style="color:var(--text-muted);font-size:0.78rem">当日无品种</span>'; btn.textContent = '品种: 全部 ▾'; return; }
+    const items = list.map(v => `<label style="display:flex;align-items:center;gap:6px;padding:3px 2px;font-size:0.8rem;cursor:pointer">
+        <input type="checkbox" ${this._vsSel.has(v.code) ? 'checked' : ''}
+               onchange="App.onVsumVarietyPick('${v.code}', this.checked)">
+        <b>${this._escHtml(v.code)}</b>
+        <span style="color:var(--text-secondary)">${this._escHtml(v.name || '')}</span>
+        <span style="margin-left:auto;color:var(--text-muted);font-size:0.72rem">${v.cached ? '✓' : '⏳'}</span>
+      </label>`).join('');
+    panel.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:6px">
+        <button class="btn btn-outline btn-sm" onclick="App.onVsumVarietyAll(true)">全选</button>
+        <button class="btn btn-outline btn-sm" onclick="App.onVsumVarietyAll(false)">清空</button>
+      </div>${items}`;
+    btn.textContent = (!this._vsSel.size || this._vsSel.size === list.length)
+      ? `品种: 全部(${list.length}) ▾` : `品种: 已选 ${this._vsSel.size}/${list.length} ▾`;
+  },
+
+  // 【功能】加载某日单品种总结列表并把未生成品种自动入队(并发 2 后台跑, 不阻塞页面)。
+  // 【输入】读 #res-vsum-date + #res-vsum-type 【渲染】#res-vsum-grid + #res-vsum-tag
+  // 【后端】GET /api/research/variety-summary/{date}?report_type=
+  async loadVarietySummaries() {
+    const date = document.getElementById('res-vsum-date')?.value || '';
+    const rtype = document.getElementById('res-vsum-type')?.value || '';
+    const grid = document.getElementById('res-vsum-grid');
+    const key = `${rtype}|${date}`;
+    this._vsKey = key;       // 切日期/口径 → 旧响应与旧结果一律作废
+    this._vsQueue = [];
+    this._vsPaused = false;
+    this._vsSel = new Set(); // 换日期重置品种筛选(品种集合随日期变)
+    const stopBtn = document.getElementById('res-vsum-stop');
+    if (stopBtn) { stopBtn.style.display = 'none'; stopBtn.textContent = '⏸ 暂停生成'; }
+    if (!date || !grid) return;
+    grid.innerHTML = '<span style="color:var(--text-muted)">加载中…</span>';
+    try {
+      const r = await fetch(`/api/research/variety-summary/${date}${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
+      const d = await r.json();
+      if (this._vsKey !== key) return;   // 响应回来前用户已切走
+      this._vsList = d.varieties || [];
+      this._renderVsumVarietyPanel();
+      this._renderVarietySummaries();
+      const pending = this._vsList.filter(v => !v.cached && !this._vsBusyCodes.has(v.code)).map(v => v.code);
+      if (pending.length) {
+        this._vsQueue = [...pending];
+        this.toast(`单品种总结: ${pending.length} 个品种未生成, 已自动排队(并发 ${this._vsConc})`);
+        this._drainVarietyQueue();
+      } else {
+        this._updateVarietyBadge();
+      }
+    } catch (e) {
+      if (grid && this._vsKey === key) grid.innerHTML = '<span style="color:var(--red)">单品种总结加载失败</span>';
+    }
+  },
+
+  // 【功能】队列泵: 只要有空位且未暂停就发出下一个品种的生成请求; 空+无在途时收起暂停按钮。
+  _drainVarietyQueue() {
+    while (!this._vsPaused && this._vsActive < this._vsConc && this._vsQueue.length) {
+      const code = this._vsQueue.shift();
+      this._vsActive++;
+      this._genVarietySummary(code, false).finally(() => {
+        this._vsActive--;
+        this._drainVarietyQueue();
+      });
+    }
+    const stopBtn = document.getElementById('res-vsum-stop');
+    if (stopBtn && !this._vsQueue.length && this._vsActive === 0) stopBtn.style.display = 'none';
+    this._updateVarietyBadge();
+  },
+
+  // 【功能】暂停/继续自动生成队列(已缓存的品种不受影响)。
+  toggleVarietyQueue() {
+    this._vsPaused = !this._vsPaused;
+    const btn = document.getElementById('res-vsum-stop');
+    if (btn) btn.textContent = this._vsPaused ? '▶ 继续生成' : '⏸ 暂停生成';
+    if (!this._vsPaused) this._drainVarietyQueue();
+  },
+
+  // 【功能】生成单个品种总结(同步等 LLM), 完成就地更新列表并重渲染; 失败标 _fail 给重试按钮。
+  // 【后端】POST /api/research/variety-summary/generate {date, code, report_type, force}
+  async _genVarietySummary(code, force) {
+    const date = document.getElementById('res-daily-date')?.value || '';
+    const rtype = document.getElementById('res-daily-type')?.value || '';
+    const key = `${rtype}|${date}`;
+    this._vsBusyCodes.add(code);
+    this._updateVarietyBadge();
+    try {
+      const r = await fetch('/api/research/variety-summary/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, code, report_type: rtype, force: !!force }),
+      });
+      const d = await r.json();
+      if (this._vsKey !== key) return;   // 已切日期, 结果作废
+      const v = (this._vsList || []).find(x => x.code === code);
+      if (v) {
+        if (d.ok) {
+          v.summary_md = d.content; v.cached = true; v._fail = false;
+          v.generated_at = d.generated_at || ''; v.report_rows = d.reports || 0;
+        } else {
+          v._fail = d.error || '生成失败';
+        }
+      }
+      this._renderVarietySummaries();
+      if (!d.ok) this.toast(`${code} 单品种总结生成失败: ${d.error || '未知错误'}`, 'error');
+    } catch (e) {
+      if (this._vsKey === key) {
+        const v = (this._vsList || []).find(x => x.code === code);
+        if (v) v._fail = String(e.message || e);
+        this._renderVarietySummaries();
+      }
+    } finally {
+      this._vsBusyCodes.delete(code);
+    }
+  },
+
+  // 【功能】失败品种重试: 清失败标记, 插回队列继续跑。
+  retryVariety(code) {
+    const v = (this._vsList || []).find(x => x.code === code);
+    if (v) v._fail = false;
+    this._vsPaused = false;
+    const btn = document.getElementById('res-vsum-stop');
+    if (btn) btn.textContent = '⏸ 暂停生成';
+    if (!this._vsBusyCodes.has(code)) this._vsQueue.push(code);
+    this._renderVarietySummaries();
+    this._drainVarietyQueue();
+  },
+
+  // 【功能】重新生成单个品种(忽略缓存, force=true)。
+  regenerateVariety(code) {
+    if (!confirm(`忽略缓存重新生成 ${code} 的单品种总结?`)) return;
+    this._genVarietySummary(code, true);
+  },
+
+  // 【功能】当日全部品种逐个强制重新生成(烧 LLM, 先确认)。
+  regenerateVarietySummaries() {
+    const list = this._vsList || [];
+    if (!list.length) { this.toast('当前日期没有可重生成的品种', 'error'); return; }
+    if (!confirm(`忽略缓存, 当日 ${list.length} 个品种逐个重新生成? 将消耗较多 LLM 额度。`)) return;
+    this._vsQueue = list.filter(v => !this._vsBusyCodes.has(v.code)).map(v => v.code);
+    this._vsPaused = false;
+    const btn = document.getElementById('res-vsum-stop');
+    if (btn) btn.textContent = '⏸ 暂停生成';
+    this._renderVarietySummaries();
+    this._drainVarietyQueue();
+  },
+
+  // 【功能】标题徽标进度: 「N 品种 · done/N 已生成 · k 排队中」。
+  _updateVarietyBadge() {
+    const tag = document.getElementById('res-vsum-tag');
+    if (!tag) return;
+    const list = this._vsList || [];
+    if (!list.length) { tag.textContent = ''; return; }
+    const done = list.filter(v => v.cached).length;
+    const queued = this._vsQueue.length + this._vsActive;
+    tag.textContent = `${list.length} 品种 · ${done}/${list.length} 已生成` + (queued ? ` · ${queued} 排队中` : '');
+  },
+
+  // 【功能】渲染单品种总结网格: 每品种一卡(代码+中文名+方向 badge+N 份研报),
+  //        卡内分板块异构呈现(2026-09-09 美化):
+  //        ① 来源观点对比表(逐份研报 来源/方向/置信度/原件链接, 结构化数据非 LLM);
+  //        ② LLM 总结按「## 小节」拆开 — 逻辑链=品牌色侧条 / 分歧共识=虚线碰撞框 /
+  //           倾向=净倾向大徽标 / 关键数据=数据面板。
+  _renderVarietySummaries() {
+    const grid = document.getElementById('res-vsum-grid');
+    if (!grid) return;
+    this._updateVarietyBadge();
+    const list = this._vsList || [];
+    if (!list.length) {
+      grid.innerHTML = '<span style="color:var(--text-muted)">该日期在库研报未覆盖任何品种。</span>';
+      return;
+    }
+    const dirCls = d => String(d).includes('多') ? 'badge-bull' : (String(d).includes('空') ? 'badge-bear' : 'badge-neutral');
+    // 品种多选过滤: 空集=全部; 只滤显示, 生成队列不受影响
+    const shown = this._vsSel.size ? list.filter(v => this._vsSel.has(v.code)) : list;
+    if (!shown.length) {
+      grid.innerHTML = '<span style="color:var(--text-muted)">当前筛选下没有品种(点「品种 ▾」调整)。</span>';
+      return;
+    }
+    grid.innerHTML = shown.map(v => {
+      // ① 来源观点对比表(每份研报一行, 点标题开原件)
+      const reps = v.report_rows || [];
+      let cmp = '';
+      if (reps.length) {
+        const dirsSet = [...new Set(reps.map(r => r.direction))];
+        const flag = reps.length > 1
+          ? (dirsSet.length > 1
+              ? '<span class="badge" style="color:var(--red);background:var(--red-bg);font-size:0.7rem">⚡ 方向有分歧</span>'
+              : '<span class="badge" style="color:var(--green);background:var(--green-bg);font-size:0.7rem">✓ 方向一致</span>')
+          : '';
+        const rows = reps.map(r => `<tr>
+            <td style="padding:3px 10px 3px 0;white-space:nowrap;color:var(--text-secondary)">${this._escHtml(r.source)}</td>
+            <td style="padding:3px 10px 3px 0"><span class="badge ${dirCls(r.direction)}">${this._escHtml(r.direction)}</span></td>
+            <td style="padding:3px 10px 3px 0;color:var(--text-muted)">${this._escHtml(r.confidence)}</td>
+            <td style="padding:3px 10px 3px 0"><a href="/api/research/${r.report_id}/file" target="_blank" title="打开研报原件" style="color:var(--brand);text-decoration:none">${this._escHtml(r.title)}</a></td>
+          </tr>`).join('');
+        cmp = `<details open style="margin:2px 0 10px">
+            <summary style="cursor:pointer;font-size:0.76rem;color:var(--text-muted)">📋 来源观点对比(${reps.length} 份) ${flag}</summary>
+            <table style="border-collapse:collapse;width:100%;font-size:0.76rem;margin-top:6px">
+              <thead><tr style="text-align:left;color:var(--text-muted)">
+                <th style="padding:2px 10px 2px 0;font-weight:normal">来源</th>
+                <th style="padding:2px 10px 2px 0;font-weight:normal">方向</th>
+                <th style="padding:2px 10px 2px 0;font-weight:normal">置信度</th>
+                <th style="padding:2px 10px 2px 0;font-weight:normal">研报</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </details>`;
+      }
+      // ② 总结正文
+      let body;
+      if (v.summary_md) {
+        const md = String(v.summary_md).replace(/^<!--[\s\S]*?-->\s*/, '');
+        body = this._renderVsumSections(md);
+      } else if (v._fail) {
+        body = `<div style="color:var(--red);font-size:0.82rem">生成失败: ${this._escHtml(v._fail)}</div>
+          <button class="btn btn-outline btn-sm" style="margin-top:6px" onclick="App.retryVariety('${v.code}')">↻ 重试</button>`;
+      } else {
+        body = '<div style="color:var(--text-muted);font-size:0.82rem">⏳ 待生成…(自动排队中)</div>';
+      }
+      const dirs = (v.directions || []).map(d => `<span class="badge ${dirCls(d)}">${this._escHtml(d)}</span>`).join(' ');
+      const gen = v.generated_at ? `<span style="color:var(--text-muted);font-size:0.72rem">生成于 ${this._escHtml(v.generated_at)}</span>` : '';
+      return `<div class="card" style="padding:12px 14px;margin:0">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <b>${this._escHtml(v.code)}</b>
+            <span style="color:var(--text-secondary);font-size:0.8rem">${this._escHtml(v.name || '')}</span>
+            ${dirs}
+            <span style="color:var(--text-muted);font-size:0.74rem">${v.report_count || 0} 份研报</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${gen}
+            <button class="btn btn-outline btn-sm" onclick="App.regenerateVariety('${v.code}')" title="忽略缓存, 重新生成该品种">↻</button>
+          </div>
+        </div>${cmp}${body}</div>`;
+    }).join('');
+  },
+
+  // 【功能】LLM 总结 md 按「## 小节」拆开, 各节不同视觉形式(2026-09-09 美化):
+  //        多空驱动与逻辑链=品牌色侧条 / 分歧与共识=虚线碰撞框 / 倾向与跟踪要点=
+  //        净倾向大徽标(偏多绿/偏空红/震荡黄, 取正文首个倾向词) / 当日关键数据=深色数据面板。
+  //        无「##」标题或异常 → 整段 marked 渲染兜底, 不丢内容。
+  _renderVsumSections(md) {
+    const META = {
+      '多空驱动与逻辑链': { icon: '⛓', color: 'var(--brand-light)', bar: 'var(--brand)', tip: '各家因果链如何传导到价格' },
+      '分歧与共识': { icon: '⚖', color: 'var(--amber)', dashed: true, tip: '分歧点与根源 / 共识逻辑' },
+      '倾向与跟踪要点': { icon: '🎯', color: 'var(--teal)', tip: '净倾向与未来 1~2 周跟踪清单' },
+      '当日关键数据': { icon: '📊', color: 'var(--blue)', panel: true, tip: '研报披露的基差/仓单/开工率/利润' },
+    };
+    const heads = [...String(md).matchAll(/^##\s*(.+?)\s*$/gm)];
+    if (!heads.length) return `<div class="report-content" style="font-size:0.82rem">${marked.parse(md || '_空总结_')}</div>`;
+    let html = '';
+    if (heads[0].index > 0) {  // 标题前的导语
+      const pre = md.slice(0, heads[0].index).trim();
+      if (pre) html += `<div class="report-content" style="font-size:0.8rem;margin-bottom:8px">${marked.parse(pre)}</div>`;
+    }
+    heads.forEach((h, i) => {
+      const title = h[1].replace(/[*`]/g, '').trim();
+      const start = h.index + h[0].length;
+      const end = i + 1 < heads.length ? heads[i + 1].index : md.length;
+      const sec = md.slice(start, end).trim();
+      const m = META[title] || {};
+      const style = m.dashed ? 'border:1px dashed var(--border-light);background:var(--bg-input)'
+        : m.bar ? `border-left:3px solid ${m.bar};background:var(--bg-input)`
+        : m.panel ? 'border:1px solid var(--border);background:var(--bg)'
+        : 'background:var(--bg-input)';
+      let lean = '';
+      if (title === '倾向与跟踪要点') {
+        const lm = sec.match(/偏多|看多|偏空|看空|震荡|中性/);
+        if (lm) {
+          const d = lm[0];
+          const cls = /多/.test(d) ? 'color:var(--green);background:var(--green-bg)'
+            : (/空/.test(d) ? 'color:var(--red);background:var(--red-bg)'
+                            : 'color:var(--amber);background:var(--amber-bg)');
+          lean = `<span class="badge" style="${cls};font-size:0.74rem">净倾向 ${this._escHtml(d)}</span>`;
+        }
+      }
+      html += `<div style="${style};border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+          <span style="font-size:0.8rem;font-weight:bold;color:${m.color || 'var(--text-secondary)'}">${m.icon || '📌'} ${this._escHtml(title)}
+            <span style="font-weight:normal;color:var(--text-muted);font-size:0.72rem">· ${m.tip || 'LLM 总结小节'}</span></span>
+          ${lean}
+        </div>
+        <div class="report-content" style="font-size:0.8rem">${marked.parse(sec || '_空_')}</div>
+      </div>`;
+    });
+    return html;
   },
 
   // 【功能】研报页顶部共享品种下拉变更 → 逐品种观点总览 + 国君周度观点两卡一并重载。
@@ -3953,7 +4422,7 @@ const App = {
   // 【后端】GET /api/dashboard/{variety}?days={days}
   async loadDashboard() {
     this._populateVarietySelects(['dash-variety']);  // 【关键】首次进入本页才填充下拉(懒加载); 后续只读不重填
-    const sym = (document.getElementById('dash-variety')?.value || 'RB').toUpperCase();
+    const sym = (document.getElementById('dash-variety')?.value || this._defaultCode()).toUpperCase();
     const days = document.getElementById('dash-days')?.value || 180;  // 【变量】回看天数(默认 180)
     const body = document.getElementById('dash-analysis-body');
     const badge = document.getElementById('dash-badge');
@@ -4272,7 +4741,7 @@ const App = {
   // 【渲染】#dash-sector-panel 条形图 + 表格; #dash-sector-label 板块提示
   // 【后端】GET /api/dashboard/{variety}(反查板块) → GET /api/dashboard/sector/{sector}
   async loadDashSector() {
-    const sym = (document.getElementById('dash-variety')?.value || 'RB').toUpperCase();
+    const sym = (document.getElementById('dash-variety')?.value || this._defaultCode()).toUpperCase();
     const panel = document.getElementById('dash-sector-panel');
     const label = document.getElementById('dash-sector-label');
     let sector = null;
@@ -4559,12 +5028,18 @@ const App = {
     });
   },
 
+  // 【品种池】默认品种兜底(2026-09-09):旧兜底 'RB' 已随 20 品种池收缩出池,
+  // 统一回退到下拉第一个池内品种(数据为空时再兜 'SC' 防未加载)。
+  _defaultCode() {
+    return (this._varieties && this._varieties[0] && this._varieties[0].code) || 'SC';
+  },
+
   // 【功能】情绪异动检测: 用 Z-score(阈值 2.0)找当日情绪显著偏离 7 日均值的日期
   // 【输入】forceV: 可选的强制品种(不传则读下拉)
   // 【渲染】#anomalies-result 异动列表或"未检测到"
   // 【后端】GET /api/analysis/anomalies/{v}?threshold=2.0
   async loadAnomalies(forceV) {
-    const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
+    const v = forceV || document.getElementById('comp-variety')?.value || this._defaultCode();
     const t = 2.0;  // 【变量】Z-score 异动阈值: |Z|>2 视为情绪显著偏离 7 日均值
     try {
       const r = await fetch(`/api/analysis/anomalies/${v}?threshold=${t}`);  // 【调用函数】后端接口: Z-score 情绪异动检测(阈值经查询参数传入)
@@ -4584,7 +5059,7 @@ const App = {
   // 【渲染】#divergence-detail 大号百分比(红<40%黄<70%绿≥70%)与多空占比
   // 【后端】GET /api/analysis/divergence/{v}
   async loadDivergence(forceV) {
-    const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
+    const v = forceV || document.getElementById('comp-variety')?.value || this._defaultCode();
     try {
       const r = await fetch(`/api/analysis/divergence/${v}`);  // 【调用函数】后端接口: 单品种多空分歧度(1-|看多%-看空%|)
       const d = await r.json();
@@ -4631,7 +5106,7 @@ const App = {
   // 【渲染】#leadlag-conclusion 结论文字; #chart-leadlag 双线相关系数图(绿=情绪→价格, 橙=价格→情绪)
   // 【后端】GET /api/analysis/leadlag/{v}
   async loadLeadLag(forceV) {
-    const v = forceV || document.getElementById('comp-variety')?.value || 'RB';
+    const v = forceV || document.getElementById('comp-variety')?.value || this._defaultCode();
     try {
       const r = await fetch(`/api/analysis/leadlag/${v}`);  // 【调用函数】后端接口: 领先滞后分析(情绪→价格 vs 价格→情绪相关系数)
       const d = await r.json();
@@ -5079,7 +5554,7 @@ const App = {
         try {
           const rk = await fetch('/api/trading/apply_risk', {  // 【调用函数】后端接口: 对交易明细应用止损/移动止盈(用真实价格重算每笔 pnl)
             method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({variety: v||'RB', trades: tradesAdj, stop_loss: stopLoss, trail_stop: trailStop})
+            body: JSON.stringify({variety: v||this._defaultCode(), trades: tradesAdj, stop_loss: stopLoss, trail_stop: trailStop})
           });
           const rkd = await rk.json();
           if (rkd.trades) { tradesAdj = rkd.trades; riskApplied = true; }
@@ -5528,7 +6003,7 @@ const App = {
           try {
             const riskR = await fetch('/api/trading/apply_risk', {  // 【调用函数】后端接口: 对交易明细应用风控(与单卡回测同口径, 先风控后成本)
               method:'POST', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({variety: v||'RB', trades, stop_loss: stopLoss, trail_stop: trailStop})
+              body: JSON.stringify({variety: v||this._defaultCode(), trades, stop_loss: stopLoss, trail_stop: trailStop})
             });
             const riskD = await riskR.json();
             if (riskD.trades) { trades = riskD.trades; riskApplied = true; }
@@ -5646,7 +6121,7 @@ const App = {
     let commonDates = [];  // 【变量】多策略曲线对齐的公共日期轴(有价格数据时用交易日, 否则回退到交易日期集合)
     let priceCurve = [];  // 【变量】品种价格基准曲线(相对窗口起始价涨跌%, 虚线绘制在次坐标轴)
     let marketReturn = 0;  // 【变量】市场买入持有收益(窗口内价格末点涨幅%), 用于与各策略收益对比
-    const priceVariety = v && v.trim() ? v : 'RB';  // Default to RB for market benchmark
+    const priceVariety = v && v.trim() ? v : this._defaultCode();  // 【品种池】默认基准品种随下拉首项(原 RB 已出池)
     try {
       // 基准必须与策略用同一窗口: 取数天数按所选区间跨度动态计算(覆盖区间+30天缓冲, 上限730天)。
       // 旧代码写死 days=365 且 base 钉在「整个取数窗口第一天」→ 买入持有收益恒等于「近365日涨幅」,

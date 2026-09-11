@@ -5,9 +5,9 @@ The sector-composite fallback needs a reverse map: VARIETY_METADATA.sector_cn
 the list of variety codes in that broad bucket. This test locks:
 
   - parentheses are stripped ("黑色系(合金)" -> "黑色系"),
-  - the real VARIETY_METADATA merges into exactly the 4 expected broad buckets
-    for the 52-pool (黑色系=8 / 能化=19 / 农产品=14 / 有色=11;
-    2026-09-01 扩 19 非金融品种).
+  - the real VARIETY_METADATA merges into exactly the 6 expected broad buckets
+    (黑色系=8 / 能化=24 / 农产品=14 / 有色=12 / 航运=1 / 金融=3;
+    2026-09-09 +PS 多晶硅入 有色(新能源) → 62 键).
 
 No network; the real-metadata test uses the in-repo VARIETY_METADATA table.
 """
@@ -62,15 +62,16 @@ def test_real_metadata_merges_four_buckets():
         "AP", "C", "CF", "CJ", "CS", "JD", "LH", "M", "OI", "P", "PK", "RM", "SR", "Y",
     ]
     # 2026-09-01 新增有色桶:贵金属 AG/AU + 工业金属 AL/AO/CU/NI/PB/SN/ZN + 新能源 LC/SI
+    # 2026-09-09 +PS 多晶硅(sector_cn "有色(新能源)" 去括号归入"有色")
     assert sorted(sector_map["有色"]) == [
-        "AG", "AL", "AO", "AU", "CU", "LC", "NI", "PB", "SI", "SN", "ZN",
+        "AG", "AL", "AO", "AU", "CU", "LC", "NI", "PB", "PS", "SI", "SN", "ZN",
     ]
     # 2026-09-08 新增桶:EC 航运 + IF/TS/TL 金融
     assert sector_map["航运"] == ["EC"]
     assert sorted(sector_map["金融"]) == ["IF", "TL", "TS"]
 
 
-def test_real_metadata_covers_all_61_pool_varieties():
+def test_real_metadata_covers_all_62_pool_varieties():
     sector_map = build_sector_to_varieties()
     pooled = (
         set(sector_map["黑色系"])
@@ -87,6 +88,7 @@ def test_real_metadata_covers_all_61_pool_varieties():
         "SH",                                                                      # 能化(+烧碱)
         "PG", "BZ", "PR", "SP", "BR",                                              # 能化(2026-09-08 +5)
         "AG", "AL", "AO", "AU", "CU", "NI", "PB", "SN", "ZN", "LC", "SI",          # 有色(11)
+        "PS",                                                                      # 有色(2026-09-09 +多晶硅)
         "M", "CF", "SR", "OI", "RM", "AP", "CJ", "PK",                             # 农产品(原8)
         "C", "CS", "JD", "LH", "P", "Y",                                           # 农产品(+6)
         "EC",                                                                      # 航运(2026-09-08)

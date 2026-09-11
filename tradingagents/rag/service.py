@@ -74,13 +74,18 @@ def retrieve_hits(
     exclude_report_id: int | None = None,
     dedupe_reports: bool = True,
     max_per_report: int = _MAX_PER_REPORT,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
-    """检索 top_k 个片段;variety/report_type 在应用层后过滤。
+    """检索 top_k 个片段;variety/report_type/日期范围在应用层后过滤。
 
     dedupe_reports=True(默认)按 report_id 去重、每篇最多保留 max_per_report 个
     得分最高的片段 —— 一篇研报切块多、多块同时排进前 k 时,不去重会出现"同一篇
     引用多次"(2026-09-08 用户实测反馈);但每篇只留 1 块又会把长报告的其他方面
     (如宏观段)全部挡在外面(同日实测:原油问答只检回表格块),故默认留 2 块。
+    date_from/date_to(YYYY-MM-DD,闭区间):Chroma where 不支持日期比较,走应用层
+    后过滤(YYYY-MM-DD 字典序即时间序);publish_date 为空的块在设了范围时被排除
+    (语义:日期不明的研报不纳入范围筛选,前端/prompt 已提示)。
     """
     question = (question or "").strip()
     if not question:
@@ -93,6 +98,16 @@ def retrieve_hits(
         hits = [h for h in hits if _match_variety(h["metadata"], code)]
     if report_type:
         hits = [h for h in hits if h["metadata"].get("report_type") == report_type]
+    if date_from or date_to:
+        def _in_range(meta: dict) -> bool:
+            pd = meta.get("publish_date") or ""
+            if not pd:
+                return False
+            if date_from and pd < date_from:
+                return False
+            return not (date_to and pd > date_to)
+
+        hits = [h for h in hits if _in_range(h["metadata"])]
     if dedupe_reports:
         buckets: dict[int, list[dict]] = {}
         for h in hits:  # store.query 已按 score 降序
