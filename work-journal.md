@@ -310,3 +310,18 @@
 - 改动未提交(等用户指令,不带 Co-Author 页脚);东证首次全量回填仍待跑;分析师真实 run 观察一次 get_futures_margin 调用效果(可选)。
 
 **留档**: 同日提交 `64ab2a6`(52 文件,含 RAG/视觉重述/盘面利润/东证采集器/前端重构全部改动;已扫无 token;临时脚本 _restart_when_idle.sh 未入库)。
+
+## 2026-09-14 — 研报问答自进化三层落地:反馈信号→错题本→黑话词典
+
+**状态**:✅ 完成(1326 passed 全绿 + 真机验收通过)
+
+**做了什么**:
+- **P0 反馈信号(补死穴)**:`_migrate()` 给 qa_messages 幂等补 `feedback` 列(老库 ALTER TABLE);`set_qa_feedback` 方法;新路由 `POST /api/research/qa/feedback`(非法值/不存在→200+ok:false,message_id 缺失→400)。前端 assistant 气泡尾部 👍/👎(已反馈高亮),回放恢复状态。
+- **P1 错题本**:`get_qa_feedback_stats`(up/down/zero_hit=检索空转/failed)+ `get_qa_recent_failures`(👎或0命中或error的 assistant 轮,子查询配对同 session 前一条 user 提问);`GET /api/research/qa/insights`(answer 截 200 字摘要)。前端 QA 卡片内 `<details>` 错题本面板(统计行+失败列表+回答摘要折叠)。
+- **P2 黑话词典**:新表 qa_terms(term UNIQUE/mapping/hits);CRUD 路由 `/api/research/qa/terms`(同名添加=更新映射);接入两处——①有历史时映射表(≤50条)注入改写 prompt("术语映射参考");②首轮不走改写 LLM,最长词优先子串直替换,`rewritten_query` 落替换后 query 供审计(语义更新:空=首轮无替换或改写回退),命中条目 hits+1。前端错题本面板内词典管理区+"➕录入词典"一键预填失败提问。
+- **测试**:test_rag_qa_routes.py +7(feedback 往返/非法值/迁移补列/insights 统计与配对/词典 CRUD upsert/首轮直替换/改写 prompt 注入),全量 **1326 passed + 1 环境skip**,ruff 0。
+- **真机**:杀 :5000 旧进程重启;真链路验证:录词典→问"螺纹现在咋样"→rewritten_query="RB 螺纹钢现在咋样"→检索6命中→回答1208字→👍落库→错题本统计正确→命中计数1→测试痕迹清理。
+
+**下一步**:
+- 三层已闭环:反馈采集✓→失败浮出✓→词典回灌✓;远期第3层(自动微调embedding)待反馈数据积累后再议。
+- GitHub 未推送:聪明截断+自指检测+本次自进化三批改动都在工作区,等用户指示。

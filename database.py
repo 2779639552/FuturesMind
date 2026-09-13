@@ -124,6 +124,10 @@ class AgentSenseDB:
                 self._backfill_report_type(c)
             if cols and "layout_text" not in cols:
                 c.execute("ALTER TABLE research_reports ADD COLUMN layout_text TEXT DEFAULT ''")
+            # qa_messages.feedback(2026-09-14 自进化 P0:👍👎 反馈信号,错题本数据源)
+            qa_cols = {row[1] for row in c.execute("PRAGMA table_info(qa_messages)").fetchall()}
+            if qa_cols and "feedback" not in qa_cols:
+                c.execute("ALTER TABLE qa_messages ADD COLUMN feedback TEXT DEFAULT ''")
 
     def _backfill_report_type(self, c):
         """存量研报类型(日报/周报)回填(加列后立即执行,幂等可重跑)。
@@ -386,6 +390,14 @@ class AgentSenseDB:
                     created_at TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id);
+
+                CREATE TABLE IF NOT EXISTS qa_terms (              -- 黑话词典(2026-09-14 自进化 P2):口语词→标准检索词映射,回灌改写prompt
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    term TEXT NOT NULL UNIQUE,         -- 口语/黑话词(如"螺纹"),人工录入保证质量
+                    mapping TEXT NOT NULL,             -- 标准检索词(如"RB 螺纹钢")
+                    hits INTEGER DEFAULT 0,            -- 被应用次数(首轮直替换命中计数,衡量词典价值)
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
             """)
 
     # ── Posts ──────────────────────────────────────────────────────────
@@ -1243,3 +1255,96 @@ class AgentSenseDB:
         while msgs and sum(len(m["content"]) for m in msgs) > max_chars:
             msgs.pop(0)
         return msgs
+
+    def set_qa_feedback(self, message_id: int, feedback: str) -> dict | None:
+        """设置消息反馈('up'/'down');行不存在返回 None,合法值由调用方校验。"""
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE qa_messages SET feedback=? WHERE id=?", (feedback or "", message_id)
+            )
+            if cur.rowcount == 0:
+                return None
+        return self.get_qa_message(message_id)
+
+    def get_qa_feedback_stats(self) -> dict:
+        """错题本统计:👍/👎 数 + 0命中轮数 + 失败轮数(只数 assistant 行)。
+
+        zero_hit = retrieved=0 且无 error(检索空转,改写/词典的问题);failed = error 非空。
+        """
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT"
+                " SUM(CASE WHEN feedback='up' THEN 1 ELSE 0 END) AS up,"
+                " SUM(CASE WHEN feedback='down' THEN 1 ELSE 0 END) AS down,"
+                " SUM(CASE WHEN retrieved=0 AND error='' THEN 1 ELSE 0 END) AS zero_hit,"
+                " SUM(CASE WHEN error!='' THEN 1 ELSE 0 END) AS failed"
+                " FROM qa_messages WHERE role='assistant'"
+            ).fetchone()
+        return {k: int(row[k] or 0) for k in ("up", "down", "zero_hit", "failed")}
+
+    def get_qa_recent_failures(self, limit: int = 20) -> list[dict]:
+        """错题本失败列表:👎/0命中/出错的 assistant 轮,按时间倒序,配对其前一条 user 提问。
+
+        question 由子查询取同 session 中 id 更小、role='user' 的最近一条 —— 失败轮
+        前面的提问就是"罪魁"(user 行紧跟 assistant 行落库,配对恒成立)。
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT m.*,"
+                " (SELECT content FROM qa_messages u"
+                "   WHERE u.session_id=m.session_id AND u.id<m.id AND u.role='user'"
+                "   ORDER BY u.id DESC LIMIT 1) AS question"
+                " FROM qa_messages m"
+                " WHERE m.role='assistant' AND (m.feedback='down' OR m.retrieved=0 OR m.error!='')"
+                " ORDER BY m.id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            for col in ("citations", "filters"):
+                try:
+                    d[col] = json.loads(d[col]) if d[col] else ([] if col == "citations" else {})
+                except (json.JSONDecodeError, TypeError):
+                    d[col] = [] if col == "citations" else {}
+            out.append(d)
+        return out
+
+    # ── 黑话词典(自进化 P2,2026-09-14) ─────────────────────────────────
+
+    def list_qa_terms(self, limit: int = 50) -> list[dict]:
+        """词典列表(按命中次数降序,注入改写 prompt 时封顶 limit 条)。"""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM qa_terms ORDER BY hits DESC, id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_qa_term(self, term: str, mapping: str) -> dict:
+        """添加词典条目;term 已存在则更新 mapping(UNIQUE 冲突视为改映射,不报错)。"""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO qa_terms (term, mapping) VALUES (?, ?)"
+                " ON CONFLICT(term) DO UPDATE SET mapping=excluded.mapping",
+                (term.strip(), mapping.strip()),
+            )
+            row = c.execute(
+                "SELECT * FROM qa_terms WHERE term=?", (term.strip(),)
+            ).fetchone()
+        return dict(row)
+
+    def delete_qa_term(self, term_id: int) -> bool:
+        """按 id 删除词典条目;删除成功返回 True,不存在返回 False。"""
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM qa_terms WHERE id=?", (term_id,))
+            return cur.rowcount > 0
+
+    def bump_qa_term_hits(self, term_ids: list[int]) -> None:
+        """词典条目命中计数 +1(首轮直替换实际用到时调用;空列表跳过)。"""
+        if not term_ids:
+            return
+        with self._conn() as c:
+            c.executemany(
+                "UPDATE qa_terms SET hits=hits+1 WHERE id=?",
+                [(tid,) for tid in term_ids],
+            )

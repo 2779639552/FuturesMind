@@ -316,3 +316,236 @@ def test_db_qa_history_rewrite_truncates_oldest(app_client):
     assert len(hist) <= 4
     assert any("长问题" in c and c.endswith("3") for c in contents)  # 最新一轮完整保留
     assert not any(c.endswith("0") for c in contents)  # 最旧的先被丢
+
+
+# ---------------------------------------------------------------------------
+# 聪明截断 + 自指检测(2026-09-13 改进)
+# ---------------------------------------------------------------------------
+def test_shrink_answer_keeps_tail_headings():
+    """超预算截断应保住尾部标题行——它们正是"点"的名字,指代对象不能被截掉。"""
+    content = "开头段。" + "x" * 150 + "\n## 1. 供给端维持偏弱\n" + "y" * 300 \
+        + "\n## 2. 需求端成交偏弱\n" + "z" * 300 + "\n结尾段。"
+    out = web_app._shrink_answer_for_history(content, budget=400)
+    assert out.startswith(content[:120])          # 开头保留
+    assert "## 1. 供给端维持偏弱" in out          # 尾部标题幸存(旧实现从头截会丢)
+    assert "## 2. 需求端成交偏弱" in out
+    assert len(out) <= 400
+
+
+def test_shrink_answer_short_passthrough():
+    assert web_app._shrink_answer_for_history("短回答") == "短回答"
+
+
+def test_qa_ask_selfref_includes_prior_answer(api, monkeypatch):
+    """自指追问("展开讲讲第二点")应把上轮回答全文注入作答 prompt(带"以片段为准"标注);
+    非自指追问不应注入。"""
+    _patch_rag_ok(monkeypatch)
+    fake = _FakeLLMClient([])
+    monkeypatch.setattr(web_app, "create_llm_client", lambda *a, **k: fake)
+    # 第一轮:长回答(带可识别标记)
+    fake.answers.append("首轮长回答,要点A是MARKER unique_token_42,后续展开。")
+    b1 = api.post("/api/research/qa/ask", json={"question": "螺纹钢供需怎么看"}).get_json()
+    assert b1["ok"] is True
+    # 第二轮:自指追问
+    fake.answers.append("改写后的查询")
+    fake.answers.append("衔接式回答 [1]。")
+    b2 = api.post("/api/research/qa/ask",
+                  json={"question": "展开讲讲第二点", "session_id": b1["session_id"]}).get_json()
+    assert b2["ok"] is True
+    answer_prompt = fake.prompts[-1]
+    assert "你上一轮的回答" in answer_prompt        # 附加材料块的标注在
+    assert "unique_token_42" in answer_prompt       # 上轮回答全文(未被截断)在
+    assert "一律以片段为准" in answer_prompt        # 幻觉压制标注在
+    # 第三轮:非自指追问 → 不注入
+    fake.answers.append("改写后的查询")
+    fake.answers.append("普通回答 [1]。")
+    b3 = api.post("/api/research/qa/ask",
+                  json={"question": "铁矿石现在怎么样", "session_id": b1["session_id"]}).get_json()
+    assert b3["ok"] is True
+    assert "你上一轮的回答" not in fake.prompts[-1]
+
+
+def test_qa_ask_selfref_off_on_first_turn(api, monkeypatch):
+    """首轮无历史可衔接,即使措辞像自指也不注入空块。"""
+    _patch_rag_ok(monkeypatch)
+    fake = _FakeLLMClient(["展开说说的查询", "回答 [1]。"])
+    monkeypatch.setattr(web_app, "create_llm_client", lambda *a, **k: fake)
+    body = api.post("/api/research/qa/ask", json={"question": "展开讲讲第二点"}).get_json()
+    assert body["ok"] is True
+    assert "你上一轮的回答" not in fake.prompts[-1]
+
+
+def test_qa_ask_rewrite_history_keeps_tail_headings(api, monkeypatch):
+    """改写历史经聪明截断后,上轮长回答的尾部标题应进入改写 prompt(旧实现会截丢)。"""
+    _patch_rag_ok(monkeypatch)
+    fake = _FakeLLMClient([])
+    monkeypatch.setattr(web_app, "create_llm_client", lambda *a, **k: fake)
+    long_answer = "开头。" + "x" * 150 + "\n## 1. 供给端\n" + "y" * 300 \
+        + "\n## 2. 需求端成交偏弱\n" + "z" * 300
+    fake.answers.append(long_answer)  # 第一轮回答
+    b1 = api.post("/api/research/qa/ask", json={"question": "螺纹钢供需怎么看"}).get_json()
+    assert b1["ok"] is True
+    fake.answers.append("螺纹钢 需求端")  # 第二轮改写产物
+    fake.answers.append("回答 [1]。")
+    api.post("/api/research/qa/ask",
+             json={"question": "那第二点呢", "session_id": b1["session_id"]})
+    rewrite_prompt = fake.prompts[-2]  # -1 是作答, -2 是第二轮改写
+    assert "助理:" in rewrite_prompt
+    assert "## 2. 需求端成交偏弱" in rewrite_prompt  # 尾部标题幸存,改写器看得见"点"的名字
+    assert len(rewrite_prompt) < 3000  # 截断仍生效,没有全量塞入
+
+
+# ---------------------------------------------------------------------------
+# 自进化 P0:反馈信号(2026-09-14)
+# ---------------------------------------------------------------------------
+def test_qa_feedback_roundtrip_and_replay(api, monkeypatch):
+    _patch_rag_ok(monkeypatch)
+    monkeypatch.setattr(web_app, "create_llm_client",
+                        lambda *a, **k: _FakeLLMClient(["回答 [1]。"]))
+    b = api.post("/api/research/qa/ask", json={"question": "螺纹钢"}).get_json()
+    mid = b["message_id"]
+    r = api.post("/api/research/qa/feedback",
+                 json={"message_id": mid, "feedback": "down"}).get_json()
+    assert r["ok"] is True and r["message"]["feedback"] == "down"
+    # 回放(会话切换)恢复反馈状态
+    msgs = api.get(f"/api/research/qa/sessions/{b['session_id']}/messages").get_json()["messages"]
+    assert msgs[-1]["feedback"] == "down"
+
+
+def test_qa_feedback_invalid_value_and_missing_message(api, monkeypatch):
+    _patch_rag_ok(monkeypatch)
+    monkeypatch.setattr(web_app, "create_llm_client",
+                        lambda *a, **k: _FakeLLMClient(["答"]))
+    b = api.post("/api/research/qa/ask", json={"question": "螺纹钢"}).get_json()
+    # 非法值 → 200 + ok:false(业务失败约定)
+    r = api.post("/api/research/qa/feedback",
+                 json={"message_id": b["message_id"], "feedback": "meh"}).get_json()
+    assert r["ok"] is False and "up/down" in r["error"]
+    # 消息不存在 → 200 + ok:false
+    r2 = api.post("/api/research/qa/feedback",
+                  json={"message_id": 99999, "feedback": "up"}).get_json()
+    assert r2["ok"] is False and "不存在" in r2["error"]
+    # message_id 缺失 → 400
+    assert api.post("/api/research/qa/feedback", json={"feedback": "up"}).status_code == 400
+
+
+def test_db_migrate_adds_feedback_column_to_old_schema(tmp_path):
+    """旧库(无 feedback 列)经 _migrate 后补列——CREATE TABLE IF NOT EXISTS 不改老表。"""
+    import sqlite3
+    p = tmp_path / "old.db"
+    conn = sqlite3.connect(p)
+    conn.executescript("""
+        CREATE TABLE qa_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT DEFAULT '',
+            citations TEXT DEFAULT '[]',
+            retrieved INTEGER DEFAULT 0,
+            filters TEXT DEFAULT '{}',
+            rewritten_query TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            latency_ms INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    conn.commit()
+    conn.close()
+    db = database.AgentSenseDB(str(p))
+    with db._conn() as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(qa_messages)").fetchall()}
+    assert "feedback" in cols
+
+
+# ---------------------------------------------------------------------------
+# 自进化 P1:错题本(2026-09-14)
+# ---------------------------------------------------------------------------
+def test_qa_insights_stats_and_failure_pairing(api):
+    db = database.get_db()
+    s = db.create_qa_session(title="错题会话")
+    db.insert_qa_message(s["id"], "user", "被点踩的问题")
+    m1 = db.insert_qa_message(s["id"], "assistant", "回答甲", retrieved=3)
+    db.set_qa_feedback(m1["id"], "down")
+    db.insert_qa_message(s["id"], "user", "检索空转的问题")
+    m2 = db.insert_qa_message(s["id"], "assistant", "", retrieved=0)
+    db.insert_qa_message(s["id"], "user", "报错的问题")
+    m3 = db.insert_qa_message(s["id"], "assistant", "", retrieved=2, error="生成回答失败")
+    db.insert_qa_message(s["id"], "user", "正常的问题")
+    db.insert_qa_message(s["id"], "assistant", "回答乙", retrieved=4)  # 不应浮出
+    body = api.get("/api/research/qa/insights").get_json()
+    st = body["stats"]
+    assert st == {"up": 0, "down": 1, "zero_hit": 1, "failed": 1}
+    fails = body["failures"]
+    assert {f["message_id"] for f in fails} == {m1["id"], m2["id"], m3["id"]}
+    by_id = {f["message_id"]: f for f in fails}
+    assert by_id[m1["id"]]["question"] == "被点踩的问题"   # 配对前一条 user 提问
+    assert by_id[m2["id"]]["question"] == "检索空转的问题"
+    assert by_id[m3["id"]]["error"] == "生成回答失败"
+    assert len(by_id[m1["id"]]["answer"]) <= 200  # 回答摘要截断
+
+
+# ---------------------------------------------------------------------------
+# 自进化 P2:黑话词典(2026-09-14)
+# ---------------------------------------------------------------------------
+def test_qa_terms_crud_and_upsert(api):
+    db = database.get_db()
+    # 非法输入
+    r0 = api.post("/api/research/qa/terms", json={"term": "螺纹"}).get_json()
+    assert r0["ok"] is False
+    r_same = api.post("/api/research/qa/terms",
+                      json={"term": "螺纹", "mapping": "螺纹"}).get_json()
+    assert r_same["ok"] is False
+    # 正常添加 + 列表
+    t1 = api.post("/api/research/qa/terms",
+                  json={"term": "螺纹", "mapping": "RB 螺纹钢"}).get_json()
+    assert t1["ok"] is True
+    lst = api.get("/api/research/qa/terms").get_json()["terms"]
+    assert any(x["term"] == "螺纹" and x["mapping"] == "RB 螺纹钢" for x in lst)
+    # 同名再添加 → 更新 mapping,不报错不重复
+    api.post("/api/research/qa/terms", json={"term": "螺纹", "mapping": "螺纹钢 RB"})
+    lst2 = api.get("/api/research/qa/terms").get_json()["terms"]
+    rows = [x for x in lst2 if x["term"] == "螺纹"]
+    assert len(rows) == 1 and rows[0]["mapping"] == "螺纹钢 RB"
+    # 删除 + 再删 False
+    assert api.delete(f"/api/research/qa/terms/{rows[0]['id']}").get_json()["ok"] is True
+    assert api.delete(f"/api/research/qa/terms/{rows[0]['id']}").status_code == 404
+    assert db.delete_qa_term(rows[0]["id"]) is False
+
+
+def test_qa_ask_first_turn_term_substitution(api, monkeypatch):
+    """首轮不走改写 LLM,黑话词典直替换;rewritten_query 落替换后 query 供审计。"""
+    captured = _patch_rag_ok(monkeypatch)
+    monkeypatch.setattr(web_app, "create_llm_client",
+                        lambda *a, **k: _FakeLLMClient(["回答 [1]。"]))
+    database.get_db().add_qa_term("螺纹", "RB 螺纹钢")
+    body = api.post("/api/research/qa/ask", json={"question": "螺纹现在咋样"}).get_json()
+    assert body["ok"] is True
+    assert captured["question"] == "RB 螺纹钢现在咋样"  # 检索收到替换后 query
+    assert body["rewritten_query"] == "RB 螺纹钢现在咋样"  # 落库可审计
+    # 命中计数 +1
+    terms = database.get_db().list_qa_terms()
+    assert terms[0]["hits"] == 1
+    # 无词典命中的首轮:原问题透传,rewritten_query 为空
+    body2 = api.post("/api/research/qa/ask",
+                     json={"question": "铁矿石呢", "session_id": body["session_id"]}).get_json()
+    assert body2["ok"] is True
+
+
+def test_qa_ask_rewrite_prompt_injects_terms(api, monkeypatch):
+    """有历史时词典映射表注入改写 prompt(而非直替换问题文本)。"""
+    _patch_rag_ok(monkeypatch)
+    fake = _FakeLLMClient([])
+    monkeypatch.setattr(web_app, "create_llm_client", lambda *a, **k: fake)
+    database.get_db().add_qa_term("螺纹", "RB 螺纹钢")
+    fake.answers.append("回答 [1]。")  # 第一轮作答(首轮问题不含黑话,直替换不命中)
+    b1 = api.post("/api/research/qa/ask", json={"question": "黑色系怎么看"}).get_json()
+    assert b1["ok"] is True
+    fake.answers.append("螺纹钢 供需")  # 第二轮改写产物
+    fake.answers.append("回答 [1]。")
+    b2 = api.post("/api/research/qa/ask",
+                  json={"question": "那螺纹的库存呢", "session_id": b1["session_id"]}).get_json()
+    assert b2["ok"] is True
+    rewrite_prompt = fake.prompts[-2]
+    assert "术语映射参考" in rewrite_prompt and "螺纹→RB 螺纹钢" in rewrite_prompt
+    # 改写 LLM 的产物不被直替换干扰(问题原文送改写,映射表供参考)
+    assert "那螺纹的库存呢" in rewrite_prompt

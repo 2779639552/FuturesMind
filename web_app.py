@@ -5406,16 +5406,86 @@ _QA_LLM_SEM = threading.BoundedSemaphore(3)
 _QA_REWRITE_TURNS = 3  # 送入改写的历史轮数上限(3 轮=6 条消息)
 _QA_REWRITE_CHAR_BUDGET = 6000
 _QA_REWRITE_QUERY_MAX = 120  # 改写产物长度钳制
+_QA_ANSWER_HISTORY_BUDGET = 400  # 改写历史里单条助理回答的预算(聪明截断,见下)
+_QA_SELF_REF_MAX_CHARS = 4000  # 自指模式注入作答prompt的上轮回答全文上限
+_QA_TERMS_MAX = 50  # 黑话词典注入改写prompt的条目上限(prompt 膨胀防线)
 
 
-def _rewrite_query_for_retrieval(history: list[dict], question: str) -> str:
+def _shrink_answer_for_history(content: str, budget: int = _QA_ANSWER_HISTORY_BUDGET) -> str:
+    """助理回答进改写历史的"聪明截断":保留开头 + 保留标题/列表行(2026-09-13)。
+
+    【为什么】追问常指向上轮回答中后部的"点"(如"那第二点呢"),从头截 budget 字
+            会把指代对象截掉,改写器就消解不了指代;markdown 标题行(## ...)通常
+            正是"点"的名字,优先保留。
+    【策略】超预算时:开头 120 字打底 + 依次收录标题(#/-/*/>)、有序列表(数字.)
+            与引用行(单行再截 120),直到预算用尽;不超预算原样返回。
+    """
+    if len(content) <= budget:
+        return content
+    head = content[:120]
+    kept, remaining = head, budget - len(head)
+    for line in content.splitlines()[1:]:
+        ls = line.strip()
+        if remaining <= 0:
+            break
+        if ls.startswith(("#", "-", "*", ">")) or re.match(r"^\d+[.、)]", ls):
+            chunk = ls[:120]
+            kept += "\n" + chunk
+            remaining -= len(chunk) + 1
+    return kept
+
+
+# 自指/指代追问检测:命中则把上一轮回答全文作为附加材料块放进作答 prompt
+# (混合模式:衔接对话的连续性,幻觉风险用"以研报片段为准"的标注压制)。
+_QA_SELF_REF_PAT = re.compile(
+    r"第[一二三四五六七八九十百\d]+[点条节段部分]|[上这]面[所说的]|你[刚上前](?:才|面)"
+    r"|刚才[所说的]|上一[轮条次个]|前面[所说的]|展开[讲说]|细说|具体说[说下]"
+)
+
+
+def _qa_load_terms(limit: int = _QA_TERMS_MAX) -> list[dict]:
+    """拉黑话词典(改写 prompt 注入 / 首轮直替换共用);任何异常返回 []。
+
+    【降级】词典是"可降级增强"——加载失败只损失检索质量增益,绝不拖垮问答链路。
+    """
+    try:
+        return get_db().list_qa_terms(limit=limit)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("QA terms load failed: %s", e)
+        return []
+
+
+def _qa_apply_terms(question: str, terms: list[dict]) -> tuple[str, list[int]]:
+    """首轮黑话直替换:最长词优先做子串替换,返回 (替换后query, 命中条目id列表)。
+
+    【为什么只做首轮】有历史时改写 LLM 会拿着术语映射表做改写(更懂上下文),
+            首轮没有 LLM 参与,词典是唯一的人工经验回灌通道。
+    【注意】按词长降序替换可缓解"铁矿"误伤"铁矿石";仍可能链式误替换
+            (A 的映射里含 B),词由人工录入保证质量,rewritten_query 落库可审计。
+    """
+    q = question
+    hit_ids = []
+    for t in sorted(terms, key=lambda x: len(str(x.get("term") or "")), reverse=True):
+        term = str(t.get("term") or "").strip()
+        mapping = str(t.get("mapping") or "").strip()
+        if term and mapping and term != mapping and term in q:
+            q = q.replace(term, mapping)
+            hit_ids.append(int(t.get("id") or 0))
+    return q, [i for i in hit_ids if i]
+
+
+def _rewrite_query_for_retrieval(
+    history: list[dict], question: str, term_lines: list[str] | None = None
+) -> str:
     """把追问+历史改写成独立检索 query;失败/无历史返回 ""(调用方回退原问题)。
 
     【为什么】多轮 RAG 关键步骤:用户追问"那成本端呢?"直接拿去向量检索命中率
             极低,需结合历史补全省略主语/代词成独立 query。
     【降级】history 空(首轮)跳过 LLM 返回 "";改写 LLM 抛异常/产物为空同样
             返回 "" —— 检索质量降一档,但问答链路永不被改写卡死。
-            返回值同时就是落库的 rewritten_query("" = 首轮或回退,审计可辨)。
+            返回值同时就是落库的 rewritten_query("" = 首轮或回退,审计可辨;
+            首轮词典替换命中时由调用方覆写为替换后 query,见 api_qa_ask)。
+    【词典】term_lines 非空时注入术语映射参考(自进化 P2:口语词→标准检索词回灌)。
     """
     if not history:
         return ""
@@ -5425,15 +5495,22 @@ def _rewrite_query_for_retrieval(history: list[dict], question: str) -> str:
             tag = "用户" if m.get("role") == "user" else "助理"
             content = m.get("content") or ""
             if m.get("role") != "user":
-                content = content[:400]  # 助理回答截断,历史只供理解意图
+                content = _shrink_answer_for_history(content)  # 聪明截断:保开头+保标题行
             lines.append(f"{tag}:{content}")
         hist_text = "\n".join(lines)[:_QA_REWRITE_CHAR_BUDGET]
+        terms_block = ""
+        if term_lines:
+            terms_block = (
+                "术语映射参考(用户口语/黑话→标准检索词,历史或问题中出现时按映射改写):\n"
+                + "\n".join(term_lines[:_QA_TERMS_MAX]) + "\n\n"
+            )
         prompt = (
             "你是检索查询改写器。根据对话历史,把用户最新问题改写成一个不依赖上下文、"
             "可独立用于向量检索的中文查询。要求:\n"
             "- 补全省略主语与代词(如\"它\"\"这个品种\"→具体品种名),保留最新问题的真实意图;\n"
             "- 若最新问题已切换话题,以最新问题为准,不要强行拼接历史;\n"
             "- 只输出一行查询文本,不要解释、不要加引号。\n\n"
+            f"{terms_block}"
             f"对话历史(供参考):\n{hist_text}\n\n"
             f"用户最新问题:{question}\n改写后的检索查询:"
         )
@@ -5556,9 +5633,26 @@ def api_qa_ask():
     history = db.get_qa_history_for_rewrite(session_id, max_turns=_QA_REWRITE_TURNS,
                                             max_chars=_QA_REWRITE_CHAR_BUDGET)
     prior_history = history[:-1] if history else []  # 末条是刚插入的当前问题,排除
+    # 黑话词典(自进化 P2):改写 prompt 注入映射表;首轮不走改写 LLM,直接子串替换
+    terms = _qa_load_terms()
+    term_lines = [
+        f"{t.get('term')}→{t.get('mapping')}"
+        for t in terms if t.get("term") and t.get("mapping")
+    ]
+    first_turn = not prior_history
+    mapped_q, term_hit_ids = question, []
+    if first_turn:
+        mapped_q, term_hit_ids = _qa_apply_terms(question, terms)
+        if term_hit_ids:
+            try:
+                db.bump_qa_term_hits(term_hit_ids)
+            except Exception as e:  # noqa: BLE001  计数失败不影响主链路
+                logger.warning("QA term hits bump failed: %s", e)
     t0 = time.monotonic()
     with _QA_LLM_SEM:
-        rewritten = _rewrite_query_for_retrieval(prior_history, question)
+        rewritten = _rewrite_query_for_retrieval(prior_history, question, term_lines)
+        if first_turn and term_hit_ids:
+            rewritten = mapped_q  # 首轮词典替换生效:rewritten_query 落替换后 query 供审计
         search_query = rewritten or question  # ""(首轮/改写失败)回退原问题
         try:
             hits = service.retrieve_hits(
@@ -5588,6 +5682,20 @@ def api_qa_ask():
     context = service.format_context(hits)
     # 新鲜度提示:让模型自知材料边界,回答"截至 X 日"
     latest_date = max((c["publish_date"] for c in citations if c["publish_date"]), default="未知")
+    # 自指追问(如"那第二点呢/展开讲讲你刚才说的"):上轮回答全文作附加材料块,
+    # 仅供衔接;知识仍锚定研报片段,冲突以片段为准(压制"基于模型说话"的幻觉滚雪球)
+    prior_answer = next(
+        (m.get("content") or "" for m in reversed(prior_history)
+         if m.get("role") == "assistant" and m.get("content")),
+        "",
+    )
+    extra_block = ""
+    if prior_answer and _QA_SELF_REF_PAT.search(question):
+        extra_block = (
+            "\n【你上一轮的回答(仅供衔接对话;其中的观点/数据若与下方研报片段冲突,"
+            "一律以片段为准)】\n"
+            f"{prior_answer[:_QA_SELF_REF_MAX_CHARS]}\n\n"
+        )
     try:
         with _QA_LLM_SEM:
             client = create_llm_client(
@@ -5604,7 +5712,8 @@ def api_qa_ask():
                 "按问题复杂度伸缩,不凑字数也不偷懒。\n"
                 f"这是一次多轮对话中的回答;检索查询已根据对话历史改写完成,你只需针对当前"
                 f"问题独立作答。\n"
-                f"检索片段最新发布日期:{latest_date}\n\n"
+                f"检索片段最新发布日期:{latest_date}\n"
+                f"{extra_block}"
                 f"用户问题:{question}\n\n"
                 f"{context}\n\n"
                 "回答(markdown):"
@@ -5639,6 +5748,83 @@ def api_qa_ask():
         "answer": answer, "citations": citations, "retrieved": len(hits),
         "rewritten_query": rewritten or "", "rag_enabled": True,
     })
+
+
+# ── 研报问答·自进化三层(2026-09-14):反馈信号 → 错题本 → 黑话词典 ──
+# 阶梯:①qa_messages 补 feedback 列(补"无反馈信号"死穴) ②失败轮自动浮出错题本
+# ③口语→检索词词典回灌改写链路(首轮直替换 + 改写 prompt 注入),形成闭环。
+
+@app.route("/api/research/qa/feedback", methods=["POST"])
+def api_qa_feedback():
+    """给 assistant 消息打 👍/👎(自进化 P0 反馈信号)。
+
+    【入参】{"message_id"必填, "feedback":"up"|"down"}。
+    【失败矩阵】message_id 缺失 400;值不合法/消息不存在 → 200 + ok:false(约定同 ask)。
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        message_id = int(body.get("message_id") or 0)
+    except (TypeError, ValueError):
+        message_id = 0
+    if not message_id:
+        return jsonify({"error": "message_id 必填"}), 400
+    feedback = str(body.get("feedback") or "").strip().lower()
+    if feedback not in ("up", "down"):
+        return jsonify({"ok": False, "error": "feedback 只支持 up/down"})
+    msg = get_db().set_qa_feedback(message_id, feedback)
+    if msg is None:
+        return jsonify({"ok": False, "error": "消息不存在"})
+    return jsonify({"ok": True, "message": msg})
+
+
+@app.route("/api/research/qa/insights", methods=["GET"])
+def api_qa_insights():
+    """错题本(自进化 P1):反馈统计 + 失败轮列表(👎/0命中/出错,自动浮出)。"""
+    db = get_db()
+    stats = db.get_qa_feedback_stats()
+    failures = []
+    for f in db.get_qa_recent_failures(limit=20):
+        failures.append({
+            "message_id": f["id"],
+            "session_id": f["session_id"],
+            "question": f.get("question") or "(未取到提问)",
+            "answer": (f.get("content") or "")[:200],  # 面板展示摘要,全量走会话回放
+            "retrieved": f.get("retrieved", 0),
+            "error": f.get("error") or "",
+            "rewritten_query": f.get("rewritten_query") or "",
+            "feedback": f.get("feedback") or "",
+            "filters": f.get("filters") or {},
+            "created_at": f.get("created_at") or "",
+        })
+    return jsonify({"ok": True, "stats": stats, "failures": failures})
+
+
+@app.route("/api/research/qa/terms", methods=["GET"])
+def api_qa_terms_list():
+    """黑话词典列表(按命中次数降序)。"""
+    return jsonify({"ok": True, "terms": get_db().list_qa_terms()})
+
+
+@app.route("/api/research/qa/terms", methods=["POST"])
+def api_qa_terms_add():
+    """添加/更新词典条目(口语词→检索词);term 已存在视为改映射,不报错。"""
+    body = request.get_json(silent=True) or {}
+    term = str(body.get("term") or "").strip()
+    mapping = str(body.get("mapping") or "").strip()
+    if not term or not mapping:
+        return jsonify({"ok": False, "error": "term 与 mapping 均必填"})
+    if term == mapping:
+        return jsonify({"ok": False, "error": "term 与 mapping 不能相同"})
+    t = get_db().add_qa_term(term, mapping)
+    return jsonify({"ok": True, "term": t})
+
+
+@app.route("/api/research/qa/terms/<int:tid>", methods=["DELETE"])
+def api_qa_terms_delete(tid):
+    """删除词典条目;不存在返回 404。"""
+    if not get_db().delete_qa_term(tid):
+        return jsonify({"error": "词条不存在"}), 404
+    return jsonify({"ok": True})
 
 
 # 【变量】研报自动接入并发标志(防止手动/定时并发重复接入)。

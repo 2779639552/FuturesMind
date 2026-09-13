@@ -1428,6 +1428,23 @@ label { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bott
       <button class="btn btn-primary" id="res-ask-btn" onclick="App.askResearch()">🔍 提问</button>
     </div>
     <div id="res-ask-hist" style="display:flex;flex-direction:column;gap:12px;color:var(--text-muted);font-size:0.84rem;max-height:420px;overflow-y:auto;padding-right:4px">输入问题开始提问; 对话已按会话自动保存, 可从右上角下拉找回历史。</div>
+    <!-- 自进化面板(2026-09-14):错题本(失败轮自动浮出) + 黑话词典(口语→检索词, 回灌改写链路) -->
+    <details id="res-qa-insights" style="margin-top:12px;font-size:0.84rem" ontoggle="if(this.open)App.loadQaInsights()">
+      <summary style="cursor:pointer;color:var(--text-muted)">📋 错题本与黑话词典(自进化: 失败轮浮出 / 口语词映射检索词)</summary>
+      <div id="res-qa-insights-body" style="margin-top:10px">
+        <div id="res-qa-stats" style="display:flex;gap:14px;flex-wrap:wrap;color:var(--text-muted)"></div>
+        <div id="res-qa-failures" style="margin-top:8px;display:flex;flex-direction:column;gap:8px"></div>
+        <div style="margin-top:14px;border-top:1px solid var(--border,#e0e0e0);padding-top:10px">
+          <b>黑话词典</b> <span style="color:var(--text-muted)">口语词→标准检索词, 用于首轮直替换与追问改写</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;align-items:end">
+            <input id="res-qa-term" placeholder="口语/黑话词, 如:螺纹" style="min-width:140px">
+            <input id="res-qa-term-map" placeholder="标准检索词, 如:RB 螺纹钢" style="min-width:160px">
+            <button class="btn btn-outline" onclick="App.addQaTerm()">➕ 录入词典</button>
+          </div>
+          <div id="res-qa-terms" style="display:flex;flex-direction:column;gap:4px;color:var(--text-muted)"></div>
+        </div>
+      </div>
+    </details>
   </div>
 
   <!-- 研报每日总结卡片(全品种口径: 某天在库全部研报结论的 LLM 汇总, 落盘 md 随时调阅; 2026-09-09 调整为第二卡) -->
@@ -3025,7 +3042,8 @@ const App = {
       this.qaState = { sessionId: d.session.id, messages: d.messages.map(m => ({
         role: m.role === 'user' ? 'user' : 'agent',
         data: { ok: !m.error, answer: m.content, citations: m.citations || [],
-                retrieved: m.retrieved, error: m.error },
+                retrieved: m.retrieved, error: m.error,
+                message_id: m.id, feedback: m.feedback || '' },
       })) };
       // 会话筛选快照回填前端筛选器
       const s = d.session;
@@ -3086,8 +3104,10 @@ const App = {
       const d = await r.json();
       if (d.session_id) this.qaState.sessionId = d.session_id;
       pending.data = d.ok
-        ? { ok: true, answer: d.answer, citations: d.citations || [], retrieved: d.retrieved }
-        : { ok: false, error: d.error || '生成失败', citations: d.citations, retrieved: d.retrieved };
+        ? { ok: true, answer: d.answer, citations: d.citations || [], retrieved: d.retrieved,
+            message_id: d.message_id, feedback: '' }
+        : { ok: false, error: d.error || '生成失败', citations: d.citations, retrieved: d.retrieved,
+            message_id: d.message_id, feedback: '' };
     } catch (e) {
       pending.data = { ok: false, error: '网络错误: ' + e };
     }
@@ -3098,7 +3118,7 @@ const App = {
     this._loadQaSessions();  // 静默刷新会话下拉(新会话就地长出来)
   },
 
-  // 【渲染】#res-ask-hist:用户气泡右对齐,模型回答用 marked 渲染 + 可折叠引用列表
+  // 【渲染】#res-ask-hist:用户气泡右对齐,模型回答用 marked 渲染 + 可折叠引用列表 + 👍👎反馈
   _renderAskHistory() {
     const el = document.getElementById('res-ask-hist');
     if (!el) return;
@@ -3110,7 +3130,8 @@ const App = {
       }
       const d = h.data || {};
       if (!d.ok) {
-        return `<div style="max-width:95%;color:var(--text-muted);font-size:0.85rem">⚠️ ${d.error || '生成失败'}</div>`;
+        const fb = d.message_id ? this._qaFbBar(d.message_id, d.feedback) : '';
+        return `<div style="max-width:95%;color:var(--text-muted);font-size:0.85rem">⚠️ ${d.error || '生成失败'}${fb}</div>`;
       }
       const cites = (d.citations || []).map(c =>
         `<li value="${c.no}">[${c.no}] ${c.publish_date || '日期未知'} ${c.variety || ''} 《${c.title}》 相关度 ${(c.score * 100).toFixed(0)}% <a href="/api/research/${c.report_id}/file" target="_blank">原件</a></li>`
@@ -3118,9 +3139,113 @@ const App = {
       return `<div style="max-width:95%;border:1px solid var(--border,#e0e0e0);border-radius:10px;padding:10px 14px">
         <div class="report-content" style="font-size:0.88rem">${marked.parse(d.answer || '_空回答_')}</div>
         ${d.retrieved ? `<details style="margin-top:6px;font-size:0.8rem"><summary>引用来源(${d.retrieved} 片段)</summary><ol style="margin:6px 0 0 18px">${cites}</ol></details>` : ''}
+        ${this._qaFbBar(d.message_id, d.feedback)}
       </div>`;
     }).join('');
     el.scrollTop = el.scrollHeight;
+  },
+
+  // 【渲染】assistant 气泡尾部的 👍/👎 反馈条(已反馈固定高亮;未落库的轮次不渲染)
+  _qaFbBar(messageId, feedback) {
+    if (!messageId) return '';
+    const on = v => feedback === v ? 'opacity:1;font-weight:bold' : 'opacity:0.45;cursor:pointer';
+    return `<div style="margin-top:6px;font-size:0.85rem">
+      <span onclick="App.sendQaFeedback(${messageId},'up')" style="${on('up')}" title="回答有帮助">👍</span>
+      <span onclick="App.sendQaFeedback(${messageId},'down')" style="${on('down')}" title="回答不行(进错题本)">👎</span>
+    </div>`;
+  },
+
+  // 【功能】给 assistant 消息打 👍/👎(自进化 P0 反馈信号);本地更新后重渲染
+  // 【后端】POST /api/research/qa/feedback
+  async sendQaFeedback(messageId, fb) {
+    try {
+      const r = await fetch('/api/research/qa/feedback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_id: messageId, feedback: fb }),
+      });
+      const d = await r.json();
+      if (!d.ok) { alert(d.error || '反馈失败'); return; }
+      (this.qaState?.messages || []).forEach(m => {
+        if (m.data?.message_id === messageId) m.data.feedback = fb;
+      });
+      this._renderAskHistory();
+    } catch (e) { alert('反馈失败: ' + e); }
+  },
+
+  // ── 自进化面板(2026-09-14):错题本 + 黑话词典 ──
+  // 【功能】错题本:反馈统计 + 失败轮列表(👎/0命中/出错自动浮出);词典:CRUD 同面板
+  // 【后端】GET /api/research/qa/insights + /api/research/qa/terms
+  async loadQaInsights() {
+    const statsEl = document.getElementById('res-qa-stats');
+    const failEl = document.getElementById('res-qa-failures');
+    const termsEl = document.getElementById('res-qa-terms');
+    if (!statsEl || !failEl) return;
+    try {
+      const r = await fetch('/api/research/qa/insights');
+      const d = await r.json();
+      const s = d.stats || {};
+      statsEl.innerHTML = `<span>👍 ${s.up || 0}</span><span>👎 ${s.down || 0}</span>` +
+        `<span>0命中 ${s.zero_hit || 0}</span><span>失败 ${s.failed || 0}</span>` +
+        `<span style="color:var(--text-muted)">(失败轮 = 点踩 / 检索空转 / 报错, 按时间倒序)</span>`;
+      const fails = d.failures || [];
+      failEl.innerHTML = fails.length ? fails.map(f => `<div style="border:1px solid var(--border,#e0e0e0);border-radius:8px;padding:8px 10px">
+        <div style="font-size:0.88rem">❓ ${f.question}</div>
+        <div style="color:var(--text-muted);font-size:0.78rem;margin-top:4px">
+          ${f.feedback === 'down' ? '👎 ' : ''}片段:${f.retrieved || 0}${f.error ? ' · ⚠️ ' + f.error : ''}${f.rewritten_query ? ' · 检索词:' + f.rewritten_query : ''} · ${f.created_at || ''}
+        </div>
+        ${f.answer ? `<details style="margin-top:4px;font-size:0.8rem"><summary>回答摘要</summary>${f.answer}</details>` : ''}
+        <button class="btn btn-outline" style="margin-top:6px;font-size:0.78rem" onclick="App.prefillQaTerm(${JSON.stringify(f.question).replace(/"/g, '&quot;')})">➕ 录入词典</button>
+      </div>`).join('') : '<div style="color:var(--text-muted)">暂无失败轮 —— 系统还在"无错可记"状态; 点踩或检索空转后会在这里浮出。</div>';
+    } catch (e) {
+      if (failEl) failEl.innerHTML = '错题本拉取失败: ' + e;
+    }
+    // 词典列表与错题本一起刷新(同一面板)
+    try {
+      const r2 = await fetch('/api/research/qa/terms');
+      const d2 = await r2.json();
+      const terms = d2.terms || [];
+      if (termsEl) termsEl.innerHTML = terms.length ? terms.map(t =>
+        `<div style="display:flex;gap:10px;align-items:center">
+          <span style="flex:1">${t.term} → ${t.mapping} <span style="opacity:0.6">(命中 ${t.hits} 次)</span></span>
+          <button class="btn btn-outline" style="font-size:0.78rem" onclick="App.deleteQaTerm(${t.id})">🗑</button>
+        </div>`).join('') : '<div>词典为空 —— 从错题本或下方录入口语词。</div>';
+    } catch (e) { /* 词典拉取失败不影响错题本 */ }
+  },
+
+  // 【功能】"录入词典"一键预填:把失败轮的提问填进口语词输入框(mapping 需人工提炼)
+  prefillQaTerm(question) {
+    const t = document.getElementById('res-qa-term');
+    if (t) t.value = question;
+    const m = document.getElementById('res-qa-term-map');
+    if (m) { m.value = ''; m.focus(); }
+    t?.scrollIntoView({ block: 'center' });
+  },
+
+  // 【功能】添加词典条目(term 已存在视为改映射);成功后刷新面板
+  // 【后端】POST /api/research/qa/terms
+  async addQaTerm() {
+    const term = (document.getElementById('res-qa-term')?.value || '').trim();
+    const mapping = (document.getElementById('res-qa-term-map')?.value || '').trim();
+    if (!term || !mapping) { alert('口语词与标准检索词都要填'); return; }
+    try {
+      const r = await fetch('/api/research/qa/terms', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ term, mapping }),
+      });
+      const d = await r.json();
+      if (!d.ok) { alert(d.error || '录入失败'); return; }
+      document.getElementById('res-qa-term').value = '';
+      document.getElementById('res-qa-term-map').value = '';
+      this.loadQaInsights();
+    } catch (e) { alert('录入失败: ' + e); }
+  },
+
+  // 【功能】删除词典条目
+  // 【后端】DELETE /api/research/qa/terms/<id>
+  async deleteQaTerm(id) {
+    if (!confirm('删除该词条?')) return;
+    try { await fetch(`/api/research/qa/terms/${id}`, { method: 'DELETE' }); } catch (e) {}
+    this.loadQaInsights();
   },
 
   // ── 研报每日/周报总结 ──
