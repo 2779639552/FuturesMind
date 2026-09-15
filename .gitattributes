@@ -1,0 +1,5 @@
+# 语言统计修正:以下文件是第三方 vendored 库 / 平台逆向产物,不代表项目语言构成
+# (不加标记时 ~20MB 混淆 JS 会让仓库被误判为 JavaScript 项目)
+data_collection/Spider_XHS/static/*.js linguist-vendored
+static/echarts.min.js linguist-vendored
+static/marked.min.js linguist-vendored
