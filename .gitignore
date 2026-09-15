@@ -258,5 +258,8 @@ FuturesMind Web.lnk
 data/*.db
 _web_err.log
 
+# 微信 Bot 运行态(openid→会话映射, 含用户 openid, 不进 git)
+data/wechat_bot_state.json
+
 # 研报批量重跑前的磁盘备份(DB+聚合JSON, 不进 git)
 backup/
