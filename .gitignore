@@ -263,3 +263,11 @@ data/wechat_bot_state.json
 
 # 研报批量重跑前的磁盘备份(DB+聚合JSON, 不进 git)
 backup/
+
+# ---- 2026-09-15 仓库整理: 运行态/内部日志不进 git ----
+/data/
+/worklog/
+/work-journal.md
+*.log
+.pytest_cache/
+.ruff_cache/
