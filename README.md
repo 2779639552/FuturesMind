@@ -24,7 +24,7 @@
 
 **FuturesMind** is a multi-agent LLM framework that adapts the [TradingAgents](https://github.com/TauricResearch/TradingAgents) architecture for **Chinese commodity futures markets**, fusing traditional quantitative analysis with **real-time social media sentiment** from Weibo, Zhihu, Xueqiu, and Xiaohongshu.
 
-> ⚡ 11 specialized agents collaborate in a structured debate to produce market analysis reports — covering 21 commodity varieties across ferrous metals, non-ferrous metals, energy/chemicals, and agricultural products.
+> ⚡ 11 specialized agents collaborate in a structured debate to produce market analysis reports — covering 20 actively-tracked commodity varieties (62-variety metadata registry) across energy, chemicals, and agricultural sectors. A built-in **RAG knowledge base over 14,000+ broker research reports** supports multi-turn Q&A, reachable from both the web dashboard and a **WeChat bot**.
 
 ### Why FuturesMind?
 
@@ -148,16 +148,32 @@ venv\Scripts\python commodity_demo.py RB 2026-08-02   # Rebar
 - **Backtest Panel**: Platform weight charts, variety rankings, KPI cards
 - **Report Archive**: 20+ historical analysis reports with prediction-vs-actual comparison
 
+### 📚 Research Report RAG
+- **3 Report Sources**: Huatai Futures, Guotai Junan, Orient Futures — 14,000+ reports auto-collected & archived
+- **Layout-Aware PDF Parsing**: Cluster-based table/figure extraction (32 image-only PDFs identified & tracked)
+- **Multi-Turn QA**: Session persistence, LLM query rewriting from conversation context, date filtering
+- **Self-Evolution Loop**: 👍/👎 feedback signals → mistake notebook (failed turns resurface) → slang dictionary (colloquial → retrieval terms)
+- **Per-Variety Summaries**: Auto-generated research digests with source-report cross-references
+
+### 📱 WeChat QA Bot
+- **Standalone Service**: Flask + Waitress on port 5001 — talks to the QA API, never touches the DB directly
+- **5-Second Dual-Stage Reply**: Signature ACK + async customer-service message push (long answers chunked by UTF-8 bytes)
+- **Per-User Sessions**: openid → session mapping, allowlist, 👍/👎 bridged to the QA feedback API
+
 ---
 
-## 📦 Supported Commodities (21 Varieties)
+## 📦 Supported Commodities (20 Active Varieties)
+
+Active analysis pool — energy, chemicals & agriculture (SHFE / INE / DCE / CZCE / GFEX):
 
 | Sector | Varieties |
 |--------|-----------|
-| 🏗 Ferrous Metals | RB (Rebar), I (Iron Ore), HC (HRC), JM (Coking Coal), J (Coke), SM (Mn-Si), SF (Si-Fe) |
-| 🔩 Non-Ferrous | CU (Copper), AL (Aluminum), ZN (Zinc), NI (Nickel), PB (Lead), SN (Tin), AU (Gold), AG (Silver) |
-| ⚡ Energy/Chemical | FG (Glass), SA (Soda Ash), UR (Urea), PF (Polyester Staple), MA (Methanol), TA (PTA) |
-| 🌾 Agricultural | M (Soybean Meal), CF (Cotton), SR (Sugar), OI (Rapeseed Oil), RM (Rapeseed Meal), AP (Apple), PK (Peanut) |
+| ⛽ Energy | SC (Crude Oil), FU (Fuel Oil), LU (Low-Sulfur Fuel Oil), BU (Asphalt), PG (LPG) |
+| 🧪 Aromatics & Polyester | TA (PTA), PX (Paraxylene), EG (Ethylene Glycol), EB (Styrene), BZ (Pure Benzene) |
+| 🧴 Resins, Rubber & Silicon | PS (Polystyrene), SI (Industrial Silicon), RU (Natural Rubber), NR (20G Rubber), BR (Butadiene Rubber) |
+| 🌾 Agriculture | M (Soybean Meal), CF (Cotton), CJ (Dried Jujube), LH (Live Hog) |
+
+> A 62-variety metadata registry (ferrous, non-ferrous, precious metals included) is retained in code — filtered from the UI, never deleted.
 
 ---
 
@@ -166,7 +182,9 @@ venv\Scripts\python commodity_demo.py RB 2026-08-02   # Rebar
 | Metric | Value |
 |--------|:----:|
 | Data Collected | **8,966 posts** (2026) |
-| Varieties Covered | **21** (with real-time pricing) |
+| Varieties Covered | **20 active** (62-variety registry) |
+| Research Reports Indexed | **14,000+** (3 broker sources) |
+| Test Suite | **1,363 tests** passing |
 | Backtest Accuracy | **52.5%** (author-weighted) |
 | Best Platform Weight | Xueqiu 0.278 |
 | Strategies | **7** implemented |
