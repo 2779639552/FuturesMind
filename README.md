@@ -170,7 +170,7 @@ Active analysis pool — energy, chemicals & agriculture (SHFE / INE / DCE / CZC
 |--------|-----------|
 | ⛽ Energy | SC (Crude Oil), FU (Fuel Oil), LU (Low-Sulfur Fuel Oil), BU (Asphalt), PG (LPG) |
 | 🧪 Aromatics & Polyester | TA (PTA), PX (Paraxylene), EG (Ethylene Glycol), EB (Styrene), BZ (Pure Benzene) |
-| 🧴 Resins, Rubber & Silicon | PS (Polystyrene), SI (Industrial Silicon), RU (Natural Rubber), NR (20G Rubber), BR (Butadiene Rubber) |
+| 🧴 Silicon & Rubber | PS (Polysilicon), SI (Industrial Silicon), RU (Natural Rubber), NR (20G Rubber), BR (Butadiene Rubber) |
 | 🌾 Agriculture | M (Soybean Meal), CF (Cotton), CJ (Dried Jujube), LH (Live Hog) |
 
 > A 62-variety metadata registry (ferrous, non-ferrous, precious metals included) is retained in code — filtered from the UI, never deleted.
