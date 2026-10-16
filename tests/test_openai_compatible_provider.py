@@ -24,8 +24,32 @@ def test_factory_routes_to_openai_client():
 
 
 @pytest.mark.unit
-def test_base_url_required(monkeypatch):
+def test_base_url_required(monkeypatch, tmp_path):
+    """未给 base_url 时 openai_compatible 必须报错。
+
+    【2026-09-30 自洽性修复】原用例只 delenv 掉 API key 就断言抛错,但 ``factory.
+    create_llm_client`` 有个**兜底** ``_resolve_config_base_url()``:调用点没传
+    base_url 时,它会从全局配置的 ``backend_url`` 取。于是只要运行环境(如本机 .env
+    的 ``TRADINGAGENTS_LLM_BACKEND_URL=https://ai.ctaigw.cn/v1``)配了该值,就
+    **不会抛错 → 用例假红**;而它此前在**全量会话里能过**,只是因为前面某个用例把
+    配置弄脏成了 ``backend_url=None``(顺序污染),纯属巧合。
+
+    【为什么不能删兜底】兜底是应用必需的:``web_app.py`` 里 12 个
+    ``create_llm_client(provider, model)`` 调用点都不传 base_url,本机正是靠它才能
+    正常起 LLM。所以这里改为**把兜底来源显式清空**(清 DEFAULT_CONFIG 与全局配置里的
+    backend_url),让"没有地址 ⇒ 必须报错"这个语义在干净环境下也成立。
+    """
+    import tradingagents.dataflows.config as config_module
+    import tradingagents.default_config as default_config
+
     monkeypatch.delenv("OPENAI_COMPATIBLE_API_KEY", raising=False)
+    monkeypatch.delenv("TRADINGAGENTS_LLM_BACKEND_URL", raising=False)
+    # 兜底读的是全局配置(可能已由 .env 或前序用例填上),两处都清掉才是"真的没有地址"。
+    monkeypatch.setitem(default_config.DEFAULT_CONFIG, "backend_url", None)
+    glob = dict(config_module.get_config())
+    glob["backend_url"] = None
+    config_module.set_config(glob)
+
     with pytest.raises(ValueError, match="requires a base_url"):
         create_llm_client(provider="openai_compatible", model="m").get_llm()
 

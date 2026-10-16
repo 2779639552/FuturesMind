@@ -28,6 +28,7 @@ needs_detail_fetch=True：搜索只返回摘要(note_card 基础信息)，详情
 
 import logging  # 【调用包】日志记录(API 初始化/搜索/详情)
 import os  # 【调用包】chdir 切到引擎目录/getcwd 记录原目录
+import re  # 【调用包】正则识别引擎返回的"登录已过期"类文案
 import sys  # 【调用包】把 Spider_XHS 引擎目录临时加入 sys.path
 from pathlib import Path  # 【调用包】引擎目录路径构建
 from typing import Any  # 【调用包】类型注解(API 实例等)
@@ -37,7 +38,32 @@ from .base import CredentialError, PlatformAdapter  # 【调用包】基类接�
 logger = logging.getLogger("platforms.xhs")
 
 # Spider_XHS 路径
-SPIDER_XHS_PATH = str(Path(__file__).parent.parent.parent / "Spider_XHS")  # 【变量】Spider_XHS 签名引擎目录(含 .env 与 static/)
+# 【2026-10-12 修正】原先指向 data_collection/Spider_XHS —— 该拷贝**缺 node_modules**
+# （签名引擎报 "Cannot find module 'crypto-js'" → 搜索必空）且 .env 是 9-15 的旧 cookie。
+# 真正在用的引擎是 D:\AgentSense\思路2\Spider_XHS：node_modules 齐全，且 auto_login.py /
+# xhs_login_terminal.py 登录后就是把 cookie 写进它的 .env —— 指向它后"登录写入"与
+# "适配器读取"天然一致，不会出现两边 .env 分叉。
+SPIDER_XHS_PATH = r"D:\AgentSense\思路2\Spider_XHS"  # 【变量】Spider_XHS 签名引擎目录(含 .env / node_modules / static/)
+
+# 【常量 2026-09-15】签名引擎把"登录态失效"和"关键词没内容"都归成 success=False,
+# 只在 msg 里用中文区分。需要集中识别,才能把 Cookie 过期翻译成 CredentialError ——
+# 否则采集器把它当"平台无内容",报表写成"接口变更/反爬拦截",排障方向被带偏。
+_LOGIN_EXPIRED_PAT = re.compile(
+    r"登录已过期|登录过期|登录失效|登录态失效|未登录|请先登录|重新登录"
+    r"|无登录信息|登录信息为空|登录态为空"  # 实测文案:新 cookie 缺 web_session 时引擎返回这句
+    r"|login\s*(?:has\s*)?expired|not\s*log(?:ged)?\s*in|login\s*required",
+    re.IGNORECASE,
+)
+
+
+def _is_login_expired(msg: Any) -> bool:
+    """判断签名引擎返回的消息是否属于"登录态失效"。
+
+    【功能】对引擎返回的 msg 做登录类关键词匹配。
+    【参数】msg: search_some_note / get_note_info 返回的消息(任意类型,内部转字符串)。
+    【返回】命中登录失效文案返回 True,否则 False。
+    """
+    return bool(_LOGIN_EXPIRED_PAT.search(str(msg or "")))
 
 
 def _extract_image_urls(image_list: list) -> list[str]:
@@ -115,8 +141,38 @@ class XHSAdapter(PlatformAdapter):
 
         except CredentialError:
             raise  # 凭证类错误原样抛出，不包裹
+        except ImportError as e:
+            # 【关键 2026-09-15】依赖缺失 ≠ 凭证失效。旧代码把**任何**初始化异常都转成
+            # CredentialError,于是 `No module named 'execjs'` 被报成"平台初始化失败
+            # (凭证缺失/失效)",fix_hint 还教用户"检查小红书登录状态并重新登录" —— 把人
+            # 往完全错的方向带(重新登录一百次也装不上那个包)。这里改为上抛 RuntimeError:
+            # main() 会写成"致命异常"报告并以 EXIT_ERROR(5) 退出,而不是假的 auth_failed(3)。
+            # 【二次修正 2026-09-15】初版把提示写死成 "pip install PyExecJS",结果换成
+            # loguru 缺失时又给出错误指引 —— 改为按实际缺失模块名映射出对应 pip 包名。
+            _PIP_FOR = {
+                "execjs": "PyExecJS(另需 Node.js 运行时)",
+                "loguru": "loguru",
+                "retry": "retry",
+                "cv2": "opencv-python",
+                "qrcode": "qrcode",
+                "dotenv": "python-dotenv",
+                "aiohttp": "aiohttp",
+                "openpyxl": "openpyxl",
+                "numpy": "numpy",
+                "requests": "requests",
+            }
+            _mod = getattr(e, "name", "") or ""
+            _pip = _PIP_FOR.get(_mod, _mod)
+            raise RuntimeError(
+                f"小红书适配器依赖缺失: 缺少模块 {_mod or '(未知)'}({e})\n"
+                f"请安装: pip install {_pip}\n"
+                "完整依赖清单: Spider_XHS/requirements.txt。"
+                "注意: main 项目 requirements.txt 里 `# PyExecJS>=1.5.1` 一直是注释状态,"
+                "从未真正装上,是这一系列「能跑但 0 条」的根因。"
+            ) from e
         except Exception as e:
-            # 其他初始化失败统一转成 CredentialError，并提示检查 .env
+            # 其余初始化失败仍按凭证处理(Spider_XHS 多数失败确实是 Cookie 问题),
+            # 保留原文案以免打乱既有排障习惯。
             raise CredentialError(
                 f"Failed to init Spider_XHS: {e}\nEnsure Spider_XHS/.env has valid COOKIES."
             ) from e
@@ -152,6 +208,19 @@ class XHSAdapter(PlatformAdapter):
         success, msg, items = self._api.search_some_note(keyword, count + 5, self._cookies_str)  # 【调用函数】委托签名引擎搜索(多取5条留过滤余量)
 
         if not success or not isinstance(items, list):
+            # 【关键 2026-09-15】引擎遇到登录态失效时**不抛异常**,只返回
+            # (False, '登录已过期', [])。旧代码一律当"没搜到内容"warning 吞掉 →
+            # 采集器报 error_class=empty / auth_failures=0,报表写成
+            # "blocked: 接口变更、反爬拦截或网络",而真相是 Cookie 过期、重新登录即可。
+            # 现按知乎适配器的同款范式,把登录类失败翻译成 CredentialError,
+            # 交 batch_collect 记入 auth_failures 并以 need_login(退出码 3)收尾。
+            if _is_login_expired(msg):
+                raise CredentialError(
+                    f"小红书登录态已失效(Cookie 过期): {msg}\n"
+                    "请重新登录: 在 Spider_XHS 目录运行 python auto_login.py,"
+                    "用小红书 App 扫码,新 Cookie 会自动写入 Spider_XHS/.env,"
+                    "然后重新采集即可。"
+                )
             logger.warning(f"XHS search '{keyword}' returned no results: {msg}")
             return []
 

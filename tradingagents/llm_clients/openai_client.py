@@ -193,6 +193,8 @@ _PASSTHROUGH_KWARGS = (
     "callbacks",
     "http_client",
     "http_async_client",
+    "no_thinking",  # 【2026-09-22】DeepSeek V4 非思考模式开关: 请求体注入 thinking:disabled,
+    #                 跳过推理链直出正文(研报问答首字 4.1s→0.7s)。仅 DeepSeekChatOpenAI 透传。
 )
 
 # OpenAI's ``reasoning_effort`` is only accepted by reasoning models — the GPT-5
@@ -383,10 +385,18 @@ class OpenAIClient(BaseLLMClient):
             llm_kwargs["base_url"] = self.base_url
 
         # Forward user-provided kwargs
+        no_thinking = False  # 【2026-09-22】关思考链开关: 仅 DeepSeek 子类消费, 经 extra_body 进请求体
         for key in _PASSTHROUGH_KWARGS:
             if key not in self.kwargs:
                 continue
             if key == "reasoning_effort" and not _supports_reasoning_effort(self.model):
+                continue
+            if key == "no_thinking":
+                # 【2026-10-13 修】原先这里也判 `chat_cls is DeepSeekChatOpenAI`，于是
+                #   通用 provider(openai_compatible)指向 DeepSeek 端点时**连值都取不到**，
+                #   下方再放宽判据也没用 —— 同一个开关**有两处** provider 判断，只改一处 = 没改。
+                #   现在这里只负责"把值记下来"，是否注入统一由下面的「端点方言」判据决定。
+                no_thinking = bool(self.kwargs[key])
                 continue
             llm_kwargs[key] = self.kwargs[key]
 
@@ -398,6 +408,30 @@ class OpenAIClient(BaseLLMClient):
         llm_kwargs.setdefault("max_retries", 2)
 
         # The subclass (provider quirks) comes from the registry spec.
+        #
+        # 【2026-10-13 修】原判据 `chat_cls is DeepSeekChatOpenAI` 会**漏掉一种常见配法**：
+        #   provider=openai_compatible + base_url=https://api.deepseek.com（项目当前就是这个）
+        #   ⇒ chat_cls 是 LocalCompatibleChatOpenAI，条件不成立 ⇒ no_thinking 被**静默丢弃**。
+        #   实测代价（外文研报翻译，1043 字符块）：completion_tokens=4721 里 reasoning=4529，
+        #   单块 44.9s；关掉后 1.6s（28x）。更糟的是思考 token **挤占输出预算**：
+        #   6 块对拍中，开着思考时有 1 块译文中途截断（4 个含页脚标志的块只译完 3 个），
+        #   关掉后 4/4 全译完 —— 所以这不是"牺牲质量换速度"，而是**又慢又漏**。
+        #
+        # 判据改为「**最终生效地址是否 DeepSeek 方言**」而不是 provider 名，这样：
+        #   · provider=deepseek / doubao（chat_class 本就是 DeepSeek 子类）→ 照旧注入
+        #   · provider=openai_compatible 但指向 deepseek 域名   → 现在也能注入（本次修复）
+        #   · provider=openai / 本地 vLLM / Ollama             → 仍**不**注入
+        #     （tests/test_llm_no_thinking.py 明确要求不得透传给非 DeepSeek 客户端）
+        # 取 llm_kwargs["base_url"]（而非局部变量 base_url）是因为它才是最终要用的地址：
+        # spec 为 None 时局部 base_url 根本未定义，读它会 NameError。
+        _endpoint = str(llm_kwargs.get("base_url") or "").lower()
+        _is_deepseek_dialect = chat_cls is DeepSeekChatOpenAI or "deepseek" in _endpoint
+        if no_thinking and _is_deepseek_dialect:
+            # 【2026-09-22】方舟/DeepSeek 端点认 thinking:disabled(跳过推理链直出正文)。
+            # 经 ChatOpenAI 的 extra_body 字段: openai SDK 校验顶层参数, 未知键直接抛
+            # TypeError(与 MiniMax reasoning_split 同款坑 #826); extra_body 是合法
+            # 字段, SDK 会 merge 到请求体顶层。
+            llm_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         return chat_cls(**llm_kwargs)  # 【调用函数】按注册表中的子类构造最终的 LLM 实例
 
     def validate_model(self) -> bool:

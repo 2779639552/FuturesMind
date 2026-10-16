@@ -178,6 +178,13 @@ class PlatformAdapter(ABC):
         classify_error()    — 异常分类，供限流退避决策 (默认 'other')
         close()             — 释放浏览器/会话等资源 (默认空操作)
 
+    【降级上报】(2026-09-18 新增，无需覆盖，各适配器直接调用)
+        note_degradation()  — 登记"采集仍可用、但已在降级"的证据
+                              (如登录态失效导致每关键词只能取到第 1 页)
+        degradations        — 读取本次采集登记到的降级列表，由 BatchCollector 写进运行报告
+        ⚠️ 降级与 status 正交：降级**不改** status，也不改退出码——采集确实拿到了数据，
+           只是少采了。把两者混在一起会让"拿到了 106 条却报失败"自相矛盾。
+
     【类属性约定】(子类必须给赋值)
         name         内部标识: "xhs" | "weibo" | "zhihu" | "xueqiu"
         display_name 展示名:  "小红书" | "微博" | "知乎" | "雪球"
@@ -276,6 +283,75 @@ class PlatformAdapter(ABC):
         - 'other':      其他错误，按普通错误处理
         """
         return "other"
+
+    # ============================================================
+    # 降级信号（2026-09-18 新增）
+    # ============================================================
+
+    def note_degradation(
+        self,
+        code: str,
+        message: str,
+        impact: str = "",
+        fix_hint: str = "",
+        severity: str = "warning",
+    ) -> None:
+        """登记一条「采集仍然可用、但已在降级」的证据。
+
+        【功能】把"自检/实测发现了问题，但采集并没有失败"这类中间状态记下来，
+                随运行报告一起落盘，让页面与告警都能看见。
+        【参数】
+            code:     降级码（稳定标识；同一 code 再次上报只累加 count，不重复入列）
+            message:  人话——发现了什么，尽量带上接口返回的原始信号做现场证据
+            impact:   人话——少采了多少 / 什么能力受影响
+            fix_hint: 人话——下一步怎么修
+            severity: "info" | "warning"
+        【返回】None（**绝不抛错**：登记降级失败不能反过来搞崩采集）
+        【关键逻辑】
+        ⚠️ **为什么降级必须是正交通道，而不是把 status 改成 auth_failed**：
+            像"微博游客态"这种故障，采集**依然是成功的**——第 1 页匿名可取约 8 条，
+            只是产量被压到档位上限的一小部分。此前该自检只打了一行 logger.warning，
+            运行报告里 status=ok、auth_failures=0，页面上完全看不出异常，实测连续
+            几十轮无人发现。但把 status 直接改成 auth_failed 又会与"确实拿到了数据"
+            自相矛盾（报告里 notes=106 却报失败），并会把整平台误判为"颗粒无收"。
+            所以：status 语义**原样不动**，另开 degraded 通道表达"能跑，但少采了"。
+
+        ⚠️ 本方法不要求子类调用 super().__init__()——内部用懒初始化，因为现有各适配器
+        的 __init__ 都是自行编写的，没有一个统一的父类构造调用点可依赖。
+        """
+        if not code:
+            return
+        try:
+            bag = self.__dict__.get("_degradations")
+            if bag is None:
+                bag = []
+                self.__dict__["_degradations"] = bag
+            for item in bag:
+                if item.get("code") == code:
+                    item["count"] = int(item.get("count") or 1) + 1
+                    return  # 同类降级只留首条现场（它最接近最初出问题的时刻），次数累加
+            bag.append(
+                {
+                    "code": code,
+                    "message": message,
+                    "impact": impact,
+                    "fix_hint": fix_hint,
+                    "severity": severity or "warning",
+                    "count": 1,
+                }
+            )
+        except Exception:  # noqa: BLE001 - 登记降级绝不能影响采集主流程
+            pass
+
+    @property
+    def degradations(self) -> list[dict]:
+        """本次采集中登记到的全部降级（从未登记则返回空列表）。
+
+        【返回】list[dict]：每项含 code / message / impact / fix_hint / severity / count。
+        【关键逻辑】返回的是**列表的浅拷贝**（调用方 append 不会污染适配器内部状态），
+        列表内的 dict 仍是同一对象引用——调用方只读即可。
+        """
+        return list(self.__dict__.get("_degradations") or [])
 
     def close(self) -> None:  # noqa: B027  intentional no-op default for adapters without resources
         """释放资源（关闭浏览器/Session）。默认无操作，子类按需覆盖。

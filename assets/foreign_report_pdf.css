@@ -1,0 +1,193 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   外文研报 · 中文编译稿 版式
+   2026-10-14 改版：A4 单列 → 横版 PPT(16:9, 338.67×190.5mm) 两列
+   视觉参照「期货市场多维度研判」汇报版式：深蓝主色 + 红绿信号色 + 极淡底
+   —— 类名与 HTML 组装代码一一对应，本文件只负责视觉，不改结构。
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+*{margin:0;padding:0;box-sizing:border-box}
+
+:root{
+  /* 深蓝主色阶 */
+  --navy:#0e2a47; --navy2:#1b4571; --blue:#1a4b8c; --blue-l:#002fa7;
+  --blue-t:rgba(14,42,71,.055); --blue-t2:rgba(14,42,71,.022);
+  /* 信号色：中式口径 —— 涨/多=红，跌/空=绿 */
+  --red:#c0392b;   --red-t:rgba(192,57,43,.085);
+  --green:#1a7f4b; --green-t:rgba(26,127,75,.085);
+  --amber:#b45309; --amber-t:rgba(217,119,6,.10);
+  /* 中性 */
+  --line:#e3e8ef; --line2:#d2d9e3;
+  --tx:#0f2544; --tx2:#3c4a5e; --tx3:#6b7788; --tx-body:#1f2c3f;
+  --bg:#fff; --soft:#f6f8fb;
+  --sans:"Inter Tight","PingFang SC","Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif;
+  --serif:"Songti SC","Source Han Serif SC","SimSun",serif;
+}
+
+html,body{background:var(--bg);font-family:var(--sans);color:var(--tx-body);
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+/* 横版每页只有 190.5mm 高 ⇒ 行高与字号整体收紧，否则一页装不下两列 */
+/* ★ 两列版式的落点必须在 body（2026-10-14 实测修正）
+   先试过 `.pg{padding 之外开 column-count:2}`：`.pg` 高度是 auto，而
+   `column-fill:auto` **只在容器高度确定时才分列填充** ⇒ 退化成"内容全堆第一列、
+   右列整列空白"（实测第 2 页右列全空）。设在 body 上，body 的高度由分页决定，
+   列填充才成立，整个文档成为连续两列流、由浏览器自动分页。 */
+body{font-size:9.3pt;line-height:1.60;column-count:2;column-gap:6.6mm;
+  column-fill:auto}
+
+/* ═══════════════════ 顶部色块（取代原来的整页封面） ═══════════════════
+   【为什么不再整页】用户明确要求：封面不要占满一页，只在第一页最上面放一个色块。
+   高度改用 auto（内容撑开），并 break-after:avoid 防止色块与正文被拆到两页。 */
+.cover{
+  background-color:var(--navy);
+  background-image:
+    radial-gradient(circle at 92% 0%, rgba(90,160,255,.20), transparent 46%),
+    linear-gradient(108deg, #0a1e33 0%, var(--navy) 46%, var(--navy2) 100%);
+  color:#fff;border-radius:3mm;padding:4.6mm 6.4mm 3.8mm;
+  margin-bottom:3.8mm;break-after:avoid;break-inside:avoid;position:relative;
+  overflow:hidden;column-span:all}
+.cover .brand{display:flex;align-items:center;gap:8px;font-size:6.8pt;
+  letter-spacing:2.2px;color:rgba(255,255,255,.58);font-weight:500}
+.cover .brand img{height:22px;filter:brightness(0) invert(1) opacity(.80)}
+.cover .conf{margin-left:auto;font-size:6.4pt;letter-spacing:1px;
+  border:1px solid rgba(255,255,255,.34);border-radius:2.2px;padding:1px 6px;
+  color:rgba(255,255,255,.82);font-weight:600}
+.cover h1{margin-top:2.8mm;font-size:16.6pt;font-weight:800;letter-spacing:.2px;
+  line-height:1.20;max-width:305mm}
+.cover h1 em{font-style:normal;display:block;font-size:7pt;font-weight:600;
+  letter-spacing:2.4px;color:rgba(255,255,255,.60);margin-bottom:1.6mm}
+.cover .sub{margin-top:2.2mm;font-size:8.4pt;line-height:1.54;
+  color:rgba(255,255,255,.90);font-weight:500}
+.cover .sub b{color:#fff;font-weight:700;border-bottom:1.6px solid rgba(120,190,255,.60);
+  padding-bottom:.5px}
+/* 横版下元信息改为 4 列（原来是 2 列，占太高） */
+.cover .meta{margin-top:2.4mm;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:1px 9px;font-size:7pt;color:rgba(255,255,255,.78);
+  border-top:1px solid rgba(255,255,255,.14);padding-top:2.2mm}
+.cover .meta i{font-style:normal;color:rgba(255,255,255,.48);display:block;
+  font-size:6.2pt;letter-spacing:.3px;margin-bottom:.3mm}
+.cover .foot{margin-top:2.2mm;display:flex;justify-content:space-between;
+  align-items:flex-end;font-size:6.4pt;color:rgba(255,255,255,.50)}
+
+/* ═══════════════════ 两列版式（正文主体） ═══════════════════
+   【为什么用 column-count】杂志式两列是横版汇报稿的常规解法：内容自动在列间
+   流动，且超出页高时自动换页。节标题用 column-span:all 横跨两列。
+   ⚠ 不要在 body 上开多列 —— 那样各节的 break-before:page 会与列流打架。 */
+.pg{break-before:auto}
+/* 【2026-10-14】全文连续两列（.pg 不再 break-before:page）。
+   原因：横版每页仅 190.5mm 高，"每节另起一页"会把大量空间浪费在半空列上
+   （实测第 1 页右列整列空白）。改为连续流动后，节与节靠 h2.sec 横跨两列分隔。
+   .pg.run-in 保留作兼容（现已是默认行为）。 */
+.pg.run-in{break-before:auto}
+/* 打印分页时两列不要被从中间劈开 */
+@media print{ body{column-fill:auto} }
+
+/* ⚠️ 不要给 h2.sec 加 column-span:all（2026-10-14 实测）
+   多列上下文中，column-span:all 的元素会**强制结束当前多列行**并在其下重开新行；
+   在分页模式里这会造成「页内剩余高度不足以再开一个列行 ⇒ 整列空白」
+   （实测第 2 页右列全空）。参考图的板块标题本就是每列各有一个，
+   所以让节标题留在列内、全文保持**连续两列流**才是对的。 */
+h2.sec{display:flex;align-items:center;gap:9px;font-size:12.6pt;
+  font-weight:700;color:var(--tx);letter-spacing:.3px;margin:0 0 3mm;
+  padding-bottom:1.6mm;border-bottom:1.4px solid var(--line);
+  break-after:avoid;break-inside:avoid}
+h2.sec .no{flex:0 0 auto;background:var(--navy);color:#fff;font-size:8.4pt;
+  font-weight:700;letter-spacing:.6px;padding:2.4px 8px;border-radius:2.6px}
+h3.t{font-size:11pt;font-weight:700;color:var(--tx);margin:4.4mm 0 2.2mm;
+  line-height:1.44;letter-spacing:.2px;padding-left:8px;
+  border-left:3.2px solid var(--blue);break-after:avoid}
+h3.t:first-of-type{margin-top:0}
+h3.t span{color:var(--tx3);font-weight:600;font-size:9pt}
+h4.st{font-size:9.8pt;font-weight:700;color:var(--navy2);margin:3.4mm 0 1.2mm;
+  break-after:avoid}
+p{font-size:9.3pt;line-height:1.66;color:var(--tx-body);text-align:justify;
+  margin-bottom:2mm}
+p b{font-weight:700;color:var(--tx)}
+.lead{font-size:9.8pt;line-height:1.66;color:var(--tx2)}
+
+/* ── 长内容卡：左侧竖线 + 极淡横向渐变，允许跨列/跨页 ── */
+.card{border-left:3.4px solid var(--blue);padding-left:4.4mm;margin-bottom:4.2mm;
+  break-inside:auto;
+  background:linear-gradient(90deg,var(--blue-t) 0%,var(--blue-t2) 26%,rgba(0,0,0,0) 56%)}
+.card.key{border-left-color:var(--navy2)}
+.card.warn{border-left-color:var(--amber);
+  background:linear-gradient(90deg,var(--amber-t) 0%,rgba(217,119,6,.016) 26%,rgba(0,0,0,0) 56%)}
+.card .ch,.box .ch{display:flex;align-items:baseline;gap:7px;margin-bottom:1.8mm;
+  break-after:avoid}
+/* ── 短内容盒：整块不跨列/跨页 ── */
+.box{border:1px solid var(--line2);border-radius:6px;padding:3.6mm 4.2mm;
+  margin-bottom:3.4mm;break-inside:avoid;background:var(--soft)}
+.box.warn{border-left:3.4px solid var(--amber);
+  background:linear-gradient(90deg,var(--amber-t),var(--soft) 34%)}
+.card .ch .n,.box .ch .n{flex:0 0 auto;font-size:8.4pt;font-weight:700;
+  color:var(--blue);letter-spacing:.7px}
+.card.warn .ch .n,.box.warn .ch .n{color:var(--amber)}
+.card .ch h3,.box .ch h3{font-size:11pt;font-weight:700;color:var(--tx);line-height:1.40}
+.card ul,.box ul{margin:0;list-style:none}
+.card li,.box li{position:relative;padding-left:12px;font-size:9.1pt;line-height:1.62;
+  color:var(--tx-body);margin-bottom:1.2mm;text-align:justify;break-inside:avoid}
+.card li::before,.box li::before{content:"";position:absolute;left:2px;top:.66em;
+  width:4.4px;height:4.4px;border-radius:50%;background:var(--blue);opacity:.60}
+.card.warn li::before,.box.warn li::before{background:var(--amber)}
+.card li b,.box li b{font-weight:700;color:var(--tx)}
+
+/* ── 摘要数字卡：三栏（HTML 固定生成 3 张）── */
+.tldr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2.4mm;
+  margin-bottom:3.4mm;break-inside:avoid}
+.tldr .k{border:1px solid var(--line2);border-radius:6px;padding:2.8mm 2.8mm;
+  min-width:0;break-inside:avoid;background:linear-gradient(180deg,var(--blue-t),transparent 76%)}
+.tldr .k .kk{font-size:7.8pt;font-weight:700;letter-spacing:.9px;color:var(--navy2);
+  margin-bottom:1.4mm}
+.tldr .k .kv{font-size:12.4pt;font-weight:800;color:var(--tx);line-height:1.16;
+  letter-spacing:-.2px;overflow-wrap:anywhere}
+.tldr .k .kd{font-size:8pt;color:var(--tx3);margin-top:1mm;line-height:1.48}
+
+/* ── 表格 ── */
+table{width:100%;border-collapse:collapse;font-size:8.6pt;margin:0 0 3.4mm}
+thead{display:table-header-group}
+th,td{padding:1.8mm 2.2mm;border-bottom:1px solid var(--line);text-align:left;
+  vertical-align:top}
+thead th{background:var(--blue-t);color:var(--navy);font-weight:700;font-size:8.4pt;
+  letter-spacing:.3px;border-bottom:1.3px solid rgba(14,42,71,.28)}
+tbody tr:nth-child(even){background:var(--soft)}
+td.n{white-space:nowrap;font-weight:700;color:var(--tx)}
+td.k{color:var(--tx);font-weight:600}
+td.s{color:var(--tx3);font-size:8.2pt;line-height:1.54}
+tbody tr.hi td{background:var(--amber-t)}
+tbody tr.hi td.n{color:#8a4008}
+
+/* ── 条形 ── */
+.bar{position:relative;height:6px;border-radius:3px;background:#eceff4;overflow:hidden;
+  margin-top:1mm}
+.bar>i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--blue);
+  opacity:.80}
+.bar.old>i{background:var(--tx3);opacity:.42}
+
+/* ── 图 ── */
+.fig{margin:3mm 0;break-inside:avoid;text-align:center}
+.fig img{max-width:100%;border:1px solid var(--line2);border-radius:5px}
+.fig .cap{font-size:8pt;color:var(--tx3);margin-top:1.2mm;line-height:1.52}
+/* 双图并排：两列版式下宽度本就收窄，不再向右出血 */
+.fig-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3.4mm;
+  margin:3mm 0;break-inside:avoid}
+.fig-row .fig{margin:0}
+.fig-row .fig img{width:100%}
+.fig-row .fig .cap{text-align:left;font-size:7.8pt}
+
+/* ── 术语对照 ── */
+.gloss{display:grid;grid-template-columns:1fr;gap:1mm;margin:0 0 3.6mm;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:2.8mm 0}
+.gloss div{font-size:8.6pt;line-height:1.48;color:var(--tx2);break-inside:avoid}
+.gloss div b{color:var(--tx);font-weight:700;margin-right:5px}
+.gloss div i{font-style:normal;color:var(--tx2)}
+
+.foot-note{font-size:8.2pt;color:var(--tx3);line-height:1.58;
+  border-top:1px solid var(--line);padding-top:2mm;margin-top:3.6mm}
+
+/* ── 翻译正文 ── */
+.tr-src{font-size:8.2pt;color:var(--tx3);line-height:1.52;font-style:italic;
+  border-left:2.2px solid var(--line2);padding-left:7px;margin:-.6mm 0 2.2mm}
+.tr p{font-size:9.1pt;line-height:1.68}
+.tag{display:inline-block;font-size:7.6pt;font-weight:700;letter-spacing:.5px;
+  padding:1.2px 6px;border-radius:2.6px;background:var(--blue-t);color:var(--navy2);
+  margin-right:5px;vertical-align:1px}
+.tag.a{background:var(--amber-t);color:var(--amber)}

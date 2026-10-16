@@ -21,6 +21,15 @@ jieba>=0.42.1
 # --- 工具库 ---
 python-dateutil>=2.8.0
 
-# --- 可选: JS逆向 (生产环境) ---
-# PyExecJS>=1.5.1
-# nodejs-bin>=18.0.0  # 需要Node.js环境
+# --- JS逆向: 小红书 Spider_XHS 签名引擎 (**必需,不是可选**) ---
+# ⚠️ 2026-09-15 修正: 原先把 PyExecJS 标成"可选"并注释掉, 是小红书长期
+#    "能跑但 0 条" 的根因 —— 缺它时 xhs 适配器初始化直接失败, 却被上层
+#    误报成"登录凭证失效", 排障方向被带偏。
+PyExecJS>=1.5.1
+# PyExecJS 需要系统装 Node.js 作为 JS 运行时(本机已有 v22)
+
+# Spider_XHS 引擎自身声明的依赖 (见 Spider_XHS/requirements.txt), 同步一份以便一次装齐
+loguru>=0.7.0
+retry>=0.9.2
+opencv-python>=4.8.0
+qrcode>=7.4.0

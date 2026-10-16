@@ -207,15 +207,33 @@ VARIETY_KB = {
         "price_unit": "元/吨",
     },
     "工业硅": {
-        "aliases": ["工业硅", "SI", "多晶硅", "光伏硅"],
+        # 2026-09-18 拆品种: 原 aliases 含 "多晶硅", 导致多晶硅全被标成工业硅。
+        # 广期所 SI(工业硅) 与 PS(多晶硅) 是两个独立品种, 白名单里两者并存。
+        "aliases": ["工业硅", "SI", "光伏硅"],
         "exchange": "广期所",
         "sector": "有色金属",
         "contract_pattern": r"[Ss][Ii]\d{2,4}",
         "price_unit": "元/吨",
+        "related": ["多晶硅", "碳酸锂"],
+    },
+    "多晶硅": {
+        # 2026-09-18 新增: 原挂在 工业硅 名下(0% 标注率)。
+        # 标准名与下游品种元数据(PG/BR/BZ/PS)一致 => "多晶硅"。
+        # 刻意不加裸别名 "PS": 该缩写易与英文 postscript / 图片格式混淆,
+        # 合约识别交给 contract_pattern(要求尾部跟数字)。
+        "aliases": ["多晶硅", "硅料"],
+        "exchange": "广期所",
+        "sector": "有色金属",
+        "contract_pattern": r"[Pp][Ss]\d{2,4}",
+        "price_unit": "元/吨",
+        "related": ["工业硅", "碳酸锂"],
     },
     # ============ 能源化工 ============
     "原油": {
         "aliases": [
+            # 2026-09-18 补裸词: 标准名"原油"此前未入自己的别名表, 裸词全部漏标
+            # (实测标注率仅 41.7%, 只认 原油期货/油价/WTI/SC 等变体)
+            "原油",
             "原油期货",
             "SC",
             "WTI",
@@ -269,11 +287,24 @@ VARIETY_KB = {
         "price_unit": "元/吨",
     },
     "橡胶": {
-        "aliases": ["橡胶", "天然橡胶", "RU", "橡胶期货", "天胶", "合成橡胶", "BR"],
+        # 2026-09-18 摘出 "BR": 原把它当橡胶别名, 导致丁二烯橡胶(上期所 BR)
+        # 的帖子全被并入"橡胶"(0% 标注率)。BR 是独立上市品种。
+        "aliases": ["橡胶", "天然橡胶", "RU", "橡胶期货", "天胶", "合成橡胶"],
         "exchange": "上期所",
         "sector": "能源化工",
         "contract_pattern": r"[Rr][Uu]\d{2,4}",
         "price_unit": "元/吨",
+        "related": ["20号胶", "丁二烯橡胶"],
+    },
+    "丁二烯橡胶": {
+        # 2026-09-18 新增: 原文本含 "橡胶" 子串 => 全部被橡胶吞掉。
+        # 标准名对齐下游品种元数据(BR = 丁二烯橡胶)。
+        "aliases": ["丁二烯橡胶", "顺丁橡胶", "丁二烯", "BR"],
+        "exchange": "上期所",
+        "sector": "能源化工",
+        "contract_pattern": r"[Bb][Rr]\d{2,4}",
+        "price_unit": "元/吨",
+        "related": ["橡胶", "20号胶"],
     },
     "沥青": {
         "aliases": ["沥青", "BU", "石油沥青", "道路沥青"],
@@ -295,6 +326,17 @@ VARIETY_KB = {
         "sector": "能源化工",
         "contract_pattern": r"[Ll][Uu]\d{2,4}",
         "price_unit": "元/吨",
+    },
+    "LPG": {
+        # 2026-09-18 新增: 词典此前完全没有该品种(0% 标注率)。
+        # 标准名对齐下游品种元数据(PG = "LPG"), 而非"液化石油气"
+        # (下游 price_fetcher 两种写法都认, 取元数据口径最稳)。
+        "aliases": ["LPG", "液化石油气", "液化气", "PG"],
+        "exchange": "大商所",
+        "sector": "能源化工",
+        "contract_pattern": r"[Pp][Gg]\d{2,4}",
+        "price_unit": "元/吨",
+        "related": ["原油", "燃料油", "纯苯"],
     },
     "20号胶": {
         "aliases": ["20号胶", "NR", "20号橡胶", "20号标准胶", "泰标"],
@@ -332,11 +374,25 @@ VARIETY_KB = {
         "price_unit": "元/吨",
     },
     "苯乙烯": {
-        "aliases": ["苯乙烯", "EB", "SM"],
+        # 2026-09-18 摘出 "SM": SM 是锰硅(郑商所)的代码, 苯乙烯是 EB。
+        # 原写法让二者争同一个别名, 且写覆盖语义下后者(苯乙烯)取胜
+        # => 所有 "SM" 帖子被误标成苯乙烯(白名单品种), 污染其情绪信号。
+        "aliases": ["苯乙烯", "EB"],
         "exchange": "大商所",
         "sector": "能源化工",
         "contract_pattern": r"[Ee][Bb]\d{2,4}",
         "price_unit": "元/吨",
+        "related": ["纯苯", "乙二醇"],
+    },
+    "纯苯": {
+        # 2026-09-18 新增: 词典此前完全没有该品种(0% 标注率, 只被"苯乙烯"蹭到)。
+        # 标准名对齐下游品种元数据(BZ = 纯苯)。
+        "aliases": ["纯苯", "BZ"],
+        "exchange": "大商所",
+        "sector": "能源化工",
+        "contract_pattern": r"[Bb][Zz]\d{2,4}",
+        "price_unit": "元/吨",
+        "related": ["苯乙烯", "原油"],
     },
     "短纤": {
         "aliases": ["短纤", "PF", "涤纶短纤"],
@@ -623,6 +679,65 @@ class NERResult:
     contract_count: int = 0
 
 
+# 【常量】ASCII 字母/数字集合: 供"拉丁别名上下文"判定用
+#   ⚠️ 必须用 ascii 判定, 不能用 str.isalpha(): 汉字 .isalpha() 也是 True,
+#      若拿它判边界, "跟pta"/"看多sc" 这类最常见的中文紧邻写法会被误拒。
+_ASCII_ALPHA = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_ASCII_ALPHA_LOWER = frozenset("abcdefghijklmnopqrstuvwxyz")
+_ASCII_DIGIT = frozenset("0123456789")
+
+
+def _latin_alias_ok(hay: str, idx: int, alias: str) -> bool:
+    """【判定】一次别名命中是否可信。中文别名一律通过, 拉丁别名要过三道闸。
+
+    【背景 2026-09-18】品种代码别名是 1~3 个拉丁字母, 天生容易撞进英文串和其他编码。
+    实测存量 3.1 万条帖子里误标高发形态:
+      - `VLCC`(超大型油轮) -> LC 碳酸锂 ; `SHFE` -> SH 烧碱 ; `APP` -> PP 聚丙烯
+      - `(SH601015)` 股票代码 -> SH 烧碱 ; `MA5` 均线 -> MA 甲醇
+      - `深V` / `M头` / `10Y国债` / `见P1` / `L.M.S` -> V,M,Y,P,L 等单字母
+      - `GB/T4008` 国标号 -> T 十年期国债 ; `Al brooks`(人名) -> AL 铝
+
+    【三道闸】(hay 可能是小写副本, 但长度与原文一致, 故 idx 可直接用)
+      1. 前后不紧邻 ASCII 字母 —— 挡 VLCC / SHFE / APP 这类"更长英文串的子串"
+      2. 后跟数字时, 数字必须是 3~4 位合约格式 —— 挡 SH601015(6位股票) / MA5(1位均线)
+      3. 短别名只认"合约代码"位置:
+         - 单字母: 仅当后跟 3~4 位数字(如 M2601 / C1200 / T2603); 且前邻 `/` 时拒绝(GB/T4008)
+         - 双字母: 数字位数同上; 无数字时拒绝"后跟空格+小写拉丁"(英文词/人名 Al brooks)
+    """
+    if not (alias.isascii() and alias.isalpha()):
+        return True  # 中文别名: 不存在"夹在英文单词里"的问题, 不设约束
+
+    before = hay[idx - 1] if idx > 0 else ""
+    end = idx + len(alias)
+    after = hay[end] if end < len(hay) else ""
+
+    # 闸1: 前后紧邻 ASCII 字母 => 是更长英文串的子串
+    if before in _ASCII_ALPHA or after in _ASCII_ALPHA:
+        return False
+
+    # 取后跟的连续数字(期货合约月份, 如 RB2501 的 "2501")
+    d = end
+    while d < len(hay) and hay[d] in _ASCII_DIGIT:
+        d += 1
+    ndigits = d - end
+
+    if len(alias) == 1:
+        # 闸3a: 单字母只在"合约代码"位置成立
+        if before == "/":
+            return False  # 国标号 GB/T4008 里的 T
+        return 3 <= ndigits <= 4
+
+    if len(alias) == 2:
+        if ndigits:
+            return 3 <= ndigits <= 4  # 闸2
+        nxt = hay[end + 1] if end + 1 < len(hay) else ""
+        if after == " " and nxt in _ASCII_ALPHA_LOWER:
+            return False  # 英文词/人名: "Al brooks"
+        return True
+
+    return True  # 3 字母以上: 闸1 足够(PTA/PVC/LPG 等)
+
+
 class FuturesNER:
     """
     【功能】期货领域命名实体识别引擎。
@@ -635,6 +750,8 @@ class FuturesNER:
     def __init__(self):
         # 构建别名→标准名映射 (长别名优先覆盖短别名)
         # 每个别名都记下对应的标准名和完整信息(板块/交易所/正则等)
+        # ⚠️ 写覆盖语义: 同一别名挂在多个品种下时, 后遍历到的品种取胜(KB 书写顺序决定)。
+        #    2026-09-18 即因此让 "SM"(锰硅代码) 被 "苯乙烯" 抢走, 已摘除该别名。
         self._alias_to_variety = {}
         self._alias_to_info = {}
         for std_name, info in VARIETY_KB.items():
@@ -646,6 +763,16 @@ class FuturesNER:
         # 按长度降序排列（优先匹配长别名）
         # 例: "铁矿石" 应优先于 "铁矿"/"铁", 避免短的先把位置占掉
         self._sorted_aliases = sorted(self._alias_to_variety.keys(), key=len, reverse=True)
+
+        # 2026-09-18 大小写不敏感检索表: (原别名, 检索用别名, 是否纯拉丁)
+        #   中文别名(螺纹钢/原油...)原样检索; 2 字母及以上纯拉丁别名(PTA/SC/RB/MEG...)
+        #   统一按小写检索, 修复 "pta"/"sc2501"/"meg" 等小写写法漏标。
+        #   ⚠️ 单字母别名(V/L/C/M/T/Y/J/I)刻意不参与小写化: 它们同时是
+        #      升/吨/米/百万等计量单位缩写, 小写化会把 "10t"/"m2"/"500l" 标成品种。
+        self._search_aliases = [
+            (a, a.lower(), a.isascii() and a.isalpha() and len(a) > 1)
+            for a in self._sorted_aliases
+        ]
 
         # 交易所映射: 别名 → 规范名 (如 "SHFE" → "上期所")
         self._exchange_to_canonical = {}
@@ -704,26 +831,33 @@ class FuturesNER:
         if not text:
             return asdict(result)
 
-        # 1. 品种名识别（长别名优先，防重叠）
+        # 1. 品种名识别（长别名优先，防重叠；2 字母及以上纯拉丁别名大小写不敏感）
         matched_positions = set()  # 【变量】已匹配位置集合 (防止多个别名重叠占用同一段文本)
-        for alias in self._sorted_aliases:
-            if alias not in text:
+        text_lower = text.lower()  # 【变量】小写副本(仅供纯拉丁别名检索)
+        # 某些 Unicode 字符 lower() 后长度会变(如 'İ'→'i̇'), 那位置索引就不可复用, 直接放弃小写检索
+        use_lower = len(text_lower) == len(text)
+
+        for alias, alias_lower, casefold in self._search_aliases:
+            # 【变量】本次检索用的"干草堆/针": 纯拉丁且长度>1 时用小写副本, 否则按原文
+            hay = text_lower if (casefold and use_lower) else text
+            needle = alias_lower if (casefold and use_lower) else alias
+            if needle not in hay:
                 continue
 
             # 查找所有出现位置
             idx = 0
             while True:
-                idx = text.find(alias, idx)
+                idx = hay.find(needle, idx)
                 if idx < 0:
                     break
 
-                # 单字母别名需要单词边界检查 (如 "I" 不应匹配 "IC")
-                if len(alias) == 1 and alias.isalpha():
-                    before = text[idx - 1 : idx] if idx > 0 else " "
-                    after = text[idx + 1 : idx + 2] if idx + 1 < len(text) else " "
-                    if before.isalpha() or after.isalpha():
-                        idx += 1
-                        continue
+                # 【校验】拉丁别名的上下文合法性(中文别名直接通过), 三道闸见
+                #  模块级 _latin_alias_ok() 的说明。例: "I" 不匹配 "IC"、
+                #  "si" 不匹配 "sina"; 且单字母只在合约代码位置(P 后跟 3~4 位数字)成立。
+                # ⚠️ 传 alias(原别名) 而非 needle —— 长度与大小写语义以原别名为准。
+                if not _latin_alias_ok(hay, idx, alias):
+                    idx += 1
+                    continue
 
                 # 检查是否与已匹配位置重叠
                 positions = set(range(idx, idx + len(alias)))
@@ -801,30 +935,31 @@ class FuturesNER:
           {"variety": 标准名, "matched_alias": 命中的别名, "context": 上下文片段,
            "sector": 板块, "position": 出现位置}。
         【关键逻辑】
-          - 与 extract() 相同的"最长别名 + 单字母边界"匹配逻辑。
+          - 与 extract() 相同的"最长别名优先 + 拉丁别名三道闸(_latin_alias_ok) + 2 字母以上拉丁大小写不敏感"匹配逻辑。
           - 每个品种只取第一次出现的位置记录, 避免重复 (seen_names 去重)。
           - context 取窗口片段后在句号处截断, 让片段尽量是完整句子。
         """
         results = []
         seen_names = set()  # 【变量】已记录品种名集合 (每个品种只取第一次出现, 避免重复)
+        text_lower = text.lower()  # 【变量】小写副本(仅供纯拉丁别名检索)
+        use_lower = len(text_lower) == len(text)  # 长度不等则放弃小写检索(位置索引不可复用)
 
-        for alias in self._sorted_aliases:
-            if alias not in text:
+        for alias, alias_lower, casefold in self._search_aliases:
+            hay = text_lower if (casefold and use_lower) else text
+            needle = alias_lower if (casefold and use_lower) else alias
+            if needle not in hay:
                 continue
 
             idx = 0
             while True:
-                idx = text.find(alias, idx)
+                idx = hay.find(needle, idx)
                 if idx < 0:
                     break
 
-                # 单字母边界检查
-                if len(alias) == 1 and alias.isalpha():
-                    before = text[idx - 1 : idx] if idx > 0 else " "
-                    after = text[idx + 1 : idx + 2] if idx + 1 < len(text) else " "
-                    if before.isalpha() or after.isalpha():
-                        idx += 1
-                        continue
+                # 【校验】拉丁别名上下文合法性, 与 extract() 共用同一判定函数
+                if not _latin_alias_ok(hay, idx, alias):
+                    idx += 1
+                    continue
 
                 info = self._alias_to_info.get(alias, {})
                 std_name = self._alias_to_variety.get(alias, alias)

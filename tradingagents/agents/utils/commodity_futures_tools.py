@@ -229,6 +229,56 @@ def get_futures_supply_demand(
 #           底层读 research_data.get_research_report_text(~/.tradingagents/external_data
 #           {品种}_research.json)。研报是人工上传的一手材料,可信优先级最高
 #           (RESEARCH > 外部 EXTERNAL > 免费 FREE_API),基本面/宏观分析师应优先采信。
+# 【功能】查询用户导入的本地品种数据库(产业一手数据: 库存/仓单/开工/产量/排产/裂差/基差...)。
+# 【参数】symbol: 品种代码(如 BU); keyword: 指标关键词; group: 分组名; days: 回看天数。
+# 【返回】读数文本(最新值/环比/近4期/区间分位/近N期点位); 未导入或无命中返回哨兵文本。
+# 【关键逻辑】不经 route_to_vendor: 该库是**本地文件**(data/variety/<品种>/), 不是联网
+#           供应商, 故直接调 dataflows.variety_db(与 research_macro_context 同做法)。
+#           基本面分析师系统提示里已确定性注入该库的**关键读数摘要**(variety_db_context),
+#           本工具用于**下钻**: 换关键词/分组/更长历史。
+@tool
+def get_variety_db(
+    symbol: Annotated[str, "Commodity variety code, e.g. BU (bitumen), SC (crude oil)"],
+    keyword: Annotated[str, "指标关键词, e.g. 库存/仓单/开工/产量/裂差/基差/排产 (empty = browse by group)"] = "",
+    group: Annotated[str, "分组名, e.g. 库存仓单/供需/炼厂排产/成本利润/基差价差 (empty = all groups)"] = "",
+    days: Annotated[int, "Lookback days for the returned window, e.g. 180; 0 = full history"] = 180,
+) -> str:
+    """
+    Query the LOCALLY IMPORTED variety database (品种数据库) for a commodity variety.
+
+    This is the user's own industry-data snapshot (one Excel workbook per variety, imported
+    through the "品种数据库" tab), covering weekly/daily fundamentals: inventory & warehouse
+    receipts by region/warehouse, refinery utilization, production, blendstock inventory,
+    cracking spread & margin, basis & calendar spread, road-construction demand,
+    supply-demand balance tables, temperature, etc.
+
+    Trust level: FIRST-HAND INDUSTRY DATA. For the same indicator and period it OUTRANKS
+    akshare/free APIs and research-report paraphrases; when numbers disagree, prefer this
+    database.
+
+    Each returned series shows: latest value with date, period-over-period change,
+    4-period change, percentile & range inside the window, and the most recent points.
+    Missing days are simply absent (never zero-filled or interpolated).
+
+    If the response starts with "VARIETY_DB_NO_DATA", the variety has NOT been imported —
+    say so honestly and never invent inventory/utilization numbers for it.
+    If it starts with "VARIETY_DB_NO_MATCH", retry with another keyword/group; the response
+    lists the available groups and modules.
+
+    Args:
+        symbol: Variety code like BU, SC, MA
+        keyword: Indicator keyword, e.g. 库存, 开工, 裂差, 基差
+        group: Group filter, e.g. 库存仓单, 供需, 炼厂排产, 成本利润
+        days: Lookback window in days (0 = full history)
+    Returns:
+        Formatted readout of the matching series (or a VARIETY_DB_* sentinel).
+    """
+    # 【调用函数】本地品种库检索(确定性读文件, 无网络, 无 LLM)
+    from tradingagents.dataflows.variety_db import query_variety_db
+
+    return query_variety_db(symbol, keyword=keyword or "", group=group or "", days=days)
+
+
 @tool
 def get_research_report(
     symbol: Annotated[str, "Commodity variety code, e.g. RB (rebar)"],
@@ -354,6 +404,20 @@ def user_data_context(symbol: str, client_tag: str = "") -> str:
 
         return render_user_data_context(symbol, client_tag=client_tag)
     except Exception:  # 上下文加载失败不影响分析主线,静默降级为无注入
+        return ""
+
+
+# 【功能】品种数据库上下文(确定性,无 LLM,非 @tool)——基本面分析师注入用(2026-09-18)。
+#           与 user_data_context 同模式: 不做 @tool(工具调用不保证发生), 节点构造提示时
+#           确定性前置; 该品种未导入数据库 / 加载异常时返回 ""(静默降级,不注入)。
+# 【参数】symbol: 品种代码(如 BU; 库内 meta.symbols 记录代码与品种的对应关系)。
+# 【返回】str: "【品种数据库 · ...】" 关键读数块(库存/开工/产量/裂差/基差等最新值与环比)或 ""。
+def variety_db_context(symbol: str) -> str:
+    try:
+        from tradingagents.dataflows.variety_db import render_variety_db_context
+
+        return render_variety_db_context(symbol)
+    except Exception:  # 注入失败绝不影响分析主线, 静默降级为无注入
         return ""
 
 

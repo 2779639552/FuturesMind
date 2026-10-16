@@ -55,8 +55,18 @@ class TestCacheCoversEnd:
 
 @pytest.mark.unit
 class TestPriceRefetchGuard:
+    # 【2026-10-13】必须显式关掉天勤快路径：get_futures_price 在 2026-10-12 接入天勤后
+    # 是「天勤优先、AKShare 降级」——只要 .env 配了天勤账号(configured()=True)，本用例
+    # mock 的 futures_main_sina 就永远不会被调用(实测 call_count=0)，断言必然红。
+    # 本用例验证的缓存护栏(_cached_covers_end 跨 end_date 重拉)活在 AKShare 这条链路上，
+    # 所以要**钉住数据源**：让 _fetch_daily_via_tq 恒返 None 逼走 AKShare。
+    # 这样用例行为不再随「有没有配天勤账号」而变，也避免真连 shinnytech 污染后续用例的日志。
     @patch.dict(sys.modules, {"akshare": None}, clear=False)
-    def test_newer_end_date_refetches(self):
+    @patch(
+        "tradingagents.dataflows.commodity_futures._fetch_daily_via_tq",
+        return_value=None,
+    )
+    def test_newer_end_date_refetches(self, _mock_tq):
         _response_cache.clear()
         fake = MagicMock()
         fake.futures_main_sina.side_effect = lambda **kw: _df_upto(5)  # ends 2025-01-05

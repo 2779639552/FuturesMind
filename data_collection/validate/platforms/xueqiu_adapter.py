@@ -39,6 +39,38 @@ COOKIE_FILE = CREDENTIALS_DIR / "xueqiu_cookie.txt"  # 【变量】雪球登录 
 
 SEARCH_TIMEOUT = 25  # 【变量】搜索超时等待秒数
 
+# ── 雪球搜索的分页/超时/重试 (2026-09-17) ──────────────────────────────
+# 【为什么需要】实测雪球跑到第 12 个关键词起进入"请求被拖死"状态: 前 11 个关键词
+# 46 秒全部跑完(每词 2~3 秒),之后每个关键词白等数分钟 —— 现象是整轮撞上调度器
+# subprocess timeout(时值 900s, 现为 1500s) 被强杀,连 collect_run 报告都写不出来,被记成
+# "Timeout (15 min)" 的 error(实际已采到 162 条)。根因是两处叠加:
+#   ① 页内 fetch 没有超时控制 → 请求被拖住时只能等 Playwright 默认 30s 才抛错;
+#   ② 请求失败时代码 `page += 1; continue` —— 去翻"下一页",而不是重试本页,
+#      于是白白重复 5 轮(5 × 30s = 150s),且失败被当成"这页没内容"静默吞掉。
+XUEQIU_FETCH_TIMEOUT_MS = 8000  # 页内 fetch 超时(ms): 被拖住的请求必须快速失败,不等 Playwright 的 30s
+XUEQIU_PAGE_RETRIES = 2  # 单页失败重试次数(重试**同一页**,不再浪费在翻页上)
+XUEQIU_PAGE_RETRY_SLEEP = 2.0  # 重试前冷却秒数
+
+
+def _absolute_xueqiu_url(target: Any, sid: str) -> str:
+    """把雪球搜索接口的 target 补成绝对 URL(纯函数, 可单测)。
+
+    【为什么抽成独立函数 2026-09-18】原先这段内联在 normalize 里, 写成
+      `content_item.get("target", "") or f"https://xueqiu.com/{sid}"` ——
+      `or` 只在 target **为空**时短路, 而 target 恰恰永远有值(只是根相对路径),
+      于是兜底形同虚设: 历史落盘的 5849 条全是 "/uid/sid" 这种相对路径,
+      前端把它当 href => 解析到本站域名下(localhost:5000/...) => 点击必然 404。
+    【为什么必须独立可测】内联时只能靠"源码里有没有这串字符"来断言, 而那种断言
+      挡不住 `if False and ...` 这类"字符串还在、分支已死"的改法 —— 本地实测确实
+      骗过了一次。抽出来之后测试直接调函数看返回值, 改坏必红。
+    【输入】target: 接口给的路径(可能是根相对, 也可能是全 URL); sid: 帖子 id
+    【返回】绝对 URL; target 为空时回落到 https://xueqiu.com/{sid}
+    """
+    url = (target or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://xueqiu.com/" + url.lstrip("/")
+    return url or f"https://xueqiu.com/{sid}"
+
 
 class XueqiuAdapter(PlatformAdapter):
     """雪球数据采集适配器 (Playwright 响应拦截)
@@ -225,34 +257,70 @@ class XueqiuAdapter(PlatformAdapter):
         """
         import urllib.parse  # 【调用包】URL 编码搜索词
 
-        all_items = []
+        all_items: list = []
+        # 页数按"每页 20 条"实算,不再写死 5 页 —— count=30 只需 2 页。
+        # 写死 5 页的代价:一旦请求开始被拖死,就是 5 轮白等(每轮最长 30s)。
+        max_pages = max(1, (count + 19) // 20)
         page = 1
 
-        while len(all_items) < count and page <= 5:
+        while len(all_items) < count and page <= max_pages:
             q_enc = urllib.parse.quote(keyword)  # 【调用函数】URL 编码搜索词(中文安全拼接)
             per_page = min(20, count - len(all_items))  # 本页取多少条
+            if per_page <= 0:
+                break
 
-            # 在浏览器内执行 JS: fetch 雪球搜索接口，失败返回 null
-            result = self._page.evaluate(f"""
-                async () => {{
-                    const url = '/query/v1/search/status.json?sortId=2&q={q_enc}&count={per_page}&page={page}';
-                    try {{
-                        const r = await fetch(url);
-                        if (!r.ok) return null;
-                        return await r.json();
-                    }} catch(e) {{ return null; }}
-                }}
-            """)  # 【调用函数】浏览器内 fetch 调雪球搜索 API(绕过阿里云 WAF)
+            result = None  # 【变量】本页成功取到的 JSON;保持 None 表示这一页最终失败
+            why = "未发起请求"
+            for attempt in range(1, XUEQIU_PAGE_RETRIES + 1):
+                # 浏览器内 fetch 雪球搜索接口(绕过阿里云 WAF)。
+                # ⚠️ AbortController 超时是**必需**的:没有它,请求被风控拖住时只能
+                # 等 Playwright 默认 30s 才抛 timeout,单页就白等 30 秒。
+                raw = self._page.evaluate(f"""
+                    async () => {{
+                        const ctl = new AbortController();
+                        const timer = setTimeout(() => ctl.abort(), {XUEQIU_FETCH_TIMEOUT_MS});
+                        try {{
+                            const url = '/query/v1/search/status.json?sortId=2&q={q_enc}&count={per_page}&page={page}';
+                            const r = await fetch(url, {{signal: ctl.signal}});
+                            if (!r.ok) return {{__http_status: r.status}};
+                            return await r.json();
+                        }} catch (e) {{
+                            return {{__error: String(e)}};
+                        }} finally {{
+                            clearTimeout(timer);
+                        }}
+                    }}
+                """)  # 【调用函数】浏览器内 fetch 调雪球搜索 API(自带 8s 超时,快速失败)
 
-            page += 1
+                if isinstance(raw, dict) and raw.get("__http_status"):
+                    why = f"HTTP {raw['__http_status']}(疑似风控)"
+                elif isinstance(raw, dict) and raw.get("__error"):
+                    why = str(raw["__error"])[:120]
+                elif isinstance(raw, dict):
+                    result, why = raw, ""  # 拿到合法 JSON(可能是空列表,那是"真没内容")
+                    break
+                else:
+                    why = "页面返回 null(请求被拖死或页面已失效)"
 
-            if not result or not isinstance(result, dict):
-                time.sleep(0.5)
-                continue  # 本次请求失败，短暂等待后翻下一页
+                logger.warning(
+                    f"  Xueqiu page {page} attempt {attempt}/{XUEQIU_PAGE_RETRIES} failed: {why}"
+                )
+                if attempt < XUEQIU_PAGE_RETRIES:
+                    time.sleep(XUEQIU_PAGE_RETRY_SLEEP)
+
+            # 重试耗尽仍拿不到数据 → **明确报错**,绝不再"翻下一页"假装没事。
+            # 【为什么】旧写法失败也 page+=1 继续,导致: ① 白等 5 轮; ② 整轮静默返回空,
+            # 被下游当成"平台确实没内容",而真相是被风控拖死 —— 这正是要消灭的静默失效。
+            # 消息里保留 "timeout" 字样,让 classify_error 判为 rate_limit 触发限流退避。
+            if result is None:
+                raise RuntimeError(
+                    f"雪球搜索请求 timeout/被拒(关键词 '{keyword}' 第 {page} 页, 已重试 "
+                    f"{XUEQIU_PAGE_RETRIES} 次): {why}"
+                )
 
             items = result.get("list", [])
             if not items:
-                break  # 没有更多结果
+                break  # 合法空结果:该关键词确实没有更多内容
 
             for item in items:
                 sid = str(item.get("id", ""))
@@ -267,6 +335,7 @@ class XueqiuAdapter(PlatformAdapter):
                     continue
                 all_items.append(item)
 
+            page += 1
             time.sleep(0.5)  # 页间延时，避免请求过快触发风控
 
         logger.info(f"  Xueqiu: {len(all_items)} results for '{keyword}'")
@@ -364,7 +433,11 @@ class XueqiuAdapter(PlatformAdapter):
             p.get("url", p.get("src", "")) for p in pics if isinstance(p, dict) and p.get("url")
         ]
 
-        url = content_item.get("target", "") or f"https://xueqiu.com/{sid}"
+        # 【2026-09-18 修既有缺陷】雪球搜索接口的 target 是**根相对路径**
+        #   (如 "/9551545711/399073978" 或股票页 "/S/SH600519/123456"), 不是绝对 URL。
+        #   原实现 `target or f"https://xueqiu.com/{sid}"` 只在 target 为空时短路,
+        #   而 target 永远有值, 兜底从未生效 —— 详见 _absolute_xueqiu_url 的说明。
+        url = _absolute_xueqiu_url(content_item.get("target", ""), sid)
 
         return {  # 【变量】统一 Schema 输出(键对齐 UNIFIED_SCHEMA_FIELDS)
             "platform": "xueqiu",
@@ -399,7 +472,11 @@ class XueqiuAdapter(PlatformAdapter):
         【关键逻辑】超时(timeout)多半是 WAF/限流拖慢响应，判为限流退避重试。
         """
         msg = str(exc).lower()
-        if "timeout" in msg:
+        # 【2026-09-17】不能只认 "timeout": 请求被风控拖死时,页内 fetch 抛的是
+        # AbortError(我们自己的 8s AbortController 触发的),文案里没有 "timeout";
+        # 非 2xx 被拒时抛的是"HTTP 4xx(疑似风控)"。这些都属限流,必须走退避,
+        # 否则会被当成 other 而按普通失败处理,退避力度不足、继续撞风控。
+        if "timeout" in msg or "abort" in msg or "风控" in msg or "被拒" in msg:
             return "rate_limit"
         return "other"
 

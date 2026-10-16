@@ -24,6 +24,33 @@
 from .base_client import BaseLLMClient  # 【调用包】统一客户端基类(所有厂商客户端的公共父类)
 
 
+def _resolve_config_base_url() -> str | None:
+    """【2026-09-30 修复】未显式传 base_url 时, 从全局配置兜底取 backend_url。
+
+    【背景/为什么必须有这个兜底】
+    .env 里的 TRADINGAGENTS_LLM_BACKEND_URL 经 default_config._ENV_OVERRIDES
+    映射为 config["backend_url"], 再被 web_app.py 的 set_config(config) 写进
+    全局配置。但项目里绝大多数调用点写的是 `create_llm_client(provider, model)`
+    ——不传第三个参数。对"注册表里有厂商默认地址"的服务(deepseek/doubao/qwen…)
+    这无关紧要; 但对 openai_compatible 这种 require_base_url=True 且
+    base_url=None 的【通用端点】, 会直接在 get_llm() 抛 ValueError:
+        "Provider 'openai_compatible' requires a base_url. Set it via backend_url
+         / TRADINGAGENTS_LLM_BACKEND_URL to your endpoint"
+    ——报错文案本身就指明"应该经由 backend_url 生效", 可见本兜底符合设计意图。
+    在工厂内统一兜底 = 一处改动覆盖全部调用点, 不必逐个改业务文件。
+
+    【返回值】全局配置里的 backend_url; 取不到时返回 None(不改变原有行为)。
+    """
+    try:
+        from ..dataflows.config import get_config  # 【调用包】读全局运行时配置(由 set_config 写入)
+
+        return get_config().get("backend_url")
+    except Exception:
+        # 配置尚未初始化 / 循环导入等异常场景: 静默返回 None, 保持旧行为不变,
+        # 绝不因为"兜底逻辑"本身而把原本能跑的场景弄挂。
+        return None
+
+
 def create_llm_client(
     provider: str,
     model: str,
@@ -70,6 +97,12 @@ def create_llm_client(
         这样新增一家厂商 = 在工厂里加一个分支 + 写一个 BaseLLMClient 子类,
         业务代码完全不动。
     """
+    # 【2026-09-30 修复】调用点未显式传 base_url 时, 从全局配置的 backend_url 兜底。
+    # 只填 None(不覆盖已显式传入的值), 因此对存量厂商(有注册表默认地址)零影响,
+    # 仅让"通用 OpenAI 兼容端点"(openai_compatible)按 .env 里的地址正常工作。
+    if base_url is None:
+        base_url = _resolve_config_base_url()
+
     provider_lower = provider.lower()  # 【变量】归一化后的厂商名(小写), 供后续分支逐一比对
 
     # Native (non-OpenAI) APIs are matched first so their string check doesn't

@@ -1,0 +1,8026 @@
+
+// ================================================================
+// 【皮肤重构 2026-09-15】CSS 变量 → ECharts 的桥
+// ── 为什么需要它:CSS 变量在 <canvas> 里不可见,ECharts 只能吃字面色值。原先品牌橙
+//    被硬编码在 20+ 处图表配置里,导致"改 CSS 换肤"影响不到图表 —— UI 变冰蓝、
+//    图表仍发橙,风格割裂。现在统一从这里取值。
+// ── 两个设计点:
+//    ① 用 getter 而不是常量 ⇒ 每次**渲染那一刻**才读 CSS,自动跟随亮/暗主题切换,
+//       不需要任何"主题变了要重算配色"的缓存失效逻辑;
+//    ② 每个取值都带回退的硬编码色 ⇒ 令牌被误删时图表不会变黑或报错,只是退回旧色。
+// ── 取 --chart-*(而不是 --brand):图表线在近黑底上需要比 UI 文字更饱和的颜色。
+// ================================================================
+const __cssVar = (name, fallback) => {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  } catch (e) { return fallback; }
+};
+const CHART = {
+  get brand()     { return __cssVar('--chart-brand', '#8fd2f5'); },      // 主序列线/柱
+  get brand2()    { return __cssVar('--chart-brand-2', '#d8eefc'); },    // 渐变亮端
+  get brandGlow() { return __cssVar('--chart-brand-glow', 'rgba(140,200,250,0.35)'); },  // 面积渐变起色
+  get brandA25()  { return __cssVar('--chart-brand-a25', 'rgba(140,200,250,0.25)'); },
+  get brandA02()  { return __cssVar('--chart-brand-a02', 'rgba(140,200,250,0.02)'); },
+  get axis()      { return __cssVar('--chart-axis', '#8b9aad'); },       // 轴标签/标题/图例
+  get grid()      { return __cssVar('--chart-grid', '#19222e'); },       // 网格线
+  get line()      { return __cssVar('--chart-line', '#2b3746'); },       // 轴线
+  // 糖果族:给分类色板用(装饰性,不承载涨跌语义)
+  get candy1()    { return __cssVar('--candy-1', '#c7c7ff'); },
+  get candy2()    { return __cssVar('--candy-2', '#ffd8be'); },
+  get candy3()    { return __cssVar('--candy-3', '#a9ecbf'); },
+  get candy4()    { return __cssVar('--candy-4', '#f3bbe1'); },
+};
+
+// ================================================================
+// 前端核心逻辑入口。所有业务逻辑封装在全局单例 App 对象中 (下方 const App = {...})。
+// 页面加载流程: 底部 DOMContentLoaded 事件 → App.init()。
+//   1. 绑定顶部导航按钮 (6 个标签页切换)
+//   2. 读取本地主题设置 (亮/暗)
+//   3. 从后端加载品种列表 (GET /api/varieties)
+// 与后端 Flask 服务通信全部走 /api/* JSON 接口 (每个方法里的 fetch 调用即后端端点)。
+// 图表: ECharts; 报告正文: marked 渲染 Markdown。
+// ================================================================
+// Configure marked.js — 开启 Markdown 换行 (breaks) 与 GFM 语法 (表格/删除线等)
+marked.setOptions({ breaks: true, gfm: true });  // 【调用函数】marked.js 全局配置: 开启换行(<br>)与 GFM(表格/删除线等)
+
+// 【修复 2026-09-11】LLM 生成的研报总结用单个 ~ 表示区间/约数(如 10%~20%、1~2周、
+// ~300元),而 marked GFM 把单个 ~ 误判为删除线定界符,导致大段文字被 <del> 划线。
+// 这里给 marked.parse 套一层安全壳: 只保留成对 ~~...~~ 的真删除线语法,其余单个 ~
+// 统一替换为全角 ～(区间语义不变、不再触发划线)。所有 marked.parse 调用自动受益。
+const __markedParseSafe = marked.parse.bind(marked);
+marked.parse = (src) => {
+  if (typeof src !== 'string' || !src.includes('~')) return __markedParseSafe(src);
+  const parts = src.split('~~');  // 奇数索引为成对删除线内部,原样保留
+  const fixed = parts.map((seg, i) => (i % 2 === 1 ? seg : seg.replace(/~/g, '\uFF5E'))).join('~~');
+  return __markedParseSafe(fixed);
+};
+
+// ================================================================
+// 网络健壮性护栏 (2026-09-14)
+// 背景: 站点经 Cloudflare 隧道对外发布。隧道断开/重启后,Cloudflare 边缘会返回
+//       HTTP 530 + HTML 错误页;前端 `await r.json()` 解析 HTML 失败,只会弹一句
+//       `Unexpected token '<', "<!doctype "... is not valid JSON` —— 看不出是网络问题,
+//       误以为功能坏了(2026-09-14 实测:隧道换址后"研报每日总结"卡在"加载失败")。
+// 做法: 包一层 window.fetch,仅拦截「状态码 >= 400 且响应体是 HTML」这一种情况,
+//       抛出人话异常告诉用户是入口断了。其余全部原样透传 —— 包括 200 的 SSE 流式
+//       响应与文件下载、以及业务本身的 JSON 错误(400/409/500 JSON)。
+const __nativeFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  let resp;
+  try {
+    resp = await __nativeFetch(...args);
+  } catch (e) {  // 网络层直接失败(断网 / 服务未启动)
+    const u = String((args[0] && args[0].url) || args[0] || '');
+    if (u.includes('/api/')) {
+      throw new Error('无法连接服务: 网络中断或服务未启动。请确认服务在运行后刷新页面。');
+    }
+    throw e;
+  }
+  if (resp.status >= 400) {
+    // 【2026-09-24 局域网登录】401 JSON = 未登录/会话过期 → 弹登录遮罩
+    if (resp.status === 401) {
+      const ct401 = (resp.headers.get('content-type') || '').toLowerCase();
+      if (ct401.includes('application/json')) showLogin();
+    }
+    const ct = (resp.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('text/html')) {
+      const gateway = [502, 503, 504, 520, 521, 522, 523, 524, 530].includes(resp.status);
+      const msg = gateway
+        ? `访问入口已断开(网关 HTTP ${resp.status})。如果你用的是公网地址,说明隧道已重启、地址已更换 —— 双击桌面「AgentSense公网地址.bat」取最新地址,再刷新本页。若在本机用 127.0.0.1:5000 访问,则说明后台服务已停止。`
+        : `服务返回了 HTML 错误页(HTTP ${resp.status}),通常是接口不存在或后端异常,请查看服务端日志。`;
+      const err = new Error(msg);
+      err.__httpStatus = resp.status;
+      throw err;
+    }
+  }
+  return resp;
+};
+
+// ================================================================
+// App State
+// ================================================================
+// App 对象结构速览 (按功能分区, 每区有中文注释):
+//   [状态字段] _currentTab 当前标签页 / _chartInstances 所有 ECharts 实例
+//   ── Init ── init / _bindNav / switchTab: 初始化与标签页切换 (懒加载)
+//   ── Toast / Theme / Varieties ── 提示、主题切换、品种下拉
+//   ── Run Analysis ── runAnalysis 主分析(轮询进度) + 反馈/对比图
+//   ── Charts ── _initChart 图表生命周期(创建/复用/dispose) + 各图表加载
+//   ── History / Data Update / Analysis Tab / Trading Tab ── 各标签页逻辑
+// ── 黑洞 loading 遮罩控制器(2026-09-15):纯展示,不参与业务逻辑 ──
+// show(msg?) 显示并可改写底部提示文案;hide() 最短展示 600ms(避免快返回时闪烁),
+// 另带 180s 兜底自动隐藏(防异常路径把用户永久锁在遮罩里)。
+const bhLoader = {
+  _t0: 0,
+  _minMs: 600,
+  _safety: null,
+  show(msg) {
+    const el = document.getElementById('bh-overlay');
+    if (!el) return this;
+    const hint = document.getElementById('bh-hint');
+    if (hint && msg) hint.textContent = msg;
+    this._t0 = Date.now();
+    el.classList.add('show');
+    clearTimeout(this._safety);
+    this._safety = setTimeout(() => this.hide(), 180000);
+    return this;
+  },
+  hide() {
+    const el = document.getElementById('bh-overlay');
+    if (!el) return this;
+    clearTimeout(this._safety);
+    const wait = Math.max(0, this._minMs - (Date.now() - this._t0));
+    setTimeout(() => el.classList.remove('show'), wait);
+    return this;
+  },
+};
+
+// 关键方法: runAnalysis / runMultiCompare / startAgentValidation
+// 注: runMultiCompare 对应「交易回测页」(2026-09-11 下线); 实现已按 2026-09-29 要求
+//     补回为代码资产但不接 UI, 详见函数头「未接 UI 说明」。
+const App = {
+  // State
+  _currentTab: 'run',  // 【变量】当前激活标签页标识
+  _currentReportFile: null,  // 【变量】当前打开的历史报告文件名(下载 MD/PDF 时使用)
+  _chartInstances: {},  // 【变量】ECharts 实例注册表 {容器id: 实例}, 供统一 resize/销毁
+  _allPosts: [],  // 【变量】情绪数据页缓存的全量帖子(供品种下拉过滤)
+  _platformFilter: '',  // 【变量】情绪数据页当前选中的平台(''=全部);筛选由后端执行,见 loadSentimentPosts
+  _PLATFORM_NAMES: {  // 【变量】平台键→中文名(键的书写顺序即筛选 chip 的显示顺序)
+    weibo: '微博', zhihu: '知乎', xhs: '小红书', xueqiu: '雪球',
+    eastmoney_guba: '东财股吧', douyin: '抖音',
+  },
+  _POST_RENDER_LIMIT: 100,  // 【变量】帖子列表一次最多渲染多少条(后端单次最多回 200 条,见 web_app POSTS_API_LIMIT)
+  _varieties: [],  // 【变量】从 /api/varieties 拉取的品种列表
+  _isAnalysisRunning: false,  // 【变量】运行分析互斥锁: 防止重复点击启动多个任务
+
+  // ── Init ──
+  // 【功能】页面初始化入口, DOMContentLoaded 后由底部事件调用一次
+  // 【输入】无
+  // 【渲染】触发品种下拉填充、主题图标、多策略计数徽标; 注册窗口 resize 与 Ctrl+1~6 快捷键
+  // 【后端】GET /api/varieties (经 _loadVarieties)
+  async init() {
+    this._bindNav();
+    this._loadTheme();
+    await this._loadVarieties();
+    this.updatePlatformHint();
+    // Handle window resize for charts
+    window.addEventListener('resize', () => this._resizeAllCharts());
+    // Keyboard nav: Ctrl+1-7 to switch tabs
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key >= '1' && e.key <= '7') {
+        e.preventDefault();
+        const tabs = ['run', 'research', 'sentiment', 'dashboard', 'warrant', 'foreign', 'warehouse'];  // 【变量】Ctrl+1~7 快捷键对应的标签页顺序(2026-09-24 新增外文研报后与顶部导航 7 页对齐)
+        this.switchTab(tabs[parseInt(e.key) - 1]);
+      }
+    });
+  },
+
+  // 【功能】给顶部导航每个按钮绑定点击 → 切换到对应标签页 (data-tab 属性决定目标)
+  // 【输入】无
+  // 【渲染】无 (由 switchTab 完成)
+  // 【后端】无
+  _bindNav() {
+    document.querySelectorAll('nav button').forEach(btn => {
+      btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
+    });
+  },
+
+  // ── Tab switching ──
+  // 【功能】切换标签页: 更新 .active 类(显示对应 tab + 高亮导航按钮), 并对各页做"懒加载"
+  // 【输入】t: 标签页标识, 如 'run' / 'sentiment' / 'trading'
+  // 【渲染】显示/隐藏 6 个 <div class="tab">; 首次进入某页时拉取该页数据
+  // 【后端】视目标页而定, 见各 loadXxx 方法
+  switchTab(t) {
+    this._currentTab = t;
+    document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(el => el.classList.remove('active'));
+    const tabEl = document.getElementById('tab-' + t);
+    if (tabEl) tabEl.classList.add('active');
+    const navBtn = document.querySelector(`nav button[data-tab="${t}"]`);
+    if (navBtn) navBtn.classList.add('active');
+
+    // Lazy load
+    if (t === 'sentiment') { this.loadOverlayChart(); this.loadSentimentPosts(); this.loadBacktest(); this.initAnalysisTab(); this.loadUpdateStats(); this.loadUpdateDeltas(); }  // 分析工具已并入本页(2026-09-07); 数据更新已并入本页(2026-09-08); 各平台增量(2026-09-17)
+    if (t === 'dashboard') this.loadDashboard();
+    if (t === 'warrant') this.loadWarrant();  // 仓单分析(2026-09-14 新增)
+    if (t === 'foreign') this.loadForeign();  // 外文研报编译(2026-09-24 新增)
+    if (t === 'research') this.loadResearch();
+    if (t === 'warehouse') { this.loadWarehouse(); this.loadHistory(); }  // 历史报告已并入本页(2026-09-08)
+    if (t === 'variety') this.loadBitumen();  // 品种数据库(2026-09-18 新增, 原沥青数据库)
+    if (t === 'quant') this.loadQuant();  // 量化分析(2026-09-28 新增, 7 子模块; K 线由看板迁入)
+    // ⑨ 小模块索引目录(2026-09-29): 本页加载项挂完后构建索引 + 折叠卡片。
+    // 【为什么放最后】索引要读卡片标题, 必须在同页其它 loadXxx 把动态标题填完后再扫,
+    //   否则拿到的可能是空标题(如"加载中…")。用 setTimeout 让同步 loadXxx 先跑完。
+    setTimeout(() => this._buildSectionIndex(t), 0);
+    this._resizeAllCharts();
+  },
+
+  // ── Toast ──
+  // 【功能】右上角弹出轻量通知(成功/错误/信息), 3.5 秒后自动淡出消失
+  // 【输入】msg: 显示文本; type: 'info'|'success'|'error' (决定背景色)
+  // 【渲染】在 #toasts 容器中追加一个 .toast 元素
+  // 【后端】无
+  toast(msg, type='info') {
+    const container = document.getElementById('toasts');
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    container.appendChild(el);
+    setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 3500);
+  },
+
+  // ── Theme ──
+  // 【功能】暗色↔亮色切换; 写入 <html data-theme> 属性(驱动 CSS 变量)并记住到 localStorage
+  // 【输入】无
+  // 【渲染】更新主题图标/文字; 因主题色变化需重设图表尺寸
+  // 【后端】无
+  toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('agentsense-theme', next);
+    this._updateThemeUI(next);
+    this._resizeAllCharts();
+  },
+
+  // 【功能】初始化时从 localStorage 读取已保存的主题并应用 (默认暗色)
+  // 【输入】无
+  // 【渲染】设置 <html data-theme> 与主题按钮图标/文字
+  // 【后端】无
+  _loadTheme() {
+    const saved = localStorage.getItem('agentsense-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+    this._updateThemeUI(saved);
+  },
+
+  // 【功能】根据主题刷新顶栏按钮上的图标与文字 (🌙暗色 / ☀️亮色)
+  // 【输入】theme: 'dark' 或 'light'
+  // 【渲染】#theme-icon 与 #theme-label 两个 span 的文本
+  // 【后端】无
+  _updateThemeUI(theme) {
+    document.getElementById('theme-icon').textContent = theme === 'dark' ? '🌙' : '☀️';
+    document.getElementById('theme-label').textContent = theme === 'dark' ? '暗色' : '亮色';
+  },
+
+  // ── Varieties ──
+  // 【功能】从后端加载品种列表并填充「运行分析」页的品种下拉框 #sym
+  // 【输入】无
+  // 【渲染】#sym 下拉选项(代码-名称-帖子数); 顶部统计卡 #stat-varieties 品种覆盖数; 触发 updateSentimentStats
+  // 【后端】GET /api/varieties
+  async _loadVarieties() {
+    try {
+      const r = await fetch('/api/varieties');  // 【调用函数】后端接口: 拉取品种列表(代码/名称/情绪帖数)
+      this._varieties = await r.json();
+      const sel = document.getElementById('sym');
+      sel.innerHTML = '';
+      this._varieties.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.code;
+        o.textContent = `${v.code} - ${v.name} (${v.sentiment_posts}帖)`;
+        sel.appendChild(o);
+      });
+      // 【2026-09-17】默认选中"有情绪帖的第一个品种", 而不是列表第一项。
+      // 【为什么】品种白名单收敛到 20 个后按代码排序, 排第一的 BR(丁二烯橡胶)只有
+      // 研报、没有情绪数据 —— 默认选中它时 /api/overlay 的情绪序列为空,
+      // 情绪得分曲线整条不画, 用户看到的是"曲线消失了"。优先挑有帖子的品种,
+      // 让页面第一次打开就是完整可读的图; 没有任何品种有数据时才退回第一项。
+      const __vWithPosts = this._varieties.find(v => (v.sentiment_posts || 0) > 0);
+      if (__vWithPosts) sel.value = __vWithPosts.code;
+      else if (this._varieties.length) sel.value = this._varieties[0].code;
+      // 【2026-09-21】情绪数据页那张叠加图有自己的品种下拉, 一并填充(见方法注释)
+      this._populateOverlaySymSelect();
+      document.getElementById('stat-varieties').textContent = this._varieties.length;
+      // 2026-09-01 扩 33 品种:验证模块品种数提示改动态(不再硬编码"12品种")
+      const vn = this._varieties.length;
+      const elVC = document.getElementById('val-variety-count');
+      const elVA = document.getElementById('val-variety-all-hint');
+      if (elVC) elVC.textContent = vn;
+      if (elVA) elVA.textContent = `全部${vn}个`;
+      this.updateSentimentStats();
+      this.loadRunInputDash();
+    } catch (e) { console.error('Failed to load varieties', e); }
+  },
+
+  // 【功能】品种下拉框 onchange 时刷新该品种的情绪概览(顶部统计卡与品种信息卡)
+  // 【输入】无 (读取 #sym 当前值)
+  // 【渲染】#stat-posts 情绪帖数 / #sentiment-badge 情绪标签 / #variety-info 品种详情(板块/多空比/趋势/数据覆盖)
+  // 【后端】GET /api/sentiment/{sym}
+  async updateSentimentStats() {
+    const sym = document.getElementById('sym').value;
+    try {
+      const r = await fetch(`/api/sentiment/${sym}`);  // 【调用函数】后端接口: 拉取该品种情绪概览(多空比/趋势/数据覆盖)
+      if (r.ok) {
+        const d = await r.json();
+        const ss = d.data.social_sentiment;
+        document.getElementById('stat-posts').textContent = ss.total_posts_analyzed;
+        document.getElementById('sentiment-badge').textContent = ss.overall_sentiment_label;
+        document.getElementById('variety-info').innerHTML =
+          `<b>${d.variety_name}</b> | ${d.sector} | 情绪: ${ss.overall_sentiment_label} | 多空比: ${(ss.bullish_ratio*100).toFixed(0)}:${(ss.bearish_ratio*100).toFixed(0)} | 趋势: ${ss.trend_label}`;
+        // Show time range if available
+        if (d._meta) {
+          document.getElementById('variety-info').innerHTML +=
+            `<br><small style="color:var(--text-muted)">数据覆盖: ${d._meta.data_start} ~ ${d._meta.data_end} (${d._meta.data_days}天) | 更新: ${d._meta.file_updated}</small>`;
+        }
+      }
+    } catch (e) { /* ignore */ }
+  },
+
+  // ── Overlay Variety Picker (情绪得分 vs 价格走势 自己的品种下拉) ──
+  // 【功能】填充情绪数据页「情绪得分 vs 价格走势」卡片自己的品种下拉框 #overlay-sym
+  // 【为什么需要它】2026-09-21 之前, loadOverlayChart() 直接读运行分析页的 #sym ——
+  //   意味着想换这张图上的品种, 只能回「运行分析」改分析对象(顺带把分析对象也换了),
+  //   想对比两个品种的情绪就得来回切页。这里给它一个独立品种轴: 选谁画谁。
+  // 【输入】无 【渲染】#overlay-sym 的 <option> 【后端】无 (数据来自 this._varieties)
+  // 【关键】必须**保留用户当前选择**: _loadVarieties() 在数据更新完成后会被再次调用,
+  //   若每次都重置成默认值, 用户选好的品种会在下一轮采集结束时被悄悄换掉。
+  _populateOverlaySymSelect() {
+    const sel = document.getElementById('overlay-sym');
+    if (!sel) return;
+    const keep = sel.value;  // 【变量】重建 <option> 前先记住用户的选择
+    sel.innerHTML = '';
+    this._varieties.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v.code;
+      o.textContent = `${v.code} - ${v.name} (${v.sentiment_posts || 0}帖)`;
+      sel.appendChild(o);
+    });
+    if (!this._varieties.length) return;
+    if (keep && this._varieties.some(v => v.code === keep)) {
+      sel.value = keep;  // 仍在该品种池内 ⇒ 还原用户的选择
+    } else {
+      // 首次填充: 与 #sym 同一口径, 优先挑有情绪帖的品种, 保证首屏就是完整可读的图
+      const withPosts = this._varieties.find(v => (v.sentiment_posts || 0) > 0);
+      sel.value = (withPosts || this._varieties[0]).code;
+    }
+  },
+
+  // 【功能】「情绪得分 vs 价格走势」品种下拉 onchange: 只重画这张图
+  // 【输入】无 (读取 #overlay-sym) 【渲染】#chart-overlay 【后端】GET /api/overlay/{品种}
+  // 【口径】不触碰 #sym(运行分析品种), 也不重载帖子列表 —— 帖子有自己的 #post-filter
+  onOverlaySymChange() {
+    this.loadOverlayChart();
+  },
+
+  // ── Run Input Data Dashboard (分析输入数据小看板) ──
+  // 【功能】加载"运行分析输入数据"小看板: 展示接下来运行分析将用到的真实数据快照(最新可用,口径与数据看板一致)
+  // 【输入】读取 #sym 当前值
+  // 【渲染】#run-input-asof "数据截至"标注 + #run-input-body(价格/基差/库存/情绪四卡 + 新闻列表 + 宏观chips + 降级提示)
+  // 【后端】GET /api/run_input_data/{sym}
+  async loadRunInputDash() {
+    const sym = document.getElementById('sym').value;
+    const body = document.getElementById('run-input-body');
+    const asof = document.getElementById('run-input-asof');
+    if (!body) return;
+    try {
+      const r = await fetch(`/api/run_input_data/${sym}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (asof && d._meta && d._meta.data_as_of) asof.textContent = `数据截至: ${d._meta.data_as_of}`;
+      body.innerHTML = this._renderRunInput(d);
+    } catch (e) {
+      body.innerHTML = `<span class="badge badge-neutral">输入数据加载失败: ${this._escHtml(String(e.message || e))}</span>`;
+    }
+  },
+
+  // 【功能】渲染输入数据小看板内容(纯字符串拼接,复用 _escHtml)
+  // 【输入】d: GET /api/run_input_data/{sym} 返回 {price,basis,inventory,sentiment,news,macro,_meta}
+  // 【渲染】顶部四张统计卡 + 下拉式表折叠区(品种信息/校验报价/技术指标/价格基差库存序列/供需/情绪详情)
+  //           + 新闻滚动列表(前8条) + 宏观chips + 各块降级note(琥珀) + raw 原文透传
+  // 【后端】无(纯前端渲染)
+  _renderRunInput(d) {
+    const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
+    const f2 = v => (v == null ? '-' : Number(v).toFixed(2));
+    const p = d.price || {}, b = d.basis || {}, i = d.inventory || {}, s = d.sentiment || {};
+    const vi = d.variety_info || {}, ind = d.indicators || {}, vq = d.verified_quote || {}, sd = d.supply_demand || {};
+    const vdb = d.variety_db || {};
+    const cards = [];
+    // 1) 最新价卡
+    if (p.available && p.latest_close != null) {
+      let chg = '';
+      if (p.change_pct != null) {
+        const up = p.change_pct >= 0;
+        chg = `<div style="font-size:0.8rem;color:${up ? 'var(--red)' : 'var(--green)'}">${up ? '+' : ''}${p.change_pct.toFixed(2)}%</div>`;
+      }
+      cards.push(`<div class="stat-card"><div class="stat-val">${esc(p.latest_close)}</div><div class="stat-lbl">最新价 ${esc(p.date || '')}${chg}</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:0.9rem">无数据</div><div class="stat-lbl">最新价</div></div>`);
+    }
+    // 2) 近月基差率卡
+    if (b.available && b.near_basis_rate != null) {
+      const st = this._structureCN(b.structure);
+      cards.push(`<div class="stat-card"><div class="stat-val">${f2(b.near_basis_rate)}%</div><div class="stat-lbl">近月基差率 ${esc(b.date || '')} · ${esc(st)}</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:0.9rem">无数据</div><div class="stat-lbl">近月基差率</div></div>`);
+    }
+    // 3) 仓单库存卡
+    if (i.available && i.inventory != null) {
+      let chg = '';
+      if (i.change != null) {
+        const up = i.change >= 0;
+        chg = `<div style="font-size:0.8rem;color:${up ? 'var(--red)' : 'var(--green)'}">${up ? '+' : ''}${f2(i.change)}</div>`;
+      }
+      cards.push(`<div class="stat-card"><div class="stat-val">${f2(i.inventory)}</div><div class="stat-lbl">仓单库存 ${esc(i.date || '')} · ${esc(this._trendCN(i.trend))}${chg}</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:0.9rem">无数据</div><div class="stat-lbl">仓单库存</div></div>`);
+    }
+    // 4) 情绪卡
+    if (s.available && s.label) {
+      const bull = s.bullish_ratio != null ? Math.round(s.bullish_ratio * 100) : '-';
+      const bear = s.bearish_ratio != null ? Math.round(s.bearish_ratio * 100) : '-';
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:1.2rem">${esc(s.label)}</div><div class="stat-lbl">情绪 ${esc(s.data_end || '')} · ${f2(s.score)} · 多空 ${esc(bull)}:${esc(bear)} ${esc(s.trend_label || '')}</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="stat-val" style="font-size:0.9rem">无数据</div><div class="stat-lbl">情绪</div></div>`);
+    }
+    let html = `<div class="grid grid-4" style="gap:8px">${cards.join('')}</div>`;
+
+    // ---- 下拉式表:放不下的详细数据收进 <details> 折叠区(默认收起) ----
+    const sections = [];
+
+    // 4.5) 品种数据库(本地导入产业库): 分析时基本面分析师**同源**使用的产业一手数据
+    //      (库存/仓单/开工/产量/排产/裂差/基差…), 让用户看到"这次分析实际用到的库内读数"
+    if (vdb.available && (vdb.modules || []).length) {
+      const trs = [];
+      (vdb.modules || []).forEach(m => (m.rows || []).forEach(r => {
+        const col = r.change == null ? 'var(--text-muted)' : (r.change >= 0 ? 'var(--red)' : 'var(--green)');
+        const chg = r.change == null ? '-' :
+          `${r.change >= 0 ? '+' : ''}${f2(r.change)}${r.pct != null ? ` (${r.pct >= 0 ? '+' : ''}${f2(r.pct)}%)` : ''}`;
+        trs.push(`<tr>
+          <td style="padding:2px 8px;color:var(--text-muted)">${esc(m.group)}</td>
+          <td style="padding:2px 8px">${esc(m.name)}</td>
+          <td style="padding:2px 8px">${esc(r.name)}</td>
+          <td style="padding:2px 8px;color:var(--text-muted)">${esc(r.unit)}</td>
+          <td style="padding:2px 8px;text-align:right">${f2(r.latest)}</td>
+          <td style="padding:2px 8px;color:var(--text-muted)">${esc(r.date)}</td>
+          <td style="padding:2px 8px;text-align:right;color:${col}">${esc(chg)}</td>
+          <td style="padding:2px 8px;text-align:right;color:var(--text-muted)">${r.pct_rank == null ? '-' : Math.round(r.pct_rank) + '%'}</td>
+        </tr>`);
+      }));
+      const head = ['分组', '模块', '指标', '单位', '最新', '日期', '环比', '分位']
+        .map(h => `<th style="padding:3px 8px;text-align:left;border-bottom:1px solid var(--border-light);white-space:nowrap">${h}</th>`).join('');
+      const info = `<div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:4px">`
+        + `${esc(vdb.name)}（${esc(vdb.slug)}） · ${esc(vdb.n_sheets)} 模块 / ${esc(vdb.n_series)} 序列`
+        + ` · 源 ${esc(vdb.source)} · 导入 ${esc(vdb.imported_at)}`
+        + ` · 分析时基本面分析师按同一份数据取数（权重高于公开接口与研报转述）</div>`;
+      sections.push({
+        title: '📚 品种数据库（本地导入产业库）',
+        html: info + `<div style="max-height:300px;overflow:auto"><table style="border-collapse:collapse;font-size:0.78rem;width:100%"><thead><tr>${head}</tr></thead><tbody>${trs.join('')}</tbody></table></div>`,
+      });
+    }
+
+    // 5) 品种信息(元数据 KV 表)
+    if (vi.available && vi.data) {
+      const kvRows = Object.entries(vi.data)
+        .filter(([k, v]) => v != null && v !== '')
+        .map(([k, v]) => `<tr><td style="padding:2px 8px;color:var(--text-muted)">${esc(k)}</td><td style="padding:2px 8px">${esc(v)}</td></tr>`)
+        .join('');
+      sections.push({ title: '📋 品种信息', html: `<table style="border-collapse:collapse;font-size:0.78rem;width:100%"><tbody>${kvRows}</tbody></table>` });
+    }
+
+    // 6) 实时校验报价(VERIFIED_SNAPSHOT:分析师数值单一事实来源)
+    if (vq.available && vq.snapshot) {
+      const sn = vq.snapshot;
+      const ohlcv = Object.entries(sn.ohlcv || {}).map(([k, v]) => `<span class="badge badge-info" style="margin:2px">${esc(k)}: ${esc(v)}</span>`).join(' ');
+      const lvls = Object.entries(sn.levels || {}).map(([k, v]) => `<div style="padding:1px 0">${esc(k)}: <b>${esc(v)}</b></div>`).join('');
+      sections.push({ title: `✅ 实时校验报价 ${esc(sn.date || '')}`, html: `<div style="margin-bottom:4px">${ohlcv}</div><div style="font-size:0.8rem">${lvls}</div>` });
+    }
+
+    // 7) 技术指标(最新摘要 + 近5日全列表)
+    if (ind.available && ind.latest) {
+      const L = ind.latest;
+      const labels = { close:'收盘', sma_5:'MA5', sma_10:'MA10', sma_20:'MA20', sma_50:'MA50',
+        ema_12:'EMA12', ema_26:'EMA26', macd:'MACD', macd_signal:'信号', macd_histogram:'柱',
+        rsi_14:'RSI14', boll_upper:'BOLL上', boll_mid:'BOLL中', boll_lower:'BOLL下', atr_14:'ATR14',
+        volume_ratio:'量比', pct_from_sma_20:'距MA20%', oi_change_pct:'持仓增%' };
+      const kvRows = Object.entries(labels)
+        .filter(([k]) => L[k] != null && L[k] !== '')
+        .map(([k, lbl]) => `<tr><td style="padding:2px 8px;color:var(--text-muted)">${esc(lbl)}</td><td style="padding:2px 8px;text-align:right">${esc(L[k])}</td></tr>`)
+        .join('');
+      let inner = `<table style="border-collapse:collapse;font-size:0.78rem;width:100%"><tbody>${kvRows}</tbody></table>`;
+      if (ind.rows && ind.rows.length) {
+        inner += `<div style="margin-top:6px;color:var(--text-muted)">近${ind.rows.length}日明细</div><div style="max-height:200px;overflow-y:auto">${this._tableHtml(Object.keys(ind.rows[0]), ind.rows)}</div>`;
+      }
+      sections.push({ title: `📊 技术指标 ${esc(L.date || '')}`, html: `<div style="max-height:240px;overflow-y:auto">${inner}</div>` });
+    }
+
+    // 8) 价格序列(近10日)
+    if (p.available && p.series && p.series.length) {
+      sections.push({ title: '📈 价格序列', html: `<div style="max-height:200px;overflow-y:auto">${this._tableHtml(['date','open','high','low','close'], p.series)}</div>` });
+    }
+
+    // 9) 基差序列(近10日)
+    if (b.available && b.series && b.series.length) {
+      sections.push({ title: '📐 基差序列', html: `<div style="max-height:200px;overflow-y:auto">${this._tableHtml(['date','spot_price','dom_basis','dom_basis_rate','near_basis','near_basis_rate'], b.series)}</div>` });
+    }
+
+    // 10) 库存序列(近10日)
+    if (i.available && i.series && i.series.length) {
+      sections.push({ title: '📦 库存序列', html: `<div style="max-height:200px;overflow-y:auto">${this._tableHtml(['date','inventory','change'], i.series)}</div>` });
+    }
+
+    // 11) 供需数据(格式化文本,可滚动)
+    if (sd.available && sd.text) {
+      sections.push({ title: '🏭 供需数据', html: `<pre style="max-height:260px;overflow:auto;font-size:0.75rem;white-space:pre-wrap;margin:4px 0">${esc(sd.text)}</pre>` });
+    }
+
+    // 12) 情绪详情(得分/多空比/趋势/数据范围)
+    if (s.available && s.label) {
+      const bull = s.bullish_ratio != null ? Math.round(s.bullish_ratio * 100) : '-';
+      const bear = s.bearish_ratio != null ? Math.round(s.bearish_ratio * 100) : '-';
+      const kvRows = [
+        ['标签', s.label], ['得分', f2(s.score)], ['多空比', `${bull}:${bear}`],
+        ['趋势', s.trend_label], ['数据截止', s.data_end],
+      ].map(([k, v]) => `<tr><td style="padding:2px 8px;color:var(--text-muted)">${esc(k)}</td><td style="padding:2px 8px">${esc(v)}</td></tr>`).join('');
+      sections.push({ title: '💬 情绪详情', html: `<table style="border-collapse:collapse;font-size:0.78rem;width:100%"><tbody>${kvRows}</tbody></table>` });
+    }
+
+    // 渲染折叠区(全部默认收起)
+    for (const sec of sections) {
+      html += `<details style="margin-top:8px;border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:0 10px"><summary style="cursor:pointer;font-size:0.85rem;font-weight:600;padding:6px 0">${sec.title}</summary><div style="padding-bottom:8px">${sec.html}</div></details>`;
+    }
+
+    // 13) 新闻滚动列表(前 8 条)
+    if (d.news && d.news.available && d.news.items && d.news.items.length) {
+      const items = d.news.items.slice(0, 8).map(n =>
+        `<div style="padding:3px 0;border-bottom:1px solid var(--border-light)">
+           <span class="badge badge-info">${esc(n.time)}</span> <b>${esc(n.source)}</b> ${esc(n.title)}
+           ${n.summary ? `<div style="color:var(--text-muted);margin:2px 0 0 12px">${esc(n.summary)}</div>` : ''}
+         </div>`).join('');
+      html += `<div style="margin-top:10px"><b>新闻</b> (前${Math.min(8, d.news.items.length)}条)<div style="max-height:180px;overflow-y:auto;margin-top:4px">${items}</div></div>`;
+    }
+
+    // 14) 宏观摘要 chips
+    if (d.macro && d.macro.available && d.macro.items && d.macro.items.length) {
+      const chips = d.macro.items.map(m =>
+        m.value != null
+          ? `<span class="badge badge-info" title="${esc(m.note)}">${esc(m.name)}: ${esc(m.value)}</span>`
+          : `<span class="badge badge-neutral" title="不可用">${esc(m.name)}: 不可用</span>`
+      ).join(' ');
+      html += `<div style="margin-top:10px"><b>宏观</b> <div style="margin-top:4px">${chips}</div></div>`;
+    }
+
+    // 15) 各块降级 note(琥珀) + raw 原文透传
+    const notes = [];
+    for (const key of ['price', 'basis', 'inventory', 'sentiment', 'news', 'macro',
+                       'variety_info', 'indicators', 'verified_quote', 'supply_demand']) {
+      const blk = d[key];
+      if (blk && !blk.available && blk.note) notes.push(`[${key}] ${blk.note}`);
+      if (blk && blk.raw) {
+        html += `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted)">${key} 原文透传</summary><pre style="max-height:180px;overflow:auto;font-size:0.75rem;white-space:pre-wrap">${esc(blk.raw)}</pre></details>`;
+      }
+    }
+    if (notes.length) {
+      html += `<div style="margin-top:10px">${notes.map(n => `<span class="badge badge-neutral" style="margin-right:4px">${esc(n)}</span>`).join('')}</div>`;
+    }
+    return html;
+  },
+
+  // 【功能】通用表渲染:headers 列名数组 + rows 对象数组 → HTML <table>
+  // 【关键】数值单元格右对齐;日期/文本左对齐;数字为空显 '-'
+  _tableHtml(headers, rows) {
+    const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
+    const fmt = v => {
+      const n = Number(v);
+      if (Number.isInteger(n)) return String(n);
+      return n.toFixed(2);
+    };
+    const th = headers.map(h => `<th style="padding:3px 8px;text-align:left;border-bottom:1px solid var(--border-light);white-space:nowrap">${esc(h)}</th>`).join('');
+    const trs = rows.map(r => `<tr>${headers.map(h => {
+      const v = r[h];
+      const isNum = v != null && v !== '' && (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))));
+      return `<td style="padding:2px 8px;${isNum ? 'text-align:right' : ''}">${isNum ? fmt(v) : esc(v)}</td>`;
+    }).join('')}</tr>`).join('');
+    return `<table style="border-collapse:collapse;font-size:0.78rem;width:100%"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`;
+  },
+
+  // 【功能】基差结构英文 → 中文(小看板展示用)
+  _structureCN(st) {
+    if (!st) return '结构未知';
+    if (st === 'BACKWARDATION') return '现货升水(Back)';
+    if (st === 'CONTANGO') return '现货贴水(Cont)';
+    if (st === 'FLAT') return '平水';
+    return st;
+  },
+
+  // 【功能】库存趋势英文 → 中文(小看板展示用)
+  _trendCN(tr) {
+    if (!tr) return '趋势未知';
+    if (tr === 'BUILDING') return '累库';
+    if (tr === 'DRAINING') return '去库';
+    if (tr === 'STABLE') return '平稳';
+    return tr;
+  },
+
+  // ── SSE Reader (shared) ──
+  // 【功能】通用的"服务器流式事件"读取器: 后端用 chunked/SSE 推送日志时, 逐行解析 `data: {...}` JSON
+  // 【输入】response: fetch 返回的可读流对象; handlers: {消息类型: 回调函数} 映射, 另支持 '*' 通配
+  // 【渲染】由调用方传的 handlers 决定 (如 runDataUpdate 用它渲染更新日志)
+  // 【后端】配合返回 text/event-stream 的端点使用 (如 POST /api/update_data)
+  async _readSSE(response, handlers) {
+    const reader = response.body.getReader();  // 【调用函数】读取流式响应体(逐块消费 SSE 文本)
+    const decoder = new TextDecoder();  // 【变量】UTF-8 流解码器(处理中文等多字节字符跨块边界)
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');  // 【数据转换】按行切分; 最后一行可能不完整, 留到下次循环补全
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const d = JSON.parse(line.slice(6));  // 【数据转换】去掉 SSE 行首 'data: '(前6字符)前缀后解析为 JSON
+          if (handlers[d.type]) handlers[d.type](d);
+          if (handlers['*']) handlers['*'](d);
+        } catch (e) { /* skip malformed */ }
+      }
+    }
+  },
+
+  // ── Run Analysis (polling — reliable, no network errors) ──
+  // 【功能】核心方法: 启动一次完整的 10 节点多智能体分析, 并通过轮询实时刷新进度
+  //   1. 先 POST /api/run_analysis 发起分析(参数: symbol/date/include_sentiment)
+  //   2. 之后每 2 秒轮询 GET /api/progress 获取阶段状态(is_running/is_complete/stages)
+  //   3. 完成后再拉取全部报告结果渲染到页面
+  // 【输入】无 (读取 #sym 品种 / #date 日期 / #include-sentiment 是否含情绪分析师)
+  // 【渲染】顶部 10 个流水线阶段点(techn→fund→macro→sent→bull→bear→rebuttal→judge→synth→scenario)
+  //          的 done/active/pending 状态; 实时日志 #progress-log; 状态统计卡; 完成后渲染报告区
+  // 【后端】POST /api/run_analysis → 轮询 GET /api/progress → 完成时 GET /api/analysis_results
+  // 【功能】预设档位:把三档快捷组合应用到下方细粒度勾选框。
+  // 【输入】preset: 'full'(全跑) | 'light'(跳辩论+情景,保留综合研判) | 'minimal'(仅基础报告)。
+  _setPreset(preset) {
+    const map = { full:[true,true,true], light:[false,true,false], minimal:[false,false,false] };
+    const v = map[preset] || [true,true,true];  // 未知值回退完整档
+    this._applyDepth(v[0], v[1], v[2]);
+  },
+
+  // 【功能】把辩论/综合/情景三布尔写入勾选框并同步 UI(依赖联动 + 预设高亮)。
+  // 【输入】debate/synthesis/scenario: 三模块是否启用。
+  _applyDepth(debate, synthesis, scenario) {
+    const elD = document.getElementById('mod-debate');
+    const elS = document.getElementById('mod-synthesis');
+    const elC = document.getElementById('mod-scenario');
+    if (!elD || !elS || !elC) return;
+    elD.checked = debate; elS.checked = synthesis; elC.checked = scenario;
+    this._syncDepthUI();
+  },
+
+  // 【功能】同步模块勾选 UI:综合研判是主开关 —— 关闭时禁用并清空辩论/情景(否则白跑);
+  //         并按当前勾选组合高亮"恰好匹配"的预设档,组合不匹配任何档时取消全部高亮。
+  _syncDepthUI() {
+    const elD = document.getElementById('mod-debate');
+    const elS = document.getElementById('mod-synthesis');
+    const elC = document.getElementById('mod-scenario');
+    if (!elD || !elS || !elC) return;
+    if (!elS.checked) { elD.checked = false; elC.checked = false; elD.disabled = true; elC.disabled = true; }
+    else { elD.disabled = false; elC.disabled = false; }
+    const match = elS.checked
+      ? (elD.checked && elC.checked ? 'full' : (!elD.checked && !elC.checked ? 'light' : null))
+      : 'minimal';
+    document.querySelectorAll('.depth-preset').forEach(b => b.classList.toggle('active', b.dataset.preset === match));
+  },
+
+  async runAnalysis() {
+    if (this._isAnalysisRunning) return;
+    this.loadRunInputDash();  // 【关键】点开始分析前刷新一次输入数据小看板(不 await, fire-and-forget)
+    this._isAnalysisRunning = true;
+
+    const btnRun = document.getElementById('btn-run');
+    const log = document.getElementById('progress-log');
+    const progCard = document.getElementById('progress-card');
+    const pipeline = document.getElementById('pipeline-stages');
+
+    btnRun.disabled = true; btnRun.textContent = 'Running...';
+    log.textContent = '';
+    progCard.style.display = 'block';
+    document.getElementById('results-area').innerHTML = '';
+    document.getElementById('comparison-charts').style.display = 'none';
+    document.getElementById('stat-status').textContent = 'Starting...';
+
+    const allStages = [  // 【变量】10 个流水线阶段定义(id/名称/图标, 与后端返回的 stage id 对应)
+      {id:'technical',name:'Tech',icon:'📊'},{id:'fundamental',name:'Fund',icon:'📋'},
+      {id:'macro',name:'Macro',icon:'🌍'},{id:'sentiment',name:'Sent',icon:'💬'},
+      {id:'bull_opening',name:'Bull',icon:'🐂'},{id:'bear_refute',name:'Bear',icon:'🐻'},
+      {id:'bull_rebuttal',name:'Rebuttal',icon:'🔄'},{id:'moderator',name:'Judge',icon:'⚖️'},
+      {id:'synthesis',name:'Synth',icon:'🎯'},{id:'scenario',name:'Scenario',icon:'📈'}
+    ];
+    const incChoice = (document.getElementById('include-sentiment')?.value || 'auto');  // 【变量】情绪分析师开关: auto 自动/include 始终包含/exclude 排除
+    // 模块细粒度开关(辩论/综合/情景)。综合研判是主开关,关闭时辩论/情景被 UI 禁用并清空。
+    const _chk = id => { const el = document.getElementById(id); return el ? el.checked : true; };  // 【变量】读取勾选框布尔(缺省视为 true=完整档)
+    const includeDebate = _chk('mod-debate');  // 【变量】是否运行辩论对抗
+    const includeSynthesis = _chk('mod-synthesis');  // 【变量】是否运行综合研判(最终评级)
+    const includeScenario = _chk('mod-scenario');  // 【变量】是否运行情景分析
+    // 本次实际参与分析的阶段列表:按情绪 + 模块开关预先剔除(后端 d1.stages 仍为权威)。
+    const debateIds = ['bull_opening','bear_refute','bull_rebuttal','moderator'];
+    let stages = allStages.filter(s =>
+      (incChoice !== 'exclude' || s.id !== 'sentiment') &&
+      (includeDebate || debateIds.indexOf(s.id) < 0) &&
+      (includeSynthesis || s.id !== 'synthesis') &&
+      (includeScenario || s.id !== 'scenario')
+    );
+    const analystN = stages.filter(s =>  // 【变量】分析师阶段个数(前 N 个流水线阶段初始化为 active 点亮)
+      ['technical','fundamental','macro','sentiment'].includes(s.id)).length;
+    pipeline.innerHTML = stages.map((s,i) =>
+      `<span class="pipeline-stage ${i<analystN?'active':'pending'}" id="stage-${s.id}"><span class="dot"></span>${s.icon} ${s.name}</span>`
+    ).join('');
+
+    const sym = document.getElementById('sym').value;
+    // 【关键逻辑】换品种分析时清空「讨论进化」历史, 避免对话框残留上一个品种的辩论内容。
+    // 只在新品种与上一次讨论所属品种不同时清空, 同一品种重复分析则保留已有讨论。
+    if (sym !== this._feedbackSymbol) {
+      this._feedbackSymbol = sym;
+      this._resetFeedback();
+    }
+    const date = document.getElementById('date').value;
+    const start = Date.now();
+    const timer = setInterval(() => {  // 【变量】耗时计时器: 每秒刷新顶部"上次耗时"统计卡
+      document.getElementById('stat-time').textContent = Math.floor((Date.now()-start)/1000) + 's';
+    }, 1000);
+
+    // Step 1: Start analysis
+    log.innerHTML += '<span class="node">Starting analysis...</span>\n';
+    const r1 = await fetch('/api/run_analysis', {  // 【调用函数】后端接口: 启动分析, 返回权威阶段列表与是否含情绪分析师
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:sym, date, include_sentiment: incChoice,
+        include_debate: includeDebate, include_synthesis: includeSynthesis, include_scenario: includeScenario})
+    });
+    const d1 = await r1.json();
+    log.innerHTML += `<span class="node">Analysis started (${d1.status})</span>\n`;
+    // Backend's authoritative stage list (auto/skip may have dropped modules)
+    this._runModules = d1.modules || null;  // 【变量】记录本次后端权威启用的模块(供结果区提示档位)
+    if (d1.stages && d1.stages.length) {
+      const ids = new Set(d1.stages);
+      stages = allStages.filter(s => ids.has(s.id));
+      pipeline.innerHTML = stages.map((s,i) =>
+        `<span class="pipeline-stage pending" id="stage-${s.id}"><span class="dot"></span>${s.icon} ${s.name}</span>`
+      ).join('');
+      log.innerHTML += `<span class="node">Sentiment 分析师: ${d1.include_sentiment ? '包含' : '跳过'}</span>\n`;
+      const m = d1.modules || {};
+      const sk = [];
+      if (m.debate === false) sk.push('辩论对抗');
+      if (m.synthesis === false) sk.push('综合研判');
+      if (m.scenario === false) sk.push('情景分析');
+      log.innerHTML += `<span class="node">模块: ${sk.length ? '跳过 ' + sk.join('、') : '全部启用(完整档)'}</span>\n`;
+    }
+
+    // Step 2: Poll for progress
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/api/progress');  // 【调用函数】后端接口: 轮询分析进度(阶段状态/llm调用数/是否完成)
+        const d = await r.json();
+        document.getElementById('stat-status').textContent = d.is_running ? 'Analyzing...' : d.is_complete ? 'Complete' : d.error ? 'Error' : '?';
+        if (d.stages) {
+          d.stages.forEach(s => {
+            const el = document.getElementById('stage-'+s.id);
+            if (el) el.className = 'pipeline-stage '+s.status;
+          });
+          document.getElementById('progress-status').textContent =
+            `${d.completed_stages?.length||0}/${d.stages?.length||stages.length} stages`;
+          document.getElementById('stat-llm').textContent = d.llm_calls || '-';
+        }
+
+        // Check complete
+        if (d.is_complete) {
+          clearInterval(poll); clearInterval(timer);
+          document.getElementById('stat-status').textContent = 'Complete';
+          document.getElementById('stat-time').textContent = d.elapsed;
+          log.innerHTML += '<span class="node">=== DONE ===</span>\n';
+
+          // Fetch reports
+          await this.loadAnalysisResults(sym, date);
+          this._isAnalysisRunning = false;
+          btnRun.disabled = false; btnRun.textContent = '▶ Start';
+          return;
+        }
+        if (d.error) {
+          clearInterval(poll); clearInterval(timer);
+          log.innerHTML += `<span class="error">ERROR: ${d.error}</span>\n`;
+          this._isAnalysisRunning = false;
+          btnRun.disabled = false; btnRun.textContent = '▶ Start';
+        }
+      } catch(e) {}
+    }, 2000);
+  },
+
+  _feedbackVisible: false, _feedbackHistory: [], _feedbackSymbol: undefined,  // 【变量】讨论进化状态: 面板可见性/对话历史/所属品种(换品种时清空历史)
+  _runModules: null,  // 【变量】最近一次运行的权威模块开关(来自 /api/run_analysis 的 modules),用于结果区档位提示
+
+  // 【功能】展开/收起「讨论进化」对话输入框(与 Agent 多轮辩论)
+  // 【输入】无
+  // 【渲染】切换 #feedback-box 显示/隐藏, 展开时滚动到可视区域
+  // 【后端】无
+  toggleFeedback() {
+    this._feedbackVisible = !this._feedbackVisible;
+    const box = document.getElementById('feedback-box');
+    box.style.display = this._feedbackVisible ? 'block' : 'none';
+    if (this._feedbackVisible) box.scrollIntoView({behavior:'smooth'});
+  },
+
+  // 【功能】把用户输入的辩论观点发给后端, 并把 Agent 回复追加进对话历史
+  // 【输入】无 (读取 #feedback-input 内容与当前品种 #sym)
+  // 【渲染】#feedback-msgs 里追加用户气泡与 Agent 气泡 (Agent 回复用 marked 渲染 Markdown)
+  // 【后端】POST /api/feedback (body: {symbol, message, history})
+  async sendFeedback() {
+    const input = document.getElementById('feedback-input');
+    const msg = input.value.trim();
+    if (!msg) return;
+    input.value = '';
+    const sym = document.getElementById('sym').value;
+    this._feedbackHistory.push({role:'user', content:msg});
+    this._renderFeedback();
+
+    try {
+      const r = await fetch('/api/feedback', {  // 【调用函数】后端接口: 把用户观点交给 Agent 辩论, 返回回复内容
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({symbol:sym, message:msg, history:this._feedbackHistory})
+      });
+      const d = await r.json();
+      this._feedbackHistory.push({role:'agent', content:d.reply||'No response'});
+      this._renderFeedback();
+    } catch(e) { this._feedbackHistory.push({role:'agent', content:'Error: '+e.message}); this._renderFeedback(); }
+  },
+
+  // 【功能】把 _feedbackHistory 对话数组渲染成气泡列表并滚到底部
+  // 【输入】无 (读取 this._feedbackHistory)
+  // 【渲染】#feedback-msgs 内多行 .debate-round 气泡
+  // 【后端】无
+  _renderFeedback() {
+    const box = document.getElementById('feedback-msgs');
+    box.innerHTML = this._feedbackHistory.map(h =>
+      `<div class="debate-round ${h.role==='agent'?'bull':'bear'}" style="margin:4px 0">
+        <span class="speaker">${h.role==='agent'?'🤖 Agent':'👤 You'}</span>
+        <div style="font-size:0.84rem;margin-top:4px">${h.role==='agent'?marked.parse(h.content):h.content}</div>
+      </div>`).join('');
+    box.scrollTop = box.scrollHeight;
+  },
+
+  // 【功能】更换分析品种时清空「讨论进化」的对话历史(讨论内容跟随当前品种)
+  // 【输入】无 (读取 _feedbackSymbol; 被 #sym 的 onchange 与 runAnalysis 换品种时调用)
+  // 【渲染】清空 _feedbackHistory 数组与 #feedback-msgs 气泡区域
+  // 【后端】无
+  _resetFeedback() {
+    this._feedbackHistory = [];
+    const box = document.getElementById('feedback-msgs');
+    if (box) box.innerHTML = '';
+  },
+
+  // 【功能】(旧版定义) 绘制「预测 vs 实盘价格」对比折线图, 在价格曲线上用虚线标出分析日
+  // 【输入】sym: 品种代码; date: 分析日期
+  // 【渲染】#chart-compare-price 折线图; 显示 #comparison-charts 容器
+  // 【后端】GET /api/compare/{sym}/{date}
+  // 注意: 本文件里该方法定义了两次, JS 对象字面量同名属性以最后一次定义为准(见后文新版)
+  async loadComparisonChart(sym, date) {
+    try {
+      const r = await fetch('/api/compare/' + sym + '/' + date);  // 【调用函数】后端接口: 预测 vs 实盘价格对比(含实际方向与涨跌幅)
+      const d = await r.json();
+      const prices = d.prices || [];
+      if (!prices || prices.length < 2) return;
+      document.getElementById('comparison-charts').style.display = 'grid';
+      const chart = this._initChart('chart-compare-price');
+      if (!chart) return;
+      chart.setOption({
+        title:{text:'Actual: '+d.actual_direction+' ('+(d.pct_change>0?'+':'')+d.pct_change+'%)',left:'center',textStyle:{color:CHART.axis,fontSize:11}},
+        tooltip:{trigger:'axis'},
+        grid:{left:60,right:20,top:35,bottom:20},
+        xAxis:{type:'category',data:prices.map(p=>p.date),axisLabel:{show:false}},
+        yAxis:{type:'value',axisLabel:{color:CHART.axis}},
+        series:[{
+          type:'line',data:prices.map(p=>p.close),smooth:true,showSymbol:false,
+          lineStyle:{color:CHART.brand,width:2},
+          markLine:{silent:true,symbol:'none',data:[{xAxis:date,lineStyle:{color:'#fbbf24',type:'dashed'}}]}
+        }]
+      },true);
+      chart.resize();
+    } catch(e) {}
+  },
+
+  // 【功能】(旧版定义) 绘制「平台权重」柱状图 —— 各平台在回测中的 Softmax 权重(越接近 1 代表预测力越强)
+  // 【输入】无
+  // 【渲染】#chart-platform-weights 柱状图, 标签显示百分比
+  // 【后端】GET /api/backtest
+  // 注意: 该方法同样定义了两次, 运行时以新版(下方)为准
+  async loadPlatformWeightsChart() {
+    try {
+      const r = await fetch('/api/backtest');  // 【调用函数】(旧版定义) 后端接口: 拉取回测平台权重(运行时被下方新版覆盖)
+      const d = await r.json();
+      const platforms = d.platforms || {};
+      const chart = this._initChart('chart-platform-weights');
+      if (!chart) return;
+      chart.setOption({
+        title:{text:'Platform Weights',left:'center',textStyle:{color:CHART.axis,fontSize:11}},
+        grid:{left:50,right:20,top:35,bottom:20},
+        xAxis:{type:'category',data:Object.keys(platforms)},
+        yAxis:{type:'value',axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:CHART.axis}},
+        series:[{type:'bar',data:Object.values(platforms).map(v=>(v*100).toFixed(1)),
+          itemStyle:{color:CHART.brand},label:{show:true,position:'top',formatter:p=>p.value+'%',color:CHART.axis}}]
+      },true);
+      chart.resize();
+    } catch(e) {}
+  },
+
+  // 【功能】分析完成后拉取全部报告, 按固定顺序渲染 10 份报告 + RATING 信号横幅 + 背离提示
+  // 【输入】sym: 品种代码; date: 分析日期
+  // 【渲染】#results-area: 分析师/辩论报告卡片、RATING 信号横幅(绿≥6/红≤4/黄中)、预测背离警告卡; 并触发两幅对比图
+  // 【后端】GET /api/analysis_results (报告正文用 marked 渲染 Markdown)
+  async loadAnalysisResults(sym, date) {
+    try {
+      const r = await fetch('/api/analysis_results');  // 【调用函数】后端接口: 分析完成后一次性拉取全部报告与 RATING
+      const d = await r.json();
+      if (!d.ready) return;
+      const reports = d.reports || {};
+      const order = ['technical_analyst','fundamental_analyst','macro_analyst','sentiment_analyst',
+                     'bull_opening','bear_refute','bull_rebuttal','debate_moderator','synthesis','scenario_analysis'];
+      const names = {
+        'technical_analyst':'📊 Technical Analysis','fundamental_analyst':'📋 Fundamental Analysis',
+        'macro_analyst':'🌍 Macro/News','sentiment_analyst':'💬 Sentiment Analysis',
+        'bull_opening':'🐂 Bull Opening','bear_refute':'🐻 Bear Refute',
+        'bull_rebuttal':'🔄 Bull Rebuttal','debate_moderator':'⚖️ Debate Moderator',
+        'synthesis':'🎯 Synthesis','scenario_analysis':'📈 Scenario Analysis'
+      };
+      let html = '';
+      // 2026-09-03:本档跳过综合研判(极简)时给提示,避免"Complete 却无最终评级"的困惑。
+      const rm = this._runModules;
+      if (rm && rm.synthesis === false) {
+        html += '<div class="card" style="margin-top:12px;border-left:3px solid var(--amber);background:rgba(251,191,36,0.06)">'
+          + '<h3>🧾 本档为「极简」运行</h3>'
+          + '<div style="font-size:0.85rem;color:var(--text-secondary)">本次跳过了综合研判(及辩论对抗、情景分析),仅生成基础分析报告,'
+          + '无最终评级与投资计划。'
+          + (rm.sentiment === false ? ' 情绪分析师也未运行。' : '')
+          + '</div></div>';
+      }
+      order.forEach(key => {
+        const txt = reports[key];
+        if (!txt) return;
+        if (key.includes('bull')||key.includes('bear')) {
+          const cls = key.includes('bull')?'bull':'bear';
+          html += `<div class="debate-round ${cls}"><span class="speaker">${names[key]}</span>${marked.parse(txt)}</div>`;
+        } else {
+          html += `<div class="card" style="margin-top:12px"><h3>${names[key]}</h3><div class="report-content">${marked.parse(txt)}</div></div>`;
+        }
+      });
+      // Rating + predicted magnitude
+      if (d.rating) {
+        const c = d.rating.score>=6?'var(--green)':d.rating.score<=4?'var(--red)':'var(--amber)';
+        const mag = d.predicted_magnitude;
+        const magText = mag != null ? ` | 预测幅度: ${mag>0?'+':''}${mag}%` : '';
+        html += `<div class="signal-banner"><div class="signal-label">RATING</div><div class="signal-rating" style="color:${c}">${d.rating.rating}</div><div class="signal-meta">CONFIDENCE: ${d.rating.confidence} | SCORE: ${d.rating.score}/10${magText}</div></div>`;
+      }
+      // 机构(研报) vs 散户(社媒) 观点对比卡(2026-09-03):确定性对比,放在评级 banner 之后。
+      html += this._renderGroupCompareHtml(reports.group_compare);
+      // Divergence warning
+      const divergence = d.reports?._divergence;
+      if (divergence) {
+        html += `<div class="card" style="margin-top:12px;border-left:3px solid var(--red);background:rgba(239,68,68,0.05)">
+          <h3>⚠️ 预测背离 — 已自动学习</h3>
+          <div style="font-size:0.85rem;color:var(--text-secondary)">${divergence.note}</div>
+        </div>`;
+      }
+      document.getElementById('results-area').innerHTML = html;
+      App.loadComparisonChart(sym, date);
+      App.loadPlatformWeightsChart();
+    } catch(e) { console.error(e); }
+  },
+
+  // 【功能】渲染「机构(研报) vs 散户(社媒) 观点对比」卡(2026-09-03)。
+  // 【输入】gc: reports.group_compare(后端 web_app._build_group_compare 返回值)。
+  // 【渲染】双栏(机构·研报群体 / 散户·社媒群体)+ 右上 共振/背离/分化/单边 徽标;
+  //         gc 缺失或不可用返回空串(不占结果区)。全部文本经 _escHtml 防 XSS。
+  _renderGroupCompareHtml(gc) {
+    if (!gc || !gc.available) return '';
+    const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+    const dirCol = d => (d || '').indexOf('多') >= 0 ? 'var(--green)' : (d || '').indexOf('空') >= 0 ? 'var(--red)' : 'var(--amber)';
+    const chip = (d, bold) => {
+      const c = dirCol(d);
+      const bg = c === 'var(--green)' ? 'rgba(34,197,94,0.12)' : c === 'var(--red)' ? 'rgba(239,68,68,0.12)' : 'rgba(251,191,36,0.12)';
+      return '<span style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:0.78rem;color:' + c + ';background:' + bg + (bold ? ';font-weight:700' : '') + '">' + esc(d) + '</span>';
+    };
+    const pctBar = (label, ratio) => {
+      const pct = Math.max(0, Math.min(100, Math.round((ratio || 0) * 100)));
+      const col = label.indexOf('多') >= 0 ? 'var(--green)' : label.indexOf('空') >= 0 ? 'var(--red)' : 'var(--amber)';
+      return '<div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:0.78rem">'
+        + '<span style="width:30px;color:var(--text-muted)">' + esc(label) + '</span>'
+        + '<span style="flex:1;height:6px;border-radius:3px;background:var(--bg-input);overflow:hidden"><span style="display:block;height:100%;width:' + pct + '%;background:' + col + '"></span></span>'
+        + '<span style="width:38px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text-secondary)">' + pct + '%</span></div>';
+    };
+    const confMini = c => (typeof c === 'number' && isFinite(c))
+      ? '<span style="font-variant-numeric:tabular-nums;color:var(--text-secondary)">' + Math.round(c * 100) + '%</span>' : '—';
+    const I = gc.institution;
+    const R = gc.retail;
+    const J = gc.judgement;
+    let instHtml;
+    if (I && I.present) {
+      const c = I.counts || {};
+      const avg = I.conf_avg || {};
+      instHtml = '<div>净方向: ' + chip(I.net_dir || '中性', true) + ' <span style="color:var(--text-muted);font-size:0.76rem">共 ' + esc(I.count) + ' 份在库研报</span></div>';
+      instHtml += '<div style="margin:6px 0;color:var(--text-secondary);font-size:0.78rem">看多/偏多 <b>' + esc(c.bull) + '</b> · 中性 <b>' + esc(c.neutral) + '</b> · 看空/偏空 <b>' + esc(c.bear) + '</b> &nbsp;|&nbsp; 平均置信度 多 ' + confMini(avg.bull) + ' / 空 ' + confMini(avg.bear) + '</div>';
+      instHtml += '<div style="border-top:1px dashed var(--bg-input);margin:4px 0"></div>';
+      (I.items || []).forEach(it => {
+        instHtml += '<div style="font-size:0.76rem;color:var(--text-secondary);margin:3px 0">' + chip(it.direction || '中性') + ' ' + esc(it.title) + '<span style="color:var(--text-muted)"> (' + esc(it.source) + ')</span></div>';
+      });
+    } else {
+      instHtml = '<span style="color:var(--text-muted);font-size:0.8rem">暂无研报上传,机构群体无数据</span>';
+    }
+    let retailHtml;
+    if (R && R.present) {
+      retailHtml = '<div>净方向: ' + chip(R.dir || '中性', true)
+        + (R.label ? ' <span style="color:var(--text-muted);font-size:0.76rem">(综合标签 ' + esc(R.label) + ')</span>' : '') + '</div>'
+        + pctBar('看多', R.bull_ratio) + pctBar('中性', R.neutral_ratio) + pctBar('看空', R.bear_ratio)
+        + '<div style="color:var(--text-secondary);font-size:0.78rem">avg_score <b>' + esc(R.avg_score) + '</b> · ' + esc(R.posts) + ' 帖 · 趋势 ' + esc(R.trend || '—') + '</div>';
+    } else {
+      retailHtml = '<span style="color:var(--text-muted);font-size:0.8rem">暂无独立社媒数据(情绪可能走了板块复合,此处不展开)</span>';
+    }
+    const kind = J ? (J.kind || '') : '';
+    const jc = kind === '共振' ? 'var(--green)' : kind === '背离' ? 'var(--red)' : 'var(--amber)';
+    const jbg = kind === '共振' ? 'rgba(34,197,94,0.12)' : kind === '背离' ? 'rgba(239,68,68,0.12)' : 'rgba(251,191,36,0.12)';
+    return '<div class="card" style="margin-top:12px;border-left:3px solid var(--blue)">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">'
+      + '<h3 style="margin:0">机构(研报) vs 散户(社媒) 观点对比</h3>'
+      + '<span style="padding:2px 12px;border-radius:999px;font-weight:700;font-size:0.82rem;color:' + jc + ';background:' + jbg + '">' + esc(kind || '—') + '</span></div>'
+      + '<div style="color:var(--text-secondary);font-size:0.82rem;margin:6px 0 8px">' + esc(J ? J.detail : '') + '</div>'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+      + '<div style="background:var(--bg-input);border-radius:8px;padding:10px"><div style="font-weight:700;margin-bottom:6px;color:var(--text-secondary);font-size:0.8rem">机构 · 研报群体</div>' + instHtml + '</div>'
+      + '<div style="background:var(--bg-input);border-radius:8px;padding:10px"><div style="font-weight:700;margin-bottom:6px;color:var(--text-secondary);font-size:0.8rem">散户 · 社媒群体</div>' + retailHtml + '</div>'
+      + '</div></div>';
+  },
+
+  // 【功能】暂停正在运行的分析(后端进入 paused 状态), 并把按钮切换为「恢复」
+  // 【输入】无
+  // 【渲染】#btn-pause 隐藏 / #btn-resume 显示; 状态卡 #stat-status 显示「已暂停」
+  // 【后端】POST /api/pause
+  async pauseAnalysis() {
+    try {
+      const r = await fetch('/api/pause', { method: 'POST' });  // 【调用函数】后端接口: 请求暂停分析(后端进入 paused 状态)
+      const d = await r.json();
+      if (d.status === 'paused') {
+        this.toast('分析已暂停', 'info');
+        document.getElementById('btn-pause').style.display = 'none';
+        document.getElementById('btn-resume').style.display = 'inline-flex';
+        document.getElementById('stat-status').textContent = '已暂停';
+      }
+    } catch (e) { this.toast('暂停失败', 'error'); }
+  },
+
+  // 【功能】恢复已暂停的分析, 按钮切回「暂停」
+  // 【输入】无
+  // 【渲染】#btn-resume 隐藏 / #btn-pause 显示; 状态卡显示「分析中...」; 弹出成功提示
+  // 【后端】POST /api/resume
+  async resumeAnalysis() {
+    try {
+      const r = await fetch('/api/resume', { method: 'POST' });  // 【调用函数】后端接口: 请求恢复已暂停的分析
+      const d = await r.json();
+      if (d.status === 'resumed') {
+        this.toast('分析已恢复', 'success');
+        document.getElementById('btn-resume').style.display = 'none';
+        document.getElementById('btn-pause').style.display = 'inline-flex';
+        document.getElementById('stat-status').textContent = '分析中...';
+      }
+    } catch (e) { this.toast('恢复失败', 'error'); }
+  },
+
+  // 【功能】请求后端停止当前分析
+  // 【输入】无
+  // 【渲染】状态卡显示「停止中...」; 弹提示
+  // 【后端】POST /api/stop
+  async stopAnalysis() {
+    try {
+      const r = await fetch('/api/stop', { method: 'POST' });  // 【调用函数】后端接口: 请求停止当前分析
+      const d = await r.json();
+      if (d.status === 'stopping') {
+        this.toast('正在停止...', 'info');
+        document.getElementById('stat-status').textContent = '停止中...';
+      }
+    } catch (e) { this.toast('停止失败', 'error'); }
+  },
+
+  // ── Charts (ECharts) ──
+  // 【功能】图表生命周期入口: 获取 ECharts 实例。若该容器已有旧实例, 先 dispose() 销毁
+  //         (原因: ECharts 实例不能重复 init 同一 DOM, 不销毁会报 "There is a chart instance already initialized")
+  //         保证每次渲染都是全新图表, 也避免内存/事件堆积。
+  // 【输入】containerId: 图表容器 div 的 id
+  // 【渲染】返回 echarts 实例并存入 _chartInstances (供 resize/统一管理)
+  // 【后端】无
+  _initChart(containerId) {
+    const el = document.getElementById(containerId);
+    if (!el) { console.warn('Chart container not found:', containerId); return null; }
+    // Ensure container has dimensions
+    if (el.clientHeight === 0) { el.style.height = '320px'; }
+    if (this._chartInstances[containerId]) {
+      try { this._chartInstances[containerId].dispose(); } catch(e) {}
+      delete this._chartInstances[containerId];
+    }
+    const chart = echarts.init(el);  // 【调用函数】ECharts: 创建实例并登记到 _chartInstances(供 resize/销毁)
+    this._chartInstances[containerId] = chart;
+    return chart;
+  },
+
+  // 【功能】返回 ECharts 主题名(占位方法)
+  // 【说明】标准 ECharts 未打包暗色主题, 故始终返回 undefined, 由 _baseChartOptions 手写颜色适配暗/亮
+  // 【输入】无 【渲染】无 【后端】无
+  _getEChartsTheme() {
+    // Standard ECharts CDN doesn't include dark theme; use undefined always
+    return undefined;
+  },
+
+  // 【功能】遍历所有已创建的图表实例调用 resize(), 使图表在容器尺寸变化(窗口缩放/主题切换/切页)时自适应
+  // 【输入】无 【渲染】所有活动图表 【后端】无
+  _resizeAllCharts() {
+    Object.values(this._chartInstances).forEach(c => { try { c.resize(); } catch(e){} });
+  },
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ⑨ 小模块索引目录 (2026-09-29)
+  // 【需求】页面太乱: 每个大模块(tab)下把卡片(小模块)列成一列清单, 点标题展开/收起,
+  //         卡片内容收进卡片里, 不再全部平铺。
+  // 【做法】运行时改造, **不改静态 HTML**:
+  //   ① 扫描 tab 内顶层 .card, 每个包一层 .sec-block(可折叠外壳);
+  //   ② 在 tab 顶部插入 .sec-index 索引条, 一列列出各卡片标题;
+  //   ③ 点索引项 → 折叠/展开对应 .sec-block。
+  // 【为什么用 max-height 而不是 display:none】卡片内的 ECharts 在 display:none 容器里
+  //   init 会得到 0x0 画布, 图表变空白; 用 max-height+overflow:hidden 时容器仍有宽度,
+  //   图表可正常初始化。展开后调一次 resize 修正尺寸。
+  // 【为什么运行时做】模板 500KB+ 且卡片含嵌套 div/script 模板串, 静态重排风险高
+  //   (本项目已知"同文件多处编辑静默丢改"); 运行时失败只降级为"不折叠", 不影响功能。
+  // 【品种口径】本功能不涉及数据口径, 纯布局。
+  // ══════════════════════════════════════════════════════════════════════
+
+  // 【功能】某张卡片在索引里显示的标题(取 h3 文本, 去掉内嵌 select/badge 的噪声)
+  _secTitleOf(card) {
+    const h3 = card.querySelector('h3');
+    if (!h3) return '';
+    // 克隆后剔除控件, 避免把下拉/徽标文字混进标题
+    const clone = h3.cloneNode(true);
+    clone.querySelectorAll('select, .badge, .sec-hint').forEach(n => n.remove());
+    return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+  },
+
+  // 【功能】给一个 tab 构建"小模块索引 + 可折叠卡片"。
+  // 【输入】tabId: 如 'sentiment' 【渲染】插入索引条并包裹卡片 【后端】无
+  // 【幂等】已构建过则跳过(切 tab 会重复触发)。
+  _buildSectionIndex(tabId) {
+    const tab = document.getElementById('tab-' + tabId);
+    if (!tab || tab.dataset.secIndex === '1') return;
+    tab.dataset.secIndex = '1';
+
+    // ① 只取"顶层"卡片: 父节点就是 tab 本身。grid 里的卡片由外层 grid 统一包裹,
+    //    按 grid 为一行条目处理(否则一行拆成两个条目反而更乱)。
+    const cards = Array.from(tab.children).filter(el => el.classList && el.classList.contains('card'));
+    const rows = [];   // {label, nodes:[...]}
+    Array.from(tab.children).forEach(el => {
+      if (el.classList && el.classList.contains('card')) {
+        const t = this._secTitleOf(el);
+        if (t) rows.push({ label: t, nodes: [el] });
+        return;
+      }
+      // grid 容器: 其内部直接子级 card 合并为一条
+      if (el.classList && el.classList.contains('grid')) {
+        const inner = Array.from(el.children).filter(c => c.classList && c.classList.contains('card'));
+        if (inner.length) {
+          const titles = inner.map(c => this._secTitleOf(c)).filter(Boolean);
+          if (titles.length) rows.push({ label: titles.join(' / '), nodes: inner });
+        }
+      }
+    });
+    if (!rows.length) return;
+
+    // ② 包裹: 每个 .card 外面套 .sec-block(折叠外壳)
+    rows.forEach(r => {
+      r.nodes.forEach(card => {
+        if (card.parentElement && card.parentElement.classList.contains('sec-block')) return;
+        const block = document.createElement('div');
+        block.className = 'sec-block';
+        card.parentNode.insertBefore(block, card);
+        block.appendChild(card);
+      });
+    });
+
+    // ③ 索引条
+    const idx = document.createElement('div');
+    idx.className = 'sec-index';
+    const title = document.createElement('div');
+    title.className = 'sec-index-title';
+    title.innerHTML = '<span>🗂 小模块</span>'
+      + '<span style="font-size:0.72rem;color:var(--text-muted);font-weight:400">'
+      + `共 ${rows.length} 项 · 点击标题展开 / 收起</span>`;
+    const list = document.createElement('div');
+    list.className = 'sec-index-list';
+    idx.appendChild(title);
+    idx.appendChild(list);
+
+    rows.forEach((r, i) => {
+      const btn = document.createElement('div');
+      btn.className = 'sec-index-item';
+      const blocks = r.nodes.map(c => c.parentElement).filter(p => p && p.classList.contains('sec-block'));
+      btn.innerHTML = `<span class="sec-index-num">${i + 1}</span><span>${this._escHtml(r.label)}</span>`;
+      btn.addEventListener('click', () => this._toggleSection(btn, blocks));
+      list.appendChild(btn);
+      r.btn = btn;
+      r.blocks = blocks;
+    });
+
+    tab.insertBefore(idx, tab.firstChild);
+
+    // ④ 默认: 首个展开(便于一眼看到内容), 其余收起
+    rows.forEach((r, i) => {
+      if (i === 0) this._setBlockOpen(r, true);
+      else this._setBlockOpen(r, false);
+    });
+    // 记住本页 rows 供后续批量操作
+    this._secRows = this._secRows || {};
+    this._secRows[tabId] = rows;
+  },
+
+  // 【功能】设置一组 sec-block 的展开/收起, 并同步按钮态。
+  _setBlockOpen(row, open) {
+    (row.blocks || []).forEach(b => {
+      if (open) {
+        // 先量真实高度再过渡, 避免 max-height 写死导致内容被截断
+        b.style.maxHeight = 'none';
+        const h = b.scrollHeight;
+        b.style.maxHeight = h + 'px';
+        b.classList.remove('is-collapsed');
+        // 内容高度后续可能变化(图表渲染/异步填充): 过渡结束后放开限制
+        setTimeout(() => { b.style.maxHeight = 'none'; }, 320);
+      } else {
+        b.style.maxHeight = b.scrollHeight + 'px';
+        // 强制回流后再归零, 保证过渡生效
+        void b.offsetHeight;
+        b.style.maxHeight = '0px';
+        b.classList.add('is-collapsed');
+      }
+    });
+    if (row.btn) row.btn.classList.toggle('is-open', !!open);
+  },
+
+  // 【功能】点击索引项: 切换折叠, 并在展开后修正图表尺寸。
+  _toggleSection(btn, blocks) {
+    const open = !btn.classList.contains('is-open');
+    this._setBlockOpen({ blocks, btn }, open);
+    if (open) {
+      // ECharts 在折叠态量不到高度, 展开后必须 resize 一次
+      setTimeout(() => this._resizeAllCharts(), 40);
+      setTimeout(() => this._resizeAllCharts(), 340);
+    }
+  },
+
+  // 【功能】生成一份"通用图表配置"基础对象(标题/提示框/坐标轴颜色), 按当前主题适配暗/亮色,
+  //         供各图表的 setOption 用展开运算符 {...} 覆盖/追加 series
+  // 【输入】title: 图表标题文本
+  // 【渲染】返回 ECharts option 片段(不直接画图)
+  // 【后端】无
+  _baseChartOptions(title) {
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    return {
+      backgroundColor: 'transparent',
+      // 标题置顶居中(top:4);legend 显式下移到标题下方(top:30, 居中)。
+      // 若不显式指定 legend.top,ECharts 会把它放在与标题同一行(y:0)且居中,与标题文字重叠。
+      // grid.top 预留 56px 容纳「标题 + 图例」两行,避免绘图区与文字标识重叠。
+      title: { text: title, left: 'center', top: 4, textStyle: { color: isDark ? CHART.axis : '#666', fontSize: 12 } },
+      tooltip: { trigger: 'axis' },
+      grid: { left: 50, right: 20, top: 56, bottom: 30 },
+      xAxis: { type: 'category', axisLine: { lineStyle: { color: isDark ? CHART.line : '#ddd' } }, axisLabel: { color: isDark ? '#666' : '#999' } },
+      yAxis: { type: 'value', axisLine: { lineStyle: { color: isDark ? CHART.line : '#ddd' } }, axisLabel: { color: isDark ? '#666' : '#999' }, splitLine: { lineStyle: { color: isDark ? CHART.grid : '#eee' } } },
+      legend: { top: 30, left: 'center', textStyle: { color: isDark ? CHART.axis : '#666' } }
+    };
+  },
+
+  // 【功能】绘制单品种价格走势折线图(带橙色渐变面积)
+  // 【输入】无 (读取 #sym 品种与 #lookback-days 回看天数)
+  // 【渲染】#chart-price 折线图
+  // 【后端】GET /api/price/{sym}?days={days}
+  async loadPriceChart() {
+    const sym = document.getElementById('sym').value;
+    const days = document.getElementById('lookback-days')?.value || 180;  // 【变量】回看天数(下拉未选时默认 180 天)
+    try {
+      const r = await fetch(`/api/price/${sym}?days=${days}`);  // 【调用函数】后端接口: 拉取品种价格序列(days 控制时间窗口)
+      const d = await r.json();
+      const prices = d.prices || d; // Support both new {_meta, prices} and old array format
+      const chart = this._initChart('chart-price');
+      if (!chart) return;
+      const adjTag = (d._meta && d._meta.adjusted) ? ' · 后复权' : '';  // 【变量】复权标注: 后端已消除换月跳空
+      chart.setOption({
+        ...this._baseChartOptions(sym + ' 价格走势' + adjTag),
+        series: [{
+          type: 'line', data: prices.map(p => [p.date, p.close]),
+          smooth: true, showSymbol: false,
+          lineStyle: { color: CHART.brand, width: 2 },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,  // 【调用函数】ECharts: 垂直渐变(品牌橙从上到下渐隐至透明)
+            [{offset:0,color:CHART.brandA25},{offset:1,color:CHART.brandA02}]) }
+        }]
+      });
+    } catch (e) { /* ignore */ }
+  },
+
+  // ── Sentiment-Price Overlay Chart (dual Y-axis) ──
+  // 【功能】绘制情绪数据页的核心叠加图: 左轴价格(橙) + 右轴作者加权情绪(绿)与简单平均情绪(黄虚线)
+  //         双 Y 轴让"情绪与价格是否同向/背离"一眼可辨
+  // 【输入】无 (读取 #overlay-sym 品种与 #lookback-days 回看天数)
+  // 【渲染】#chart-overlay 三线叠加图; 同时更新时间范围统计卡(情绪/价格起止)与 #overlay-badge 交易日数
+  // 【后端】GET /api/overlay/{sym}?days={days}
+  async loadOverlayChart() {
+    // 【2026-09-21】品种优先取本卡片自己的下拉 #overlay-sym(2026-09-21 起该图不再跟随
+    //   运行分析的 #sym); 元素缺失时才回退 #sym, 保证老布局/半加载状态下不报错。
+    const _oSel = document.getElementById('overlay-sym');
+    const sym = (_oSel && _oSel.value) || document.getElementById('sym')?.value || '';
+    const days = document.getElementById('lookback-days')?.value || 180;  // 【变量】回看天数(下拉未选时默认 180 天)
+    try {
+      const r = await fetch(`/api/overlay/${sym}?days=${days}`);  // 【调用函数】后端接口: 拉取情绪得分 vs 价格叠加数据(双轴图)
+      if (!r.ok) {
+        // 【2026-09-21】非 200 必须**清掉旧图**: 下拉已经切到新品种, 画面上却还是上一个品种
+        //   的曲线, 属于最容易被误读的一类显示错误("换了但看不出变化")。见
+        //   _overlayChartError() 的说明。
+        this._overlayChartError(sym);
+        return;
+      }
+      const d = await r.json();
+      const data = d.overlay || [];
+      const meta = d._meta || {};
+      // 每行按日期建索引: tooltip formatter 里按 axisValue 回查该天的多空占比/帖数
+      // (params 里只带 series 值, 不带整行数据)
+      const rowByDate = {};
+      data.forEach(row => { rowByDate[row.date] = row; });
+      const sentCount = data.filter(p => p.avg_score != null).length;  // 【变量】有情绪得分的交易日数(0 = 该品种没情绪数据)
+      // 【2026-09-17】情绪 7 日均线: 单日情绪噪声极大(很多天只有 1~3 帖, 得分动辄
+      // ±0.8~1.0, 在 [-1,1] 轴上就是满屏锯齿), 日线只答"今天这几条帖子在喊什么",
+      // 均线才答"情绪重心往哪走"。按情绪日序列滚动(样本 <3 不出线, 避免开头假平稳)。
+      const sentPts = data.filter(p => p.avg_score != null);
+      const ma7Map = {};
+      sentPts.forEach((p, i) => {
+        if (i < 2) return;
+        const win = sentPts.slice(Math.max(0, i - 6), i + 1).map(q => q.avg_score);
+        ma7Map[p.date] = win.reduce((a, b) => a + b, 0) / win.length;
+      });
+
+      // Update time range badges
+      document.getElementById('sentiment-meta-bar').style.display = 'flex';
+      document.getElementById('meta-sent-start').textContent = meta.sentiment_start || '-';
+      document.getElementById('meta-sent-end').textContent = meta.sentiment_end || '-';
+      document.getElementById('meta-price-start').textContent = meta.price_start || '-';
+      document.getElementById('meta-price-end').textContent = meta.price_end || '-';
+      // 【2026-09-17】情绪数据为空时在徽标上明说 —— 否则用户只看到"情绪曲线不见了",
+      // 没有任何线索知道是"这个品种没采到情绪"还是"图坏了"(BR 等只有研报的品种就这样)。
+      document.getElementById('overlay-badge').textContent =
+        `${data.length} 个交易日` + (meta.adjusted ? ' · 后复权' : '')
+        + (sentCount ? ` · 情绪 ${sentCount} 天` : ' · ⚠ 该品种暂无情绪数据');  // 【变量】复权标注(价格轴已消除换月跳空)
+
+      const chart = this._initChart('chart-overlay');
+      if (!chart) return;
+
+      const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+      const textColor = isDark ? CHART.axis : '#666';
+      const gridColor = isDark ? CHART.grid : '#eee';
+
+      // 价格面积渐变(从主题令牌取色, 双主题都成立)
+      const priceArea = new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: CHART.brandGlow },
+        { offset: 1, color: 'rgba(0,0,0,0)' }
+      ]);
+
+      chart.setOption({
+        backgroundColor: 'transparent',
+        // 每次全量重建(notMerge): 切品种/切回看天数时清掉上一次的 graphic 提示与
+        // dataZoom 状态, 避免 ECharts 默认合并把"无数据提示"残留在新图上
+        notMerge: true,
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'cross', crossStyle: { color: '#999' } },
+          formatter: (params) => {
+            const row = rowByDate[params[0].axisValue] || {};
+            const num = (v, n) => (v == null || v === '' ? '—' : Number(v).toFixed(n));
+            const dot = (c) => `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${c};margin-right:5px"></span>`;
+            const dir = row.avg_score == null ? '' : (row.avg_score > 0 ? '看多' : row.avg_score < 0 ? '看空' : '中性');
+            const hasSent = row.avg_score != null;
+            return [
+              `<b>${params[0].axisValue}</b>`,
+              hasSent ? `${dot(CHART.candy3)}作者加权情绪&nbsp;<b>${num(row.avg_score, 3)}</b>&nbsp;(${dir})` : `${dot(CHART.candy3)}作者加权情绪&nbsp;—`,
+              ma7Map[row.date] != null ? `${dot(CHART.candy4)}情绪7日均线&nbsp;${num(ma7Map[row.date], 3)}` : null,
+              hasSent ? `${dot(CHART.candy2)}简单平均情绪&nbsp;${num(row.simple_avg, 3)}` : null,
+              row.close != null ? `${dot(CHART.brand)}收盘价&nbsp;<b>${num(row.close, 2)}</b>` : null,
+              hasSent && (row.bullish_ratio != null || row.bearish_ratio != null)
+                ? `<span style="opacity:.75">多空比&nbsp;${Math.round((row.bullish_ratio || 0) * 100)}% / ${Math.round((row.bearish_ratio || 0) * 100)}%</span>` : null,
+              hasSent && row.total_notes ? `<span style="opacity:.75">帖子&nbsp;${row.total_notes} 条</span>` : null,
+              row.adaptive != null
+                ? `${dot(CHART.candy1)}自适应因子&nbsp;<b>${row.adaptive > 0 ? '+1 顺势(信情绪)' : row.adaptive < 0 ? '−1 逆向(反情绪)' : '0 无信号(接飞刀跳过)'}</b>` : null
+            ].filter(Boolean).join('<br>');
+          }
+        },
+        legend: {
+          data: ['收盘价', '作者加权情绪', '情绪7日均线', '简单平均情绪', '自适应因子'],
+          top: 0,
+          right: 10,  // 【布局】图例移到右上角, 与标题错开, 不再挤占底部空间
+          icon: 'roundRect',
+          itemWidth: 14,
+          itemHeight: 8,
+          textStyle: { color: CHART.axis, fontSize: 11 }
+        },
+        grid: { left: 60, right: 88, top: 36, bottom: 50 },
+        // 【2026-09-17】滚轮纵向缩放 + 拖动平移(无滑杆, 不占空间): 2 年窗口 480+ 个
+        // 交易日时标签密不可读, 缩放后可看清局部细节; 双击图表还原
+        dataZoom: [{ type: 'inside', zoomOnMouseWheel: true, moveOnMouseWheel: true, throttle: 60 }],
+        xAxis: {
+          type: 'category',
+          boundaryGap: false,  // 【布局】折线贴边起画, 左右不留半个柱位的空白
+          data: data.map(d => d.date),
+          axisLine: { lineStyle: { color: gridColor } },
+          axisTick: { alignWithLabel: true },
+          axisLabel: { color: CHART.axis, fontSize: 10, rotate: data.length > 60 ? 45 : 0 },
+          splitLine: { show: false }
+        },
+        yAxis: [
+          {
+            type: 'value',
+            name: '价格',
+            nameTextStyle: { color: textColor, fontSize: 10, padding: [0, 0, 0, -14] },
+            scale: true,  // 【轴】价格轴自动缩放到数据范围(不强制从 0 起, 波动才可辨)
+            axisLine: { show: true, lineStyle: { color: CHART.brand } },
+            axisLabel: { color: CHART.brand, fontSize: 10 },
+            splitNumber: 5,
+            splitLine: { lineStyle: { color: gridColor, type: 'dashed' } }
+          },
+          {
+            type: 'value',
+            name: '情绪得分',  // 【布局】刻意短名: 长名会被右上角图例裁掉
+            nameTextStyle: { color: textColor, fontSize: 10, align: 'left', padding: [0, -30, 0, 0] },
+            min: -1, max: 1, interval: 0.5,  // 【轴】固定 [-1,1] 步长 0.5: 不同品种/时段的情绪振幅可横向比较
+            axisLine: { show: true, lineStyle: { color: CHART.candy3 } },
+            axisLabel: { color: CHART.candy3, fontSize: 10 },
+            splitLine: { show: false }
+          },
+          {
+            type: 'value',
+            name: '因子',  // 【2026-09-24 自适应因子】离散 ±1/0 阶梯轴: +1 顺势 / −1 逆向 / 0 跳过
+            nameTextStyle: { color: textColor, fontSize: 10, align: 'left', padding: [0, -14, 0, 0] },
+            min: -1.5, max: 1.5, interval: 1,
+            axisLine: { show: true, lineStyle: { color: CHART.candy1 } },
+            axisLabel: { color: CHART.candy1, fontSize: 10 },
+            splitLine: { show: false }
+          }
+        ],
+        series: [
+          {
+            name: '收盘价',
+            type: 'line',
+            yAxisIndex: 0,
+            z: 2,
+            data: data.map(d => d.close != null ? d.close : null),
+            smooth: 0.25,  // 【样式】轻微平滑(0.25): 保留拐角形态, 又不像全平滑那样造出假拐点
+            showSymbol: false,
+            connectNulls: false,
+            lineStyle: { color: CHART.brand, width: 2 },
+            itemStyle: { color: CHART.brand },
+            areaStyle: { color: priceArea }  // 【样式】价格下方渐变面积, 突出走势主体
+          },
+          {
+            name: '作者加权情绪',
+            type: 'line',
+            yAxisIndex: 1,
+            z: 3,
+            data: data.map(d => d.avg_score != null ? d.avg_score : null),
+            smooth: 0.25,
+            showSymbol: false,
+            connectNulls: false,
+            lineStyle: { color: CHART.candy3, width: 2.5 },
+            itemStyle: { color: CHART.candy3 },
+            areaStyle: { color: CHART.candy3, opacity: 0.10 },  // 【样式】极淡面积让情绪带可辨, 不喧宾夺主
+            // 【2026-09-17】0 轴虚线: 情绪在 0 上下震荡, 没有 0 基线就看不出多空分界
+            markLine: {
+              silent: true,
+              symbol: 'none',
+              label: { show: false },
+              lineStyle: { color: CHART.axis, type: 'dashed', width: 1, opacity: 0.55 },
+              data: [{ yAxis: 0 }]
+            }
+          },
+          {
+            name: '情绪7日均线',
+            type: 'line',
+            yAxisIndex: 1,
+            z: 4,
+            data: data.map(d => ma7Map[d.date] != null ? +ma7Map[d.date].toFixed(3) : null),
+            smooth: 0.35,
+            showSymbol: false,
+            connectNulls: false,  // 【关键】均线按情绪日滚动, 但**不得跨情绪数据空窗连画**
+            // (如 07-20 → 08-21 之间一个月没有帖子, 连直线会伪装成"情绪平稳一个月";
+            //  连续情绪日之间无空档, 照常相连)
+            lineStyle: { color: CHART.candy4, width: 2.5 },
+            itemStyle: { color: CHART.candy4 }
+          },
+          {
+            name: '简单平均情绪',
+            type: 'line',
+            yAxisIndex: 1,
+            z: 3,
+            data: data.map(d => d.simple_avg != null ? d.simple_avg : null),
+            smooth: 0.25,
+            showSymbol: false,
+            connectNulls: false,
+            lineStyle: { color: CHART.candy2, width: 1.5, type: 'dashed' },
+            itemStyle: { color: CHART.candy2 }
+          },
+          {
+            // 【2026-09-24 自适应因子】每日决策阶梯线(与 signal_analyzer.run_adaptive_sentiment
+            //   决策树同构): +1=顺势信情绪 / −1=逆向反情绪 / 0=接飞刀跳过。轴独立(最右),
+            //   不与价格/情绪共用量纲。空窗不连画。
+            name: '自适应因子',
+            type: 'line',
+            yAxisIndex: 2,
+            z: 2,
+            data: data.map(d => d.adaptive != null ? d.adaptive : null),
+            step: 'end',
+            showSymbol: false,
+            connectNulls: false,
+            lineStyle: { color: CHART.candy1, width: 1.5, opacity: 0.9 },
+            itemStyle: { color: CHART.candy1 },
+            markLine: {
+              silent: true,
+              symbol: 'none',
+              label: { show: false },
+              lineStyle: { color: CHART.axis, type: 'dashed', width: 1, opacity: 0.4 },
+              data: [{ yAxis: 2 }]
+            }
+          }
+        ],
+        // 【空态】该品种没采到情绪数据时, 图内居中提示 —— 与徽标文案呼应,
+        // 否则右侧整条轴没有内容, 用户无法区分"没数据"和"渲染坏了"
+        // 【2026-09-21】拆成两档: 连价格都没有(data.length===0)与"只有价格没情绪"是
+        //   两回事 —— 品种下拉可自由选之后, 前者是真会遇到的状态, 不能都报同一句话。
+        graphic: data.length === 0 ? [{
+          type: 'text',
+          left: 'center',
+          top: 'middle',
+          silent: true,
+          z: 100,
+          style: {
+            text: `${sym} 暂无数据\n该时间窗内没有价格序列`,
+            fill: textColor,
+            fontSize: 14,
+            lineHeight: 24,
+            textAlign: 'center',
+            opacity: 0.75
+          }
+        }] : sentCount ? [] : [{
+          type: 'text',
+          left: 'center',
+          top: 'middle',
+          silent: true,
+          z: 100,
+          style: {
+            text: '该品种暂无情绪数据\n当前仅展示价格走势',
+            fill: textColor,
+            fontSize: 14,
+            lineHeight: 24,
+            textAlign: 'center',
+            opacity: 0.75
+          }
+        }]
+      });
+    } catch (e) {
+      console.error('Overlay chart error:', e);
+      // 【2026-09-21】异常路径**也要清旧图**。别以为 !r.ok 已经覆盖了失败 —— 本模板的
+      //   window.fetch 被包装过(见脚本开头): HTTP ≥400 且响应是 HTML 错误页时, 包装层
+      //   会**直接 throw**(带人话提示), 根本回不到 !r.ok 那条分支。只挂 !r.ok 的话,
+      //   服务端 500 时屏上会留着上一个品种的曲线。
+      this._overlayChartError(sym);
+    }
+  },
+
+  // 【功能】叠加图加载失败时的统一善后: 清掉旧图 + 图内与徽标给出明确失败态
+  // 【为什么必须清】品种下拉已经切到新品种, 若旧图留在屏上, 用户看到的是"换了品种但
+  //   曲线没变" —— 比明确报错更糟(报错至少让人知道眼前是错的)。_initChart 会 dispose
+  //   旧实例并重建, 旧曲线随之消失。
+  // 【输入】sym: 当前选中的品种(用于提示文案) 【渲染】#chart-overlay 与 #overlay-badge
+  _overlayChartError(sym) {
+    const c = this._initChart('chart-overlay');
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    if (c) c.setOption({
+      graphic: [{
+        type: 'text',
+        left: 'center',
+        top: 'middle',
+        silent: true,
+        z: 100,
+        style: {
+          text: `${sym} 数据加载失败\n请稍后重试`,
+          fill: isDark ? CHART.axis : '#666',
+          fontSize: 14,
+          lineHeight: 24,
+          textAlign: 'center',
+          opacity: 0.75
+        }
+      }]
+    });
+    document.getElementById('overlay-badge').textContent = '⚠ 数据加载失败';
+  },
+
+  // ── Sentiment Posts (separated from chart loading) ──
+  // 【功能】加载情绪数据页的帖子列表: 先拉取帖子, 再从帖子中收集所有品种做下拉过滤, 默认渲染前 100 条
+  // 【输入】this._platformFilter(平台筛选,''=全部) 与 #lookback-days(时间范围)
+  // 【渲染】#sentiment-posts 帖子卡片; #posts-platform-breakdown 平台筛选 chip;
+  //         #post-filter 品种过滤下拉; 时间范围徽标与统计卡
+  // 【后端】GET /api/sentiment_posts?days={days}&platform={key}
+  // 【关键】平台筛选**下推给后端**执行:接口只回最多 200 条(全局分层抽样),若在前端
+  //         按 platform 过滤,切到弱源就只能看到它被抽中的那几条(如抖音实际采到 877
+  //         条、抽样里只有 ~33 条),用户会直接判成"这个平台没采到" —— 正是 2026-09-15
+  //         "抽样饿死弱源"的同一个坑,只不过这次是筛选器自己制造出来的。
+  async loadSentimentPosts() {
+    const days = document.getElementById('lookback-days')?.value || 180;  // 【变量】回看天数(下拉未选时默认 180 天)
+    const plat = this._platformFilter || '';  // 【变量】当前平台筛选(''=全部)
+    try {
+      const url = `/api/sentiment_posts?days=${days}`
+        + (plat ? `&platform=${encodeURIComponent(plat)}` : '');
+      const r2 = await fetch(url);  // 【调用函数】后端接口: 拉取指定时间范围/平台的帖子列表
+      const d = await r2.json();
+      const posts = d.posts || d; // Support both new {_meta, posts} and old array format
+      const meta = d._meta || {};
+      this._allPosts = Array.isArray(posts) ? posts : [];
+
+      this._applyPostMeta(meta);
+      this.renderPlatformFilter(meta);
+
+      const varieties = new Set();
+      this._allPosts.forEach(p => p.varieties.forEach(v => varieties.add(v)));
+      const sel = document.getElementById('post-filter');
+      const prev = sel.value;  // 【变量】切换平台前的品种选择,新平台也有该品种则保留
+      sel.innerHTML = '<option value="">全部品种 (' + this._allPosts.length + ')</option>';
+      [...varieties].sort().forEach(v => {
+        const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
+      });
+      if (prev && varieties.has(prev)) sel.value = prev;
+      this.filterPosts();
+    } catch (e) {
+      // 【2026-09-17】原本是 `catch (e) { /* ignore */ }`,失败时页面永远停在"加载中…"
+      //   且没有任何提示 —— 看起来就像"这个平台没数据"。改为明确报错。
+      const box = document.getElementById('sentiment-posts');
+      if (box) {
+        box.innerHTML = '<div style="color:var(--text-muted);font-size:0.84rem;padding:14px 4px">'
+          + '帖子加载失败: ' + this._escHtml(String((e && e.message) || e)) + '</div>';
+      }
+    }
+  },
+
+  // 【功能】渲染平台筛选器: 每个平台一个可点 chip,带该平台在当前时间窗内的真实条数
+  // 【输入】meta: 接口 _meta(用 platform_counts / total_posts / platform)
+  // 【渲染】#posts-platform-breakdown 内的 .sent-plat-chip 组
+  // 【关键】计数恒为**全平台**口径 —— 选中某平台后其余平台的数字不能消失,
+  //         否则就失去了"换个平台看看"的参照。
+  renderPlatformFilter(meta) {
+    const box = document.getElementById('posts-platform-breakdown');
+    if (!box) return;
+    const counts = meta.platform_counts || {};
+    const cur = meta.platform || '';
+    const names = this._PLATFORM_NAMES;
+    // 已知平台(固定顺序) + 数据里出现的未知平台(上游新增平台时不至于漏掉它)
+    const keys = Object.keys(names).concat(Object.keys(counts).filter(k => !(k in names)));
+    const total = meta.total_posts || 0;
+    const chip = (key, label, n, extra) =>
+      `<span class="sent-plat-chip ${extra}" data-plat="${this._escHtml(key)}"`
+      + ` onclick="App.filterByPlatform(this.dataset.plat)">${label}`
+      + `<span class="n">${n}</span></span>`;
+    const missing = [];
+    let html = chip('', '全部', total, cur ? '' : 'active');
+    keys.forEach(k => {
+      const n = counts[k] || 0;
+      if (!n) missing.push(names[k] || k);
+      html += chip(k, names[k] || k, n, (cur === k ? 'active' : '') + (n ? '' : ' empty'));
+    });
+    html += '<span class="sent-plat-hint">真实采集量(去重后·当前时间窗)'
+      + (missing.length ? `　⚠️ 无数据: ${missing.join('、')}` : '') + '</span>';
+    box.innerHTML = html;
+  },
+
+  // 【功能】平台筛选 chip 的点击回调: 记录选择并**重新向后端拉取**(筛选在后端做)
+  // 【输入】key: 平台键(''=全部)
+  // 【渲染】触发 loadSentimentPosts 重载 【后端】GET /api/sentiment_posts?platform=key
+  filterByPlatform(key) {
+    this._platformFilter = key || '';
+    this.loadSentimentPosts();
+  },
+
+  // 【功能】把接口 _meta 渲染成"数据覆盖范围 + 当前展示口径"
+  // 【输入】meta: 接口 _meta
+  // 【渲染】#posts-time-range 徽标 / #meta-posts-start / #meta-posts-end 统计卡
+  _applyPostMeta(meta) {
+    const range = document.getElementById('posts-time-range');
+    if (range) {
+      // 时间范围是**全平台**口径(描述这批采集数据覆盖到哪),不随平台筛选变化;
+      // "当前筛选了多少条"是另一回事 —— 写在同一行但分开表述,免得看混。
+      const cover = meta.posts_start ? `${meta.posts_start} ~ ${meta.posts_end}` : '时间未知';
+      const total = meta.total_posts || 0;
+      const plat = meta.platform || '';
+      const shown = Math.min(this._allPosts.length, this._POST_RENDER_LIMIT);
+      const scopeTxt = plat
+        ? `　筛选 ${this._PLATFORM_NAMES[plat] || plat}: ${meta.scope_total} 条中展示 ${shown} 条`
+        : `　本次展示 ${shown} 条`;
+      range.textContent = `(${cover} · 窗口内共 ${total} 条${scopeTxt})`;
+    }
+    // 【2026-09-17】原实现只在 meta.posts_start 存在时更新统计卡,于是"全部日期都
+    //   不可信"时统计卡会**残留上一次的数字**,看起来像还有数据。现在明确置为 '—'。
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    set('meta-posts-start', meta.posts_start || '—');
+    set('meta-posts-end', meta.posts_end || '—');
+  },
+
+  // ── Lookback days change handler ──
+  // 【功能】回看天数下拉 onchange 回调: 仅当当前在情绪数据页时, 重新加载叠加图与帖子
+  // 【输入】无 【渲染】#chart-overlay 与 #sentiment-posts 【后端】无
+  onLookbackChange() {
+    if (this._currentTab === 'sentiment') {
+      this.loadOverlayChart();
+      this.loadSentimentPosts();
+    }
+  },
+
+  // ── Old loadSentimentData kept for backward compat, now just calls new functions ──
+  // 【功能】旧接口的兼容壳: 现在只需要分别调用叠加图与帖子加载
+  async loadSentimentData() {
+    this.loadOverlayChart();
+    this.loadSentimentPosts();
+  },
+
+  // 【功能】帖子列表按品种过滤(下拉框 onchange 触发), 重新渲染前 POST_RENDER_LIMIT 条
+  // 【输入】无 (读取 #post-filter)
+  // 【渲染】#sentiment-posts 帖子卡片 【后端】无
+  // 【口径提示】品种过滤是在**已返回的帖子集合**上做(全部视图下即全局抽样后的
+  //   最多 200 条),因此"某品种条数"不等于该品种的真实采集量 —— 真实量请用上方
+  //   各平台计数与品种详情页。刻意不做成后端筛选:品种维度可多选、组合语义复杂,
+  //   而平台维度是"看哪个源",粒度清晰、收益最大。
+  filterPosts() {
+    const sel = document.getElementById('post-filter').value;
+    const filtered = sel ? this._allPosts.filter(p => p.varieties.includes(sel)) : this._allPosts;
+    this.renderPostCards(filtered.slice(0, this._POST_RENDER_LIMIT));
+  },
+
+  // 【功能】把帖子数组渲染成卡片列表: 平台标签(配色区分) + 作者(粉丝数) + 多空标签 + 品种 + 标题链接 + 时间/点赞
+  // 【输入】posts: 帖子对象数组 (字段: platform/author/fans/score/varieties/url/title/time/likes)
+  // 【渲染】#sentiment-posts 内多个 .post-card 【后端】无
+  renderPostCards(posts) {
+    const box = document.getElementById('sentiment-posts');
+    if (!box) return;
+    // 【2026-09-17】加空态提示。平台筛选上线后"空列表"会经常出现(某平台在较短
+    //   时间窗内确实没有帖子),原来会渲染成一片空白,看起来像页面坏了。
+    if (!posts.length) {
+      const who = this._PLATFORM_NAMES[this._platformFilter] || this._platformFilter;
+      box.innerHTML = '<div style="color:var(--text-muted);font-size:0.84rem;padding:14px 4px">'
+        + (this._platformFilter
+            ? `当前时间窗内「${this._escHtml(who)}」没有帖子 —— 可放宽上方回看天数,或点「全部」看其它平台`
+            : '当前时间窗内没有帖子')
+        + '</div>';
+      return;
+    }
+    box.innerHTML = posts.map(p => `
+      <div class="post-card">
+        <span class="platform-tag ${p.platform}">${p.platform}</span>
+        <b>${this._escHtml(p.author)}</b> ${p.fans ? '(' + (p.fans/10000).toFixed(1) + '万粉)' : '·'}
+        <span style="color:${p.score>0?'var(--green)':p.score<0?'var(--red)':'var(--text-muted)'};font-weight:600">
+          ${p.score > 0.1 ? '看多' : p.score < -0.1 ? '看空' : '中性'}
+        </span>
+        ${p.varieties.length ? ' [' + p.varieties.join(',') + ']' : ''}<br>
+        ${p.url ? `<a href="${p.url}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${this._escHtml(p.title || '（无正文）')}</a>` : this._escHtml(p.title || '（无正文）')}<br>
+        ${p.parent_title ? `<small style="color:var(--text-muted);font-size:0.76rem">↳ 出自视频：${this._escHtml(String(p.parent_title).replace(/^\[抖音评论[^\]]*\]\s*/, ''))}</small><br>` : ''}
+        <small style="color:var(--text-muted)">${p.time || '时间未知'} · ${p.likes}赞</small>
+      </div>`).join('');
+  },
+
+  // 【功能】HTML 转义: 把用户/帖子文本当作纯文本塞进 <div> 再取回 innerHTML,
+  //         浏览器会自动把 <>& 等转义 → 防止 XSS 注入
+  // 【输入】s: 任意字符串
+  // 【渲染】返回转义后的 HTML 安全字符串 【后端】无
+  _escHtml(s) {
+    const div = document.createElement('div');
+    div.textContent = s || '';
+    return div.innerHTML;
+  },
+
+  // 【功能】(新版定义, 运行时以此为准) 绘制「预测 vs 实盘价格」对比折线图, 虚线标注分析日
+  // 【输入】sym: 品种代码; date: 分析日期
+  // 【渲染】#chart-compare-price 折线图(用统一 _baseChartOptions 主题); 显示 #comparison-charts 容器
+  // 【后端】GET /api/compare/{sym}/{date}
+  async loadComparisonChart(sym, date) {
+    try {
+      const r = await fetch(`/api/compare/${sym}/${date}`);  // 【调用函数】(新版) 后端接口: 拉取预测 vs 实盘价格对比
+      const d = await r.json();
+      const prices = d.prices || [];
+      if (!prices || prices.length < 2) return;
+      document.getElementById('comparison-charts').style.display = 'grid';
+      const chart = this._initChart('chart-compare-price');
+      if (!chart) return;
+      chart.setOption({
+        ...this._baseChartOptions(`实际: ${d.actual_direction} (${d.pct_change > 0 ? '+' : ''}${d.pct_change}%)`),
+        series: [{
+          name: sym + ' Close', type: 'line',
+          data: prices.map(p => [p.date, p.close]),
+          smooth: true, showSymbol: false,
+          lineStyle: { color: CHART.brand, width: 2 },
+          markLine: {
+            silent: true,
+            data: [{ xAxis: date, label: { formatter: '分析日', color: '#fbbf24' }, lineStyle: { color: '#fbbf24', type: 'dashed' } }]
+          }
+        }]
+      });
+    } catch (e) { console.error(e); }
+  },
+
+  // 【功能】(新版定义, 运行时以此为准) 绘制「平台权重」柱状图, 使用渐变橙色条
+  // 【输入】无
+  // 【渲染】#chart-platform-weights 柱状图(用 _baseChartOptions 统一主题, 渐变色柱)
+  // 【后端】GET /api/backtest
+  async loadPlatformWeightsChart() {
+    try {
+      const r = await fetch('/api/backtest');  // 【调用函数】(新版) 后端接口: 拉取回测平台权重(Softmax)
+      const d = await r.json();
+      const platforms = d.platforms || {};
+      const chart = this._initChart('chart-platform-weights');
+      if (!chart) return;
+      const labels = Object.keys(platforms);
+      const values = Object.values(platforms).map(w => w * 100);
+      chart.setOption({
+        ...this._baseChartOptions('平台权重 (回测 Softmax)'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: labels },
+        series: [{
+          type: 'bar', data: values,
+          itemStyle: {
+            color: new echarts.graphic.LinearGradient(0,0,0,1,
+              [{offset:0,color:CHART.brand},{offset:1,color:CHART.brand2}])
+          },
+          label: { show: true, position: 'top', formatter: p => p.value.toFixed(1) + '%', color: CHART.axis }
+        }]
+      });
+    } catch (e) { /* ignore */ }
+  },
+
+  // 【功能】情绪信号回测数据加载(2026-09-01 由独立 tab-backtest 并入情绪数据页):
+  //         两幅柱状图(平台预测力 + 品种方向准确率)与三个统计卡片
+  // 【输入】无
+  // 【渲染】#chart-platforms、#chart-varieties(绿≥55%红<55%)、#backtest-stats(作者加权/简单平均/加权来源)
+  // 【后端】GET /api/backtest
+  async loadBacktest() {
+    try {
+      const r = await fetch('/api/backtest');  // 【调用函数】后端接口: 拉取回测数据(平台预测力/品种准确率/信号对比)
+      const d = await r.json();
+
+      // Platform chart
+      const platLabels = Object.keys(d.platforms || {});
+      const chart1 = this._initChart('chart-platforms');
+      if (chart1) {
+        chart1.setOption({
+          ...this._baseChartOptions('平台预测力'),
+          xAxis: { ...this._baseChartOptions('').xAxis, data: platLabels },
+          series: [{
+            type: 'bar', data: platLabels.map(p => (d.platforms[p] * 100).toFixed(1)),
+            itemStyle: { color: CHART.brand },
+            label: { show: true, position: 'top', formatter: p => p.value + '%', color: CHART.axis }
+          }]
+        });
+      }
+
+      // Variety chart
+      const vars = Object.entries(d.varieties || {}).sort((a, b) => b[1].accuracy - a[1].accuracy).slice(0, 15);
+      const chart2 = this._initChart('chart-varieties');
+      if (chart2) {
+        chart2.setOption({
+          ...this._baseChartOptions('品种方向准确率'),
+          xAxis: { ...this._baseChartOptions('').xAxis, data: vars.map(v => v[0]), axisLabel: { rotate: 45, fontSize: 9 } },
+          yAxis: { ...this._baseChartOptions('').yAxis, axisLabel: { formatter: v => (v * 100).toFixed(0) + '%' } },
+          series: [{
+            type: 'bar',
+            data: vars.map(v => (v[1].accuracy * 100).toFixed(1)),
+            itemStyle: { color: params => params.value >= 55 ? '#22c55e' : '#ef4444' }
+          }]
+        });
+      }
+
+      // Stats
+      const cmp = d.signal_comparison || {};
+      document.getElementById('backtest-stats').innerHTML = `
+        <div class="card"><h3>作者加权</h3><div style="font-size:2rem;font-weight:700;color:var(--green)">${((cmp.author_weighted?.direction_accuracy || 0) * 100).toFixed(1)}%</div><div style="font-size:0.78rem;color:var(--text-muted)">方向准确率 (n=${cmp.author_weighted?.data_points || 0})</div></div>
+        <div class="card"><h3>简单平均</h3><div style="font-size:2rem;color:var(--text-secondary)">${((cmp.simple_avg?.direction_accuracy || 0) * 100).toFixed(1)}%</div><div style="font-size:0.78rem;color:var(--text-muted)">对照基准 (n=${cmp.simple_avg?.data_points || 0})</div></div>
+        <div class="card"><h3>加权来源</h3><div style="font-size:1.1rem;color:var(--brand)">${d.weight_source || 'N/A'}</div><div style="font-size:0.78rem;color:var(--text-muted)">平台权重优化方法</div></div>`;
+    } catch (e) { console.error(e); }
+  },
+
+  // ── Research (研报上传) ──
+  // 【功能】进入「研报」页时懒加载: 填充上传/筛选两个品种下拉 + 拉取研报列表
+  // 【功能】研报页(观点分析)首次进入: 填充顶部共享品种下拉并载入两卡。
+  //        2026-09-03 研报页收窄: 上传/研报库已迁「数据仓库」tab → 不再拉列表。
+  // 【输入】无 【渲染】#res-views 观点总览卡
+  // 【后端】GET /api/research/views?variety=
+  async loadResearch() {
+    // 品种下拉首次进入才填充(重复进入只读不重填); res-views-variety 是研报页顶部
+    // 共享品种选择 —— 逐品种观点总览卡读它。
+    this._populateVarietySelects(['res-views-variety', 'res-ask-variety']);
+    await this.loadResearchViews();
+    this._loadDailyDates();   // 每日总结日期列表(后台填充, 不阻塞两卡)
+    this._loadVsumDates();    // 单品种总结:独立日期下拉 + 品种多选面板(后台, 不阻塞)
+    this._loadRagStatus();    // 研报问答卡片:索引状态(后台, 不阻塞)
+    // 2026-09-24 历史会话下拉已隐藏, 不再预拉会话列表(_loadQaSessions 函数保留待恢复)
+  },
+
+  // ── 研报问答(RAG·多轮智能知识库, 2026-09-12) ──
+  // 会话持久化在后端(qa_sessions/qa_messages 表);前端 qaState 只存当前会话 id 与已加载消息。
+  // 追问由后端用 LLM 改写(补全省略主语/代词)后再检索,前端无需回传历史。
+  // 【功能】拉取 RAG 索引状态,渲染徽标;未启用时禁用提问按钮并给出安装/回填提示。
+  // 【输入】无 【渲染】#res-ask-tag 徽标 + #res-ask-hist 空态提示 + #res-ask-btn
+  // 【后端】GET /api/research/rag/status
+  async _loadRagStatus() {
+    const tag = document.getElementById('res-ask-tag');
+    if (!tag) return;
+    try {
+      const r = await fetch('/api/research/rag/status');  // 【调用函数】后端接口: RAG 索引状态
+      const d = await r.json();
+      if (!d.rag_enabled) {
+        tag.textContent = '未启用';
+        const hist = document.getElementById('res-ask-hist');
+        const btn = document.getElementById('res-ask-btn');
+        if (hist && !this.qaState?.messages?.length) hist.innerHTML =
+          'RAG 未启用: 需安装 chromadb 与 sentence-transformers,并运行 <code>python scripts/backfill_rag_index.py</code> 回填存量研报索引。';
+        if (btn) btn.disabled = true;
+      } else {
+        tag.textContent = `${d.reports} 份研报 / ${d.chunks} 片段`;
+      }
+    } catch (e) { /* 状态拉取失败不影响卡片 */ }
+  },
+
+  // 【功能】拉取会话列表填下拉(进研报页时 + 每次提问后静默刷新)
+  // 【后端】GET /api/research/qa/sessions
+  async _loadQaSessions() {
+    const sel = document.getElementById('res-qa-session');
+    if (!sel) return;
+    try {
+      const r = await fetch('/api/research/qa/sessions?limit=50');
+      const d = await r.json();
+      const sessions = d.sessions || [];
+      const cur = this.qaState?.sessionId || '';
+      sel.innerHTML = '<option value="">— 选择历史会话 —</option>' + sessions.map(s =>
+        `<option value="${s.id}" ${s.id === cur ? 'selected' : ''}>${s.title || '(未命名)'} (${s.message_count}条)</option>`
+      ).join('');
+    } catch (e) { /* 下拉拉取失败不影响提问 */ }
+  },
+
+  // 【功能】切换会话:拉取该会话全部消息回放(含引用与失败轮)
+  // 【后端】GET /api/research/qa/sessions/<id>/messages
+  async switchQaSession(id) {
+    const sel = document.getElementById('res-qa-session');
+    const sid = id || sel?.value;
+    if (!sid) return;
+    try {
+      const r = await fetch(`/api/research/qa/sessions/${sid}/messages`);
+      if (!r.ok) { this.newQaSession(); return; }
+      const d = await r.json();
+      this.qaState = { sessionId: d.session.id, messages: d.messages.map(m => ({
+        role: m.role === 'user' ? 'user' : 'agent',
+        data: { ok: !m.error, answer: m.content, citations: m.citations || [],
+                retrieved: m.retrieved, error: m.error,
+                message_id: m.id, feedback: m.feedback || '' },
+      })) };
+      // 会话筛选快照回填前端筛选器
+      const s = d.session;
+      const setv = (eid, v) => { const e = document.getElementById(eid); if (e) e.value = v || ''; };
+      setv('res-ask-variety', s.variety); setv('res-ask-type', s.report_type);
+      setv('res-qa-from', s.date_from); setv('res-qa-to', s.date_to);
+      this._renderAskHistory();
+    } catch (e) { /* 切换失败保持现状 */ }
+  },
+
+  // 【功能】开新对话:重置本地状态与筛选器(不请求后端, 首次提问自动建会话)
+  newQaSession() {
+    this.qaState = { sessionId: null, messages: [] };
+    const sel = document.getElementById('res-qa-session');
+    if (sel) sel.value = '';
+    ['res-ask-question', 'res-ask-variety', 'res-ask-type', 'res-qa-from', 'res-qa-to']
+      .forEach(eid => { const e = document.getElementById(eid); if (e) e.value = ''; });
+    const el = document.getElementById('res-ask-hist');
+    if (el) el.innerHTML = '输入问题开始提问; 对话已按会话自动保存(刷新不丢)。';
+  },
+
+  // 【功能】删除当前会话(连消息一起), 删除后回到新对话状态
+  async deleteQaSession() {
+    const sid = this.qaState?.sessionId;
+    if (!sid) return;
+    if (!confirm('删除当前会话及其全部问答记录?')) return;
+    try { await fetch(`/api/research/qa/sessions/${sid}`, { method: 'DELETE' }); } catch (e) {}
+    this.newQaSession();
+    this._loadQaSessions();
+  },
+
+  // 【功能】多轮研报问答:提问 → (追问时后端改写检索) → LLM 引用作答 → 会话落库。
+  // 【输入】读 #res-ask-question / #res-ask-variety / #res-ask-type / #res-qa-from / #res-qa-to
+  // 【渲染】#res-ask-hist 追加问答气泡(先插"⏳"占位, 完整返回后替换, 等待 10~60s)
+  // 【后端】POST /api/research/qa/ask
+  async askResearch() {
+    const q = (document.getElementById('res-ask-question')?.value || '').trim();
+    if (!q) return;
+    const variety = document.getElementById('res-ask-variety')?.value || '';
+    const reportType = document.getElementById('res-ask-type')?.value || '';
+    const dateFrom = document.getElementById('res-qa-from')?.value || '';
+    const dateTo = document.getElementById('res-qa-to')?.value || '';
+    const btn = document.getElementById('res-ask-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 检索中…'; }
+    // 【2026-09-15 下线全屏 loading 遮罩】此处曾调用 bhLoader.show() 铺一层全屏黑洞遮罩。
+    // 实测代价过大:检索 + 生成要 10~60s,遮罩期间整页被盖住、其他标签页全部点不动 ——
+    // 为一段 loading 动效冻结整个工具,不划算。现改回「按钮文案 ⏳ + 消息流里的
+    // 进行中提示」这套**非阻塞**反馈(见下方 pending 消息),检索期间可自由切页。
+    // 黑洞组件本体仍保留在文件里(未删),若日后复用请做成不阻断操作的小浮标,
+    // 不要再做成铺满视口的容器级遮罩。
+    this.qaState = this.qaState || { sessionId: null, messages: [] };
+    this.qaState.messages.push({ role: 'user', content: q });
+    const pending = { role: 'agent', data: { ok: false, error: '⏳ 检索与生成中…(最长可能等待一分钟)' } };
+    this.qaState.messages.push(pending);
+    this._renderAskHistory();
+    try {
+      const r = await fetch('/api/research/qa/ask', {  // 【调用函数】后端接口: 多轮研报问答
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: q, session_id: this.qaState.sessionId,
+          variety, report_type: reportType, date_from: dateFrom, date_to: dateTo,
+          stream: true,  // 【2026-09-22 流式输出】后端 SSE 边生成边推
+        }),
+      });
+      const ct = (r.headers.get('content-type') || '').toLowerCase();
+      if (ct.includes('text/event-stream')) {
+        // 【2026-09-22 流式】逐段读 SSE:delta 追加到 pending.answer,结束解析 done 事件
+        pending.data = { ok: false, streaming: true, answer: '', error: '⏳ 生成中…' };
+        this._renderAskHistory();
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '', final = null, errMsg = null;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
+            const ev = buf.slice(0, idx); buf = buf.slice(idx + 2);
+            const m = ev.match(/^data: (.*)$/m);
+            if (!m) continue;
+            let d; try { d = JSON.parse(m[1]); } catch { continue; }
+            if (d.delta) { pending.data.answer += d.delta; pending.data.thinking = false; pending.data.heartbeat = false; pending.data.status = ''; this._renderAskHistory(); }
+            else if (d.thinking) { pending.data.thinking = true; pending.data.heartbeat = false; this._renderAskHistory(); }
+            else if (d.status) {
+              // 【2026-09-22 流式前置】链路阶段状态: 改写/检索/数据块 期间立即可见
+              pending.data.status = d.status; pending.data.heartbeat = false; this._renderAskHistory();
+            }
+            else if (d.heartbeat) {
+              // 【2026-09-22】首字前心跳: 端点排队/首 token 慢时每 4s 推一次, 避免"假卡死"
+              if (!pending.data.answer) { pending.data.heartbeat = (pending.data.heartbeat || 0) + 1; this._renderAskHistory(); }
+            }
+            else if (d.done) { final = d; }
+            else if (d.error) { errMsg = d.error; }
+          }
+        }
+        if (final) {
+          pending.data = { ok: true, answer: final.answer || '', citations: final.citations || [],
+                           retrieved: final.retrieved, message_id: final.message_id, feedback: '' };
+          if (final.session_id) this.qaState.sessionId = final.session_id;
+        } else {
+          pending.data = { ok: false, error: errMsg || '流式响应未完成' };
+        }
+      } else {
+        const d = await r.json();
+        if (d.session_id) this.qaState.sessionId = d.session_id;
+        pending.data = d.ok
+          ? { ok: true, answer: d.answer, citations: d.citations || [], retrieved: d.retrieved,
+              message_id: d.message_id, feedback: '' }
+          : { ok: false, error: d.error || '生成失败', citations: d.citations, retrieved: d.retrieved,
+              message_id: d.message_id, feedback: '' };
+      }
+    } catch (e) {
+      pending.data = { ok: false, error: '网络错误: ' + e };
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 提问'; }
+    const input = document.getElementById('res-ask-question');
+    if (input) input.value = '';
+    this._renderAskHistory();
+    // 2026-09-24 历史会话下拉已隐藏, 不再静默刷新会话列表
+  },
+
+  // 【渲染】#res-ask-hist:用户气泡右对齐,模型回答用 marked 渲染 + 可折叠引用列表 + 👍👎反馈
+  _renderAskHistory() {
+    const el = document.getElementById('res-ask-hist');
+    if (!el) return;
+    const hist = this.qaState?.messages || [];
+    if (!hist.length) return;
+    el.innerHTML = hist.map(h => {
+      if (h.role === 'user') {
+        return `<div style="align-self:flex-end;max-width:85%;background:var(--bg-elev,#eef2ff);border-radius:10px;padding:8px 12px;font-size:0.88rem">${h.content}</div>`;
+      }
+      const d = h.data || {};
+      if (d.streaming) {
+        // 【2026-09-22 流式】生成中:思考期显示"思考中"心跳,正文纯文本累积(不 markdown,避免频繁重渲染闪烁)
+        const state = d.status ? `⏳ ${d.status}` : d.thinking ? '🧠 思考中…(推理较慢属正常)'
+          : d.heartbeat ? `⏳ 仍在等待模型响应…(已 ${d.heartbeat * 4}s, 首字较慢属正常)` : '✍️ 生成中…';
+        return `<div style="max-width:95%;border:1px solid var(--border,#e0e0e0);border-radius:10px;padding:10px 14px">
+          <div style="color:var(--text-muted);font-size:0.8rem;margin-bottom:4px">${state}</div>
+          <div style="white-space:pre-wrap;font-size:0.88rem">${d.answer || ''}</div>
+        </div>`;
+      }
+      if (!d.ok) {
+        const fb = d.message_id ? this._qaFbBar(d.message_id, d.feedback) : '';
+        return `<div style="max-width:95%;color:var(--text-muted);font-size:0.85rem">⚠️ ${d.error || '生成失败'}${fb}</div>`;
+      }
+      const cites = (d.citations || []).map(c =>
+        `<li value="${c.no}">[${c.no}] ${c.publish_date || '日期未知'} ${c.variety || ''} 《${c.title}》${c.kind === 'conclusion' ? ' <span title="这是系统对该篇研报的结构化归纳,不是研报原文" style="border:1px solid currentColor;border-radius:4px;padding:0 4px;font-size:0.72rem;opacity:0.75">系统归纳</span>' : ''} 相关度 ${(c.score * 100).toFixed(0)}% <a href="/api/research/${c.report_id}/file" target="_blank">原件</a></li>`
+      ).join('');
+      return `<div style="max-width:95%;border:1px solid var(--border,#e0e0e0);border-radius:10px;padding:10px 14px">
+        <div class="report-content" style="font-size:0.88rem">${marked.parse(d.answer || '_空回答_')}</div>
+        ${d.retrieved ? `<details style="margin-top:6px;font-size:0.8rem"><summary>引用来源(${d.retrieved} 片段)</summary><ol style="margin:6px 0 0 18px">${cites}</ol></details>` : ''}
+        ${this._qaFbBar(d.message_id, d.feedback)}
+      </div>`;
+    }).join('');
+    el.scrollTop = el.scrollHeight;
+  },
+
+  // 【渲染】assistant 气泡尾部的 👍/👎 反馈条(已反馈固定高亮;未落库的轮次不渲染)
+  _qaFbBar(messageId, feedback) {
+    if (!messageId) return '';
+    const on = v => feedback === v ? 'opacity:1;font-weight:bold' : 'opacity:0.45;cursor:pointer';
+    return `<div style="margin-top:6px;font-size:0.85rem">
+      <span onclick="App.sendQaFeedback(${messageId},'up')" style="${on('up')}" title="回答有帮助">👍</span>
+      <span onclick="App.sendQaFeedback(${messageId},'down')" style="${on('down')}" title="回答不行(进错题本)">👎</span>
+    </div>`;
+  },
+
+  // 【功能】给 assistant 消息打 👍/👎(自进化 P0 反馈信号);本地更新后重渲染
+  // 【后端】POST /api/research/qa/feedback
+  async sendQaFeedback(messageId, fb) {
+    try {
+      const r = await fetch('/api/research/qa/feedback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_id: messageId, feedback: fb }),
+      });
+      const d = await r.json();
+      if (!d.ok) { alert(d.error || '反馈失败'); return; }
+      (this.qaState?.messages || []).forEach(m => {
+        if (m.data?.message_id === messageId) m.data.feedback = fb;
+      });
+      this._renderAskHistory();
+    } catch (e) { alert('反馈失败: ' + e); }
+  },
+
+  // ── 自进化面板(2026-09-14):错题本 + 黑话词典 ──
+  // 【功能】错题本:反馈统计 + 失败轮列表(👎/0命中/出错自动浮出);词典:CRUD 同面板
+  // 【后端】GET /api/research/qa/insights + /api/research/qa/terms
+  async loadQaInsights() {
+    const statsEl = document.getElementById('res-qa-stats');
+    const failEl = document.getElementById('res-qa-failures');
+    const termsEl = document.getElementById('res-qa-terms');
+    if (!statsEl || !failEl) return;
+    try {
+      const r = await fetch('/api/research/qa/insights');
+      const d = await r.json();
+      const s = d.stats || {};
+      statsEl.innerHTML = `<span>👍 ${s.up || 0}</span><span>👎 ${s.down || 0}</span>` +
+        `<span>0命中 ${s.zero_hit || 0}</span><span>失败 ${s.failed || 0}</span>` +
+        `<span style="color:var(--text-muted)">(失败轮 = 点踩 / 检索空转 / 报错, 按时间倒序)</span>`;
+      const fails = d.failures || [];
+      failEl.innerHTML = fails.length ? fails.map(f => `<div style="border:1px solid var(--border,#e0e0e0);border-radius:8px;padding:8px 10px">
+        <div style="font-size:0.88rem">❓ ${f.question}</div>
+        <div style="color:var(--text-muted);font-size:0.78rem;margin-top:4px">
+          ${f.feedback === 'down' ? '👎 ' : ''}片段:${f.retrieved || 0}${f.error ? ' · ⚠️ ' + f.error : ''}${f.rewritten_query ? ' · 检索词:' + f.rewritten_query : ''} · ${App._utcToLocal(f.created_at, true) || ''}
+        </div>
+        ${f.answer ? `<details style="margin-top:4px;font-size:0.8rem"><summary>回答摘要</summary>${f.answer}</details>` : ''}
+        <button class="btn btn-outline" style="margin-top:6px;font-size:0.78rem" onclick="App.prefillQaTerm(${JSON.stringify(f.question).replace(/"/g, '&quot;')})">➕ 录入词典</button>
+      </div>`).join('') : '<div style="color:var(--text-muted)">暂无失败轮 —— 系统还在"无错可记"状态; 点踩或检索空转后会在这里浮出。</div>';
+    } catch (e) {
+      if (failEl) failEl.innerHTML = '错题本拉取失败: ' + e;
+    }
+    // 词典列表与错题本一起刷新(同一面板)
+    try {
+      const r2 = await fetch('/api/research/qa/terms');
+      const d2 = await r2.json();
+      const terms = d2.terms || [];
+      if (termsEl) termsEl.innerHTML = terms.length ? terms.map(t =>
+        `<div style="display:flex;gap:10px;align-items:center">
+          <span style="flex:1">${t.term} → ${t.mapping} <span style="opacity:0.6">(命中 ${t.hits} 次)</span></span>
+          <button class="btn btn-outline" style="font-size:0.78rem" onclick="App.deleteQaTerm(${t.id})">🗑</button>
+        </div>`).join('') : '<div>词典为空 —— 从错题本或下方录入口语词。</div>';
+    } catch (e) { /* 词典拉取失败不影响错题本 */ }
+  },
+
+  // 【功能】"录入词典"一键预填:把失败轮的提问填进口语词输入框(mapping 需人工提炼)
+  prefillQaTerm(question) {
+    const t = document.getElementById('res-qa-term');
+    if (t) t.value = question;
+    const m = document.getElementById('res-qa-term-map');
+    if (m) { m.value = ''; m.focus(); }
+    t?.scrollIntoView({ block: 'center' });
+  },
+
+  // 【功能】添加词典条目(term 已存在视为改映射);成功后刷新面板
+  // 【后端】POST /api/research/qa/terms
+  async addQaTerm() {
+    const term = (document.getElementById('res-qa-term')?.value || '').trim();
+    const mapping = (document.getElementById('res-qa-term-map')?.value || '').trim();
+    if (!term || !mapping) { alert('口语词与标准检索词都要填'); return; }
+    try {
+      const r = await fetch('/api/research/qa/terms', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ term, mapping }),
+      });
+      const d = await r.json();
+      if (!d.ok) { alert(d.error || '录入失败'); return; }
+      document.getElementById('res-qa-term').value = '';
+      document.getElementById('res-qa-term-map').value = '';
+      this.loadQaInsights();
+    } catch (e) { alert('录入失败: ' + e); }
+  },
+
+  // 【功能】删除词典条目
+  // 【后端】DELETE /api/research/qa/terms/<id>
+  async deleteQaTerm(id) {
+    if (!confirm('删除该词条?')) return;
+    try { await fetch(`/api/research/qa/terms/${id}`, { method: 'DELETE' }); } catch (e) {}
+    this.loadQaInsights();
+  },
+
+
+  // 【功能】把新入库(done)但还没向量的研报补进 RAG 索引 —— 幂等,可随时点。
+  // 【为什么】单篇入库本会即时索引,但 embedding 模型缺失期间入库的会静默漏掉
+  //          (2026-09-09:模型没装 → 09-07 之后的研报在问答里检索不到)。
+  // 【后端】POST /api/research/rag/index(since_days=7);轮询 GET 同路径等待完成
+  async indexRag() {
+    const btn = document.getElementById('res-rag-index-btn');
+    try {
+      const r = await fetch('/api/research/rag/index', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ since_days: 7 })
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 409) { this.toast('RAG 入库已在进行中, 请稍候', 'info'); this._watchRagIndex(); return; }
+      if (!r.ok) { this.toast(d.error || 'RAG 入库启动失败', 'error'); return; }
+      if (btn) { btn.disabled = true; btn.textContent = '录入中…'; }
+      this.toast('新研报入库 RAG 已启动', 'success');
+      this._watchRagIndex();
+    } catch (e) { this.toast('RAG 入库启动失败', 'error'); }
+  },
+
+  // 【功能】轮询 RAG 入库状态直到结束, 结束后刷新徽标计数
+  _watchRagIndex() {
+    if (this._ragIndexTimer) return;
+    this._ragIndexTimer = setInterval(async () => {
+      try {
+        const r = await fetch('/api/research/rag/index');
+        const d = await r.json();
+        if (d.indexing) return;
+        clearInterval(this._ragIndexTimer);
+        this._ragIndexTimer = null;
+        const b = document.getElementById('res-rag-index-btn');
+        if (b) { b.disabled = false; b.textContent = '📥 录入新研报'; }
+        const last = d.last || {};
+        this.toast(`RAG 入库结束: 新增 ${last.done || 0} 份 / 跳过 ${last.skipped || 0} 份`, 'success');
+        this._loadRagStatus();
+      } catch (e) { /* 网络抖动忽略 */ }
+    }, 3000);
+  },
+
+  // ── 研报每日/周报总结 ──
+  // 【功能】切换总结口径(日报/周报):重置日期缓存,按新口径重拉日期下拉与内容。
+  // 【输入】无 (读 #res-daily-type) 【渲染】#res-daily-kind 标题字 + 触发 _loadDailyDates
+  onDailyTypeChange() {
+    this._dailyDatesSig = null;    // 口径变了,日期下拉强制重建
+    this._dailyLoadedOnce = false;
+    const kind = document.getElementById('res-daily-kind');
+    if (kind) kind.textContent = (document.getElementById('res-daily-type')?.value || '') === '周报' ? '周报' : '每日';
+    this._loadDailyDates();
+  },
+
+  // 【功能】周报口径的日期显示:周起点(周日) → 简洁周区间「8.31-9.6」(周日~周六,
+  //          跨月也直接写 M.D-M.D,如 8.31-9.6;同年不重复年份,简洁优先)。
+  // 【输入】date: 周起点 YYYY-MM-DD(后端已归一化为周日)。
+  // 【返回】str: 周区间文案;非合法日期原样返回。
+  _weekLabel(date) {
+    const s = String(date || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const d = new Date(s + 'T00:00:00');
+    if (isNaN(d)) return s;
+    const end = new Date(d.getTime() + 6 * 86400000);
+    const fmt = x => `${x.getMonth() + 1}.${x.getDate()}`;
+    return `${fmt(d)}-${fmt(end)}`;
+  },
+
+  // 【功能】拉取可用日期列表(库内对应类型研报日期 ∪ 已生成总结文件)填充日期下拉,
+  //        已生成过的日期加 ✓ 标记;首次进入自动选中最新日期并尝试调阅。
+  //        采集期间由轮询反复调用:日期集合没变化时不重建下拉/不重载总结,
+  //        新日期出现时下拉就地长出新选项(不打断当前阅读)。
+  // 【输入】无 (读 #res-daily-type 口径) 【渲染】#res-daily-date 下拉 + 触发 loadDailySummary
+  // 【后端】GET /api/research/daily?report_type=
+  async _loadDailyDates() {
+    const sel = document.getElementById('res-daily-date');
+    if (!sel) return;
+    const rtype = document.getElementById('res-daily-type')?.value || '';
+    const isWeekly = rtype === '周报';  // 【周报口径 2026-09-11】日期为周起点,文案带区间
+    try {
+      const r = await fetch(`/api/research/daily${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
+      const d = await r.json();
+      const dates = d.dates || [];
+      const sig = JSON.stringify(dates.map(x => `${x.date}${x.generated ? '✓' : ''}`));
+      const prev = sel.value;
+      if (sig !== this._dailyDatesSig) {  // 日期集合/✓标记有变化才重建下拉
+        this._dailyDatesSig = sig;
+        sel.innerHTML = '';
+        dates.forEach(x => {
+          const o = document.createElement('option');
+          o.value = x.date;
+          o.textContent = (isWeekly ? this._weekLabel(x.date) : x.date) + (x.generated ? ' ✓' : '');
+          sel.appendChild(o);
+        });
+      }
+      const next = dates.some(x => x.date === prev) ? prev : ((dates[0] || {}).date || '');
+      if (sel.value !== next) sel.value = next;
+      // 选中日期变化(或首次加载)才重载总结;轮询间日期没变就不动内容
+      if (sel.value !== prev || !this._dailyLoadedOnce) {
+        this._dailyLoadedOnce = true;
+        await this.loadDailySummary();
+      }
+    } catch (e) { /* 日期列表失败不阻塞研报页 */ }
+  },
+
+  // 【功能】调阅某日总结: 已生成 → 渲染 markdown;未生成 → 占位提示可点生成。
+  // 【输入】无 (读 #res-daily-date + #res-daily-type) 【渲染】#res-daily + #res-daily-tag/note
+  // 【后端】GET /api/research/daily/{date}?report_type=
+  async loadDailySummary() {
+    const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+    const el = document.getElementById('res-daily');
+    const tag = document.getElementById('res-daily-tag');
+    const note = document.getElementById('res-daily-note');
+    const date = document.getElementById('res-daily-date')?.value || '';
+    const rtype = document.getElementById('res-daily-type')?.value || '';
+    const dir = rtype === '周报' ? 'research_weekly' : 'research_daily';
+    if (!el) return;
+    if (!date) {
+      el.innerHTML = '<span style="color:var(--text-muted)">暂无研报日期。上传或采集研报后此处出现日期。</span>';
+      if (tag) tag.textContent = ''; if (note) note.textContent = '';
+      return;
+    }
+    try {
+      const r = await fetch(`/api/research/daily/${date}${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
+      const d = await r.json();
+      if (!d.exists) {
+        el.innerHTML = `<span style="color:var(--text-muted)">${esc(date)} 的${rtype === '周报' ? '周报' : '每日'}总结还没生成, 点右上「✨ 生成」调 LLM 汇总当天全部${rtype === '周报' ? '周报' : '日报'}研报。</span>`;
+        if (tag) tag.textContent = '未生成';
+        if (note) note.textContent = '';
+        return;
+      }
+      if (tag) tag.textContent = '已生成';
+      if (note) note.textContent = `生成于 ${d.generated_at || '—'} · 覆盖 ${d.reports || '—'} 条研报结论 · 原文落盘 ~/.tradingagents/${dir}/${date}.md`;
+      // 【总表代码生成 2026-09-11】需求二扩展:第一节"当日/本周观点总表"由后端代码生成,
+      //          固定 20 品种且含覆盖表列(研报数/是否有新研报),已并入 md 正文直接渲染;
+      //          LLM 只输出二~四节。前端无需再单独拉覆盖表。
+      const md = (d.content || '').replace(/^<!--.*?-->\s*/, '');
+      el.innerHTML = `<div class="report-content">${marked.parse(md || '_空总结_')}</div>`;
+      // 【一二级菜单 2026-09-11】总表按板块分块(### 油品/能化/农产品/新能源),
+      //          渲染后把每个板块标题+子表包成可折叠菜单(默认展开)。
+      this._groupSectorMenus(el);
+    } catch (e) { el.innerHTML = '<span style="color:var(--red)">加载失败</span>'; }
+  },
+
+  // 【功能】把容器内"板块 h3 + 后续表格"包成 expander 折叠菜单(默认展开)。
+  // 【输入】container: 渲染完 md 的根元素 【渲染】h3 隐藏, 其后兄弟元素进 expander-body
+  // 【关键】只处理板块名(油品/能化/农产品/新能源/其他); 遇下一个 h2/h3 停止收集。
+  _groupSectorMenus(container) {
+    const sectors = ['油品', '能化', '农产品', '新能源', '其他'];
+    const icons = { '油品': '🛢', '能化': '🧪', '农产品': '🌾', '新能源': '🔋', '其他': '📋' };
+    for (const h3 of Array.from(container.querySelectorAll('h3'))) {
+      const name = h3.textContent.trim();
+      const sector = sectors.find(s => name.includes(s));
+      if (!sector) continue;
+      const wrap = document.createElement('div');
+      wrap.className = 'expander open';
+      const head = document.createElement('div');
+      head.className = 'expander-header';
+      head.setAttribute('onclick', "this.parentElement.classList.toggle('open')");
+      head.innerHTML = `<span>${icons[sector] || '📋'} ${name}</span><span style="font-size:0.72rem;color:var(--text-muted)">点击展开/收起</span><span class="arrow">▶</span>`;
+      const body = document.createElement('div');
+      body.className = 'expander-body';
+      let n = h3.nextSibling;
+      h3.style.display = 'none';
+      while (n && !(n.nodeType === 1 && /^H[123]$/.test(n.tagName))) {
+        const next = n.nextSibling;
+        body.appendChild(n);
+        n = next;
+      }
+      wrap.appendChild(head);
+      wrap.appendChild(body);
+      h3.parentNode.insertBefore(wrap, h3);
+    }
+  },
+
+  // 【功能】生成(或重新生成)某日总结: 同步等 LLM(~10-40s), 完成后重渲染。
+  // 【输入】force=true 忽略已有总结重跑并覆盖; false 时已生成过直接复用文件。
+  // 【后端】POST /api/research/daily/generate {date, report_type, force}
+  async generateDailySummary(force = false) {
+    const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+    const btn = document.getElementById(force ? 'res-daily-regen' : 'res-daily-gen');
+    const el = document.getElementById('res-daily');
+    const date = document.getElementById('res-daily-date')?.value || '';
+    const rtype = document.getElementById('res-daily-type')?.value || '';
+    const kind = rtype === '周报' ? '周报' : '每日';
+    if (!date) { this.toast('没有可生成的日期: 先上传/采集研报', 'error'); return; }
+    const old = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 生成中...'; }
+    if (el) el.innerHTML = `<span style="color:var(--text-muted)">正在调用 LLM 汇总 ${esc(date)} 全部${kind}研报结论, 视条目数约 1~4 分钟…</span>`;
+    try {
+      const r = await fetch('/api/research/daily/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, report_type: rtype, force: !!force }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || '生成失败');
+      this.toast(`✅ ${date} ${kind}总结${d.cached ? '已存在, 直接调阅' : '已生成并落盘'}`, 'success');
+      await this.loadDailySummary();
+      this._loadDailyDates();  // 刷新日期下拉的 ✓ 标记
+    } catch (e) {
+      this.toast(String(e.message || e), 'error');
+      this.loadDailySummary();
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = old; }
+    }
+  },
+
+  // ── 研报单品种总结(2026-09-09) ──
+  // 【状态】_vsList 当日品种列表; _vsQueue 待生成队列; _vsActive 在途请求数;
+  //        _vsBusyCodes 防重入(在途品种不重复入队); _vsKey 当前口径|日期, 切换即作废旧队列;
+  //        _vsPaused 用户暂停开关; _vsConc 并发上限 2(账户 LLM 并发 5, 给其他链路留余量);
+  //        _vsSel 品种多选过滤(空集=全部, 只滤显示不影响生成队列); _vsDatesSig 日期下拉签名缓存。
+  _vsList: [], _vsQueue: [], _vsActive: 0, _vsBusyCodes: new Set(),
+  _vsKey: '', _vsPaused: false, _vsConc: 2, _vsSel: new Set(), _vsDatesSig: null,
+
+  // 【功能】单品种总结卡的口径切换:重置日期签名缓存并重拉日期下拉。
+  onVsumTypeChange() {
+    this._vsDatesSig = null;
+    this._loadVsumDates();
+  },
+
+  // 【功能】拉取可用日期填充单品种总结卡的独立日期下拉(口径随 #res-vsum-type),
+  //        首选最新日期;与每日总结卡互不干扰(2026-09-09 拆独立筛选)。
+  async _loadVsumDates() {
+    const sel = document.getElementById('res-vsum-date');
+    if (!sel) return;
+    const rtype = document.getElementById('res-vsum-type')?.value || '';
+    const isWeekly = rtype === '周报';  // 【周报口径 2026-09-11】日期为周起点,文案带区间
+    try {
+      const r = await fetch(`/api/research/daily${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
+      const d = await r.json();
+      const dates = d.dates || [];
+      const sig = JSON.stringify([rtype, dates.map(x => `${x.date}${x.generated ? '✓' : ''}`)]);
+      if (sig !== this._vsDatesSig) {
+        this._vsDatesSig = sig;
+        sel.innerHTML = '';
+        dates.forEach(x => {
+          const o = document.createElement('option');
+          o.value = x.date;
+          o.textContent = (isWeekly ? this._weekLabel(x.date) : x.date) + (x.generated ? ' ✓' : '');
+          sel.appendChild(o);
+        });
+      }
+      if (!dates.some(x => x.date === sel.value)) sel.value = (dates[0] || {}).date || '';
+      await this.loadVarietySummaries();
+    } catch (e) { /* 日期列表失败不阻塞研报页 */ }
+  },
+
+  // 【功能】品种多选下拉面板开合;打开后点面板外自动收起。
+  toggleVsumVarietyPanel() {
+    const panel = document.getElementById('res-vsum-vpanel');
+    if (!panel) return;
+    const opening = panel.style.display === 'none';
+    panel.style.display = opening ? '' : 'none';
+    if (opening) setTimeout(() => document.addEventListener('click', this._vsPanelOutside), 0);
+    else document.removeEventListener('click', this._vsPanelOutside);
+  },
+  _vsPanelOutside(e) {
+    const panel = document.getElementById('res-vsum-vpanel');
+    const btn = document.getElementById('res-vsum-vbtn');
+    if (panel && !panel.contains(e.target) && !(btn && btn.contains(e.target))) {
+      panel.style.display = 'none';
+      document.removeEventListener('click', this._vsPanelOutside);
+    }
+  },
+
+  // 【功能】品种筛选勾选(checked=false 即取消), 只影响卡片显示, 不影响生成队列。
+  onVsumVarietyPick(code, checked) {
+    if (checked) this._vsSel.add(code); else this._vsSel.delete(code);
+    this._renderVarietySummaries();
+    this._renderVsumVarietyPanel();
+  },
+
+  // 【功能】品种筛选 全选/清空。
+  onVsumVarietyAll(all) {
+    this._vsSel = all ? new Set((this._vsList || []).map(v => v.code)) : new Set();
+    this._renderVarietySummaries();
+    this._renderVsumVarietyPanel();
+  },
+
+  // 【功能】渲染品种多选面板(复选框列表 + 全选/清空)与按钮文案。
+  _renderVsumVarietyPanel() {
+    const panel = document.getElementById('res-vsum-vpanel');
+    const btn = document.getElementById('res-vsum-vbtn');
+    if (!panel || !btn) return;
+    const list = this._vsList || [];
+    if (!list.length) { panel.innerHTML = '<span style="color:var(--text-muted);font-size:0.78rem">当日无品种</span>'; btn.textContent = '品种: 全部 ▾'; return; }
+    const items = list.map(v => `<label style="display:flex;align-items:center;gap:6px;padding:3px 2px;font-size:0.8rem;cursor:pointer">
+        <input type="checkbox" ${this._vsSel.has(v.code) ? 'checked' : ''}
+               onchange="App.onVsumVarietyPick('${v.code}', this.checked)">
+        <b>${this._escHtml(v.code)}</b>
+        <span style="color:var(--text-secondary)">${this._escHtml(v.name || '')}</span>
+        <span style="margin-left:auto;color:var(--text-muted);font-size:0.72rem">${v.cached ? '✓' : '⏳'}</span>
+      </label>`).join('');
+    panel.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:6px">
+        <button class="btn btn-outline btn-sm" onclick="App.onVsumVarietyAll(true)">全选</button>
+        <button class="btn btn-outline btn-sm" onclick="App.onVsumVarietyAll(false)">清空</button>
+      </div>${items}`;
+    btn.textContent = (!this._vsSel.size || this._vsSel.size === list.length)
+      ? `品种: 全部(${list.length}) ▾` : `品种: 已选 ${this._vsSel.size}/${list.length} ▾`;
+  },
+
+  // 【功能】加载某日单品种总结列表并把未生成品种自动入队(并发 2 后台跑, 不阻塞页面)。
+  // 【输入】读 #res-vsum-date + #res-vsum-type 【渲染】#res-vsum-grid + #res-vsum-tag
+  // 【后端】GET /api/research/variety-summary/{date}?report_type=
+  async loadVarietySummaries() {
+    const date = document.getElementById('res-vsum-date')?.value || '';
+    const rtype = document.getElementById('res-vsum-type')?.value || '';
+    const grid = document.getElementById('res-vsum-grid');
+    const key = `${rtype}|${date}`;
+    this._vsKey = key;       // 切日期/口径 → 旧响应与旧结果一律作废
+    this._vsQueue = [];
+    this._vsPaused = false;
+    this._vsSel = new Set(); // 换日期重置品种筛选(品种集合随日期变)
+    const stopBtn = document.getElementById('res-vsum-stop');
+    if (stopBtn) { stopBtn.style.display = 'none'; stopBtn.textContent = '⏸ 暂停生成'; }
+    if (!date || !grid) return;
+    grid.innerHTML = '<span style="color:var(--text-muted)">加载中…</span>';
+    try {
+      const r = await fetch(`/api/research/variety-summary/${date}${rtype ? `?report_type=${encodeURIComponent(rtype)}` : ''}`);
+      const d = await r.json();
+      if (this._vsKey !== key) return;   // 响应回来前用户已切走
+      this._vsList = d.varieties || [];
+      this._renderVsumVarietyPanel();
+      this._renderVarietySummaries();
+      const pending = this._vsList.filter(v => !v.cached && !this._vsBusyCodes.has(v.code)).map(v => v.code);
+      if (pending.length) {
+        this._vsQueue = [...pending];
+        this.toast(`单品种总结: ${pending.length} 个品种未生成, 已自动排队(并发 ${this._vsConc})`);
+        this._drainVarietyQueue();
+      } else {
+        this._updateVarietyBadge();
+      }
+    } catch (e) {
+      if (grid && this._vsKey === key) grid.innerHTML = '<span style="color:var(--red)">单品种总结加载失败</span>';
+    }
+  },
+
+  // 【功能】队列泵: 只要有空位且未暂停就发出下一个品种的生成请求; 空+无在途时收起暂停按钮。
+  _drainVarietyQueue() {
+    while (!this._vsPaused && this._vsActive < this._vsConc && this._vsQueue.length) {
+      const code = this._vsQueue.shift();
+      this._vsActive++;
+      this._genVarietySummary(code, false).finally(() => {
+        this._vsActive--;
+        this._drainVarietyQueue();
+      });
+    }
+    const stopBtn = document.getElementById('res-vsum-stop');
+    if (stopBtn && !this._vsQueue.length && this._vsActive === 0) stopBtn.style.display = 'none';
+    this._updateVarietyBadge();
+  },
+
+  // 【功能】暂停/继续自动生成队列(已缓存的品种不受影响)。
+  toggleVarietyQueue() {
+    this._vsPaused = !this._vsPaused;
+    const btn = document.getElementById('res-vsum-stop');
+    if (btn) btn.textContent = this._vsPaused ? '▶ 继续生成' : '⏸ 暂停生成';
+    if (!this._vsPaused) this._drainVarietyQueue();
+  },
+
+  // 【功能】生成单个品种总结(同步等 LLM), 完成就地更新列表并重渲染; 失败标 _fail 给重试按钮。
+  // 【后端】POST /api/research/variety-summary/generate {date, code, report_type, force}
+  async _genVarietySummary(code, force) {
+    const date = document.getElementById('res-daily-date')?.value || '';
+    const rtype = document.getElementById('res-daily-type')?.value || '';
+    const key = `${rtype}|${date}`;
+    this._vsBusyCodes.add(code);
+    this._updateVarietyBadge();
+    try {
+      const r = await fetch('/api/research/variety-summary/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, code, report_type: rtype, force: !!force }),
+      });
+      const d = await r.json();
+      if (this._vsKey !== key) return;   // 已切日期, 结果作废
+      const v = (this._vsList || []).find(x => x.code === code);
+      if (v) {
+        if (d.ok) {
+          v.summary_md = d.content; v.cached = true; v._fail = false;
+          v.generated_at = d.generated_at || ''; v.report_rows = d.reports || 0;
+        } else {
+          v._fail = d.error || '生成失败';
+        }
+      }
+      this._renderVarietySummaries();
+      if (!d.ok) this.toast(`${code} 单品种总结生成失败: ${d.error || '未知错误'}`, 'error');
+    } catch (e) {
+      if (this._vsKey === key) {
+        const v = (this._vsList || []).find(x => x.code === code);
+        if (v) v._fail = String(e.message || e);
+        this._renderVarietySummaries();
+      }
+    } finally {
+      this._vsBusyCodes.delete(code);
+    }
+  },
+
+  // 【功能】失败品种重试: 清失败标记, 插回队列继续跑。
+  retryVariety(code) {
+    const v = (this._vsList || []).find(x => x.code === code);
+    if (v) v._fail = false;
+    this._vsPaused = false;
+    const btn = document.getElementById('res-vsum-stop');
+    if (btn) btn.textContent = '⏸ 暂停生成';
+    if (!this._vsBusyCodes.has(code)) this._vsQueue.push(code);
+    this._renderVarietySummaries();
+    this._drainVarietyQueue();
+  },
+
+  // 【功能】重新生成单个品种(忽略缓存, force=true)。
+  regenerateVariety(code) {
+    if (!confirm(`忽略缓存重新生成 ${code} 的单品种总结?`)) return;
+    this._genVarietySummary(code, true);
+  },
+
+  // 【功能】当日全部品种逐个强制重新生成(烧 LLM, 先确认)。
+  regenerateVarietySummaries() {
+    const list = this._vsList || [];
+    if (!list.length) { this.toast('当前日期没有可重生成的品种', 'error'); return; }
+    if (!confirm(`忽略缓存, 当日 ${list.length} 个品种逐个重新生成? 将消耗较多 LLM 额度。`)) return;
+    this._vsQueue = list.filter(v => !this._vsBusyCodes.has(v.code)).map(v => v.code);
+    this._vsPaused = false;
+    const btn = document.getElementById('res-vsum-stop');
+    if (btn) btn.textContent = '⏸ 暂停生成';
+    this._renderVarietySummaries();
+    this._drainVarietyQueue();
+  },
+
+  // 【功能】标题徽标进度: 「N 品种 · done/N 已生成 · k 排队中」。
+  _updateVarietyBadge() {
+    const tag = document.getElementById('res-vsum-tag');
+    if (!tag) return;
+    const list = this._vsList || [];
+    if (!list.length) { tag.textContent = ''; return; }
+    const done = list.filter(v => v.cached).length;
+    const queued = this._vsQueue.length + this._vsActive;
+    tag.textContent = `${list.length} 品种 · ${done}/${list.length} 已生成` + (queued ? ` · ${queued} 排队中` : '');
+  },
+
+  // 【功能】渲染单品种总结网格: 每品种一卡(代码+中文名+方向 badge+N 份研报),
+  //        卡内分板块异构呈现(2026-09-09 美化):
+  //        ① 来源观点对比表(逐份研报 来源/方向/置信度/原件链接, 结构化数据非 LLM);
+  //        ② LLM 总结按「## 小节」拆开 — 逻辑链=品牌色侧条 / 分歧共识=虚线碰撞框 /
+  //           倾向=净倾向大徽标 / 关键数据=数据面板。
+  _renderVarietySummaries() {
+    const grid = document.getElementById('res-vsum-grid');
+    if (!grid) return;
+    this._updateVarietyBadge();
+    const list = this._vsList || [];
+    if (!list.length) {
+      grid.innerHTML = '<span style="color:var(--text-muted)">该日期在库研报未覆盖任何品种。</span>';
+      return;
+    }
+    const dirCls = d => String(d).includes('多') ? 'badge-bull' : (String(d).includes('空') ? 'badge-bear' : 'badge-neutral');
+    // 品种多选过滤: 空集=全部; 只滤显示, 生成队列不受影响
+    const shown = this._vsSel.size ? list.filter(v => this._vsSel.has(v.code)) : list;
+    if (!shown.length) {
+      grid.innerHTML = '<span style="color:var(--text-muted)">当前筛选下没有品种(点「品种 ▾」调整)。</span>';
+      return;
+    }
+    grid.innerHTML = shown.map(v => {
+      // ① 来源观点对比表(每家机构一行; 同源多篇已合并, 标题列列出该机构全部篇目, 均可点开原件)
+      const reps = v.report_rows || [];
+      const repTotal = reps.reduce((s, r) => s + (r.merged_count || 1), 0);
+      let cmp = '';
+      if (reps.length) {
+        const dirsSet = [...new Set(reps.map(r => r.direction))];
+        const flag = reps.length > 1
+          ? (dirsSet.length > 1
+              ? '<span class="badge" style="color:var(--red);background:var(--red-bg);font-size:0.7rem">⚡ 方向有分歧</span>'
+              : '<span class="badge" style="color:var(--green);background:var(--green-bg);font-size:0.7rem">✓ 方向一致</span>')
+          : '';
+        const rows = reps.map(r => {
+          // 【同源合并 2026-09-14】一行 = 一家机构;同一机构多篇时标题全部列出(每篇独立可点),
+          // 方向/置信度是该机构的**统一口径**(方向=内部多数意见、置信度=组内均值)。
+          const tl = (r.titles && r.titles.length) ? r.titles : [{ report_id: r.report_id, title: r.title }];
+          const links = tl.map(t => `<a href="/api/research/${t.report_id}/file" target="_blank" title="打开研报原件" style="color:var(--brand);text-decoration:none">${this._escHtml(t.title)}</a>`).join('<br>');
+          const n = r.merged_count || tl.length || 1;
+          const cnt = n > 1
+            ? ` <span class="badge" style="font-size:0.68rem;color:var(--text-muted);background:var(--bg-elevated)">${n} 篇已合并</span>`
+            : '';
+          // 【衍生策略分列 2026-09-15 用户定】方向列只回答单边看多/看空/中性, 组合思路
+          // (期现正套/月差反套/多RU空BR/买期权保护)单独一列, 免得被一个方向标签吃掉;
+          // 取不到显示 —(灰), 不占视觉重量。
+          const deriv = String(r.deriv || '').trim();
+          const derivCell = deriv
+            ? `<span style="color:var(--text-secondary)" title="${this._escHtml(deriv)}">${this._escHtml(deriv)}</span>`
+            : '<span style="color:var(--text-muted)">—</span>';
+          return `<tr>
+            <td style="padding:3px 10px 3px 0;white-space:nowrap;color:var(--text-secondary)" title="${this._escHtml(r.source_raw || r.source)}">${this._escHtml(r.source)}</td>
+            <td style="padding:3px 10px 3px 0"><span class="badge ${dirCls(r.direction)}">${this._escHtml(r.direction)}</span></td>
+            <td style="padding:3px 10px 3px 0">${derivCell}</td>
+            <td style="padding:3px 10px 3px 0;color:var(--text-muted)">${this._escHtml(r.confidence)}</td>
+            <td style="padding:3px 10px 3px 0">${links}${cnt}</td>
+          </tr>`;
+        }).join('');
+        cmp = `<details open style="margin:2px 0 10px">
+            <summary style="cursor:pointer;font-size:0.76rem;color:var(--text-muted)">📋 来源观点对比(${reps.length} 家 · 共 ${repTotal} 篇) ${flag}</summary>
+            <table style="border-collapse:collapse;width:100%;font-size:0.76rem;margin-top:6px">
+              <thead><tr style="text-align:left;color:var(--text-muted)">
+                <th style="padding:2px 10px 2px 0;font-weight:normal">来源</th>
+                <th style="padding:2px 10px 2px 0;font-weight:normal" title="研报给出的方向(单边为主;组合/相对策略见右侧「衍生策略」列)">方向</th>
+                <th style="padding:2px 10px 2px 0;font-weight:normal" title="研报自报的非单边策略:期现/月差正套反套、跨品种多空、期权保护、卖出套保等;未提及显示 —">衍生策略</th>
+                <th style="padding:2px 10px 2px 0;font-weight:normal" title="研报观点识别置信度(观点表述越明确越高),不是行情胜率">置信度</th>
+                <th style="padding:2px 10px 2px 0;font-weight:normal">研报</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </details>`;
+      }
+      // ② 总结正文
+      let body;
+      if (v.summary_md) {
+        const md = String(v.summary_md).replace(/^<!--[\s\S]*?-->\s*/, '');
+        body = this._renderVsumSections(md);
+      } else if (v._fail) {
+        body = `<div style="color:var(--red);font-size:0.82rem">生成失败: ${this._escHtml(v._fail)}</div>
+          <button class="btn btn-outline btn-sm" style="margin-top:6px" onclick="App.retryVariety('${v.code}')">↻ 重试</button>`;
+      } else {
+        body = '<div style="color:var(--text-muted);font-size:0.82rem">⏳ 待生成…(自动排队中)</div>';
+      }
+      const dirs = (v.directions || []).map(d => `<span class="badge ${dirCls(d)}">${this._escHtml(d)}</span>`).join(' ');
+      const gen = v.generated_at ? `<span style="color:var(--text-muted);font-size:0.72rem">生成于 ${this._escHtml(v.generated_at)}</span>` : '';
+      return `<div class="card" style="padding:12px 14px;margin:0">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <b>${this._escHtml(v.code)}</b>
+            <span style="color:var(--text-secondary);font-size:0.8rem">${this._escHtml(v.name || '')}</span>
+            ${dirs}
+            <span style="color:var(--text-muted);font-size:0.74rem">${v.report_count || 0} 家${(v.merged_total || 0) > (v.report_count || 0) ? ` · 共 ${v.merged_total} 篇` : ' 研报'}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${gen}
+            <button class="btn btn-outline btn-sm" onclick="App.regenerateVariety('${v.code}')" title="忽略缓存, 重新生成该品种">↻</button>
+          </div>
+        </div>${cmp}${body}</div>`;
+    }).join('');
+  },
+
+  // 【功能】LLM 总结 md 按「## 小节」拆开, 各节不同视觉形式(2026-09-09 美化):
+  //        多空驱动与逻辑链=品牌色侧条 / 分歧与共识=虚线碰撞框 / 倾向与跟踪要点=
+  //        净倾向大徽标(偏多绿/偏空红/震荡黄, 取正文首个倾向词) / 当日关键数据=深色数据面板。
+  //        无「##」标题或异常 → 整段 marked 渲染兜底, 不丢内容。
+  _renderVsumSections(md) {
+    const META = {
+      '多空驱动与逻辑链': { icon: '⛓', color: 'var(--brand-light)', bar: 'var(--brand)', tip: '各家因果链如何传导到价格' },
+      '分歧与共识': { icon: '⚖', color: 'var(--amber)', dashed: true, tip: '分歧点与根源 / 共识逻辑' },
+      '倾向与跟踪要点': { icon: '🎯', color: 'var(--teal)', tip: '净倾向与未来 1~2 周跟踪清单' },
+      '当日关键数据': { icon: '📊', color: 'var(--blue)', panel: true, tip: '研报披露的基差/仓单/开工率/利润' },
+    };
+    const heads = [...String(md).matchAll(/^##\s*(.+?)\s*$/gm)];
+    if (!heads.length) return `<div class="report-content" style="font-size:0.82rem">${marked.parse(md || '_空总结_')}</div>`;
+    let html = '';
+    if (heads[0].index > 0) {  // 标题前的导语
+      const pre = md.slice(0, heads[0].index).trim();
+      if (pre) html += `<div class="report-content" style="font-size:0.8rem;margin-bottom:8px">${marked.parse(pre)}</div>`;
+    }
+    heads.forEach((h, i) => {
+      const title = h[1].replace(/[*`]/g, '').trim();
+      const start = h.index + h[0].length;
+      const end = i + 1 < heads.length ? heads[i + 1].index : md.length;
+      const sec = md.slice(start, end).trim();
+      const m = META[title] || {};
+      const style = m.dashed ? 'border:1px dashed var(--border-light);background:var(--bg-input)'
+        : m.bar ? `border-left:3px solid ${m.bar};background:var(--bg-input)`
+        : m.panel ? 'border:1px solid var(--border);background:var(--bg)'
+        : 'background:var(--bg-input)';
+      let lean = '';
+      if (title === '倾向与跟踪要点') {
+        const lm = sec.match(/偏多|看多|偏空|看空|震荡|中性/);
+        if (lm) {
+          const d = lm[0];
+          const cls = /多/.test(d) ? 'color:var(--green);background:var(--green-bg)'
+            : (/空/.test(d) ? 'color:var(--red);background:var(--red-bg)'
+                            : 'color:var(--amber);background:var(--amber-bg)');
+          lean = `<span class="badge" style="${cls};font-size:0.74rem">净倾向 ${this._escHtml(d)}</span>`;
+        }
+      }
+      html += `<div style="${style};border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+          <span style="font-size:0.8rem;font-weight:bold;color:${m.color || 'var(--text-secondary)'}">${m.icon || '📌'} ${this._escHtml(title)}
+            <span style="font-weight:normal;color:var(--text-muted);font-size:0.72rem">· ${m.tip || 'LLM 总结小节'}</span></span>
+          ${lean}
+        </div>
+        <div class="report-content" style="font-size:0.8rem">${marked.parse(sec || '_空_')}</div>
+      </div>`;
+    });
+    return html;
+  },
+
+  // 【功能】研报页顶部共享品种下拉变更 → 逐品种观点总览卡重载。
+  //        (研报日期下拉只影响观点总览, 不经过这里 → 单独绑 loadResearchViews)
+  async onViewVarietyChanged() {
+    await this.loadResearchViews();
+  },
+
+  // 【功能】数据仓库页首次进入: 填充本页三个品种下拉(上传/研报库筛选/国君数据集),
+  //        并拉取研报库列表。列表的查看/删除入口在此页, 研报页已不承载。
+  // 【输入】无 【渲染】#res-list 【后端】GET /api/research?variety=&ingest_source=
+  async loadWarehouse() {
+    this._populateVarietySelects(['res-upload-variety', 'res-filter-variety', 'dwh-ds-variety', 'ud-upload-variety']);
+    this._fillCollectVarietyList();  // 【采集品种面板】进入数据仓库页时懒填充勾选列表
+    await this.refreshResearchList();
+    await this.loadUserDatasets();  // 【自传数据】进入数据仓库页时刷新列表
+  },
+
+  // 【功能】刷新「研报库」列表(别名: 供 HTML 按钮直呼语义化的方法名)。
+  //        读 #res-filter-variety(品种) + #res-filter-source(来源) 两个筛选值。
+  refreshResearchList() {
+    return this._refreshResearch();
+  },
+
+  // 【功能】逐品种观点总览: 切换品种/日期, 拉取该品种该研报日期各家发行方的
+  //       方向/置信度/观点要点并渲染成表格。头寸列 = 单边/区间+头寸+研报建议
+  //       合并(后端语义去重); 单元格观点要点 = 综述→利多/利空条目(逻辑/风险,新口径 2026-09-07;
+  //       旧口径结论回落七小节推理链渲染; 不含交易要素行避免与头寸列重复); 点击研报标题进详情看完整两段式结论。
+  // 【输入】无 (读取 #res-views-variety + #res-views-date)
+  // 【渲染】#res-views-count 计数 + #res-views 表格(发行方/研报/方向/置信度/观点要点)
+  // 【后端】GET /api/research/views?variety={code}&date={date}
+  async loadResearchViews() {
+    const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+    const selV = document.getElementById('res-views-variety');
+    if (!selV) return;
+    if (!selV.value) {
+      // 首次进入默认选第一个真品种(首个有值 option),让卡片开箱即有内容
+      const first = Array.from(selV.options).find(o => o.value);
+      if (first) { selV.value = first.value; }
+    }
+    const code = selV.value || '';
+    const el = document.getElementById('res-views');
+    const elCount = document.getElementById('res-views-count');
+    const elNote = document.getElementById('res-views-note');
+    if (!code) { if (el) el.innerHTML = '<span style="color:var(--text-muted)">请选择品种。</span>'; return; }
+    if (el) el.innerHTML = '加载中...';
+    try {
+      const prevDate = document.getElementById('res-views-date')?.value || '';
+      const rtype = document.getElementById('res-views-type')?.value || '';
+      const q = new URLSearchParams({ variety: code });
+      if (prevDate) q.set('date', prevDate);
+      if (rtype) q.set('report_type', rtype);  // 日报/周报分开统计(后端按类型过滤日期并集+行)
+      const r = await fetch(`/api/research/views?${q.toString()}`);
+      const d = await r.json();
+      this._lastViews = d;  // 供「导出 PDF / 导出图片」复用当前总览数据(无需再拉)
+      // 重建日期下拉并回选后端实际生效日期(切换品种时旧日期可能不属于新品种)
+      const dateSel = document.getElementById('res-views-date');
+      if (dateSel) {
+        dateSel.innerHTML = '';
+        const isWeekly = rtype === '周报';  // 【周报口径 2026-09-11】日期为周起点,文案带区间
+        (d.dates || []).forEach(dt => {
+          const o = document.createElement('option');
+          o.value = dt; o.textContent = isWeekly ? this._weekLabel(dt) : dt;
+          dateSel.appendChild(o);
+        });
+        dateSel.value = d.date || '';
+      }
+      if (elCount) elCount.textContent = d.date ? `${rtype ? rtype + ' ' : ''}${d.rows.length} 份 · ${d.dates.length} 个日期` : '';
+      if (elNote) elNote.textContent = d.date
+        ? `${d.name}(${d.variety}) · 研报日期 ${d.date}${rtype ? ` · 仅${rtype}结论` : ''}: 各发行方对它的方向与观点要点。同一品种同日可能多份(如覆盖多个子品种), 点标题看完整两段式结论。 —为研报未披露。`
+        : '';
+      if (!el) return;
+      if (!d.date) {
+        el.innerHTML = '<span style="color:var(--text-muted)">该品种暂无研报。上传或采集后此处自动出现各家观点。</span>';
+        return;
+      }
+      if (!d.rows.length) {
+        el.innerHTML = `<span style="color:var(--text-muted)">${esc(d.date)} 当日无研报, 请在日期栏换一个研报日期。</span>`;
+        return;
+      }
+      const isNum = x => typeof x === 'number' && isFinite(x);
+      const chipBg = x => x === '看多' ? 'var(--green-bg)' : x === '看空' ? 'var(--red-bg)' : 'var(--amber-bg)';
+      const chipColor = x => x === '看多' ? 'var(--green)' : x === '看空' ? 'var(--red)' : 'var(--amber)';
+      // 头寸列(2026-09-05 合并原 单边/区间+头寸+研报建议 三列, 后端已语义去重):研报自己的表述, 缺 → '—'; 建议(LLM) 列另见 th 说明
+      const txtCell = (v, maxW) => v
+        ? `<td style="max-width:${maxW}px;font-size:0.78rem;line-height:1.45;color:var(--text)" title="${esc(v)}">${esc(v)}</td>`
+        : '<td><span style="color:var(--text-muted)">—</span></td>';
+      const confCell = c => {
+        if (!isNum(c)) return '<span style="color:var(--text-muted)">—</span>';
+        const pct = Math.max(0, Math.min(100, Math.round(c * 100)));
+        const col = c >= 0.7 ? 'var(--green)' : c >= 0.4 ? 'var(--amber)' : 'var(--red)';
+        return `<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:56px;height:5px;border-radius:3px;background:var(--bg-input);display:inline-block;overflow:hidden"><span style="display:block;height:100%;width:${pct}%;background:${col}"></span></span><span style="color:var(--text-secondary);font-size:0.76rem;font-variant-numeric:tabular-nums">${pct}%</span></span>`;
+      };
+      el.innerHTML = `<table class="rv-tbl">
+        <thead><tr>
+          <th>发行方</th>
+          <th>研报</th>
+          <th style="text-align:center">方向</th>
+          <th>置信度</th>
+          <th title="研报的单边/区间表述 + 头寸/仓位建议 + 原文操作建议(语义去重合并为一列,未给为 —)">头寸</th>
+          <th title="系统 LLM 基于该研报观点生成的配置/关注权重建议(非研报原文)">建议 🤖<span style="font-weight:400;font-size:0.68rem;color:var(--text-muted)">LLM</span></th>
+          <th>观点要点(综述→利多/利空:逻辑/风险)</th>
+        </tr></thead>
+        <tbody>${d.rows.map(rp => {
+          const covers = (rp.covers || []).length > 1
+            ? `<div style="color:var(--text-muted);font-size:0.72rem;margin-top:2px">覆盖 ${esc(rp.covers.join('/'))}</div>`
+            : '';
+          const opinionFull = esc(rp.key_opinion) || '<span style="color:var(--text-muted)">(无观点摘要)</span>';
+          const hasMore = (rp.key_opinion || '').length > 110;
+          return `<tr>
+            <td style="white-space:nowrap">
+              <span style="display:inline-flex;align-items:center;gap:6px">
+                <span style="width:7px;height:7px;border-radius:50%;background:${chipColor(rp.direction)};flex:0 0 auto;display:inline-block"></span>
+                <span style="font-weight:700">${esc(rp.source)}</span>
+              </span>
+            </td>
+            <td style="max-width:200px">
+              <a href="javascript:void(0)" onclick="App.viewResearch(${rp.id})" title="查看完整结论" style="color:var(--blue);text-decoration:none;font-weight:600">${esc(rp.title)}</a>${rp.report_type === '周报' ? ' <span class="badge" style="background:rgba(245,158,11,.18);color:var(--amber);font-size:0.7rem">周报</span>' : ''}${covers}
+              ${(rp.publish_date || rp.uploaded_at) ? `<div style="color:var(--text-muted);font-size:0.7rem;margin-top:2px">${esc(rp.publish_date ? String(rp.publish_date).slice(0, 10) : App._utcToLocal(rp.uploaded_at, false).slice(0, 10))}</div>` : ''}
+            </td>
+            <td style="text-align:center;white-space:nowrap"><span class="rv-chip" style="background:${chipBg(rp.direction)};color:${chipColor(rp.direction)}">${esc(rp.direction)}</span></td>
+            <td style="white-space:nowrap">${confCell(rp.confidence)}</td>
+            ${txtCell(rp.trade, 220)}
+            ${txtCell(rp.advice, 150)}
+            <td title="${opinionFull}">
+              <div id="rv-opinion-${rp.id}" class="rv-opinion">${opinionFull}</div>
+              ${hasMore ? `<div style="margin-top:2px"><span class="rv-opinion-clamp-more" onclick="App.toggleRvOpinion(${rp.id}, event)" data-id="${rp.id}">▼ 展开</span></div>` : ''}
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`;
+    } catch (e) { if (el) el.innerHTML = '<span style="color:var(--red)">加载失败</span>'; }
+  },
+
+  // 【功能】观点要点行内展开/收起(默认 6 行截断, 长文点「展开」看全)。
+  toggleRvOpinion(id, ev) {
+    const el = document.getElementById('rv-opinion-' + id);
+    if (!el) return;
+    const wasCollapsed = el.classList.contains('rv-opinion');
+    el.classList.toggle('rv-opinion');
+    const t = (ev && ev.currentTarget) || document.querySelector('.rv-opinion-clamp-more[data-id="' + id + '"]');
+    if (t) t.textContent = wasCollapsed ? '▲ 收起' : '▼ 展开';
+  },
+
+  // ----------------------------------------------------------------
+  // 逐品种观点总览导出(PDF / PNG): 从 this._lastViews 重建一份自包含的轻量表格,
+  // 用固定的浅色文字色值(不依赖主题 CSS 变量), 保证打印与图片上观感一致。
+  // ----------------------------------------------------------------
+  _viewsExportData() {
+    const d = this._lastViews;
+    if (!d || !d.date || !Array.isArray(d.rows) || !d.rows.length) return null;
+    const sel = document.getElementById('res-views-variety');
+    const code = (sel && sel.value) || d.variety || '';
+    return { d, code };
+  },
+
+  // 生成导出的自包含 HTML(含抬头 + 固定布局表格)。opt: {width, font}
+  _buildViewsExport(dat, opt) {
+    const o = opt || {};
+    const W = o.width || 1040;
+    const esc = s => this._escHtml(s == null ? '' : String(s));
+    const C = { text: '#16181d', sub: '#374151', muted: '#8a8f98', line: '#e6e8ec',
+      headBg: '#f4f5f7', brand: '#2f7fb4', bull: '#15803d', bear: '#c0281d', flat: '#b45309' };
+    const d = dat.d, code = dat.code;
+    const dirCol = x => x === '看多' ? C.bull : x === '看空' ? C.bear : C.flat;
+    const confColor = c => c >= 0.7 ? C.bull : c >= 0.4 ? C.flat : C.bear;
+    const legend = '— 研报未披露。头寸列 = 研报的单边/区间 + 头寸/仓位 + 原文操作建议合并(语义去重); 🤖LLM 建议列是系统 LLM 基于研报观点生成的权重建议(非研报原文)。仅供研究参考, 非交易建议。';
+    const stamp = new Date().toLocaleString('zh-CN', { hour12: false });
+    const head = `<div style="border-bottom:2px solid ${C.brand};padding-bottom:8px;margin-bottom:2px">
+        <div style="font-size:19px;font-weight:800;color:${C.text};line-height:1.4">逐品种观点总览 · ${esc(d.name || code)}(${esc(code)}) · 研报日期 ${esc(d.date)}</div>
+        <div style="font-size:10.5px;color:${C.muted};margin-top:3px">${esc(legend)}</div>
+        <div style="font-size:10px;color:#b6bac2;margin-top:2px">${d.rows.length} 份 · AgentSense 研报观点 · 生成于 ${esc(stamp)}</div>
+      </div>`;
+    const th = (t, a) => `<th style="text-align:left;padding:6px 8px;font-weight:600;color:#4b5563;background:${C.headBg};border-bottom:1px solid ${C.line};font-size:10.5px;${a || ''}">${t}</th>`;
+    const trs = d.rows.map(rp => {
+      const txtTd = (v, w) => v
+        ? `<td style="padding:6px 8px;color:${C.text};font-size:10.5px;line-height:1.5;border-bottom:1px solid ${C.line}">${esc(v)}</td>`
+        : `<td style="padding:6px 8px;color:#c6cad1;font-size:10.5px;border-bottom:1px solid ${C.line}">—</td>`;
+      const covers = (rp.covers || []).length > 1
+        ? `<div style="color:#8a8f98;font-size:9.5px;margin-top:2px">覆盖 ${esc(rp.covers.join('/'))}</div>` : '';
+      const pct = isFinite(rp.confidence) ? Math.max(0, Math.min(100, Math.round(rp.confidence * 100))) : null;
+      const confTd = pct === null
+        ? '<td style="padding:6px 8px;color:#c6cad1;font-size:10.5px">—</td>'
+        : `<td style="padding:6px 8px;white-space:nowrap"><span style="display:inline-block;background:${confColor(rp.confidence)};color:#fff;font-size:10px;font-weight:700;padding:1px 9px;border-radius:999px;font-variant-numeric:tabular-nums">${pct}%</span></td>`;
+      return `<tr style="vertical-align:top">
+        <td style="padding:6px 8px;white-space:nowrap;font-weight:700;color:${C.text};font-size:11px;border-bottom:1px solid ${C.line}">${esc(rp.source)}</td>
+        <td style="padding:6px 8px;color:${C.sub};font-size:10.5px;border-bottom:1px solid ${C.line}"><span style="color:#1d4ed8;font-weight:600">${esc(rp.title)}</span>${covers}</td>
+        <td style="padding:6px 8px;white-space:nowrap;border-bottom:1px solid ${C.line}"><span style="font-weight:800;color:${dirCol(rp.direction)};font-size:11px">${esc(rp.direction)}</span></td>
+        ${confTd}
+        ${txtTd(rp.trade)}${txtTd(rp.advice)}
+        <td style="padding:6px 8px;color:#374151;font-size:10px;line-height:1.55;white-space:pre-line;border-bottom:1px solid ${C.line}">${esc(rp.key_opinion) || '<span style="color:#c6cad1">(无观点摘要)</span>'}</td>
+      </tr>`;
+    }).join('');
+    const table = `<table style="width:100%;table-layout:fixed;border-collapse:collapse">
+      <colgroup>
+        <col style="width:9%"><col style="width:19%"><col style="width:6%"><col style="width:7%">
+        <col style="width:14%"><col style="width:9%"><col style="width:36%">
+      </colgroup>
+      <thead><tr>
+        ${th('发行方')}${th('研报')}${th('方向', 'text-align:center')}${th('置信度')}
+        ${th('头寸')}${th('建议🤖LLM')}
+        ${th('观点要点(综述→利多/利空:逻辑/风险)')}
+      </tr></thead>
+      <tbody>${trs}</tbody>
+    </table>`;
+    return `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${W}px;box-sizing:border-box;background:#fff;color:${C.text};font-family:'Segoe UI','PingFang SC','Microsoft YaHei',Arial,sans-serif;padding:12px 14px">${head}${table}</div>`;
+  },
+
+  // 导出 PDF: 开打印窗口(可在打印对话框选「另存为 PDF」), 横向 A4 分页。
+  async exportViewsPdf() {
+    const dat = this._viewsExportData();
+    if (!dat) { this.toast('当前无可导出的观点总览: 请先选择有研报的品种/日期', 'error'); return; }
+    const html = this._buildViewsExport(dat, { width: 1040, font: '11.5px' });
+    const ttl = `逐品种观点总览_${dat.code}_${dat.d.date}`;
+    const w = window.open('', '_blank');
+    if (!w) { this.toast('浏览器拦截了新窗口, 请允许弹窗后重试(也可用「导出图片」)', 'error'); return; }
+    const css = '@page{size:A4 landscape;margin:9mm}html,body{margin:0;padding:0;background:#fff}thead{display:table-header-group}tr{break-inside:avoid;page-break-inside:avoid}';
+    w.document.open();
+    w.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${ttl}</title><style>${css}</style></head><body>${html}</body></html>`);
+    w.document.close();
+    w.focus();
+    setTimeout(() => { try { w.print(); } catch (e) { this.toast('若未弹出打印框, 请在新窗口按 Ctrl+P 打印并选择「另存为 PDF」', 'error'); } }, 450);
+  },
+
+  // 导出 PNG: 用 SVG <foreignObject> 把上面自包含 HTML 转成位图再下载(无需第三方库)。
+  async exportViewsPng() {
+    const dat = this._viewsExportData();
+    if (!dat) { this.toast('当前无可导出的观点总览: 请先选择有研报的品种/日期', 'error'); return; }
+    const width = 1240;
+    const html = this._buildViewsExport(dat, { width, font: '12.5px' });
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-100000px;top:0;';
+    holder.innerHTML = html;
+    document.body.appendChild(holder);
+    const height = Math.ceil(holder.getBoundingClientRect().height) + 80;  // 留余量防最后一行被裁
+    document.body.removeChild(holder);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject width="100%" height="100%">${html}</foreignObject></svg>`;
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+    const img = new Image();
+    img.onload = () => {
+      const scale = 2;  // 2× 保证清晰度
+      const cv = document.createElement('canvas');
+      cv.width = width * scale; cv.height = height * scale;
+      const ctx = cv.getContext('2d');
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      const a = document.createElement('a');
+      a.download = `逐品种观点总览_${dat.code}_${dat.d.date}.png`;
+      a.href = cv.toDataURL('image/png');
+      document.body.appendChild(a); a.click(); a.remove();
+      this.toast('已导出图片', 'success');
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); this.toast('图片导出失败(浏览器不支持该方式), 请改用「导出 PDF」', 'error'); };
+    img.src = url;
+  },
+
+  // 【功能】国君数据集(基差/仓单): 按品种 + 可选日期区间拉 GTJA 数据集并渲染表格。
+  //        日期区间留空 → 后端按类型给默认(基差近 180 天/仓单 240 交易日兜底)。
+  // 【输入】无 (读 #dwh-ds-variety 品种 + #dwh-ds-type 类型 + #dwh-ds-start/end 起止)
+  // 【渲染】#dwh-ds-note 说明 + #dwh-ds-table 表格
+  // 【后端】GET /api/gtja/dataset/{basis|inventory}?variety=&start=&end=
+  async loadGtjaDataset() {
+    const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+    const v = document.getElementById('dwh-ds-variety')?.value || '';
+    const type = document.getElementById('dwh-ds-type')?.value || 'basis';
+    const start = document.getElementById('dwh-ds-start')?.value || '';
+    const end = document.getElementById('dwh-ds-end')?.value || '';
+    const noteEl = document.getElementById('dwh-ds-note');
+    const body = document.getElementById('dwh-ds-table');
+    if (!v) { if (noteEl) noteEl.innerHTML = '<span style="color:var(--amber)">请先选择品种。</span>'; if (body) body.innerHTML = ''; return; }
+    if (body) body.innerHTML = '查询中...';
+    try {
+      const q = new URLSearchParams({ variety: v, start, end });
+      const r = await fetch(`/api/gtja/dataset/${type}?${q.toString()}`);
+      const d = await r.json();
+      if (!d.ok) {
+        if (noteEl) noteEl.innerHTML = `<span style="color:var(--amber)">${esc(d.error || '查询失败')}</span>`;
+        if (body) body.innerHTML = '';
+        return;
+      }
+      const rows = d.rows || [];
+      if (noteEl) noteEl.textContent = `${d.name}(${d.variety}) · ${d.source || '国泰君安(GTJA)'} · ${d.count} 行`
+        + (d.start && d.end ? ` · ${d.start} ~ ${d.end}` : '') + '。留空起止用默认区间; 基差率/基差单位为接口原始值, 仅供研究参考。';
+      if (!rows.length) { if (body) body.innerHTML = '<span style="color:var(--text-muted)">该品种此区间暂无数据(覆盖子集, SC 等无现货指数品种为空)。</span>'; return; }
+      const cols = type === 'inventory'
+        ? [['date', '日期'], ['inventory', '仓单'], ['change', '较前日']]
+        : [['date', '日期'], ['spot_price', '现货价'], ['dominant_contract', '主力合约'], ['dominant_contract_price', '合约价'], ['dom_basis', '基差'], ['dom_basis_rate', '基差率']];
+      const fmtNum = x => {
+        if (x == null || (typeof x === 'number' && !isFinite(x))) return '—';
+        const n = Number(x);
+        if (Number.isInteger(n)) return String(n);
+        return String(Math.round(n * 10000) / 10000);
+      };
+      const colorOf = (k, n) => {
+        if ((k === 'dom_basis' || k === 'dom_basis_rate' || k === 'change') && typeof n === 'number' && isFinite(n))
+          return n > 0 ? 'var(--green)' : n < 0 ? 'var(--red)' : 'var(--text-muted)';
+        return 'var(--text-secondary)';
+      };
+      const head = cols.map(([, h]) => `<th style="padding:6px 8px">${h}</th>`).join('');
+      const trs = rows.map(row => `<tr style="border-bottom:1px solid #e5e7eb">${cols.map(([k]) => {
+        const raw = row[k];
+        if (k === 'date') return `<td style="padding:5px 8px;white-space:nowrap">${esc(String(raw).slice(0, 10))}</td>`;
+        if (k === 'dominant_contract') return `<td style="padding:5px 8px;white-space:nowrap">${esc(raw)}</td>`;
+        if (typeof raw === 'number') return `<td style="padding:5px 8px;white-space:nowrap;color:${colorOf(k, raw)}">${fmtNum(raw)}</td>`;
+        return `<td style="padding:5px 8px;white-space:nowrap">${esc(raw)}</td>`;
+      }).join('')}</tr>`).join('');
+      if (body) body.innerHTML = `<table style="font-size:0.85rem;border-collapse:collapse;width:100%">
+        <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid #e5e7eb">${head}</tr></thead>
+        <tbody>${trs}</tbody></table>`;
+    } catch (e) { if (body) body.innerHTML = '<span style="color:var(--red)">加载失败</span>'; }
+  },
+
+  // 【功能】把库里的 UTC 时间串转成本地时间串(界面显示用)。
+  // 【输入】s: 'YYYY-MM-DD HH:MM:SS'(库内一律 UTC,来源 SQLite datetime('now'));
+  //         withSec: 是否保留秒(默认 false ⇒ 到分钟)。
+  // 【返回】str: 本地 'YYYY-MM-DD HH:MM(:SS)';空/无法解析时**原样返回**(不抛)。
+  // 【为什么需要】全库时间戳统一 UTC,而模板原先直接 slice 显示 ⇒ 界面比本地早 8 小时,
+  //   用户把"采集 01:32"(实为本地 09:32)读成"凌晨入库的东西卡到早上"(2026-09-22 实测)。
+  // 【注意】只转 uploaded_at / created_at 这类**时刻**;publish_date 是研报的**发布日期**
+  //   (本地语义的日期串,不是时间戳),绝不能一起转,否则会整体偏移一天。
+  _utcToLocal(s, withSec = false) {
+    const raw = String(s || '').trim();
+    if (!raw) return '';
+    // 库里是 'YYYY-MM-DD HH:MM:SS'(无时区标记) ⇒ 补 'Z' 明确按 UTC 解析。
+    // 已带 Z / ±HH:MM 的串(CURRENT_TIMESTAMP 的 ISO 形态)不重复追加。
+    const iso = raw.replace(' ', 'T') + (/[Zz]$|[+-]\d\d:?\d\d$/.test(raw) ? '' : 'Z');
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return raw;  // 脏值/老格式:原样显示,不猜
+    const p = n => String(n).padStart(2, '0');
+    const ymd = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+    return withSec ? `${ymd} ${hm}:${p(d.getSeconds())}` : `${ymd} ${hm}`;
+  },
+
+  // 【功能】生成研报列表的时间标签:发布日 + 采集/入库时间并列(到分钟)。
+  // 【输入】rp: 研报列表项(publish_date=研报发布日期, uploaded_at=采集/入库时间, created_at 兜底)。
+  // 【返回】str: 如「发布 2026-09-11 · 采集 09-11 09:56」;两者皆缺返回空串。
+  // 【关键】2026-09-11: 原来只显示 publish_date || uploaded_at 的前 10 位(仅日期且优先发布日,
+  //          采集时间不可见)。改为两者并列, 采集时间精确到分钟(与发布日错开、可区分)。
+  // 【关键】2026-09-22: 采集时间原为 UTC 原值直显(比本地早 8h) ⇒ 改走 _utcToLocal;
+  //          发布日期是本地语义,保持不动。
+  _researchTimeLabel(rp) {
+    const pd = (rp.publish_date || '').slice(0, 10).trim();  // 发布日期:本地语义,不转
+    const up = App._utcToLocal(rp.uploaded_at || rp.created_at, false);  // 采集时刻:UTC → 本地
+    const parts = [];
+    if (pd) parts.push(`发布 ${pd}`);
+    if (up) parts.push(`采集 ${up}`);
+    return parts.join(' · ');
+  },
+
+  // 【功能】按筛选品种/来源/类型拉取研报列表并渲染(状态徽标/来源徽标/方向/置信度/查看/删除按钮)
+  // 【输入】无 (读取 #res-filter-variety 品种 + #res-filter-source 来源 + #res-filter-type 类型筛选值)
+  // 【渲染】#res-count 计数 + #res-list 列表(处理中/已处理/失败三种状态)
+  // 【后端】GET /api/research?variety={variety}&ingest_source={manual|auto}&report_type={日报|周报}
+  async _refreshResearch(silent = false) {
+    const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
+    const v = document.getElementById('res-filter-variety')?.value || '';
+    const src = document.getElementById('res-filter-source')?.value || '';
+    const rtype = document.getElementById('res-filter-type')?.value || '';
+    const listEl = document.getElementById('res-list');
+    if (!silent) listEl.innerHTML = '加载中...';  // 静默模式不闪"加载中", 原列表保持到新数据就绪
+    // 【后台采集态恢复】页面刷新后若采集仍在进行, 顺带把按钮置回轮询态(异步, 不阻塞列表)
+    this._checkResearchCollecting();
+    try {
+      const q = new URLSearchParams();
+      if (v) q.set('variety', v);
+      if (src) q.set('ingest_source', src);
+      if (rtype) q.set('report_type', rtype);
+      const r = await fetch(`/api/research?${q.toString()}`);
+      const d = await r.json();
+      const rows = d.reports || [];
+      // 【计数带队列口径】除总数外,把"处理中/排队中/失败"分开报 —— 批量导入时用户最
+      // 需要的就是一眼看出"整批都在队列里、其中 N 路在跑",而不是盯着一两篇猜是否还
+      // 在动(2026-09-14:"研报库还是只有一篇在处理"的观感来源之一就是这个计数没有
+      // 队列口径)。没有对应状态时不显示该段,避免日常态被噪声占满。
+      const nRun = rows.filter(rp => rp.status === 'processing').length;
+      const nWait = rows.filter(rp => rp.status === 'pending').length;
+      const nErr = rows.filter(rp => rp.status === 'error').length;
+      // 【已跳过】品种全在白名单外 ⇒ 正常过滤,单列一档且**不计入失败**(2026-09-22)。
+      const nSkip = rows.filter(rp => rp.status === 'skipped').length;
+      document.getElementById('res-count').textContent =
+        `${rows.length} 份`
+        + (nRun ? ` · ${nRun} 处理中` : '')
+        + (nWait ? ` · ${nWait} 排队中` : '')
+        + (nErr ? ` · ${nErr} 失败` : '')
+        + (nSkip ? ` · ${nSkip} 已跳过` : '');
+      if (!rows.length) { listEl.innerHTML = '<span style="color:var(--text-muted)">暂无研报, 请上传或运行自动采集。</span>'; return; }
+      listEl.innerHTML = rows.map(rp => {
+        const srcBadge = rp.ingest_source === 'auto'
+          ? '<span class="badge" style="background:rgba(168,85,247,.18);color:#c084fc;margin-right:6px">自动</span>'
+          : '<span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);margin-right:6px">上传</span>';
+        // 类型徽标: 只标周报(橙色), 日报/未知不标(2026-09-05 日报/周报分口径)
+        const typeBadge = rp.report_type === '周报'
+          ? '<span class="badge" style="background:rgba(245,158,11,.18);color:var(--amber);margin-right:6px">周报</span>'
+          : '';
+        // 状态徽标: done 绿 / error 红 / pending 灰蓝(已登记排队) / 其余 processing 琥珀(正在跑)
+        // 【2026-09-14】本地批量导入改为「先全批登记(pending) → 再并行处理」,新增
+        // "排队中"一档:让用户一眼看到整批都在队列里(而不是只有几篇"处理中"在动),
+        // 区分"已排队待跑"和"正在跑(LMM 处理中)"。
+        const statusBadge = rp.status === 'done'
+          ? '<span class="badge" style="background:rgba(34,197,94,.15);color:var(--green)">已处理</span>'
+          : rp.status === 'error'
+            ? '<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">失败</span>'
+            : rp.status === 'skipped'
+              // 【已跳过】识别品种全在池外 ⇒ 白名单的正常过滤,用灰蓝(同"排队中"色),
+              // 不用红色,避免把预期行为读成故障(2026-09-22)。
+              ? '<span class="badge" style="background:rgba(148,163,184,.20);color:var(--text-muted)">已跳过</span>'
+              : rp.status === 'pending'
+                ? '<span class="badge" style="background:rgba(148,163,184,.20);color:var(--text-muted)">排队中</span>'
+                : '<span class="badge" style="background:rgba(245,158,11,.15);color:var(--amber)">处理中</span>';
+        const dirColor = rp.direction === '看多' ? 'var(--green)' : rp.direction === '看空' ? 'var(--red)' : 'var(--text-muted)';
+        const conf = rp.confidence != null ? ` · 置信度 ${rp.confidence}` : '';
+        // 多品种徽标: varieties 逗号分隔, >1 个品种时显示
+        const vcodes = (rp.varieties || '').split(',').filter(Boolean);
+        const multiBadge = vcodes.length > 1
+          ? `<span class="badge" style="background:rgba(96,165,250,.15);color:var(--blue);margin-left:6px">多品种 ${esc(vcodes.join('/'))}</span>`
+          : '';
+        return `<div class="debate-round">
+          <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
+            <div>
+              <b>${esc(rp.title || '(未命名)')}</b>${multiBadge}
+              <span style="color:var(--text-muted);font-size:0.8rem"> — ${esc(rp.variety || '')} · ${esc(rp.source || '')} · ${esc(this._researchTimeLabel(rp))}</span>
+              <span style="color:${dirColor};font-weight:700">${esc(rp.direction || '中性')}</span>${conf}
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              ${typeBadge}${srcBadge}${statusBadge}
+              <button class="btn btn-outline btn-sm" onclick="App.viewResearch(${rp.id})">查看</button>
+              <button class="btn btn-outline btn-sm" onclick="App.viewResearchOriginal(${rp.id})" title="查看研报原文">原文</button>
+              <button class="btn btn-red btn-sm" onclick="App.deleteResearch(${rp.id})">删除</button>
+            </div>
+          </div>
+          ${rp.status === 'error' ? `<div style="color:var(--red);font-size:0.8rem;margin-top:4px">${esc(rp.error || '')}</div>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) { listEl.innerHTML = '<span style="color:var(--red)">加载失败</span>'; }
+  },
+
+  // 【功能】上传研报: FormData(multipart) 提交 → 后台线程处理, 立即返回 {id}
+  // 【输入】从 4 个表单元素读取 (主品种/标题/发行方/文件); 前三者留空由后台 LLM 自动识别
+  // 【渲染】toast 提示 + 成功后刷新列表
+  // 【后端】POST /api/research/upload
+  async uploadResearch() {
+    const variety = document.getElementById('res-upload-variety')?.value || '';
+    const title = document.getElementById('res-upload-title')?.value.trim() || '';
+    const source = document.getElementById('res-upload-source')?.value.trim() || '';
+    const file = document.getElementById('res-upload-file')?.files[0];
+    if (!file) { this.toast('请选择研报文件', 'error'); return; }
+    const fd = new FormData();
+    fd.append('variety', variety);
+    if (title) fd.append('title', title);
+    if (source) fd.append('source', source);
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/research/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '上传失败', 'error'); return; }
+      this.toast('研报已接收, 后台处理中', 'success');
+      const fileEl = document.getElementById('res-upload-file');
+      if (fileEl) fileEl.value = '';
+      document.getElementById('res-upload-title').value = '';
+      document.getElementById('res-upload-source').value = '';
+      await this._refreshResearch();
+    } catch (e) { this.toast('上传失败', 'error'); }
+  },
+
+  // ── 外文研报(2026-09-24 新增) ─────────────────────────────────────
+  // 【功能】上传外文研报 PDF → 后台编译成中文 A4 编译稿 PDF; 本页 5s 轮询进度,
+  //        完成后给预览/下载链接; 历史任务可追溯与删除。
+  // 【任务恢复】job id 记在 localStorage('fg-last-job'), 刷新或离开本页回来后
+  //        自动接上同一任务(后端任务线程独立于前端存活)。
+  // 【后端】POST /api/foreign/upload · GET /api/foreign/job/<id> · GET /api/foreign/jobs
+  //        · GET /api/foreign/download/<id> · DELETE /api/foreign/job/<id>
+  _fgTimer: null,   // 【变量】进度轮询定时器句柄
+  _fgJobId: null,   // 【变量】当前跟进的任务 id
+
+  // 【功能】外文研报页入口: 恢复上一次任务 + 拉历史列表(switchTab 懒加载调用)
+  async loadForeign() {
+    const saved = localStorage.getItem('fg-last-job');
+    if (saved && !this._fgJobId) { this._fgJobId = saved; this._pollForeign(); }
+    this.loadForeignJobs();
+  },
+
+  // 【功能】提交上传并开始编译
+  // 【渲染】toast; 成功后显示进度卡并开始轮询
+  async startForeign() {
+    const file = document.getElementById('fg-file')?.files[0];
+    if (!file) { this.toast('请选择外文研报 PDF', 'error'); return; }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('include_images', document.getElementById('fg-images')?.value || '1');
+    fd.append('include_insight', document.getElementById('fg-insight')?.value || '1');
+    const btn = document.getElementById('fg-start');
+    btn.disabled = true; const txt = btn.textContent; btn.textContent = '上传中…';
+    try {
+      const r = await fetch('/api/foreign/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '上传失败', 'error'); return; }
+      this.toast('已接收，后台编译中（可离开本页稍后回来）', 'success');
+      this._fgJobId = d.id;
+      localStorage.setItem('fg-last-job', d.id);
+      document.getElementById('fg-file').value = '';
+      document.getElementById('fg-job').style.display = '';
+      document.getElementById('fg-log').textContent = '';
+      this._renderForeignJob({ status: 'running', stage_label: '排队中', progress: 0, message: '任务已入队', log: [] });
+      this._pollForeign();
+    } catch (e) { this.toast('上传失败', 'error'); }
+    finally { btn.disabled = false; btn.textContent = txt; }
+  },
+
+  // 【功能】轮询当前任务进度, running 时每 5s 再轮一次(网络异常退避到 8s)
+  async _pollForeign() {
+    if (!this._fgJobId) return;
+    if (this._fgTimer) { clearTimeout(this._fgTimer); this._fgTimer = null; }
+    let done = false;
+    try {
+      const r = await fetch(`/api/foreign/job/${this._fgJobId}`, { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        this._renderForeignJob(j);
+        if (j.status === 'running') {
+          this._fgTimer = setTimeout(() => this._pollForeign(), 5000);
+          return;
+        }
+        done = true;
+      } else if (r.status === 404) {
+        this.toast('任务不存在或已被删除', 'error');
+        localStorage.removeItem('fg-last-job');
+        document.getElementById('fg-job').style.display = 'none';
+        return;
+      } else {
+        this._fgTimer = setTimeout(() => this._pollForeign(), 8000);
+        return;
+      }
+    } catch (e) {
+      this._fgTimer = setTimeout(() => this._pollForeign(), 8000);
+      return;
+    }
+    // 终态: 提示 + 刷新历史列表
+    const j = await (await fetch(`/api/foreign/job/${this._fgJobId}`, { cache: 'no-store' })).json().catch(() => ({}));
+    if (j.status === 'done') this.toast(`编译完成：${j.pages || '?'} 页`, 'success');
+    else if (j.status === 'error') this.toast('编译失败：' + (j.error || '未知错误'), 'error');
+    this.loadForeignJobs();
+    if (done) { /* 保留进度卡, 便于查看日志与下载 */ }
+  },
+
+  // 【功能】把单个任务状态渲染进进度卡
+  // 【输入】j: /api/foreign/job/<id> 的返回(含 status/progress/log/warnings/error)
+  _renderForeignJob(j) {
+    const card = document.getElementById('fg-job');
+    if (!card) return;
+    card.style.display = '';
+    const running = j.status === 'running';
+    document.getElementById('fg-job-title').textContent =
+      j.title ? `《${j.title}》` : (j.filename || '外文研报编译');
+    document.getElementById('fg-job-meta').textContent =
+      (j.org ? j.org + ' · ' : '') + (j.n_pages ? `原文 ${j.n_pages} 页 · ` : '') +
+      (j.pages ? `编译稿 ${j.pages} 页` : '');
+    document.getElementById('fg-bar-fill').style.width = (j.progress || 0) + '%';
+    document.getElementById('fg-pct').textContent = (j.progress || 0) + '%';
+    document.getElementById('fg-stage').textContent = j.stage_label || j.stage || '';
+    const logEl = document.getElementById('fg-log');
+    logEl.textContent = (j.log || []).join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+
+    const warnEl = document.getElementById('fg-warn');
+    const warns = j.warnings || [];
+    warnEl.style.display = warns.length ? '' : 'none';
+    warnEl.innerHTML = warns.length
+      ? '<b>⚠ 编译提示</b><br>' + warns.map(w => '· ' + this._escHtml(w)).join('<br>') : '';
+
+    const errEl = document.getElementById('fg-err');
+    errEl.style.display = j.status === 'error' ? '' : 'none';
+    errEl.textContent = j.status === 'error' ? ('编译失败：' + (j.error || '未知错误')) : '';
+
+    const has = !!j.has_pdf;
+    const view = document.getElementById('fg-view');
+    const dl = document.getElementById('fg-dl');
+    view.style.display = has ? '' : 'none';
+    dl.style.display = has ? '' : 'none';
+    if (has) {
+      view.href = `/api/foreign/download/${j.id}?inline=1`;
+      dl.href = `/api/foreign/download/${j.id}`;
+      dl.setAttribute('download', j.out_name || '外文研报_中文编译.pdf');
+    }
+  },
+
+  // 【功能】拉取并渲染历史编译任务列表(含删除)
+  // 【后端】GET /api/foreign/jobs
+  async loadForeignJobs() {
+    const box = document.getElementById('fg-list');
+    if (!box) return;
+    const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+    try {
+      const r = await fetch('/api/foreign/jobs?limit=30');
+      const d = await r.json();
+      const jobs = d.jobs || [];
+      const badge = document.getElementById('fg-list-badge');
+      if (badge) badge.textContent = `${jobs.length} 个任务`;
+      if (!jobs.length) { box.innerHTML = '暂无任务'; return; }
+      const stMap = {
+        done: ['已完成', 'var(--green)'],
+        error: ['失败', 'var(--red)'],
+        running: ['进行中', 'var(--amber)'],
+      };
+      box.innerHTML = jobs.map(j => {
+        const [label, color] = stMap[j.status] || [j.stage_label || j.status, 'var(--text-muted)'];
+        const links = [];
+        if (j.has_pdf) {
+          links.push(`<a href="/api/foreign/download/${esc(j.id)}?inline=1" target="_blank" rel="noopener">预览</a>`);
+          links.push(`<a href="/api/foreign/download/${esc(j.id)}" download="${esc(j.out_name)}">下载</a>`);
+        }
+        links.push(`<a href="javascript:void(0)" onclick="App.deleteForeign('${esc(j.id)}')">删除</a>`);
+        return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid var(--border,#e0e0e0)">
+          <span style="min-width:64px;font-size:.76rem;font-weight:700;color:${color}">${esc(label)}</span>
+          <span style="flex:1;min-width:200px">
+            <b>${esc(j.title || j.filename)}</b>
+            <span style="color:var(--text-muted);font-size:.78rem"> ${esc(j.org ? '· ' + j.org : '')}${j.pages ? ' · 编译稿 ' + esc(j.pages) + ' 页' : (j.n_pages ? ' · 原文 ' + esc(j.n_pages) + ' 页' : '')}</span>
+            ${j.status === 'error' && j.error ? `<div style="color:var(--red);font-size:.76rem">${esc(j.error)}</div>` : ''}
+          </span>
+          <span style="color:var(--text-muted);font-size:.76rem">${esc((j.created_at || '').slice(5, 16))}</span>
+          <span style="display:flex;gap:10px;font-size:.78rem">${links.join('')}</span>
+        </div>`;
+      }).join('');
+    } catch (e) { box.innerHTML = '加载失败'; }
+  },
+
+  // 【功能】删除一个编译任务(连同其产物 PDF 与上传的原始文件)
+  // 【后端】DELETE /api/foreign/job/<id>
+  async deleteForeign(jid) {
+    if (!jid || !confirm('删除该编译任务及其 PDF 产物？此操作不可恢复。')) return;
+    try {
+      const r = await fetch(`/api/foreign/job/${jid}`, { method: 'DELETE' });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '删除失败', 'error'); return; }
+      this.toast('已删除', 'success');
+      if (this._fgJobId === jid) {
+        this._fgJobId = null;
+        localStorage.removeItem('fg-last-job');
+        const card = document.getElementById('fg-job');
+        if (card) card.style.display = 'none';
+      }
+      this.loadForeignJobs();
+    } catch (e) { this.toast('删除失败', 'error'); }
+  },
+
+  // ── 自传数据(个人数据接口) ─────────────────────────────────────────
+  // 【功能】上传 Excel/CSV/MD/TXT 数据文件 → 后台 LLM 识别格式解析入库;
+  //        列表展示处理状态;删除连同落盘文件。分析师注入由后端运行分析时自动完成。
+  // 【输入】#ud-upload-variety(品种,可自动识别) + #ud-upload-file
+  // 【渲染】toast + loadUserDatasets() 【后端】POST /api/userdata/upload
+  async uploadUserData() {
+    const variety = document.getElementById('ud-upload-variety')?.value || '';
+    const file = document.getElementById('ud-upload-file')?.files[0];
+    if (!file) { this.toast('请选择数据文件', 'error'); return; }
+    const fd = new FormData();
+    if (variety) fd.append('variety', variety);
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/userdata/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '上传失败', 'error'); return; }
+      this.toast('数据文件已接收, 后台解析中(LLM 识别格式)', 'success');
+      document.getElementById('ud-upload-file').value = '';
+      await this.loadUserDatasets();
+    } catch (e) { this.toast('上传失败', 'error'); }
+  },
+
+  // 【功能】拉取自传数据列表并渲染(状态徽标: processing 黄 / done 绿 / error 红)。
+  // 【后端】GET /api/userdata?variety=
+  async loadUserDatasets() {
+    const box = document.getElementById('ud-list');
+    if (!box) return;
+    const esc = s => this._escHtml(s == null || s === '' ? '-' : String(s));
+    try {
+      const r = await fetch('/api/userdata');
+      const d = await r.json();
+      const list = d.datasets || [];
+      const countEl = document.getElementById('ud-count');
+      if (countEl) countEl.textContent = `${list.length} 个数据集`;
+      if (!list.length) { box.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem">暂无自传数据;上传后自动接入宏观/情绪分析。</div>'; return; }
+      const badge = (s) => s === 'done' ? '<span class="badge" style="background:rgba(34,197,94,.15);color:var(--green)">已接入</span>'
+        : s === 'error' ? '<span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">解析失败</span>'
+        : '<span class="badge" style="background:rgba(245,158,11,.15);color:var(--amber)">解析中</span>';
+      box.innerHTML = `<table style="width:100%;font-size:0.85rem"><thead><tr>
+          <th style="text-align:left">文件</th><th style="text-align:left">品种</th><th style="text-align:left">数据类型</th>
+          <th>行数</th><th>状态</th><th style="text-align:left">上传时间</th><th></th>
+        </tr></thead><tbody>${list.map(x => `<tr>
+          <td>${esc(x.filename || '')}</td>
+          <td><b>${esc(x.variety || '?')}</b></td>
+          <td>${esc(x.data_type || '—')}</td>
+          <td style="text-align:center">${x.status === 'done' ? x.row_count : '—'}</td>
+          <td>${badge(x.status)}${x.status === 'error' ? `<div style="font-size:0.78rem;color:var(--red);max-width:260px;white-space:normal">${esc(x.error || '')}</div>` : ''}</td>
+          <td>${esc(App._utcToLocal(x.created_at, true) || '')}</td>
+          <td><button class="btn btn-outline btn-sm" onclick="App.deleteUserData(${x.id})">删除</button></td>
+        </tr>`).join('')}</tbody></table>`;
+    } catch (e) { box.innerHTML = '<div style="color:var(--red);font-size:0.85rem">列表加载失败</div>'; }
+  },
+
+  // 【功能】删除自传数据(DB 行 + 落盘文件);确认后调用。
+  // 【后端】DELETE /api/userdata/<id>
+  async deleteUserData(id) {
+    if (!confirm('删除该自传数据?删除后不再注入分析师。')) return;
+    try {
+      const r = await fetch(`/api/userdata/${id}`, { method: 'DELETE' });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '删除失败', 'error'); return; }
+      this.toast('已删除', 'success');
+      await this.loadUserDatasets();
+    } catch (e) { this.toast('删除失败', 'error'); }
+  },
+
+  // ── 采集品种选择面板(按品种采集防全量 LLM 耗时过长) ──────────────────
+  // 【功能】开关面板; 打开时懒填充品种勾选列表(this._varieties, 只填一次)
+  toggleCollectVarietyPanel(e) {
+    if (e) e.stopPropagation();
+    const p = document.getElementById('res-collect-variety-panel');
+    if (!p) return;
+    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    if (p.style.display !== 'block') return;
+    this._fillCollectVarietyList();
+    const closer = (ev) => {  // 点面板外自动收起(面板自身 onclick 已 stopPropagation)
+      if (!p.contains(ev.target)) { p.style.display = 'none'; document.removeEventListener('click', closer); }
+    };
+    document.addEventListener('click', closer);
+  },
+
+  // 【功能】把品种列表填充进勾选面板; 已有内容则跳过, 避免重复
+  _fillCollectVarietyList() {
+    const box = document.getElementById('res-cv-list');
+    if (!box || box.childElementCount) return;
+    (this._varieties || []).forEach(v => {
+      const l = document.createElement('label');
+      l.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer';
+      const c = document.createElement('input');
+      c.type = 'checkbox'; c.className = 'res-cv-item'; c.value = v.code;
+      c.onchange = () => this._updateCollectVarietyLabel();
+      l.appendChild(c);
+      l.appendChild(document.createTextNode(`${v.code} ${v.name}`));
+      box.appendChild(l);
+    });
+  },
+
+  // 【功能】"全部品种"总开关: 勾/去勾所有单项
+  _onCollectVarietyAll(checked) {
+    document.querySelectorAll('.res-cv-item').forEach(c => { c.checked = checked; });
+    this._updateCollectVarietyLabel();
+  },
+
+  // 【功能】当前勾选的品种代码列表(空 = 全部)
+  _collectVarietyCodes() {
+    return [...document.querySelectorAll('.res-cv-item:checked')].map(c => c.value);
+  },
+
+  // 【功能】同步按钮文案(如 "🔬 品种: MA/TA 等3个")与总开关勾选态
+  _updateCollectVarietyLabel() {
+    const codes = this._collectVarietyCodes();
+    const total = (this._varieties || []).length;
+    const all = document.getElementById('res-cv-all');
+    if (all) all.checked = !codes.length || codes.length === total;
+    const btn = document.getElementById('res-collect-variety-btn');
+    if (btn) btn.textContent = (codes.length && codes.length < total)
+      ? `🔬 品种: ${codes.slice(0, 3).join('/')}${codes.length > 3 ? ` 等${codes.length}个` : ''}`
+      : '🔬 品种: 全部';
+  },
+
+  // 【功能】手动采集最新研报: 触发后台线程(发现报告 2 家 + 华泰天玑 21 品种日报 + 国君云API)
+  // 【输入】source:'all' + 可选 varieties(勾选面板所选品种, 空/全选=全部, 后端按品种
+  //         过滤华泰/国君并排除发现报告); 采集进行中后端返回 409, 同样进入轮询等它结束
+  // 【渲染】按钮置灰显示"采集进行中…", 每 5s 轮询状态, 结束后 toast + 刷新列表
+  // 【后端】POST /api/research/collect {source:'all', varieties:[...]} · GET /api/research/collect
+  _resCollectTimer: null,
+  async collectResearch() {
+    const codes = this._collectVarietyCodes();
+    const total = (this._varieties || []).length;
+    const payload = { source: 'all' };
+    if (codes.length && codes.length < total) payload.varieties = codes;
+    const panel = document.getElementById('res-collect-variety-panel');
+    if (panel) panel.style.display = 'none';
+    try {
+      const r = await fetch('/api/research/collect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 409) { this.toast('研报采集已在进行中, 请稍候', 'info'); this._watchResearchCollect(); return; }
+      if (!r.ok) { this.toast(d.error || '采集启动失败', 'error'); return; }
+      this.toast(d.message || '研报采集已启动, 后台处理中', 'success');
+      this._watchResearchCollect();
+    } catch (e) { this.toast('采集启动失败', 'error'); }
+  },
+
+  // 【功能】本地文件夹导入 PDF 研报: 弹出/收起路径输入面板
+  // 【便利】展开时回填上次成功导入的路径/机构名(localStorage),免重复输入
+  toggleLocalImportPanel(ev) {
+    if (ev) ev.stopPropagation();
+    const p = document.getElementById('res-local-import-panel');
+    if (!p) return;
+    const show = p.style.display === 'none';
+    p.style.display = show ? 'block' : 'none';
+    if (show) {
+      const f = document.getElementById('res-local-folder');
+      const o = document.getElementById('res-local-org');
+      if (f && !f.value) f.value = localStorage.getItem('res_local_folder') || '';
+      if (o && !o.value) o.value = localStorage.getItem('res_local_org') || '';
+      // 展开时收起品种筛选面板,避免重叠
+      const v = document.getElementById('res-collect-variety-panel'); if (v) v.style.display = 'none';
+    }
+  },
+
+  // 【功能】从本地文件夹导入 PDF 研报: POST source=local(带 folder/org/品种筛选),复用采集轮询
+  async localImport() {
+    const folder = ((document.getElementById('res-local-folder') || {}).value || '').trim();
+    const org = ((document.getElementById('res-local-org') || {}).value || '').trim();
+    if (!folder) { this.toast('请先填写本地文件夹路径', 'error'); return; }
+    const codes = this._collectVarietyCodes();
+    const payload = { source: 'local', folder };
+    if (org) payload.org = org;
+    if (codes.length) payload.varieties = codes;  // 勾选品种时按文件名命中过滤
+    const panel = document.getElementById('res-local-import-panel');
+    if (panel) panel.style.display = 'none';
+    try {
+      const r = await fetch('/api/research/collect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 409) { this.toast('研报采集已在进行中, 请稍候', 'info'); this._watchResearchCollect('res-local-import-btn', '📁 本地导入'); return; }
+      if (!r.ok) { this.toast(d.error || '本地导入启动失败', 'error'); return; }
+      // 记住本次路径/机构名,下次打开面板自动回填
+      try { localStorage.setItem('res_local_folder', folder); if (org) localStorage.setItem('res_local_org', org); } catch (e) { /* 隐私模式等场景忽略 */ }
+      this.toast(d.message || '本地导入已启动, 后台处理中', 'success');
+      this._watchResearchCollect('res-local-import-btn', '📁 本地导入');
+    } catch (e) { this.toast('本地导入启动失败', 'error'); }
+  },
+
+  // 【功能】轮询采集状态直到结束(页面刷新后若仍在采集中, 经 _refreshResearch 也会进入此处恢复按钮态)
+  // 【体验】按钮实时显示已耗时(每篇走 LLM 提取, 全程可达数十分钟); 每 30s 静默刷新
+  //         一次列表, 让新入库的研报行陆续出现, 避免"只转圈不知进展"。
+  // 【参数】btnId: 受控按钮 id(采集=采集按钮, 本地导入=导入按钮); doneText: 结束后恢复的按钮文案。
+  _watchResearchCollect(btnId = 'res-collect-btn', doneText = '🔄 采集最新研报') {
+    const btn = document.getElementById(btnId);
+    const t0 = Date.now();
+    if (btn) { btn.disabled = true; }
+    if (this._resCollectTimer) return;  // 已在轮询, 不重复起定时器
+    const fmt = s => (s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`);
+    let ticks = 0;
+    this._resCollectTimer = setInterval(async () => {
+      ticks++;
+      const b = document.getElementById(btnId);
+      if (b) b.textContent = `采集进行中… (已 ${fmt(Math.round((Date.now() - t0) / 1000))})`;
+      try {
+        const r = await fetch('/api/research/collect');
+        const d = await r.json();
+        if (d.collecting) {
+          if (ticks % 6 === 0) {  // 静默刷新: 新行渐进出现 + 日期下拉就地长出新日期
+            this._refreshResearch(true);
+            this._loadDailyDates();
+          }
+          return;
+        }
+        clearInterval(this._resCollectTimer);
+        this._resCollectTimer = null;
+        const c = document.getElementById(btnId);
+        if (c) { c.disabled = false; c.textContent = doneText; }
+        this.toast('研报采集结束, 列表已刷新', 'success');
+        await this._refreshResearch();
+        await this._loadDailyDates();
+      } catch (e) { /* 网络抖动忽略, 下轮再查 */ }
+    }, 5000);
+  },
+
+  // 【功能】查询采集状态, 进行中则进入轮询恢复按钮态(页面加载/刷新时用, 静默失败)
+  async _checkResearchCollecting() {
+    try {
+      const r = await fetch('/api/research/collect');
+      const d = await r.json();
+      if (d.collecting) this._watchResearchCollect();
+    } catch (e) { /* 状态查询失败不影响列表加载 */ }
+  },
+
+  // 【功能】查看研报详情: 结构化 JSON 渲染为表格 + 结论 markdown, 用 marked 渲染后展示
+  // 【输入】id: 研报主键 【渲染】#modal 弹层 (结构化数据/关键事件/观点结论)
+  // 【后端】GET /api/research/<id>
+  async viewResearch(id) {
+    try {
+      const r = await fetch(`/api/research/${id}`);
+      if (!r.ok) { this.toast('研报不存在', 'error'); return; }
+      const d = await r.json();
+      const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+      const sd = d.structured_data || {};
+      // 多品种研报: sd.varieties[] 每品种一份数据; 旧单品种行(无 varieties)向后兼容包装
+      const items = (Array.isArray(sd.varieties) && sd.varieties.length)
+        ? sd.varieties
+        : [{ variety: d.variety || '?', ...sd }];
+      const num = x => (x && x.value != null)
+        ? `${x.value}${x.unit ? ' ' + esc(x.unit) : ''}${x.date ? ' (' + esc(x.date) + ')' : ''}${x.note ? ' · ' + esc(x.note) : ''}`
+        : '—';
+      const evHtml = evs => evs.length
+        ? evs.map(e => {
+            const imp = String(e.impact || 'neutral').toLowerCase();
+            const c = imp === 'bullish' ? 'var(--green)' : imp === 'bearish' ? 'var(--red)' : 'var(--text-muted)';
+            return `<li style="margin:2px 0">${esc(e.event || '')} — ${esc(e.detail || '')} <span style="color:${c}">[${esc(e.impact || 'neutral')}]</span></li>`;
+          }).join('')
+        : '<li>无</li>';
+      // 每品种一张卡: 品种代码 + 方向/置信度 + 结构化数据表 + 关键事件
+      const varietyCards = items.map(it => {
+        const dirC = it.direction === '看多' ? 'var(--green)' : it.direction === '看空' ? 'var(--red)' : 'var(--text-muted)';
+        const rows = [
+          ['现货价', num(it.spot_price)],
+          ['基差', num(it.basis)],
+          ['社会库存', num(it.social_inventory)],
+          ['厂库', num(it.mill_inventory)],
+          ['交易所仓单', num(it.warehouse_receipts)],
+          ['开工率/负荷', num(it.operating_rate)],
+          ['供给', esc(it.supply && it.supply.note)],
+          ['需求', esc(it.demand && it.demand.note)],
+          ['成本', esc(it.costs && it.costs.note)],
+          ['加工利润', num(it.processing_margin)],
+          ['目标价', it.target_price != null ? esc(it.target_price) : '—'],
+        ].map(([k, v]) => `<tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">${k}</td><td>${v}</td></tr>`).join('');
+        return `<div class="card" style="padding:12px;margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h4 style="margin:0">${esc(it.variety || '?')}</h4>
+            <span style="color:${dirC};font-weight:700">${esc(it.direction || '中性')}${it.confidence != null ? ` · 置信度 ${it.confidence}` : ''}</span>
+          </div>
+          <table style="font-size:0.86rem;border-collapse:collapse">${rows}</table>
+          <h4 style="margin:10px 0 4px">关键事件</h4>
+          <ul style="margin:0;padding-left:18px;font-size:0.86rem">${evHtml(it.key_events || [])}</ul>
+        </div>`;
+      }).join('');
+      const dirColor = d.direction === '看多' ? 'var(--green)' : d.direction === '看空' ? 'var(--red)' : 'var(--text-muted)';
+      const covered = items.map(i => esc(i.variety || '?')).join(' / ');
+      const html = `
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+          <div><b style="font-size:1.15rem">${esc(d.title || '(未命名)')}</b>
+            <div style="color:var(--text-muted);font-size:0.82rem">覆盖: ${covered} · ${esc(d.source || '')} · ${esc(d.filename || '')} · ${d.publish_date ? '发布' : '上传'} ${esc(d.publish_date ? String(d.publish_date).slice(0, 10) : App._utcToLocal(d.uploaded_at, false).slice(0, 10))}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:6px">${this._researchFileButtons(id, d.file_path)}</div>
+            <span style="color:${dirColor};font-weight:900;font-size:1.2rem">${esc(d.direction || '中性')}</span>
+            ${d.confidence != null ? `<div style="color:var(--text-muted);font-size:0.82rem">主品种置信度 ${d.confidence}</div>` : ''}
+          </div>
+        </div>
+        ${varietyCards}
+        <div class="card" style="padding:12px">
+          <h4 style="margin:0 0 8px">观点结论</h4>
+          <div class="report-content">${marked.parse(d.conclusion_md || '_暂无结论_')}</div>
+        </div>`;
+      this.openResearchModal(html, esc(d.title || '研报详情'));
+    } catch (e) { this.toast('查看失败', 'error'); }
+  },
+
+  // 【功能】按 file_path 生成原件按钮组: pdf/图片 → 在线查看+下载; .md → 下载
+  //       (研报详情弹层与原文弹层共用, 2026-09-04)
+  // 【输入】id: 研报主键; fp: file_path 字符串 【渲染】按钮 HTML(无原件返回空串)
+  _researchFileButtons(id, fp) {
+    const isBinary = /\.(pdf|png|jpe?g)$/i.test(fp || '');
+    const isMd = /\.md$/i.test(fp || '');
+    if (fp && isBinary) {
+      return `<a class="btn btn-primary btn-sm" href="/api/research/${id}/file" target="_blank" rel="noopener" style="text-decoration:none">📄 在线查看</a>
+              <a class="btn btn-outline btn-sm" href="/api/research/${id}/download" target="_blank" rel="noopener" style="text-decoration:none">⬇ 下载</a>`;
+    }
+    if (fp && isMd) {
+      return `<a class="btn btn-outline btn-sm" href="/api/research/${id}/download" target="_blank" rel="noopener" style="text-decoration:none" title="下载本地 .md 文本原件(自动接入研报无 PDF,接口只提供正文)">⬇ 下载</a>`;
+    }
+    return '';
+  },
+
+  // 【功能】查看研报原文: 展示该研报提取出的原文文本(extracted_text)。
+  //       自动接入(fxbaogao)研报的原文即为此文本;上传的 PDF/图片持有二进制原件时,
+  //       附『在线查看』(浏览器直接渲染 PDF/图片, /api/research/<id>/file, 2026-09-04
+  //       上线:其他设备经内网穿透/局域网也能直接翻阅原件)与『下载原件』。
+  // 【输入】id: 研报主键 【渲染】#research-modal 弹层(<pre> 原文 + 可选在线查看/下载)
+  // 【后端】GET /api/research/<id>
+  async viewResearchOriginal(id) {
+    try {
+      const r = await fetch(`/api/research/${id}`);
+      if (!r.ok) { this.toast('研报不存在', 'error'); return; }
+      const d = await r.json();
+      const esc = s => this._escHtml(s == null || s === '' ? '—' : String(s));
+      const text = (d.extracted_text || '').trim();
+      const fp = d.file_path || '';
+      const isBinary = /\.(pdf|png|jpe?g)$/i.test(fp);
+      const isMd = /\.md$/i.test(fp);
+      const fileBtn = this._researchFileButtons(id, fp);
+      const kindNote = isMd
+        ? '<span style="color:var(--text-muted);font-size:0.78rem">（自动接入研报，以下文本即为原文）</span>'
+        : isBinary
+          ? '<span style="color:var(--text-muted);font-size:0.78rem">（点『在线查看』可在浏览器直接翻阅原件；如需保存可点『下载』）</span>'
+          : '';
+      const html = `
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center">
+          <div><b style="font-size:1.05rem">${esc(d.title || '(未命名)')}</b>
+            <div style="color:var(--text-muted);font-size:0.8rem">${esc(d.source || '')} · ${esc(d.variety || '')} · ${d.publish_date ? '发布' : '上传'} ${esc(d.publish_date ? String(d.publish_date).slice(0, 10) : App._utcToLocal(d.uploaded_at, false).slice(0, 10))}</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">${fileBtn}</div>
+        </div>
+        ${kindNote}
+        <pre style="white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto;font-size:0.84rem;line-height:1.6;background:var(--bg-subtle,#f6f7f9);padding:14px;border-radius:8px;margin-top:8px">${esc(text || '（暂无原文文本）')}</pre>`;
+      this.openResearchModal(html, '研报原文 · ' + esc(d.title || '研报'));
+    } catch (e) { this.toast('查看原文失败', 'error'); }
+  },
+  // 【输入】html: 弹层内容; title: 弹层标题
+  // 【渲染】动态创建/复用 #research-modal 【后端】无
+  openResearchModal(html, title) {
+    let m = document.getElementById('research-modal');
+    if (!m) {
+      m = document.createElement('div');
+      m.id = 'research-modal';
+      m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:40px 16px';
+      m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+      document.body.appendChild(m);
+    }
+    m.innerHTML = `<div class="card" style="max-width:720px;width:100%;padding:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0">${title}</h3>
+        <button class="btn btn-outline btn-sm" onclick="this.closest('#research-modal').remove()">✕ 关闭</button>
+      </div>
+      ${html}
+    </div>`;
+  },
+
+  // 【功能】删除研报: confirm 后调 DELETE, 同步清理聚合 JSON 与原始文件
+  // 【输入】id: 研报主键 【渲染】toast + 刷新研报列表 + 重载逐品种观点总览
+  // 【后端】DELETE /api/research/<id>
+  // 【关键】删除后仅刷列表不够: 逐品种观点总览(#res-views)是独立 GET, 不同步刷新
+  //        会在卡片里残留已删研报 → 删除成功后一并重载 loadResearchViews(), 让
+  //        当前品种对应行即时消失(后端 remove_research_report 按 id 已删干净)。
+  async deleteResearch(id) {
+    if (!confirm('确定删除这份研报? 将同时移除聚合数据源中的对应记录。')) return;
+    try {
+      const r = await fetch(`/api/research/${id}`, { method: 'DELETE' });
+      const d = await r.json();
+      if (!r.ok) { this.toast(d.error || '删除失败', 'error'); return; }
+      this.toast('已删除', 'success');
+      await this._refreshResearch();
+      await this.loadResearchViews();
+    } catch (e) { this.toast('删除失败', 'error'); }
+  },
+
+  // ── Dashboard (数据看板) ──
+  // 【功能】加载品种级数据看板: 价格/仓单库存/基差三序列 + 关联分析(Pearson R/库存趋势/基差率/背离检测)
+  // 【输入】无 (读取 #dash-variety 品种与 #dash-days 回看天数)
+  // 【渲染】#dash-analysis 关联分析卡; #chart-dash-pi 价格-库存双轴图;
+  //         #chart-dash-basis 基差图; #chart-dash-inv-chg 库存变化柱状图;
+  //         #dash-research 研报基本面指标独立卡(_renderResearchSection)
+  // 【后端】GET /api/dashboard/{variety}?days={days}
+  async loadDashboard() {
+    this._populateVarietySelects(['dash-variety']);  // 【关键】首次进入本页才填充下拉(懒加载); 后续只读不重填
+    const sym = (document.getElementById('dash-variety')?.value || this._defaultCode()).toUpperCase();
+    const days = document.getElementById('dash-days')?.value || 180;  // 【变量】回看天数(默认 180)
+    const body = document.getElementById('dash-analysis-body');
+    const badge = document.getElementById('dash-badge');
+    if (body) body.innerHTML = '加载中...';
+    try {
+      const r = await fetch(`/api/dashboard/${sym}?days=${days}`);  // 【调用函数】后端接口: 品种级看板(价格+仓单+基差+关联分析)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const meta = d._meta || {};
+      const an = d.analysis || {};
+
+      // ── 关联分析卡 ──
+      const trendHtml = an.inventory_trend
+        ? (an.inventory_trend === 'BUILDING'
+            ? `<span style="color:var(--red);font-weight:700">累库 ${an.inventory_trend_pct > 0 ? '+' : ''}${an.inventory_trend_pct}%</span>`
+            : an.inventory_trend === 'DRAINING'
+              ? `<span style="color:var(--green);font-weight:700">去库 ${an.inventory_trend_pct > 0 ? '+' : ''}${an.inventory_trend_pct}%</span>`
+              : `<span style="color:var(--amber);font-weight:700">库存平稳 ${an.inventory_trend_pct > 0 ? '+' : ''}${an.inventory_trend_pct}%</span>`)
+        : '—';
+      const rHtml = an.price_inventory_r == null ? '—' : an.price_inventory_r.toFixed(3);
+      const rColor = an.price_inventory_r == null ? 'var(--text-muted)'
+        : (an.price_inventory_r > 0.3 ? 'var(--red)' : an.price_inventory_r < -0.3 ? 'var(--green)' : 'var(--amber)');
+      const div = an.divergence;
+      const divColor = div ? (div.label.startsWith('健康') ? 'var(--green)' : 'var(--red)') : 'var(--text-muted)';
+      const divHtml = div
+        ? `<span style="color:${divColor};font-weight:700">${div.label}</span>` +
+          ` <span style="color:var(--text-muted);font-size:0.78rem">(近5日价格 ${div.price_chg_pct > 0 ? '+' : ''}${div.price_chg_pct}% / 库存 ${div.inventory_chg_pct > 0 ? '+' : ''}${div.inventory_chg_pct}%)</span>` +
+          `<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:4px">${div.desc}</div>`
+        : '数据不足(需价格与库存各 ≥6 个点)';
+      const basisHtml = an.basis_rate_latest == null ? '—' : `${an.basis_rate_latest > 0 ? '+' : ''}${an.basis_rate_latest.toFixed(2)}%`;
+
+      // 【关键】数据源不覆盖该品种时的优雅降级提示(不报错)
+      const notes = [];
+      if (meta.inventory_available === false && meta.inventory_note) notes.push(`仓单: ${meta.inventory_note}`);
+      if (meta.basis_available === false && meta.basis_note) notes.push(`基差: ${meta.basis_note}`);
+
+      if (body) {
+        body.innerHTML = `
+          <div class="grid grid-3" style="margin-bottom:10px">
+            <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="color:${rColor}">${rHtml}</div><div class="stat-lbl">价格-库存 Pearson R <span style="font-size:0.68rem">(n=${an.price_inventory_n || 0})</span></div></div>
+            <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem">${trendHtml}</div><div class="stat-lbl">库存趋势(近5日均 vs 更早5日均)</div></div>
+            <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem">${basisHtml}</div><div class="stat-lbl">最新基差率 <span style="font-size:0.68rem">R=${an.basis_price_r == null ? '—' : an.basis_price_r.toFixed(3)}</span></div></div>
+          </div>
+          <div style="font-size:0.88rem;line-height:1.7">
+            <b>背离检测</b>: ${divHtml}
+          </div>
+          ${notes.length ? `<div style="margin-top:8px;font-size:0.8rem;color:var(--amber)">${notes.map(n => `<span style="background:var(--bg-input);padding:2px 8px;border-radius:6px;margin-right:6px">${n}</span>`).join('')}</div>` : ''}`;
+      }
+      if (badge) badge.textContent = `${meta.name || sym} (${meta.sector || '其他'}) · 价格 ${meta.price_points} 点`;
+
+      this._renderDashCharts(d);
+      this._renderMarginSection(d);    // 盘面利润独立卡(仅 RB/HC/J)
+      this._renderResearchSection(d);  // 研报基本面指标独立卡(叠加在 _renderDashCharts 内处理)
+      // 【2026-09-28 迁移】原此处调 loadKline() 画看板 K 线; K 线已迁入「量化分析」页
+      //   (chart-q-kline, 由 App.loadQuantKline 渲染), 看板不再持有 K 线图。
+    } catch (e) {
+      console.error('Dashboard load error:', e);
+      if (body) body.innerHTML = `<span style="color:var(--red)">加载失败: ${e.message}</span>`;
+    }
+  },
+
+  // 【功能】渲染数据看板三张图(价格-库存双轴 / 基差 / 库存变化)
+  // 【输入】d: GET /api/dashboard/{variety} 的完整响应
+  // 【渲染】#chart-dash-pi / #chart-dash-basis / #chart-dash-inv-chg
+  // 【后端】无(数据由 loadDashboard 传入)
+  _renderDashCharts(d) {
+    const price = d.price || [];
+    const inv = (d.inventory && d.inventory.available) ? d.inventory.points : [];
+    const basis = (d.basis && d.basis.available) ? d.basis.points : [];
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? CHART.axis : '#666';
+    const gridColor = isDark ? CHART.grid : '#eee';
+
+    // 1) 价格 vs 仓单库存(双轴, 橙色价格 / 绿色库存)
+    const invByDate = {};
+    inv.forEach(p => { invByDate[p.date] = p.inventory; });
+    const piDates = price.map(p => p.date);
+    const chart1 = this._initChart('chart-dash-pi');
+    if (chart1) {
+      chart1.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross', crossStyle: { color: '#999' } } },
+        legend: { data: ['收盘价', '仓单库存'], bottom: 0, textStyle: { color: textColor, fontSize: 11 } },
+        grid: { left: 65, right: 65, top: 15, bottom: 35 },
+        xAxis: { type: 'category', data: piDates, axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: CHART.axis, fontSize: 10, rotate: piDates.length > 60 ? 45 : 0 }, splitLine: { show: false } },
+        yAxis: [
+          { type: 'value', name: '价格', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: CHART.brand } }, axisLabel: { color: CHART.brand, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
+          { type: 'value', name: '仓单库存', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: '#22c55e' } }, axisLabel: { color: '#22c55e', fontSize: 10 }, splitLine: { show: false } }
+        ],
+        series: [
+          { name: '收盘价', type: 'line', yAxisIndex: 0, data: price.map(p => p.close), smooth: true, showSymbol: false, lineStyle: { color: CHART.brand, width: 2.5 }, itemStyle: { color: CHART.brand } },
+          { name: '仓单库存', type: 'line', yAxisIndex: 1, data: price.map(p => invByDate[p.date] != null ? invByDate[p.date] : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: '#22c55e', width: 2 }, itemStyle: { color: '#22c55e' } }
+        ]
+      });
+    }
+
+    // 2) 基差 / 基差率(品种无基差时为空图, 降级提示在分析卡中)
+    const chart2 = this._initChart('chart-dash-basis');
+    if (chart2) {
+      const hasBasis = basis.some(p => p.near_basis != null);
+      const hasRate = basis.some(p => p.near_basis_rate != null);
+      const series = [];
+      if (hasBasis) series.push({ name: '基差', type: 'line', data: basis.map(p => p.near_basis != null ? p.near_basis : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: CHART.brand, width: 2 }, itemStyle: { color: CHART.brand } });
+      if (hasRate) series.push({ name: '基差率 (%)', type: 'line', data: basis.map(p => p.near_basis_rate != null ? p.near_basis_rate : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: '#fbbf24', width: 2 }, itemStyle: { color: '#fbbf24' } });
+      // 2a) 研报基差叠加(紫色散点, 口径同为元/吨): 研报日期吸附到最近 ≤当日的交易轴位,
+      //     空档 null; 每点携带研报真实日期/来源供 tooltip 核对。市场基差不可用时
+      //     不叠加(数据不丢, _renderResearchSection 会把它并进独立卡)。
+      const resOverlay = (d.research && d.research.overlay && d.research.overlay.basis) || [];
+      if (hasBasis && resOverlay.length) {
+        const axisDates = basis.map(p => p.date);
+        const resData = new Array(axisDates.length).fill(null);
+        resOverlay.forEach(p => {
+          const idx = this._snapAxisIndex(axisDates, p.date);
+          if (idx != null) resData[idx] = { value: p.value, rDate: p.date, rUnit: p.unit, rSource: p.source, rTitle: p.title, rPointDate: p.point_date };
+        });
+        series.push({
+          name: '研报基差', type: 'scatter', yAxisIndex: 0, data: resData,
+          symbolSize: 8, itemStyle: { color: '#a855f7' }, z: 5
+        });
+      }
+      chart2.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis', formatter: (params) => {
+            if (!params || !params.length) return '';
+            let html = params[0].axisValue || '';
+            params.forEach(p => {
+              if (p.value == null) return;
+              const it = p.data || {};
+              const v = Array.isArray(p.value) ? p.value[1] : p.value;
+              if (p.seriesName === '研报基差') {
+                html += `<br/>${p.marker}${p.seriesName}: <b style="color:#a855f7">${v}${it.rUnit || ''}</b>`;
+                html += `<br/><span style="font-size:0.75rem;color:var(--text-muted)">&nbsp;&nbsp;研报日期 ${it.rDate || p.axisValue}${it.rSource ? ' · ' + it.rSource : ''}${it.rTitle ? ' · ' + it.rTitle : ''}</span>`;
+              } else {
+                html += `<br/>${p.marker}${p.seriesName}: ${v}`;
+              }
+            });
+            return html;
+          } },
+        legend: { data: series.map(s => s.name), bottom: 0, textStyle: { color: textColor, fontSize: 11 } },
+        grid: { left: 65, right: 65, top: 15, bottom: 35 },
+        xAxis: { type: 'category', data: basis.map(p => p.date), axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: CHART.axis, fontSize: 10, rotate: basis.length > 60 ? 45 : 0 }, splitLine: { show: false } },
+        yAxis: [
+          { type: 'value', name: '基差', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: CHART.brand } }, axisLabel: { color: CHART.brand, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
+          { type: 'value', name: '基差率 %', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: '#fbbf24' } }, axisLabel: { color: '#fbbf24', fontSize: 10 }, splitLine: { show: false } }
+        ],
+        series
+      });
+    }
+
+    // 3) 仓单库存日变化(柱状: 红=增仓 / 绿=减仓)
+    const chart3 = this._initChart('chart-dash-inv-chg');
+    if (chart3) {
+      const changeVals = inv.map(p => {
+        if (p.change == null || p.change === '') return null;
+        const v = parseFloat(p.change);
+        return isNaN(v) ? null : v;
+      });
+      chart3.setOption({
+        ...this._baseChartOptions('仓单库存日变化'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: inv.map(p => p.date), axisLabel: { rotate: inv.length > 60 ? 45 : 0, fontSize: 9 } },
+        yAxis: { ...this._baseChartOptions('').yAxis, axisLabel: { formatter: v => v.toLocaleString() } },
+        series: [{
+          type: 'bar',
+          data: changeVals.map(v => v != null ? v : null),
+          itemStyle: { color: p => p.value >= 0 ? '#ef4444' : '#22c55e' }
+        }]
+      });
+    }
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 量化分析页 (2026-09-28 新增)
+  //   ① K线 ②技术指标 ③基差期限 ④仓单库存 ⑤量化信号 ⑥策略回测 ⑦截面排行
+  //   ⑧ 多体系方法论研判(方案 B 方法论研判中枢, 2026-09-28 补)
+  //   品种口径由本页 #q-variety 持有; 各 loadQuantXxx 独立请求、互不阻塞。
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // 【功能】量化页入口: 初始化品种下拉 → 并发拉取 8 个子模块(switchTab 懒加载调用)
+  // 【输入】force=1 时强制绕过排行缓存(仍走后端 TTL 缓存, 仅排行支持 refresh)
+  // 【渲染】各子模块容器(见 loadQuantKline / loadQuantTechnical / ...)
+  // 【后端】GET /api/quant/meta + 各子模块接口
+  async loadQuant(force) {
+    await this._loadQuantMeta();
+    const sym = this._quantSym();
+    if (!sym) return;
+    // 各块独立 catch: 任一块失败不影响其它块(单块降级是设计目标)
+    this.loadQuantKline();
+    this.loadQuantTechnical();
+    this.loadQuantBasis();
+    this.loadQuantInventory();
+    this.loadQuantSignals();
+    this.loadQuantBacktestParams();
+    await this.loadQuantStrategies();
+    // 【2026-09-28 修复】排行原先写作 `if (force) ...` ⇒ 只有点"刷新全部"才加载,
+    // 首次进入量化页时 #q-rank-table 恒为空白(实测 rows=0, 接口本身 20 行正常)。
+    // 改为默认也加载: 该分支 async 不 await ⇒ 不阻塞其它块; 后端有 5 min 整体缓存,
+    // 首次十余秒会显示"加载中(首拉需十余秒)", 之后切维度/重进均秒回。
+    this.loadQuantRanking(force ? 1 : 0);
+    // ⑧ 方法论研判: 同样默认加载(不 await, 不阻塞其它块); 后端每次实时算(含拉基差/仓单)
+    this.loadQuantVerdict();
+  },
+
+  // 【功能】取量化页当前品种(统一口径出口, 避免各函数各读一处下拉)
+  // 【输入】无 【渲染】无 【后端】无
+  _quantSym() {
+    const el = document.getElementById('q-variety');
+    return (el?.value || '').toUpperCase();
+  },
+
+  // 【功能】初始化量化页品种下拉 + 数据边界提示(只拉一次)
+  // 【输入】无
+  // 【渲染】#q-variety 选项; #q-coverage 数据源覆盖说明
+  // 【后端】GET /api/quant/meta
+  async _loadQuantMeta() {
+    const sel = document.getElementById('q-variety');
+    if (!sel) return;
+    if (sel.options.length) return;  // 已初始化过(切 tab 反复进入不重复拉)
+    try {
+      const r = await fetch('/api/quant/meta');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      sel.innerHTML = '';
+      (d.varieties || []).forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.code;
+        o.textContent = `${v.code} - ${v.name}`;
+        sel.appendChild(o);
+      });
+      // 默认选中与其它页一致的品种(优先有情绪数据的第一个, 与 _loadVarieties 同策略)
+      const pref = this._varieties && this._varieties.find(v => (v.sentiment_posts || 0) > 0);
+      sel.value = (pref && (d.varieties || []).some(x => x.code === pref.code))
+        ? pref.code : (d.varieties?.[0]?.code || '');
+      // 数据边界提示: 先告知用户哪些维度会空, 避免把"无覆盖"误读成"系统坏了"
+      const cov = document.getElementById('q-coverage');
+      if (cov) {
+        cov.innerHTML = '<b>数据源覆盖:</b> ' + (d.sources || [])
+          .map(s => `<span style="background:var(--bg-input);padding:2px 8px;border-radius:6px;margin-right:6px;display:inline-block;margin-bottom:4px" title="${s.note}">${s.name} <b>${s.coverage}</b></span>`)
+          .join('');
+      }
+    } catch (e) {
+      console.error('quant meta error:', e);
+    }
+  },
+
+  // 【功能】① 加载 K 线(日K/分钟K) — 品种/周期/天数/叠加指标均取本页自己的控件
+  // 【输入】无(#q-variety / #q-period / #q-days / #q-overlap)
+  // 【渲染】#chart-q-kline(由 _renderQuantKline 绘制)
+  // 【后端】GET /api/quant/kline?variety=&period=&days=&overlap=
+  async loadQuantKline() {
+    const sym = this._quantSym();
+    if (!sym) return;
+    const period = document.getElementById('q-period')?.value || 'day';
+    const days = document.getElementById('q-days')?.value || 250;
+    const overlap = document.getElementById('q-overlap')?.value || 'ma5,ma10,ma20';
+    const title = document.getElementById('q-kline-title');
+    if (title) title.textContent = '加载中...';
+    try {
+      const r = await fetch(`/api/quant/kline?variety=${sym}&period=${period}&days=${days}&overlap=${encodeURIComponent(overlap)}&bars=600`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const k = await r.json();
+      if (!k.ok) {
+        if (title) title.textContent = `K 线图（${k.error || '无数据'}）`;
+        const ch = this._initChart('chart-q-kline');
+        if (ch) ch.clear();
+        return;
+      }
+      this._renderQuantKline(k);
+    } catch (e) {
+      console.error('quant kline error:', e);
+      if (title) title.textContent = `K 线加载失败: ${e.message}`;
+    }
+  },
+
+  // 【功能】渲染量化页 K 线: ECharts candlestick + 均线/布林叠加 + 成交量副图
+  // 【输入】d: GET /api/quant/kline 响应 {ok, klins:[{date,open,high,low,close,volume,open_interest}],
+  //         overlays:{ma5,ma10,ma20,ma60,boll_up,boll_mid,boll_low}, name, unit, period, adjusted, count}
+  // 【渲染】#chart-q-kline + #q-kline-title + #q-kline-badge
+  // 【后端】无
+  _renderQuantKline(d) {
+    const ks = d.klines || [];
+    const chart = this._initChart('chart-q-kline');
+    const title = document.getElementById('q-kline-title');
+    const badge = document.getElementById('q-kline-badge');
+    if (!chart || !ks.length) {
+      if (title) title.textContent = 'K 线图（无数据）';
+      return;
+    }
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? CHART.axis : '#666';
+    const gridColor = isDark ? CHART.grid : '#eee';
+    const isMinute = d.period !== 'day';
+    const dates = ks.map(p => p.date);
+    // ECharts candlestick 顺序: [open, close, low, high]
+    const ohlc = ks.map(p => [p.open, p.close, p.low, p.high]);
+    const vols = ks.map(p => p.volume);
+    const ov = d.overlays || {};
+    const meta = { name: d.name, unit: d.unit, period: d.period, points: d.count, adjusted: d.adjusted };
+    // x 轴标签: 日K 显示日期, 分钟K 显示 "MM-DD HH:MM"
+    const xLabel = isMinute
+      ? (val => { const t = String(val || ''); return t.length >= 16 ? t.slice(5, 16) : t; })
+      : { color: CHART.axis, fontSize: 10 };
+
+    const series = [{
+      name: 'K线', type: 'candlestick', data: ohlc,
+      // 中国习惯: 涨红跌绿
+      itemStyle: { color: '#ef4444', color0: '#22c55e', borderColor: '#ef4444', borderColor0: '#22c55e' },
+      emphasis: { itemStyle: { borderWidth: 1 } }
+    }];
+    const legend = ['K线'];
+    const MA_STYLE = { ma5: '#fbbf24', ma10: '#818cf8', ma20: '#a855f7', ma60: '#2dd4bf' };
+    ['ma5', 'ma10', 'ma20', 'ma60'].forEach(tag => {
+      if (ov[tag]) {
+        series.push({ name: tag.toUpperCase(), type: 'line', data: ov[tag], smooth: true, showSymbol: false,
+                      lineStyle: { width: 1.2, color: MA_STYLE[tag] }, itemStyle: { color: MA_STYLE[tag] } });
+        legend.push(tag.toUpperCase());
+      }
+    });
+    if (ov.boll_up) {  // 布林带: 上/中/下轨(虚线, 中轨实线)
+      [['boll_up', 'BOLL上轨', '#94a3b8', 'dashed'], ['boll_mid', 'BOLL中轨', '#6366f1', 'solid'],
+       ['boll_low', 'BOLL下轨', '#94a3b8', 'dashed']].forEach(([k, nm, c, tp]) => {
+        if (ov[k]) {
+          series.push({ name: nm, type: 'line', data: ov[k], smooth: true, showSymbol: false,
+                        lineStyle: { width: 1, color: c, type: tp }, itemStyle: { color: c } });
+          legend.push(nm);
+        }
+      });
+    }
+    series.push({ name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vols,
+                  itemStyle: { color: 'rgba(21,101,192,0.45)' } });
+
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis', axisPointer: { type: 'cross', crossStyle: { color: '#999' } } },
+      legend: { data: legend, bottom: 0, textStyle: { color: textColor, fontSize: 11 }, type: 'scroll' },
+      axisPointer: { link: [{ xAxisIndex: 'all' }] },
+      grid: [{ left: 65, right: 20, top: 15, height: '56%' }, { left: 65, right: 20, top: '74%', height: '16%' }],
+      xAxis: [
+        { type: 'category', data: dates, gridIndex: 0, axisLine: { lineStyle: { color: gridColor } }, axisLabel: xLabel, splitLine: { show: false } },
+        { type: 'category', data: dates, gridIndex: 1, axisLine: { lineStyle: { color: gridColor } },
+          axisLabel: isMinute ? { show: false } : { color: CHART.axis, fontSize: 10 }, splitLine: { show: false } }
+      ],
+      yAxis: [
+        { type: 'value', scale: true, gridIndex: 0, axisLine: { lineStyle: { color: CHART.brand } },
+          axisLabel: { color: CHART.brand, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
+        { type: 'value', gridIndex: 1, name: '成交量', nameTextStyle: { color: textColor, fontSize: 10 },
+          axisLabel: { color: textColor, fontSize: 9, formatter: v => v >= 10000 ? (v / 10000).toFixed(0) + '万' : v }, splitLine: { show: false } }
+      ],
+      dataZoom: [
+        { type: 'inside', xAxisIndex: [0, 1], start: isMinute ? Math.max(0, 100 - 60 * 100 / Math.max(ks.length, 1)) : Math.max(0, 100 - 8000 / Math.max(ks.length, 1)), end: 100 },
+        { type: 'slider', xAxisIndex: [0, 1], bottom: 22, height: 16, start: Math.max(0, 100 - 8000 / Math.max(ks.length, 1)), end: 100 }
+      ],
+      series
+    }, true);
+    // 标题与徽标(品种 + 周期 + 区间 + 根数 + 复权口径)
+    const periodLabel = isMinute ? `${String(meta.period).replace('min', ' 分钟')}` : '日K';
+    const adjLabel = isMinute ? '不复权' : '后复权';
+    if (title) title.textContent = `${meta.name || ''} K 线图（${periodLabel} · ${adjLabel} · ${meta.points || 0} 根）`;
+    if (badge) badge.textContent = `${ks[0].date} ~ ${ks[ks.length - 1].date}`;
+  },
+
+  // 【功能】② 加载技术指标快照(MA/RSI/MACD/BOLL/ATR/波动率/夏普/持仓 + 多空计分)
+  // 【输入】品种取 #q-variety
+  // 【渲染】#q-tech-body(指标表) + #q-tech-badge
+  // 【后端】GET /api/quant/technical?variety=&days=250
+  async loadQuantTechnical() {
+    const sym = this._quantSym();
+    const body = document.getElementById('q-tech-body');
+    const badge = document.getElementById('q-tech-badge');
+    if (!sym || !body) return;
+    body.textContent = '加载中...';
+    try {
+      const r = await fetch(`/api/quant/technical?variety=${sym}&days=250`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (!d.ok) { body.innerHTML = this._emptyState(d.error || '无数据'); if (badge) badge.textContent = ''; return; }
+      const i = d.indicators || {};
+      const fmt = (v, dp = 1, suf = '') => (v === null || v === undefined) ? '—' : (+v).toFixed(dp) + suf;
+      // 多空计分着色(正偏多=红, 负偏空=绿, 沿用国内涨跌语义色)
+      const scoreColor = d.score >= 2 ? 'var(--red)' : (d.score <= -2 ? 'var(--green)' : 'var(--text-secondary)');
+      const rows = [
+        ['趋势', `MA5 ${fmt(i.ma5, 0)} · MA10 ${fmt(i.ma10, 0)} · MA20 ${fmt(i.ma20, 0)} · MA60 ${fmt(i.ma60, 0)}`],
+        ['均线形态', `${d.ma_state || '—'} · 现价 ${fmt(d.latest, 0)}`],
+        ['动量', `RSI14 ${fmt(i.rsi14, 1)}（${i.rsi14 > 70 ? '超买' : (i.rsi14 < 30 ? '超卖' : '中性')}） · `
+               + `MACD 柱 ${fmt(i.macd_bar, 2)}（${i.macd_bar > 0 ? '红柱偏多' : '绿柱偏空'}） · 20 日动量 ${fmt(i.mom20_pct, 2, '%')}`],
+        ['波动', `BOLL(20,2) 上 ${fmt(i.boll_up, 0)} / 中 ${fmt(i.boll_mid, 0)} / 下 ${fmt(i.boll_low, 0)} · ATR14 ${fmt(i.atr14, 1)}`],
+        ['风险调整', `年化波动率 ${fmt(i.ann_vol_pct, 1, '%')} · 夏普(近60日) ${fmt(i.sharpe60, 2)}`],
+        ['资金', `持仓量 ${i.oi_latest === null ? '—' : (+i.oi_latest).toLocaleString()} · 近5日 ${fmt(i.oi_chg5_pct, 2, '%')}`],
+      ];
+      body.innerHTML = rows.map(([k, v]) =>
+        `<div style="display:flex;gap:10px;padding:4px 0;border-bottom:1px dashed var(--border)">`
+        + `<span style="flex:0 0 72px;color:var(--text-muted)">${k}</span><span style="flex:1">${v}</span></div>`
+      ).join('')
+        + `<div style="margin-top:10px;padding:8px 12px;border-radius:8px;background:var(--bg-input)">`
+        + `多空计分 <b style="color:${scoreColor};font-size:1.05rem">${d.score > 0 ? '+' : ''}${d.score}</b> / 5`
+        + ` · 综合判定 <b style="color:${scoreColor}">${d.verdict}</b>`
+        + `<span style="color:var(--text-muted)">（5 项各 ±1：均线排列 / RSI / MACD / 现价 vs MA20 / 现价 vs BOLL中轨）</span></div>`;
+      if (badge) badge.textContent = `截至 ${d.date}`;
+      // 画迷你指标图(RSI + MACD), 复用 K 线的日期轴以便对照
+      this._renderQuantIndicatorMini(d.series || {});
+    } catch (e) {
+      console.error('quant technical error:', e);
+      body.innerHTML = this._emptyState(`加载失败: ${e.message}`);
+    }
+  },
+
+  // 【功能】技术指标迷你图(RSI 与 MACD 上下两张, 共用日期轴)
+  // 【输入】s: {date:[], rsi:[], macd_dif:[], macd_dea:[], macd_bar:[]}
+  // 【渲染】#chart-q-rsi / #chart-q-macd(静态容器, 见量化页技术指标卡内两个 chart-container)
+  // 【后端】无
+  // ⚠️ 勿再加"查 q-tech-mini 容器不存在就 return"的闸门: 那两个 chart-container 是静态 HTML,
+  //    2026-09-28 曾因多查一个不存在的 id 导致 RSI/MACD 两张图永不渲染。
+  _renderQuantIndicatorMini(s) {
+    if (!s.date || !s.date.length) return;
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? CHART.axis : '#666';
+    const gridColor = isDark ? CHART.grid : '#eee';
+    const axis = { type: 'category', data: s.date, axisLabel: { color: textColor, fontSize: 9 },
+                   axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false } };
+    const yAxis = { type: 'value', scale: true, axisLabel: { color: textColor, fontSize: 9 },
+                    splitLine: { lineStyle: { color: gridColor } } };
+
+    const c1 = this._initChart('chart-q-rsi');
+    if (c1) {
+      c1.setOption({
+        backgroundColor: 'transparent',
+        title: { text: 'RSI(14)', left: 4, top: 0, textStyle: { color: textColor, fontSize: 11, fontWeight: 'normal' } },
+        tooltip: { trigger: 'axis' },
+        grid: { left: 42, right: 12, top: 24, bottom: 22 },
+        xAxis: axis, yAxis: { ...yAxis, min: 0, max: 100 },
+        series: [{ name: 'RSI14', type: 'line', data: s.rsi, showSymbol: false, smooth: true,
+                   lineStyle: { width: 1.3, color: '#fbbf24' }, itemStyle: { color: '#fbbf24' },
+                   markLine: { silent: true, symbol: 'none',
+                     data: [{ yAxis: 70, lineStyle: { color: '#ef4444', type: 'dashed', width: 1 } },
+                            { yAxis: 30, lineStyle: { color: '#22c55e', type: 'dashed', width: 1 } }] } }]
+      }, true);
+    }
+    const c2 = this._initChart('chart-q-macd');
+    if (c2) {
+      c2.setOption({
+        backgroundColor: 'transparent',
+        title: { text: 'MACD(12,26,9)', left: 4, top: 0, textStyle: { color: textColor, fontSize: 11, fontWeight: 'normal' } },
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['DIF', 'DEA', 'MACD柱'], right: 8, top: 0, textStyle: { color: textColor, fontSize: 10 } },
+        grid: { left: 42, right: 12, top: 24, bottom: 22 },
+        xAxis: axis, yAxis,
+        series: [
+          { name: 'DIF', type: 'line', data: s.macd_dif, showSymbol: false, lineStyle: { width: 1.2, color: '#60a5fa' }, itemStyle: { color: '#60a5fa' } },
+          { name: 'DEA', type: 'line', data: s.macd_dea, showSymbol: false, lineStyle: { width: 1.2, color: '#f472b6' }, itemStyle: { color: '#f472b6' } },
+          { name: 'MACD柱', type: 'bar', data: s.macd_bar,
+            itemStyle: { color: p => p.value >= 0 ? '#ef4444' : '#22c55e' } }
+        ]
+      }, true);
+    }
+  },
+
+  // 【功能】③ 加载基差 + 期限结构(两张图 + 分位/形态摘要)
+  // 【输入】品种取 #q-variety
+  // 【渲染】#chart-q-basis(基差走势) / #chart-q-basispf(现货vs期货) / #chart-q-term(跨月曲线)
+  //         #q-basis-badge / #q-term-badge
+  // 【后端】GET /api/quant/basis?variety=&days=120
+  async loadQuantBasis() {
+    const sym = this._quantSym();
+    if (!sym) return;
+    const bBadge = document.getElementById('q-basis-badge');
+    const tBadge = document.getElementById('q-term-badge');
+    try {
+      const r = await fetch(`/api/quant/basis?variety=${sym}&days=120`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      this._renderQuantBasis(d.basis || {}, sym);
+      this._renderQuantTerm(d.term || {}, sym);
+      if (bBadge) {
+        const b = d.basis || {};
+        bBadge.textContent = b.ok
+          ? `${b.state || ''} ${b.latest === null ? '' : (+b.latest).toFixed(0)} · 分位 ${b.pct_rank}%`
+          : (b.error || '无数据');
+      }
+      if (tBadge) {
+        const t = d.term || {};
+        tBadge.textContent = t.ok ? `${t.shape} · 价差 ${t.spread > 0 ? '+' : ''}${t.spread}` : (t.error || '无数据');
+      }
+    } catch (e) {
+      console.error('quant basis error:', e);
+      if (bBadge) bBadge.textContent = `加载失败: ${e.message}`;
+    }
+  },
+
+  // 【功能】渲染基差走势图(基差柱 + 基差率折线, 双轴)与"现货 vs 期货价"图
+  // 【输入】b: {ok, rows:[{date,spot_price,futures_price,basis,basis_rate}], state, pct_rank}; sym
+  // 【渲染】#chart-q-basis / #chart-q-basispf
+  // 【后端】无
+  _renderQuantBasis(b, sym) {
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? CHART.axis : '#666';
+    const gridColor = isDark ? CHART.grid : '#eee';
+    const c1 = this._initChart('chart-q-basis');
+    const c2 = this._initChart('chart-q-basispf');
+    if (!b.ok || !(b.rows || []).length) {
+      const msg = b.error || '无基差数据';
+      [c1, c2].forEach(c => {
+        if (!c) return;
+        c.clear();
+        c.setOption({ backgroundColor: 'transparent',
+          title: { text: msg, left: 'center', top: 'middle',
+                   textStyle: { color: textColor, fontSize: 13, fontWeight: 'normal' } } }, true);
+      });
+      return;
+    }
+    const rows = b.rows;
+    const dates = rows.map(r => r.date);
+    const axisCommon = { type: 'category', data: dates, axisLabel: { color: textColor, fontSize: 9 },
+                         axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false } };
+    const yCommon = { type: 'value', scale: true, axisLabel: { color: textColor, fontSize: 9 },
+                      splitLine: { lineStyle: { color: gridColor } } };
+    if (c1) {
+      c1.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['基差', '基差率%'], bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
+        grid: { left: 52, right: 52, top: 14, bottom: 38 },
+        xAxis: axisCommon,
+        yAxis: [yCommon, { ...yCommon, splitLine: { show: false }, axisLabel: { color: textColor, fontSize: 9, formatter: v => v + '%' } }],
+        series: [
+          { name: '基差', type: 'bar', data: rows.map(r => r.basis),
+            // 升水(正)红 / 贴水(负)绿 —— 与国内涨跌语义一致
+            itemStyle: { color: p => (p.value === null || p.value >= 0) ? '#ef4444' : '#22c55e', opacity: 0.75 } },
+          { name: '基差率%', type: 'line', yAxisIndex: 1, data: rows.map(r => r.basis_rate === null ? null : +(r.basis_rate * 100).toFixed(2)),
+            showSymbol: false, smooth: true, lineStyle: { width: 1.5, color: '#60a5fa' }, itemStyle: { color: '#60a5fa' } }
+        ]
+      }, true);
+    }
+    if (c2) {
+      c2.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['现货价', '期货价'], bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
+        grid: { left: 58, right: 18, top: 14, bottom: 38 },
+        xAxis: axisCommon, yAxis: yCommon,
+        series: [
+          { name: '现货价', type: 'line', data: rows.map(r => r.spot_price), showSymbol: false, smooth: true,
+            lineStyle: { width: 1.6, color: '#fbbf24' }, itemStyle: { color: '#fbbf24' } },
+          { name: '期货价', type: 'line', data: rows.map(r => r.futures_price), showSymbol: false, smooth: true,
+            lineStyle: { width: 1.6, color: '#a855f7' }, itemStyle: { color: '#a855f7' } }
+        ]
+      }, true);
+    }
+  },
+
+  // 【功能】渲染期限结构曲线(各月份合约价格 vs 月份, 主力点标注)
+  // 【输入】t: {ok, rows:[{contract,month,price,oi,volume}], shape, spread, near, far, main, error}; sym
+  // 【渲染】#chart-q-term
+  // 【后端】无
+  _renderQuantTerm(t, sym) {
+    const c = this._initChart('chart-q-term');
+    if (!c) return;
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? CHART.axis : '#666';
+    const gridColor = isDark ? CHART.grid : '#eee';
+    if (!t.ok || !(t.rows || []).length) {
+      c.clear();
+      c.setOption({ backgroundColor: 'transparent',
+        title: { text: t.error || '无跨月报价', left: 'center', top: 'middle',
+                 textStyle: { color: textColor, fontSize: 12, fontWeight: 'normal' } } }, true);
+      return;
+    }
+    const rows = t.rows;
+    const mainSym = (t.main || {}).contract;
+    // 期限结构: x=合约月份, y=价格; 主力合约加粗标注
+    c.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis',
+        formatter: ps => {
+          const p = ps[0]; const row = rows[p.dataIndex] || {};
+          return `${row.contract}<br/>价格 <b>${row.price}</b><br/>持仓 ${(row.oi || 0).toLocaleString()}`
+               + `<br/>成交 ${(row.volume || 0).toLocaleString()}`;
+        } },
+      grid: { left: 58, right: 18, top: 14, bottom: 30 },
+      xAxis: { type: 'category', data: rows.map(r => r.contract),
+               axisLabel: { color: textColor, fontSize: 9, rotate: 30 },
+               axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false } },
+      yAxis: { type: 'value', scale: true, axisLabel: { color: textColor, fontSize: 9 },
+               splitLine: { lineStyle: { color: gridColor } } },
+      series: [{
+        type: 'line', data: rows.map((r, i) => ({
+          value: r.price,
+          symbolSize: r.contract === mainSym ? 12 : 7,
+          itemStyle: { color: r.contract === mainSym ? '#ef4444' : '#60a5fa' }
+        })),
+        lineStyle: { width: 2, color: '#60a5fa' }, smooth: false,
+        label: { show: true, position: 'top', color: textColor, fontSize: 9,
+                 formatter: p => rows[p.dataIndex] && rows[p.dataIndex].contract === mainSym ? '主力' : '' },
+        markLine: { silent: true, symbol: 'none',
+          data: [{ yAxis: (t.near || {}).price, lineStyle: { color: '#fbbf24', type: 'dashed', width: 1 } }],
+          label: { formatter: '近月', color: textColor, fontSize: 9 } }
+      }]
+    }, true);
+  },
+
+  // 【功能】④ 加载仓单库存(序列图) + 库存周期四象限(文字卡)
+  // 【输入】品种取 #q-variety
+  // 【渲染】#chart-q-inv / #q-cycle-body / #q-inv-badge
+  // 【后端】GET /api/quant/inventory?variety=&days=180
+  async loadQuantInventory() {
+    const sym = this._quantSym();
+    if (!sym) return;
+    const badge = document.getElementById('q-inv-badge');
+    const body = document.getElementById('q-cycle-body');
+    try {
+      const r = await fetch(`/api/quant/inventory?variety=${sym}&days=180`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      this._renderQuantInventory(d.inventory || {});
+      if (badge) {
+        const s = d.inventory || {};
+        badge.textContent = s.ok
+          ? `最新 ${s.latest === null ? '—' : (+s.latest).toLocaleString()} · 来源 ${s.source || '—'}`
+          : (s.error || '无数据');
+      }
+      if (body) body.innerHTML = this._renderQuantCycle(d.cycle || {});
+    } catch (e) {
+      console.error('quant inventory error:', e);
+      if (badge) badge.textContent = `加载失败: ${e.message}`;
+      if (body) body.innerHTML = this._emptyState(`加载失败: ${e.message}`);
+    }
+  },
+
+  // 【功能】渲染仓单库存图(库存折线 + 日变化柱, 双轴)
+  // 【输入】s: {ok, rows:[{date,qty,change}], latest, chg, pct_rank, source, error}
+  // 【渲染】#chart-q-inv
+  // 【后端】无
+  _renderQuantInventory(s) {
+    const c = this._initChart('chart-q-inv');
+    if (!c) return;
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? CHART.axis : '#666';
+    const gridColor = isDark ? CHART.grid : '#eee';
+    if (!s.ok || !(s.rows || []).length) {
+      c.clear();
+      c.setOption({ backgroundColor: 'transparent',
+        title: { text: s.error || '无仓单数据', left: 'center', top: 'middle',
+                 textStyle: { color: textColor, fontSize: 12, fontWeight: 'normal' } } }, true);
+      return;
+    }
+    const rows = s.rows;
+    c.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis' },
+      legend: { data: ['注册仓单', '日变化'], bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
+      grid: { left: 62, right: 52, top: 14, bottom: 38 },
+      xAxis: { type: 'category', data: rows.map(r => r.date),
+               axisLabel: { color: textColor, fontSize: 9 },
+               axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false } },
+      yAxis: [
+        { type: 'value', scale: true, name: '仓单', nameTextStyle: { color: textColor, fontSize: 10 },
+          axisLabel: { color: textColor, fontSize: 9, formatter: v => v >= 10000 ? (v / 10000).toFixed(1) + '万' : v },
+          splitLine: { lineStyle: { color: gridColor } } },
+        { type: 'value', name: '增减', nameTextStyle: { color: textColor, fontSize: 10 },
+          axisLabel: { color: textColor, fontSize: 9 }, splitLine: { show: false } }
+      ],
+      series: [
+        { name: '注册仓单', type: 'line', data: rows.map(r => r.qty), showSymbol: false, smooth: true,
+          lineStyle: { width: 1.8, color: '#a855f7' }, itemStyle: { color: '#a855f7' },
+          areaStyle: { color: 'rgba(168,85,247,0.12)' } },
+        { name: '日变化', type: 'bar', yAxisIndex: 1, data: rows.map(r => r.change),
+          // 仓单增加=红 / 减少=绿(与国内涨跌语义一致)
+          itemStyle: { color: p => (p.value === null || p.value >= 0) ? '#ef4444' : '#22c55e', opacity: 0.7 } }
+      ]
+    }, true);
+  },
+
+  // 【功能】渲染库存周期四象限文字卡(周期阶段 + 库存/价格方向 + 分位)
+  // 【输入】cyc: {ok, inv_chg5_pct, inv_dir, inv_latest, price_dir, phase, note, inv_pct_rank, error}
+  // 【渲染】返回 HTML 字符串(由 loadQuantInventory 写入 #q-cycle-body)
+  // 【后端】无
+  _renderQuantCycle(cyc) {
+    if (!cyc.ok) return this._emptyState(cyc.error || '无法判定库存周期(数据不足)');
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    // 阶段语义色: 偏多起点/主升 → 红; 偏空起点/主跌 → 绿; 其余中性
+    const bull = /被动去库|主动建库/.test(cyc.phase);
+    const bear = /被动建库|主动去库/.test(cyc.phase);
+    const color = bull ? 'var(--red)' : (bear ? 'var(--green)' : 'var(--text-secondary)');
+    const pct = cyc.inv_pct_rank;
+    // 四象限图: 2×2 网格, 高亮当前象限(用底色区分)
+    const cell = (title, sub, active) => `
+      <div style="padding:10px;border-radius:8px;border:1px solid ${active ? 'var(--brand-line)' : 'var(--border)'};
+                  background:${active ? 'var(--brand-dim)' : 'transparent'};text-align:center">
+        <div style="font-size:0.82rem;font-weight:${active ? '600' : '400'};color:${active ? 'var(--text)' : 'var(--text-muted)'}">${title}</div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">${sub}</div>
+      </div>`;
+    const q = `${cyc.price_dir}·${cyc.inv_dir}`;
+    return `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+        ${cell('主动建库', '价格涨 + 库存升', q === '涨·升')}
+        ${cell('被动去库', '价格涨 + 库存降', q === '涨·降')}
+        ${cell('被动建库', '价格跌 + 库存升', q === '跌·升')}
+        ${cell('主动去库', '价格跌 + 库存降', q === '跌·降')}
+      </div>
+      <div style="padding:10px 12px;border-radius:8px;background:var(--bg-input);line-height:1.9">
+        <div>当前阶段: <b style="color:${color};font-size:1.02rem">${cyc.phase}</b></div>
+        <div style="font-size:0.84rem;color:var(--text-secondary)">${cyc.note || ''}</div>
+        <div style="font-size:0.82rem;margin-top:6px;color:var(--text-muted)">
+          仓单近 5 日 <b>${cyc.inv_chg5_pct === null || cyc.inv_chg5_pct === undefined
+            ? '—（前期归零，百分比无定义）'
+            : (cyc.inv_chg5_pct > 0 ? '+' : '') + cyc.inv_chg5_pct + '%'}</b>（${cyc.inv_dir}）
+          · 价格 20 日方向 <b>${cyc.price_dir}</b>
+          · 仓单处窗口 <b>${pct}%</b> 分位
+        </div>
+      </div>
+      <div style="font-size:0.74rem;color:var(--text-muted);margin-top:8px">
+        方法论: 库存周期四象限（技能 qihuo-duokong-logic · 仓颉蒸馏《期货多空逻辑》）
+      </div>`;
+  },
+
+  // 【功能】⑤ 加载量化信号(库存+基差 / 反转三信号 / 期限结构 → 综合研判)
+  // 【输入】品种取 #q-variety
+  // 【渲染】#q-signal-body / #q-signal-badge
+  // 【后端】GET /api/quant/signals?variety=
+  async loadQuantSignals() {
+    const sym = this._quantSym();
+    const body = document.getElementById('q-signal-body');
+    const badge = document.getElementById('q-signal-badge');
+    if (!sym || !body) return;
+    body.textContent = '加载中...';
+    try {
+      const r = await fetch(`/api/quant/signals?variety=${sym}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (!d.ok) { body.innerHTML = this._emptyState(d.error || '无数据'); return; }
+      // 信号等级 → 颜色: 偏多=红 / 偏空=绿 / 预警=琥珀 / 其余=中性
+      const lv = l => ({ '偏多': 'var(--red)', '偏空': 'var(--green)' }[l]
+        || (l === '预警' ? 'var(--amber)' : 'var(--text-muted)'));
+      const biasColor = d.bias === '偏多' ? 'var(--red)' : (d.bias === '偏空' ? 'var(--green)' : 'var(--text-secondary)');
+      body.innerHTML = (d.signals || []).map(s => `
+        <div style="padding:9px 0;border-bottom:1px dashed var(--border)">
+          <span style="display:inline-block;min-width:104px;color:var(--text-muted);font-size:0.82rem">${s.name}</span>
+          <span style="display:inline-block;min-width:48px;font-weight:600;color:${lv(s.level)}">${s.level}</span>
+          <span style="color:var(--text-secondary)">${s.desc}</span>
+        </div>`).join('')
+        + `<div style="margin-top:10px;padding:8px 12px;border-radius:8px;background:var(--bg-input)">
+             综合研判 <b style="color:${biasColor};font-size:1.05rem">${d.bias}</b>
+             <span style="color:var(--text-muted)">（信号计分 ${d.score > 0 ? '+' : ''}${d.score}）
+             · 参与维度: 仓单 ${d.inv_count} 点 / 基差 ${d.basis_count} 点 / 日线 ${d.bars} 根</span>
+           </div>
+           <div style="font-size:0.74rem;color:var(--text-muted);margin-top:8px">
+             ⚠️ 本卡仅用「库存+基差 / 反转资金 / 期限结构」三信号，不含利润维度；
+             利润已接入「方法论研判」卡（库存+基差+利润 三指标共振）与量化问答。仅供量化参考，非投资建议。
+           </div>`;
+      if (badge) badge.textContent = `计分 ${d.score > 0 ? '+' : ''}${d.score} · ${d.bias}`;
+    } catch (e) {
+      console.error('quant signals error:', e);
+      body.innerHTML = this._emptyState(`加载失败: ${e.message}`);
+    }
+  },
+
+  // 【功能】⑥ 加载策略清单 → 填充下拉 → 生成参数面板
+  // 【输入】无 【渲染】#q-bt-strategy / #q-bt-params 【后端】GET /api/quant/backtest/strategies
+  async loadQuantStrategies() {
+    const sel = document.getElementById('q-bt-strategy');
+    if (!sel || sel.options.length) return;  // 已加载过
+    try {
+      const r = await fetch('/api/quant/backtest/strategies');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      this._quantStrategies = d.strategies || [];
+      sel.innerHTML = '';
+      this._quantStrategies.forEach(s => {
+        const o = document.createElement('option');
+        o.value = s.key; o.textContent = s.label;
+        sel.appendChild(o);
+      });
+      // 结束日期默认今天
+      const endEl = document.getElementById('q-bt-end');
+      if (endEl && !endEl.value) endEl.value = new Date().toISOString().slice(0, 10);
+      this.loadQuantBacktestParams();
+    } catch (e) {
+      console.error('quant strategies error:', e);
+    }
+  },
+
+  // 【功能】根据当前选中策略动态生成参数输入框(参数登记表来自后端 /strategies)
+  // 【输入】无(#q-bt-strategy 的当前值)
+  // 【渲染】#q-bt-params(每参数一个 number 输入, id=q-bt-p-{name})
+  // 【后端】无
+  loadQuantBacktestParams() {
+    const host = document.getElementById('q-bt-params');
+    const sel = document.getElementById('q-bt-strategy');
+    if (!host || !sel) return;
+    const st = (this._quantStrategies || []).find(s => s.key === sel.value);
+    if (!st || !st.params || !Object.keys(st.params).length) {
+      host.innerHTML = `<span style="font-size:0.78rem;color:var(--text-muted);padding-bottom:8px">
+        该策略无可调参数${st && st.hint ? ' · ' + st.hint : ''}</span>`;
+      return;
+    }
+    const labels = {
+      fast: '快线周期', slow: '慢线周期', macd_fast: 'MACD 快线', macd_slow: 'MACD 慢线', macd_signal: 'MACD 信号',
+      rsi_period: 'RSI 周期', rsi_overbought: '超买阈值', rsi_oversold: '超卖阈值',
+      bb_period: '布林周期', num_std: '带宽倍数', period: '通道周期',
+      turtle_entry: '入场周期', turtle_exit: '离场周期', atr_period: 'ATR 周期', atr_mult: 'ATR 止损倍数',
+      keltner_period: '通道周期', keltner_mult: '通道倍数', lookback: '回看天数', hold: '持有天数',
+      horizon: '持有天数', threshold: '情绪阈值', trend_window: '趋势窗口',
+    };
+    host.innerHTML = `<span style="font-size:0.78rem;color:var(--text-muted);padding-bottom:8px">
+        ${st.hint || ''}</span>` + Object.entries(st.params).map(([k, v]) => `
+      <div style="min-width:110px">
+        <label style="font-size:0.76rem">${labels[k] || k}</label>
+        <input type="number" step="any" id="q-bt-p-${k}" value="${v}"
+               style="width:100%;padding:5px 8px;border-radius:6px;
+                      border:1px solid var(--border,#d0d0d0);background:var(--bg-input,#fff);
+                      color:var(--text,#222);font-size:0.82rem">
+      </div>`).join('');
+  },
+
+  // 【功能】收集参数面板上的当前值(按策略登记的参数名逐个读)
+  // 【输入】无 【返回】{参数名: 数值} 【渲染】无 【后端】无
+  _collectQuantParams(key) {
+    const st = (this._quantStrategies || []).find(s => s.key === key);
+    const out = {};
+    if (!st) return out;
+    Object.keys(st.params || {}).forEach(k => {
+      const el = document.getElementById(`q-bt-p-${k}`);
+      if (el && el.value !== '') out[k] = parseFloat(el.value);
+    });
+    return out;
+  },
+
+  // 【功能】⑥-a 运行单策略回测
+  // 【输入】品种 #q-variety; 策略 #q-bt-strategy; 区间 #q-bt-start/#q-bt-end; 参数 #q-bt-p-*
+  // 【渲染】#q-bt-stats(指标卡) / #chart-q-equity(净值曲线) / #q-bt-trades(逐笔表) / #q-bt-badge
+  // 【后端】POST /api/quant/backtest
+  async runQuantBacktest() {
+    const sym = this._quantSym();
+    const key = document.getElementById('q-bt-strategy')?.value;
+    if (!sym || !key) return;
+    const badge = document.getElementById('q-bt-badge');
+    if (badge) badge.textContent = '回测中...';
+    try {
+      const r = await fetch('/api/quant/backtest', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          variety: sym, strategy: key,
+          start: document.getElementById('q-bt-start')?.value || '2025-01-01',
+          end: document.getElementById('q-bt-end')?.value || '',
+          params: this._collectQuantParams(key),
+        })
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const one = (d.results || {})[key] || {};
+      this._renderQuantBacktest(d, [key]);
+    } catch (e) {
+      console.error('quant backtest error:', e);
+      if (badge) badge.textContent = `回测失败: ${e.message}`;
+    }
+  },
+
+  // 【功能】⑥-b 全策略对比回测(除情绪类策略外全部价格策略)
+  // 【输入】同 runQuantBacktest(忽略单个策略选择)
+  // 【渲染】同 runQuantBacktest, 指标卡换成横向对比表
+  // 【后端】POST /api/quant/backtest (strategies=逗号分隔)
+  async runQuantBacktestAll() {
+    const sym = this._quantSym();
+    if (!sym) return;
+    const badge = document.getElementById('q-bt-badge');
+    if (badge) badge.textContent = '全策略回测中...';
+    // 只对比纯价格类策略(情绪类需要情绪数据, 口径不同, 单独跑更清楚)
+    const keys = ['ma_cross', 'macd', 'rsi', 'bollinger', 'donchian', 'turtle', 'atr', 'momentum'];
+    try {
+      const r = await fetch('/api/quant/backtest', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          variety: sym, strategies: keys.join(','),
+          start: document.getElementById('q-bt-start')?.value || '2025-01-01',
+          end: document.getElementById('q-bt-end')?.value || '',
+        })
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      this._renderQuantBacktest(d, keys);
+    } catch (e) {
+      console.error('quant backtest all error:', e);
+      if (badge) badge.textContent = `回测失败: ${e.message}`;
+    }
+  },
+
+  // 【功能】渲染回测结果: 单策略给指标卡 + 净值曲线 + 逐笔明细; 多策略给对比表 + 净值叠加
+  // 【输入】d: POST /api/quant/backtest 的完整响应; keys: 本次请求的策略 key 列表
+  // 【渲染】#q-bt-stats / #chart-q-equity / #q-bt-trades / #q-bt-badge
+  // 【后端】无
+  _renderQuantBacktest(d, keys) {
+    const statsHost = document.getElementById('q-bt-stats');
+    const tradesHost = document.getElementById('q-bt-trades');
+    const badge = document.getElementById('q-bt-badge');
+    const results = d.results || {};
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? CHART.axis : '#666';
+    const gridColor = isDark ? CHART.grid : '#eee';
+    const valid = keys.filter(k => results[k] && results[k].ok);
+    const empty = keys.filter(k => results[k] && !results[k].ok);
+
+    // ── 指标卡(单策略) 或 对比表(多策略) ──
+    const pf = (v, dp = 2, suf = '') => (v === null || v === undefined) ? '—' : (+v).toFixed(dp) + suf;
+    if (statsHost) {
+      if (valid.length === 1) {
+        const r0 = results[valid[0]];
+        const st = r0.stats || {};
+        const cell = (label, val, color) => `
+          <div style="flex:1;min-width:110px;padding:10px 12px;border-radius:8px;background:var(--bg-input);text-align:center">
+            <div style="font-size:0.74rem;color:var(--text-muted)">${label}</div>
+            <div style="font-size:1.1rem;font-weight:600;color:${color || 'var(--text)'};margin-top:3px">${val}</div>
+          </div>`;
+        statsHost.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${cell('交易笔数', r0.trades)}
+          ${cell('胜率', st.win_rate === null ? '—' : (st.win_rate * 100).toFixed(1) + '%', st.win_rate >= 0.5 ? 'var(--red)' : 'var(--green)')}
+          ${cell('累计盈亏', pf(st.total_pnl, 2), st.total_pnl >= 0 ? 'var(--red)' : 'var(--green)')}
+          ${cell('单笔均值', pf(st.avg_pnl_pct, 2, '%'), st.avg_pnl_pct >= 0 ? 'var(--red)' : 'var(--green)')}
+          ${cell('夏普', pf(st.sharpe, 2))}
+          ${cell('最大回撤', pf(st.max_drawdown_pct, 2, '%'))}
+          ${cell('多 / 空', `${st.long_trades ?? '—'} / ${st.short_trades ?? '—'}`)}
+        </div>
+        ${r0.note ? `<div style="font-size:0.8rem;color:var(--amber);margin-top:8px">${r0.note}</div>` : ''}`;
+      } else if (valid.length > 1) {
+        const th = `<th style="padding:6px 12px;text-align:left">策略</th><th style="padding:6px 12px;text-align:right">交易</th>
+          <th style="padding:6px 12px;text-align:right">胜率</th><th style="padding:6px 12px;text-align:right">累计盈亏</th>
+          <th style="padding:6px 12px;text-align:right">单笔均值</th><th style="padding:6px 12px;text-align:right">夏普</th>
+          <th style="padding:6px 12px;text-align:right">最大回撤</th><th style="padding:6px 12px;text-align:right">多/空</th>`;
+        // 按累计盈亏降序, 方便直接看出哪个策略在该品种上更优
+        const sorted = [...valid].sort((a, b) => ((results[b].stats || {}).total_pnl || 0) - ((results[a].stats || {}).total_pnl || 0));
+        const trs = sorted.map(k => {
+          const st = results[k].stats || {};
+          const cl = v => v >= 0 ? 'var(--red)' : 'var(--green)';
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:6px 12px">${results[k].label || k}</td>
+            <td style="padding:6px 12px;text-align:right">${results[k].trades}</td>
+            <td style="padding:6px 12px;text-align:right">${st.win_rate === null ? '—' : (st.win_rate * 100).toFixed(1) + '%'}</td>
+            <td style="padding:6px 12px;text-align:right;color:${cl(st.total_pnl || 0)};font-weight:600">${pf(st.total_pnl)}</td>
+            <td style="padding:6px 12px;text-align:right;color:${cl(st.avg_pnl_pct || 0)}">${pf(st.avg_pnl_pct, 2, '%')}</td>
+            <td style="padding:6px 12px;text-align:right">${pf(st.sharpe)}</td>
+            <td style="padding:6px 12px;text-align:right">${pf(st.max_drawdown_pct, 2, '%')}</td>
+            <td style="padding:6px 12px;text-align:right">${st.long_trades} / ${st.short_trades}</td></tr>`;
+        }).join('');
+        statsHost.innerHTML = `<div class="table-scroll" style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:0.84rem">
+            <thead><tr style="border-bottom:2px solid var(--border);color:var(--text-muted)">${th}</tr></thead>
+            <tbody>${trs}</tbody></table></div>`;
+      } else {
+        statsHost.innerHTML = this._emptyState('该区间内所选策略均无成交, 请放宽日期区间或调整参数');
+      }
+    }
+
+    // ── 净值曲线(单策略=累计盈亏阶梯; 多策略=各自累计盈亏叠加对比) ──
+    const c = this._initChart('chart-q-equity');
+    if (c) {
+      const series = [];
+      keys.forEach((k, idx) => {
+        const r0 = results[k];
+        if (!r0 || !r0.ok || !(r0.equity || []).length) return;
+        series.push({
+          name: r0.label || k, type: 'line', step: 'end',
+          data: r0.equity.map(e => [e.date, e.equity]),
+          showSymbol: false, smooth: false,
+          lineStyle: { width: valid.length === 1 ? 2 : 1.6 },
+        });
+      });
+      if (series.length) {
+        c.setOption({
+          backgroundColor: 'transparent',
+          tooltip: { trigger: 'axis' },
+          legend: { data: series.map(s => s.name), bottom: 0, textStyle: { color: textColor, fontSize: 10 }, type: 'scroll' },
+          grid: { left: 58, right: 18, top: 14, bottom: 42 },
+          xAxis: { type: 'time', axisLabel: { color: textColor, fontSize: 9 },
+                   axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false } },
+          yAxis: { type: 'value', scale: true, name: '累计盈亏', nameTextStyle: { color: textColor, fontSize: 10 },
+                   axisLabel: { color: textColor, fontSize: 9 }, splitLine: { lineStyle: { color: gridColor } } },
+          dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 22, height: 14 }],
+          series
+        }, true);
+      } else {
+        c.clear();
+        c.setOption({ backgroundColor: 'transparent',
+          title: { text: '无净值曲线(所选策略无成交)', left: 'center', top: 'middle',
+                   textStyle: { color: textColor, fontSize: 12, fontWeight: 'normal' } } }, true);
+      }
+    }
+
+    // ── 逐笔明细(单策略时展示; 多策略展示笔数最多的那个, 避免表过长) ──
+    if (tradesHost) {
+      let best = null;
+      if (valid.length === 1) best = valid[0];
+      else if (valid.length > 1) best = valid.reduce((a, b) => (results[a].trades >= results[b].trades ? a : b));
+      const r0 = best ? results[best] : null;
+      const tr = (r0 && r0.recent_trades) || [];
+      if (!tr.length) {
+        tradesHost.innerHTML = '';
+      } else {
+        const rows = tr.map(t => {
+          const win = t.pnl >= 0;
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:5px 10px">${(t.entry || '').slice(0, 10)}</td>
+            <td style="padding:5px 10px">${(t.exit || '').slice(0, 10)}</td>
+            <td style="padding:5px 10px;color:${t.direction === 'long' ? 'var(--red)' : 'var(--green)'}">${t.direction === 'long' ? '多' : '空'}</td>
+            <td style="padding:5px 10px;text-align:right;color:${win ? 'var(--red)' : 'var(--green)'};font-weight:600">${t.pnl > 0 ? '+' : ''}${(+t.pnl).toFixed(2)}</td>
+            <td style="padding:5px 10px">${t.outcome === 'win' ? '盈' : (t.outcome === 'loss' ? '亏' : '平')}</td></tr>`;
+        }).join('');
+        tradesHost.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:6px">
+            逐笔明细 · ${results[best].label || best}（最近 ${tr.length} 笔${valid.length > 1 ? '，多策略时仅展示笔数最多的策略' : ''}）</div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+            <thead><tr style="border-bottom:2px solid var(--border);color:var(--text-muted)">
+              <th style="padding:5px 10px;text-align:left">入场</th><th style="padding:5px 10px;text-align:left">离场</th>
+              <th style="padding:5px 10px;text-align:left">方向</th><th style="padding:5px 10px;text-align:right">盈亏</th>
+              <th style="padding:5px 10px;text-align:left">结果</th></tr></thead>
+            <tbody>${rows}</tbody></table>`;
+      }
+    }
+    if (badge) badge.textContent = `${valid.length} 个策略 · ${d.start} ~ ${d.end}${empty.length ? ` · ${empty.length} 个失败` : ''}`;
+  },
+
+  // 【功能】⑦ 加载多品种截面排行表
+  // 【输入】refresh=1 强制跳过后端缓存重拉; 维度 #q-rank-metric; 方向 #q-rank-order
+  // 【渲染】#q-rank-table / #q-rank-badge / #q-rank-note
+  // 【后端】GET /api/quant/ranking?metric=&order=&refresh=
+  async loadQuantRanking(refresh) {
+    const host = document.getElementById('q-rank-table');
+    const note = document.getElementById('q-rank-note');
+    const badge = document.getElementById('q-rank-badge');
+    if (!host) return;
+    const metric = document.getElementById('q-rank-metric')?.value || 'score';
+    const order = document.getElementById('q-rank-order')?.value || 'desc';
+    host.innerHTML = '<div style="color:var(--text-muted);font-size:0.84rem;padding:8px">加载中（首拉需十余秒，之后切换维度秒回）...</div>';
+    if (note) note.textContent = '';
+    try {
+      const r = await fetch(`/api/quant/ranking?metric=${metric}&order=${order}${refresh ? '&refresh=1' : ''}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const rows = d.rows || [];
+      if (!rows.length) { host.innerHTML = this._emptyState('无数据'); return; }
+      const pf = (v, dp = 2, suf = '') => (v === null || v === undefined) ? '—' : (+v).toFixed(dp) + suf;
+      const shapeCn = s => !s ? '—' : (s.includes('backwardation') ? 'back 远月贴水' : (s.includes('contango') ? 'contango 远月升水' : '平水'));
+      const fmtInt = v => (v === null || v === undefined) ? '—' : Math.round(v).toLocaleString();
+      const trs = rows.map((r, i) => {
+        const scoreColor = r.score >= 2 ? 'var(--red)' : (r.score <= -2 ? 'var(--green)' : 'var(--text-secondary)');
+        const bColor = (r.basis === null || r.basis === undefined) ? 'var(--text-muted)' : (r.basis >= 0 ? 'var(--red)' : 'var(--green)');
+        const icColor = (r.inventory_chg_pct === null || r.inventory_chg_pct === undefined) ? 'var(--text-muted)'
+          : (r.inventory_chg_pct >= 0 ? 'var(--red)' : 'var(--green)');
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:6px 10px;color:var(--text-muted)">${i + 1}</td>
+          <td style="padding:6px 10px"><b>${r.variety}</b> <span style="color:var(--text-muted);font-size:0.8rem">${r.name || ''}</span></td>
+          <td style="padding:6px 10px;text-align:right">${fmtInt(r.close)}</td>
+          <td style="padding:6px 10px;text-align:right;color:${scoreColor};font-weight:600">${r.score === null || r.score === undefined ? '—' : (r.score > 0 ? '+' : '') + r.score}</td>
+          <td style="padding:6px 10px;color:${scoreColor}">${r.verdict || '—'}</td>
+          <td style="padding:6px 10px;color:var(--text-muted);font-size:0.8rem">${r.ma_state || '—'}</td>
+          <td style="padding:6px 10px;text-align:right">${pf(r.rsi14, 1)}</td>
+          <td style="padding:6px 10px;text-align:right">${pf(r.mom20_pct, 2, '%')}</td>
+          <td style="padding:6px 10px;text-align:right">${pf(r.ann_vol_pct, 1, '%')}</td>
+          <td style="padding:6px 10px;text-align:right;color:${bColor}">${pf(r.basis, 0)}</td>
+          <td style="padding:6px 10px;text-align:right">${pf(r.basis_pct_rank, 0, '%')}</td>
+          <td style="padding:6px 10px;text-align:right;color:${icColor}">${pf(r.inventory_chg_pct, 2, '%')}</td>
+          <td style="padding:6px 10px;font-size:0.8rem">${shapeCn(r.term_shape)}</td></tr>`;
+      }).join('');
+      host.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:0.84rem">
+        <thead><tr style="border-bottom:2px solid var(--border);color:var(--text-muted);font-size:0.78rem">
+          <th style="padding:6px 10px;text-align:left">#</th><th style="padding:6px 10px;text-align:left">品种</th>
+          <th style="padding:6px 10px;text-align:right">现价</th><th style="padding:6px 10px;text-align:right">计分</th>
+          <th style="padding:6px 10px;text-align:left">判定</th><th style="padding:6px 10px;text-align:left">均线</th>
+          <th style="padding:6px 10px;text-align:right">RSI</th><th style="padding:6px 10px;text-align:right">20日动量</th>
+          <th style="padding:6px 10px;text-align:right">年化波动</th><th style="padding:6px 10px;text-align:right">基差</th>
+          <th style="padding:6px 10px;text-align:right">基差分位</th><th style="padding:6px 10px;text-align:right">仓单5日</th>
+          <th style="padding:6px 10px;text-align:left">期限结构</th></tr></thead>
+        <tbody>${trs}</tbody></table>`;
+      if (note) note.textContent = d.cached ? '（命中缓存 5 分钟内）' : '（本次实时拉取）';
+      if (badge) badge.textContent = `${d.count} 品种 · 按 ${
+        {'score': '多空计分', 'mom20_pct': '20日动量', 'ann_vol_pct': '年化波动率', 'basis': '基差',
+         'basis_pct_rank': '基差分位', 'inventory_chg_pct': '仓单5日变化', 'inventory_pct_rank': '仓单分位',
+         'term_spread': '跨月价差'}[metric] || metric} 排序`;
+    } catch (e) {
+      console.error('quant ranking error:', e);
+      host.innerHTML = this._emptyState(`加载失败: ${e.message}`);
+    }
+  },
+
+  // 【功能】⑧ 多体系方法论研判(方案 B 研判中枢, 2026-09-28 新增): 按 SKILL.md 固定读序
+  //         输出四段式(方向→入场→风控→成本→校验), 并列陈列冲突与各体系方向票。
+  // 【输入】品种取本页 #q-variety; 资金/风险档/次数/每点价值/手续费取**本卡自己的输入框**
+  //         (不读别处下拉 —— 各卡各自持口径是本项目既定约定; 缺省值会让手数失真故单列)。
+  // 【渲染】#q-verdict-body / #q-verdict-badge
+  // 【后端】GET /api/quant/verdict?variety=&account=&risk_pct=&times=&point_value=&round_trip_fee=
+  async loadQuantVerdict() {
+    const host = document.getElementById('q-verdict-body');
+    const badge = document.getElementById('q-verdict-badge');
+    if (!host) return;
+    const sym = this._quantSym();
+    if (!sym) { host.innerHTML = this._emptyState('请先选择品种'); return; }
+    const num = id => { const v = document.getElementById(id)?.value; return (v === '' || v == null) ? null : Number(v); };
+    const qs = new URLSearchParams({ variety: sym });
+    const acc = num('q-verdict-account'); if (acc) qs.set('account', acc);
+    const rk = num('q-verdict-risk'); if (rk != null) qs.set('risk_pct', rk / 100);
+    const tm = num('q-verdict-times'); if (tm) qs.set('times', tm);
+    const pv = num('q-verdict-pv'); if (pv) qs.set('point_value', pv);
+    const fee = num('q-verdict-fee'); if (fee != null) qs.set('round_trip_fee', fee);
+    host.innerHTML = '<div style="color:var(--text-muted);font-size:0.84rem;padding:8px">研判中（需拉取 250 日线 + 基差 + 仓单，约 2~5 秒）...</div>';
+    if (badge) badge.textContent = '';
+    try {
+      const r = await fetch(`/api/quant/verdict?${qs.toString()}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (!d.ok) { host.innerHTML = this._emptyState(`研判不可用：${d.error || '未知原因'}`); return; }
+      host.innerHTML = this._renderVerdict(d);
+      if (badge) badge.textContent = `${d.variety} ${d.name || ''} · 逐卡机械计算`;
+    } catch (e) {
+      console.error('quant verdict error:', e);
+      host.innerHTML = this._emptyState(`加载失败: ${e.message}`);
+    }
+  },
+
+  // 【功能】极简行内 Markdown: 先转义 HTML, 再只还原 **粗体** 与 *斜体*
+  // 【为什么不用 marked】本卡内容为后端受控短句(含 **强调**), 整段 marked 会包 <p>
+  //         且引号/全角符号易被误渲染; 行内替换更可控且不会引入表格/列表结构。
+  // 【输入】s 任意字符串 【返回】安全 HTML 片段 【渲染】无 【后端】无
+  _mdLite(s) {
+    let h = this._escHtml(s == null ? '' : String(s));
+    h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    h = h.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<i>$2</i>');
+    return h;
+  },
+
+  // 【功能】渲染方法论研判结果: 结论 → 四段式 → 几何三件套 → 各体系方向票 → 冲突并列 → 依据与边界
+  // 【输入】d = /api/quant/verdict 的 JSON
+  // 【渲染】返回 HTML 字符串 【后端】无
+  // 【纪律】不把并列票"平均"成一个更确定的结论; 缺失项如实显示为缺口而非省略。
+  _renderVerdict(d) {
+    const md = s => this._mdLite(s);
+    // 【2026-09-28 修复】后端个别数值键可能为 null(Python None) ⇒ 直接插值会渲染成
+    // "None"/"null" 字样; 统一在此兜底成「未识别」, 保证界面不出现无意义字面量。
+    const nz = v => (v === null || v === undefined || v === 'None' || v === '') ? '未识别' : v;
+    const yn = v => (v === null || v === undefined) ? '未判定'
+      : ((v === true || v === 'True' || v === '是') ? '是' : '否');
+    const dir = d.verdict?.direction || '暂不操作';
+    const dirColor = dir.includes('多') ? 'var(--red)' : (dir.includes('空') ? 'var(--green)' : 'var(--text-secondary)');
+    const parts = [];
+
+    // ① 结论条(方向色: 做多红/做空绿, 遵循国内涨跌色约定)
+    parts.push(`<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;background:var(--bg-input);margin-bottom:12px;flex-wrap:wrap">
+      <span style="font-size:1.4rem;font-weight:800;color:${dirColor}">${md(dir)}</span>
+      <span style="color:var(--text-muted);font-size:0.82rem">${md(d.verdict?.desc || '')}</span></div>`);
+
+    // ② 四段式(固定读序, 缺段视为未完成)
+    const lines = d.verdict_text || [];
+    parts.push(`<div style="margin-bottom:14px">
+      <div style="font-weight:700;margin-bottom:4px">四段式结论（固定读序，缺段视为未完成）</div>
+      ${lines.map(l => `<div style="padding:4px 0;border-bottom:1px dashed var(--border)">${md(l)}</div>`).join('')}
+    </div>`);
+
+    // ③ 几何三件套(鹿希武: 趋势线 + 拐点线 + 分界点 A; 双线同破是强制闸门)
+    const g = d.stages?.direction?.geometry || {};
+    if (g && g.direction) {
+      const db = g.double_break;
+      parts.push(`<div style="margin-bottom:14px;font-size:0.8rem;color:var(--text-secondary)">
+        <span style="font-weight:700">几何三件套（鹿希武）：</span>
+        趋势方向 <b>${md(g.direction)}</b> · 趋势线 ${md(String(nz(g.trendline)))} ·
+        拐点线 ${md(String(nz(g.pivotline)))} · 分界点 A ${md(nz(g.point_a ? g.point_a.price : null))} ·
+        双线同破 <b>${md(yn(db) + (yn(db) === '是' ? '（原趋势已结束 → 强制暂不操作）' : ''))}</b>
+      </div>`);
+    }
+
+    // ④ 各体系方向票(并列陈列, 不取平均)
+    const votes = d.stages?.direction?.votes || [];
+    if (votes.length) {
+      const trs = votes.map(v => {
+        const b = v.bias || '';
+        const c = b.includes('做多') ? 'var(--red)' : (b.includes('做空') ? 'var(--green)' : 'var(--text-secondary)');
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:5px 8px"><b>${md(v.book)}</b></td>
+          <td style="padding:5px 8px;color:${c};font-weight:600">${md(b)}</td>
+          <td style="padding:5px 8px;color:var(--text-muted);font-size:0.78rem">${md(v.basis)}</td>
+          <td style="padding:5px 8px">${md(v.detail)}</td></tr>`;
+      }).join('');
+      parts.push(`<div style="margin-bottom:14px">
+        <div style="font-weight:700;margin-bottom:4px">各体系方向票（并列陈列，不取平均、不混用）</div>
+        <div class="table-scroll" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+          <thead><tr style="border-bottom:2px solid var(--border);color:var(--text-muted);font-size:0.78rem">
+            <th style="padding:5px 8px;text-align:left">体系</th><th style="padding:5px 8px;text-align:left">方向票</th>
+            <th style="padding:5px 8px;text-align:left">依据</th><th style="padding:5px 8px;text-align:left">细节</th></tr></thead>
+          <tbody>${trs}</tbody></table></div>
+        <div style="font-size:0.76rem;color:var(--text-muted);margin-top:4px">${md(d.stages?.direction?.conflict_note || '')}</div>
+      </div>`);
+    }
+
+    // ⑤ 冲突并列(同一问题多书口径不同; 禁止取平均)
+    const cf = d.conflicts || [];
+    if (cf.length) {
+      parts.push(`<div style="margin-bottom:14px">
+        <div style="font-weight:700;margin-bottom:4px">冲突并列（同题多口径 → 不得取平均）</div>
+        ${cf.map(c => `<div style="padding:8px 10px;border-left:3px solid var(--amber);background:var(--bg-input);border-radius:6px;margin-bottom:6px">
+          <div><b>${md(c.topic)}</b></div>
+          <div style="font-size:0.8rem">墨菲：${md(c.murphy || '—')}</div>
+          <div style="font-size:0.8rem">鹿希武：${md(c.luxiwu || '—')}</div>
+          ${c.carver ? `<div style="font-size:0.8rem">Carver：${md(c.carver)}</div>` : ''}
+          <div style="font-size:0.78rem;color:var(--text-muted)">处置：${md(c.resolution)}</div>
+        </div>`).join('')}
+      </div>`);
+    }
+
+    // ⑥ 依据(用到的能力卡, 按书归组)
+    const ev = d.evidence || {};
+    const byBook = ev.cards_by_book || {};
+    const bookRows = Object.entries(byBook)
+      .map(([b, cs]) => `<div style="font-size:0.8rem"><b>${md(b)}</b>：${(cs || []).map(c => md(c)).join('、')}</div>`)
+      .join('');
+    parts.push(`<div style="margin-bottom:14px">
+      <div style="font-weight:700;margin-bottom:4px">依据（本次实际用到的能力卡）</div>
+      ${bookRows || '<div style="color:var(--text-muted);font-size:0.8rem">—</div>'}
+    </div>`);
+
+    // ⑦ 边界与缺口(强制披露: 鹿希武 N1/N2/N3 + 本次降级项)
+    const gaps = ev.luxiwu_gaps || [];
+    const extra = d.data_gaps || [];
+    parts.push(`<div style="padding:10px 12px;border-radius:8px;background:var(--bg-input)">
+      <div style="font-weight:700;margin-bottom:4px">边界与缺口（强制披露）</div>
+      ${gaps.length ? `<div style="font-size:0.8rem">鹿希武已知缺口：<ul style="margin:4px 0 0 18px">${gaps.map(x => `<li>${md(x)}</li>`).join('')}</ul></div>` : ''}
+      ${extra.length ? `<div style="font-size:0.8rem;margin-top:6px">本次降级/数据缺口：<ul style="margin:4px 0 0 18px">${extra.map(x => `<li>${md(x)}</li>`).join('')}</ul></div>` : '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:6px">本次无降级项（全部卡片以真实数据计算）</div>'}
+      <div style="font-size:0.76rem;color:var(--text-muted);margin-top:6px">${md(d.disclaimer || '')}</div>
+    </div>`);
+
+    return parts.join('');
+  },
+
+  // 【功能】统一的空态/错误提示 HTML(全页复用, 保证"无数据"与"出错"外观一致且不误导)
+  // 【输入】msg 提示文本 【返回】HTML 字符串 【渲染】无 【后端】无
+  _emptyState(msg) {
+    return `<div style="padding:14px;border-radius:8px;background:var(--bg-input);
+              color:var(--text-muted);font-size:0.84rem;line-height:1.8">${msg || '无数据'}</div>`;
+  },
+
+  // 【功能】研报日期 → 交易轴吸附索引: 取 axisDates 中最近一个 ≤ target 的交易日
+  //         (研报 publish_date 常落在周末/节假日, 与现有非交易日回退语义一致取前
+  //         一个交易日); 全部晚于 target 时返回 null(点太新, 轴上没有位置可吸附)。
+  // 【输入】axisDates: 升序日期字符串数组(看板图 x 轴); target: 'YYYY-MM-DD'。
+  _snapAxisIndex(axisDates, target) {
+    if (!axisDates || !axisDates.length) return null;
+    let found = null;
+    for (let i = 0; i < axisDates.length; i++) {
+      if (axisDates[i] <= target) found = i; else break;
+    }
+    return found;
+  },
+
+  // 【功能】渲染研报基本面指标独立卡(#dash-research): 每个有数据的 standalone 指标
+  //         一张折线+散点小卡(开工率/仓单/加工利润/现货价…), tooltip 带研报来源与
+  //         指标口径 note 供核对。研报基差默认叠加在上方基差图(紫色散点); 市场基差
+  //         不可用时并进本区独立卡, 数据不丢。容器 id 全页唯一(chart-dash-r-*),
+  //         重渲染前先清理旧实例, 防指标消失后留孤儿图。
+  // 【输入】d: GET /api/dashboard/{variety} 的完整响应(d.research 由后端给出)。
+  // 【渲染】#dash-research 动态 card 列表 + _chartInstances 登记/清理。
+  // 【后端】无(数据由 loadDashboard 传入)。
+  _renderResearchSection(d) {
+    const host = document.getElementById('dash-research');
+    if (!host) return;
+    // 先清理上一次渲染的研报指标图实例(指标消失/品种切换不留孤儿)
+    Object.keys(this._chartInstances).forEach(id => {
+      if (id.startsWith('chart-dash-r-')) {
+        try { this._chartInstances[id].dispose(); } catch (e) {}
+        delete this._chartInstances[id];
+      }
+    });
+    const research = d.research || {};
+    const standalone = Object.assign({}, research.standalone || {});
+    // 市场基差不可用(或未叠加)时, 研报基差并入独立卡
+    const marketBasisOk = d.basis && d.basis.available && (d.basis.points || []).some(p => p.near_basis != null);
+    if (!marketBasisOk && research.overlay && research.overlay.basis && research.overlay.basis.length) {
+      standalone.basis = research.overlay.basis;
+    }
+    const labels = {
+      basis: '基差', warehouse_receipts: '仓单', operating_rate: '开工率',
+      processing_margin: '加工利润', spot_price: '现货价',
+      social_inventory: '社会库存', mill_inventory: '钢厂库存'
+    };
+    const keys = ['basis', 'warehouse_receipts', 'operating_rate', 'processing_margin', 'spot_price', 'social_inventory', 'mill_inventory']
+      .filter(k => (standalone[k] || []).length);
+    if (!keys.length) {
+      host.innerHTML = '';
+      return;
+    }
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const textColor = isDark ? CHART.axis : '#666';
+    const gridColor = isDark ? CHART.grid : '#eee';
+    host.innerHTML = keys.map(k => {
+      const pts = standalone[k];
+      // 单位取点里最常见的非空值(同指标通常同单位)
+      const unitCount = {};
+      pts.forEach(p => { if (p.unit) unitCount[p.unit] = (unitCount[p.unit] || 0) + 1; });
+      const unit = Object.entries(unitCount).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+      return `<div class="card" style="margin-top:16px"><h3>研报${labels[k] || k}${unit ? `(${unit})` : ''} <span class="badge badge-info">${pts.length} 点</span></h3><div class="chart-container" id="chart-dash-r-${k.replace(/_/g, '-')}" style="height:240px"></div></div>`;
+    }).join('');
+    keys.forEach(k => {
+      const pts = standalone[k];
+      const chart = this._initChart(`chart-dash-r-${k.replace(/_/g, '-')}`);
+      if (!chart) return;
+      chart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'item', formatter: (p) => {
+            const it = p.data || {};
+            return `<b>${p.value != null ? p.value : ''}${it.rUnit || ''}</b><br/>` +
+              `<span style="font-size:0.75rem;color:var(--text-muted)">` +
+              `研报日期 ${it.rDate || p.name}${it.rSource ? ' · ' + it.rSource : ''}` +
+              `${it.rTitle ? '<br/>' + it.rTitle : ''}${it.rNote ? '<br/>口径: ' + it.rNote : ''}` +
+              `</span>`;
+          } },
+        grid: { left: 65, right: 30, top: 15, bottom: 35 },
+        xAxis: { type: 'category', data: pts.map(p => p.date), axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: CHART.axis, fontSize: 10, rotate: pts.length > 60 ? 45 : 0 }, splitLine: { show: false } },
+        yAxis: { type: 'value', name: labels[k] || k, nameTextStyle: { color: textColor, fontSize: 10 }, axisLabel: { color: textColor, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
+        series: [{
+          name: `研报${labels[k] || k}`, type: 'line', smooth: false, showSymbol: true, symbolSize: 7,
+          lineStyle: { color: '#a855f7', width: 2, type: 'dashed' }, itemStyle: { color: '#a855f7' },
+          data: pts.map(p => ({ value: p.value, rDate: p.date, rUnit: p.unit, rSource: p.source, rTitle: p.title, rNote: p.note }))
+        }]
+      });
+    });
+  },
+
+  // 【功能】渲染盘面利润独立卡(#dash-margin): 期货价格按产业配比合成的产业链利润
+  //         折线(仅 RB/HC/J 有配方), 顶部统计条=最新值/历史分位/近5日变动/窗口统计,
+  //         tooltip 带配方腿收盘价。无配方或腿缺数据时整卡隐藏(降级 note 由后端给,
+  //         前端不展示避免误导)。容器 id 全页唯一(chart-dash-margin),
+  //         重渲染前先清理旧实例, 防品种切换留孤儿图。
+  // 【输入】d: GET /api/dashboard/{variety} 的完整响应(d.margin 由后端给出)。
+  // 【渲染】#dash-margin 单卡: 统计行 + _chartInstances 登记/清理的折线图。
+  // 【后端】无(数据由 loadDashboard 传入)。
+  _renderMarginSection(d) {
+    const host = document.getElementById('dash-margin');
+    if (!host) return;
+    const chartId = 'chart-dash-margin';
+    const old = this._chartInstances[chartId];
+    if (old) { try { old.dispose(); } catch (e) {} delete this._chartInstances[chartId]; }
+    const m = d.margin || {};
+    if (!m.available || !(m.series || []).length) { host.innerHTML = ''; return; }
+    const st = m.stats || {};
+    const pct = st.pct_rank == null ? null : (st.pct_rank * 100);
+    const pctColor = pct == null ? 'var(--text-secondary)' : pct < 10 ? 'var(--green)' : pct < 25 ? 'var(--green)' : pct <= 75 ? 'var(--amber)' : 'var(--red)';
+    const pctDesc = pct == null ? '—' : `${pct.toFixed(0)}%`;
+    const wow = st.wow == null ? null : st.wow;
+    const legs = Object.entries(st.legs || {}).map(([k, v]) => `${k} ${Number(v).toFixed(0)}`).join(' · ');
+    host.innerHTML = `
+      <div class="card" style="margin-top:16px">
+        <h3>${st.name || '盘面利润'} <span class="badge badge-info">${(m.series || []).length} 点</span></h3>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px">公式口径: ${st.note || ''} · 主力连续价合成, 换月日可能有台阶, 不等于真实现金利润</div>
+        <div class="grid grid-4" style="margin-bottom:10px">
+          <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem">${st.latest != null ? st.latest.toFixed(0) : '—'}</div><div class="stat-lbl">最新值(元/吨) ${st.latest_date || ''}</div></div>
+          <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem;color:${pctColor}">${pctDesc}</div><div class="stat-lbl">历史分位</div></div>
+          <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem;color:${wow == null ? 'inherit' : wow > 0 ? 'var(--red)' : wow < 0 ? 'var(--green)' : 'inherit'}">${wow == null ? '—' : (wow > 0 ? '+' : '') + wow.toFixed(0)}</div><div class="stat-lbl">近5交易日变动</div></div>
+          <div class="stat-card" style="padding:8px 10px"><div class="stat-val" style="font-size:1.1rem">${st.min != null && st.max != null ? st.min.toFixed(0) + '~' + st.max.toFixed(0) : '—'}</div><div class="stat-lbl">窗口最小~最大(均值 ${st.mean != null ? st.mean.toFixed(0) : '—'})</div></div>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:6px">腿最新收盘: ${legs || '—'}</div>
+        <div class="chart-container" id="${chartId}" style="height:280px"></div>
+      </div>`;
+    const chart = this._initChart(chartId);
+    if (!chart) return;
+    const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    const gridColor = isDark ? CHART.grid : '#eee';
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis', formatter: (ps) => {
+          const p = ps[0];
+          const it = p.data || {};
+          return `${p.name}<br/><b>${p.value != null ? p.value : ''} 元/吨</b>` +
+            (it.legs ? `<br/><span style="font-size:0.75rem;color:var(--text-muted)">腿收盘: ${it.legs}</span>` : '');
+        } },
+      grid: { left: 65, right: 30, top: 15, bottom: 35 },
+      xAxis: { type: 'category', data: m.series.map(p => p.date), axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: CHART.axis, fontSize: 10, rotate: m.series.length > 60 ? 45 : 0 }, splitLine: { show: false } },
+      yAxis: { type: 'value', name: '元/吨', nameTextStyle: { color: CHART.axis, fontSize: 10 }, axisLabel: { color: CHART.axis, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
+      series: [{
+        name: st.name || '盘面利润', type: 'line', smooth: true, showSymbol: false,
+        lineStyle: { color: '#f59e0b', width: 2 }, itemStyle: { color: '#f59e0b' },
+        areaStyle: { opacity: 0.08 },
+        data: m.series.map(p => p.value)
+      }]
+    });
+  },
+
+  // 【功能】板块相关性总览: 拉取板块内各品种的价格-库存 Pearson R, 渲染横向条形图 + 表格
+  // 【输入】无 (由当前 #dash-variety 反查所属板块)
+  // 【渲染】#dash-sector-panel 条形图 + 表格; #dash-sector-label 板块提示
+  // 【后端】GET /api/dashboard/{variety}(反查板块) → GET /api/dashboard/sector/{sector}
+  async loadDashSector() {
+    const sym = (document.getElementById('dash-variety')?.value || this._defaultCode()).toUpperCase();
+    const panel = document.getElementById('dash-sector-panel');
+    const label = document.getElementById('dash-sector-label');
+    let sector = null;
+    try {
+      const metaR = await fetch(`/api/dashboard/${sym}?days=60`);  // 【调用函数】先取 1 次品种级数据反查板块
+      const metaD = await metaR.json();
+      sector = (metaD._meta && metaD._meta.sector) || null;
+    } catch (e) { /* ignore */ }
+    if (!sector) { this.toast('无法确定该品种的板块', 'error'); return; }
+    if (label) label.textContent = `· ${sector} 板块`;
+    if (panel) {
+      panel.style.display = 'block';
+      panel.innerHTML = `<h3>${sector} 板块 · 价格-库存相关性</h3><div style="color:var(--text-muted);font-size:0.82rem;padding:10px 0">正在逐品种拉取价格与仓单数据(约 2×N 次请求), 请稍候…</div>`;
+    }
+    try {
+      const r = await fetch(`/api/dashboard/sector/${encodeURIComponent(sector)}`);  // 【调用函数】后端接口: 板块内各品种价格-库存 R
+      const d = await r.json();
+      const rows = d.rows || [];
+      if (!panel) return;
+      panel.innerHTML = `
+        <h3>${d.sector} 板块 · 价格-库存相关性 <span class="badge badge-info">${d.count} 品种有效</span></h3>
+        ${rows.length === 0
+          ? '<div style="color:var(--text-muted);padding:10px">板块内暂无同时具备价格与仓单库存数据的品种</div>'
+          : `
+        <div class="chart-container" id="chart-dash-sector" style="height:${Math.max(240, rows.length * 30 + 40)}px"></div>
+        <table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:0.82rem">
+          <thead><tr style="color:var(--text-muted);text-align:left">
+            <th style="padding:6px">品种</th><th>Pearson R</th><th>库存趋势</th><th>样本数</th>
+          </tr></thead>
+          <tbody>${rows.map(rr => `
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:6px"><b>${rr.code}</b> ${rr.name}</td>
+              <td style="color:${rr.r > 0.3 ? 'var(--red)' : rr.r < -0.3 ? 'var(--green)' : 'var(--amber)'}">${rr.r.toFixed(3)}</td>
+              <td>${rr.trend ? (rr.trend === 'BUILDING' ? '累库' : rr.trend === 'DRAINING' ? '去库' : '平稳') : '—'}</td>
+              <td>${rr.n}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`}`;
+      const chart = this._initChart('chart-dash-sector');
+      if (chart) {
+        chart.setOption({
+          ...this._baseChartOptions(`${d.sector} 价格-库存 Pearson R`),
+          grid: { left: 90, right: 30, top: 50, bottom: 30 },
+          xAxis: { ...this._baseChartOptions('').xAxis, axisLabel: { formatter: v => v.toFixed(2) } },
+          yAxis: { type: 'category', data: rows.map(rr => rr.code), axisLabel: { color: CHART.axis, fontSize: 10 } },
+          series: [{
+            type: 'bar', data: rows.map(rr => rr.r),
+            itemStyle: { color: p => p.value >= 0 ? '#ef4444' : '#22c55e' },
+            label: { show: true, position: 'right', formatter: p => p.value.toFixed(3), color: CHART.axis, fontSize: 9 }
+          }]
+        });
+      }
+    } catch (e) {
+      console.error('Sector dashboard error:', e);
+      if (panel) panel.innerHTML = `<h3>板块相关性</h3><div style="color:var(--red)">加载失败: ${e.message}</div>`;
+    }
+  },
+
+  // ── History ──
+  // 【功能】加载历史报告列表, 每条可点击查看详情
+  // 【输入】无
+  // 【渲染】#history-list 报告条目(品种/时间/大小KB)
+  // 【后端】GET /api/history
+  async loadHistory() {
+    try {
+      const r = await fetch('/api/history');  // 【调用函数】后端接口: 拉取历史报告列表(品种/时间/大小)
+      const reports = await r.json();
+      document.getElementById('history-list').innerHTML = reports.map(rp => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;transition:background var(--transition)"
+             onclick="App.viewReport('${rp.filename}')" onmouseover="this.style.background='var(--bg-input)'" onmouseout="this.style.background=''">
+          <span><b>${rp.symbol}</b></span>
+          <span style="color:var(--text-muted);font-size:0.84rem">${rp.time}</span>
+          <span style="color:var(--text-muted);font-size:0.78rem">${(rp.size / 1024).toFixed(0)}KB</span>
+        </div>`).join('') || '<div style="color:var(--text-muted);padding:12px">暂无历史报告</div>';
+    } catch (e) { /* ignore */ }
+  },
+
+  // 【功能】打开某份历史报告: 拉取详情, 渲染 RATING 横幅 + 各章节卡片(Markdown), 并平滑滚动到报告区
+  // 【输入】filename: 报告文件名
+  // 【渲染】#report-viewer 显示; #report-content 报告正文
+  // 【后端】GET /api/report/{filename}
+  async viewReport(filename) {
+    this._currentReportFile = filename;
+    try {
+      const r = await fetch(`/api/report/${encodeURIComponent(filename)}`);  // 【调用函数】后端接口: 拉取单份报告详情(encodeURIComponent 保证中文文件名安全)
+      const d = await r.json();
+      const v = document.getElementById('report-viewer');
+      v.style.display = 'block';
+      let html = '';
+      if (d.rating) {
+        const color = d.rating.score >= 6 ? 'var(--green)' : d.rating.score <= 4 ? 'var(--red)' : 'var(--amber)';
+        html += `<div class="signal-banner"><div class="signal-label">RATING</div><div class="signal-rating" style="color:${color}">${d.rating.rating}</div><div class="signal-meta">CONFIDENCE: ${d.rating.confidence} | SCORE: ${d.rating.score}/10</div></div>`;
+      }
+      if (d.sections) {
+        for (const [title, content] of Object.entries(d.sections)) {
+          if (content) html += `<div class="card" style="margin-top:8px"><h3>${title}</h3><div class="report-content">${marked.parse(content)}</div></div>`;
+        }
+      }
+      if (!html) html = `<div class="report-content">${marked.parse(d.content || '')}</div>`;
+      document.getElementById('report-content').innerHTML = html;
+      v.scrollIntoView({ behavior: 'smooth' });
+    } catch (e) { this.toast('加载报告失败', 'error'); }
+  },
+
+  // 【功能】在新窗口打开报告下载链接 (MD 或 PDF 格式), 由后端生成文件
+  // 【输入】format: 'md' 或 'pdf'
+  // 【渲染】无 (触发浏览器下载) 【后端】GET /api/report/{file}/{format}
+  downloadReport(format) {
+    if (!this._currentReportFile) return;
+    const url = `/api/report/${encodeURIComponent(this._currentReportFile)}/${format}`;
+    window.open(url, '_blank');
+  },
+
+  // 【功能】在新标签打开历史报告的"网页版"(独立深色主题报告页,与前端同风格)。
+  // 【后端】GET /api/report/{file}/html —— 后端把 markdown 渲染成自包含 HTML 页面。
+  openReportHtml() {
+    if (!this._currentReportFile) return;
+    window.open(`/api/report/${encodeURIComponent(this._currentReportFile)}/html`, '_blank');
+  },
+
+  // ── Data Update ──
+  // 【功能】「数据更新」页概览: 统计品种数与总帖子数, 展示前 8 个有数据的品种
+  // 【输入】无
+  // 【渲染】#update-stats 徽标(品种·帖)、#update-summary 概览文本
+  // 【后端】GET /api/varieties (必要时)
+  async loadUpdateStats() {
+    try {
+      const vars = this._varieties.length ? this._varieties : await fetch('/api/varieties').then(r => r.json());  // 【调用函数】品种列表优先用内存缓存; 缓存为空才回源拉取
+      const total = vars.reduce((s, v) => s + v.sentiment_posts, 0);
+      document.getElementById('update-stats').textContent = `${vars.length}品种·${total}帖`;
+      document.getElementById('update-summary').innerHTML = vars.filter(v => v.sentiment_posts > 0).slice(0, 8).map(v =>
+        `${v.code} ${v.name}: ${v.sentiment_posts}帖`).join(' | ') || '暂无数据';
+    } catch (e) { /* ignore */ }
+  },
+
+  // ── Update Deltas 各平台增量(2026-09-17 新增) ──
+  // 【功能】按「一次更新一行」列出历次更新各平台的 真实新增 / 采集命中
+  // 【输入】无
+  // 【渲染】#delta-body 表格、#delta-summary 摘要、#delta-badge 徽标
+  // 【后端】GET /api/update_deltas
+  _deltaPlatLabel: { weibo: '微博', zhihu: '知乎', xhs: '小红书', xueqiu: '雪球', eastmoney_guba: '东财股吧', douyin: '抖音' },
+  // 【变量】失败状态的中文解释(悬停提示用)。文案要给"下一步做什么", 而不是只报错:
+  //   auth_failed 是可自助修复的(重扫登录), blocked 只能等冷却或降载。
+  _deltaStatusText: {
+    empty: '本次采集成功但一条都没有(时间过滤后为空)',
+    blocked: '被平台拦截(软限流/接口变更), 通常需等冷却或降低采集量',
+    auth_failed: '登录态失效, 需重新扫码登录',
+    error: '采集过程异常, 详见调度告警',
+    unknown: '状态未知'
+  },
+  // 【变量】降级码 → 中文短语(表格悬停提示用)。降级与 status **正交**:
+  //   status 回答"跑没跑成", 降级回答"跑成了但少采了多少"(如微博游客态只能取第 1 页)。
+  //   code 由适配器的 note_degradation() 给出, 这里只做展示映射。
+  //   ⚠️ 刻意**不回显后端 message 原文**: 它可能含引号/换行, 直接拼进 title 属性会截断
+  //   标签, 把后面的表格结构一起吃掉。
+  _deltaDegradeText: {
+    auth_degraded: '登录态失效(游客态): 每关键词只能取到第 1 页',
+    auth_page2_blocked: '翻页被要求登录: 该关键词后续页全部丢弃',
+    auth_check_unavailable: '登录态自检未完成: 无法确认是否已登录'
+  },
+
+  async loadUpdateDeltas() {
+    const host = document.getElementById('delta-body');
+    if (!host) return;
+    try {
+      const d = await fetch('/api/update_deltas?limit=20').then(r => r.json());  // 【调用函数】后端接口: 各平台增量(按更新轮次)
+      this._renderUpdateDeltas(d);
+    } catch (e) {
+      host.innerHTML = `<div style="font-size:0.82rem;color:var(--red)">增量数据加载失败: ${e}</div>`;
+      const b = document.getElementById('delta-badge');
+      if (b) b.textContent = '加载失败';
+    }
+  },
+
+  // 【功能】渲染增量表: 行=一次更新, 列=平台, 单元格=「+真实新增 / 命中N」
+  // 【输入】d: /api/update_deltas 的响应对象
+  // 【渲染】#delta-body / #delta-summary / #delta-badge
+  _renderUpdateDeltas(d) {
+    const host = document.getElementById('delta-body');
+    const badge = document.getElementById('delta-badge');
+    const sum = document.getElementById('delta-summary');
+    if (!host) return;
+    if (d.error) {
+      if (badge) badge.textContent = '不可用';
+      if (sum) sum.textContent = d.error;
+      host.innerHTML = '';
+      return;
+    }
+    const rounds = d.rounds || [];
+    const label = (k) => this._deltaPlatLabel[k] || k;
+    if (!rounds.length) {
+      if (badge) badge.textContent = '无记录';
+      if (sum) sum.textContent = '尚未产生采集记录。';
+      host.innerHTML = '';
+      return;
+    }
+    // 列集合 = 汇总里的平台 ∪ 轮次里出现过的平台(汇总异常时不至于丢列)
+    const colSet = new Set((d.platforms || []).map(p => p.key));
+    rounds.forEach(r => Object.keys(r.platforms || {}).forEach(k => colSet.add(k)));
+    const colKeys = [...colSet];
+
+    let h = '<table class="delta-tbl"><thead><tr><th>更新时间</th><th>来源</th>';
+    colKeys.forEach(k => { h += `<th>${label(k)}</th>`; });
+    h += '<th>合计</th></tr></thead><tbody>';
+
+    rounds.forEach(r => {
+      // 时间列: "09-17 13:31" + 若跨时段则补 "~13:35"
+      const dayTime = r.start.slice(5);
+      const span = (r.end && r.end.slice(11) !== r.start.slice(11))
+        ? `<span class="delta-span">~${r.end.slice(11)}</span>` : '';
+      h += `<tr><td>${dayTime}${span}</td>`
+         + `<td><span class="delta-src ${r.source === 'scheduled' ? 'scheduled' : ''}">${r.source === 'scheduled' ? '定时' : '手动'}</span></td>`;
+      colKeys.forEach(k => {
+        const v = (r.platforms || {})[k];
+        if (!v) { h += '<td class="delta-none" title="本次未采集该平台">·</td>'; return; }
+        const st = v.status || '';
+        // 失败且颗粒无收 → ✗;但 empty(采到了、只是没有新内容)不是故障, 用灰 0 表示,
+        // 否则"平台本身正常、当天就是没新帖"会被读成出错。
+        const isFault = st && st !== 'ok' && st !== 'empty';
+        if (isFault && !v.raw) {
+          const tip = this._deltaStatusText[st] || st;
+          h += `<td title="${tip}"><span class="delta-fail">✗</span></td>`;
+          return;
+        }
+        const cls = v.new > 0 ? 'delta-new' : 'delta-new zero';
+        // 降级标记(2026-09-18): 采集成功但少采(如微博只能取第 1 页)。
+        // 挂在数值**旁边**而不是替换数值 —— 用户既要看见"+90", 也要看见"这个 90 被砍过"。
+        const degs = v.degradations || [];
+        const degTxt = degs.map(d => {
+          const t = this._deltaDegradeText[d.code] || String(d.code || '').replace(/"/g, '');
+          return (d.count > 1) ? `${t}(×${d.count})` : t;
+        }).join('; ');
+        const degMark = degs.length ? `<span class="delta-deg">⚠ 降级</span>` : '';
+        const cellTitle = `真实新增 ${v.new} 条 / 采集命中 ${v.raw} 条`
+                        + (degTxt ? ` | ⚠ 少采: ${degTxt}` : '');
+        h += `<td title="${cellTitle}">`
+           + `<span class="${cls}">+${v.new}</span><span class="delta-raw">命中 ${v.raw}</span>${degMark}</td>`;
+      });
+      h += `<td title="本轮真实新增 ${r.total_new} / 采集命中 ${r.total_raw}">`
+         + `<span class="delta-new">+${r.total_new}</span><span class="delta-raw">命中 ${r.total_raw}</span></td></tr>`;
+    });
+
+    // 末行: 各平台当前存量(去重后累计), 用于和上面各轮新增互相印证
+    h += '<tr class="delta-total-row"><td colspan="2">当前存量</td>';
+    colKeys.forEach(k => {
+      h += `<td><span class="delta-new">${(d.totals || {})[k] || 0}</span><span class="delta-raw">条</span></td>`;
+    });
+    h += `<td><span class="delta-new">${Object.values(d.totals || {}).reduce((s, n) => s + n, 0)}</span><span class="delta-raw">全平台</span></td></tr>`;
+    h += '</tbody></table>';
+    host.innerHTML = h;
+
+    const tn = rounds.reduce((s, r) => s + r.total_new, 0);
+    const tr = rounds.reduce((s, r) => s + r.total_raw, 0);
+    const last = rounds[0];
+    const dup = tr ? (100 - tn / tr * 100) : 0;
+    // 降级提示(2026-09-18): 取"平台汇总"里的长期降级标志, 而不是只看最近一轮 ——
+    // 微博游客态这类降级是**持续状态**, 只在它发生的那一轮提示, 会随窗口滚动而消失,
+    // 于是又变回"看不见"。汇总口径能让它一直挂着直到有人去修。
+    const degPlats = (d.platforms || []).filter(p => p.degraded);
+    if (sum) sum.innerHTML =
+      `近 <b>${rounds.length}</b> 次更新：真实新增 <b>${tn}</b> 条 / 采集命中 ${tr} 条`
+      + (tr ? `（重复率 ${dup.toFixed(0)}%）` : '')
+      + ` · 最近一次 ${last.start}（${last.source === 'scheduled' ? '定时' : '手动'}）`
+      + ((d.round_total || 0) > rounds.length ? ` · 更早还有 ${d.round_total - rounds.length} 次记录` : '')
+      + (degPlats.length
+          ? `<br><span style="color:var(--warn-ink)">⚠ 降级中：`
+            + degPlats.map(p => `${this._escHtml(p.label)}（${p.degraded_updates} 轮）`).join('、')
+            + ` —— 平台跑成了但少采, 悬停表中对应列的「⚠ 降级」看原因</span>`
+          : '');
+    if (badge) badge.textContent = `共 ${d.round_total || rounds.length} 次更新`;
+  },
+
+  // 【功能】根据勾选的平台与起始日期, 实时更新配置卡下方的提示文案与预计耗时
+  // 【输入】无 (读取各平台 checkbox 与 #update-since)
+  // 【渲染】#platform-hint 文案 【后端】无
+  updatePlatformHint() {
+    const plats = []; let t = 0;
+    if (document.getElementById('plat-weibo').checked) { plats.push('微博'); t += 4; }
+    if (document.getElementById('plat-zhihu').checked) { plats.push('知乎'); t += 16; }
+    if (document.getElementById('plat-xhs').checked) { plats.push('小红书'); t += 3; }
+    if (document.getElementById('plat-xueqiu').checked) { plats.push('雪球'); t += 5; }
+    if (document.getElementById('plat-emg').checked) { plats.push('东财股吧'); t += 2; }
+    if (document.getElementById('plat-douyin').checked) { plats.push('抖音'); t += 10; }
+    document.getElementById('platform-hint').textContent =
+      '流程: 多平台采集 → 时间过滤 → 粉丝解析 → 情绪聚合(作者加权) → 回测调优 → 生成JSON | ' +
+      (plats.length ? '平台: ' + plats.join(' + ') + ' | 预计: ' + t + 'min'
+                    : '请选择至少一个平台') +
+      (document.getElementById('update-since').value ? ' | 仅保留 ' + document.getElementById('update-since').value + ' 之后' : '');
+  },
+
+  // 【功能】一键数据更新: 收集配置参数后 POST 启动, 用 _readSSE 消费流式日志
+  //          (step 阶段名 / log 日志 / platform_summary 平台汇总卡片 / complete 完成 / error 错误)
+  // 【输入】无 (读取 #update-perkw/#update-minnotes/#update-since 与 4 个平台 checkbox)
+  // 【渲染】#update-log 实时日志; 完成时刷新概览/叠加图/帖子/品种列表并弹成功提示
+  // 【后端】POST /api/update_data (SSE 流式响应)
+  async runDataUpdate() {
+    const btn = document.getElementById('btn-update');
+    btn.disabled = true; btn.textContent = '更新中...';
+    const log = document.getElementById('update-log');
+    log.textContent = '';
+    const perKw = parseInt(document.getElementById('update-perkw').value);
+    const minNotes = parseInt(document.getElementById('update-minnotes').value);
+    const sinceDate = document.getElementById('update-since').value || '';
+    const platforms = [];
+    if (document.getElementById('plat-weibo').checked) platforms.push('weibo');
+    if (document.getElementById('plat-zhihu').checked) platforms.push('zhihu');
+    if (document.getElementById('plat-xhs').checked) platforms.push('xhs');
+    if (document.getElementById('plat-xueqiu').checked) platforms.push('xueqiu');
+    if (document.getElementById('plat-emg').checked) platforms.push('eastmoney_guba');
+    if (document.getElementById('plat-douyin').checked) platforms.push('douyin');
+    if (!platforms.length) {
+      this.toast('请至少选择一个平台', 'error');
+      btn.disabled = false; btn.textContent = '一键更新';
+      return;
+    }
+
+    try {
+      const resp = await fetch('/api/update_data', {  // 【调用函数】后端接口: 启动多平台数据更新(SSE 流式返回日志)
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ per_kw: perKw, min_notes: minNotes, platforms, since_date: sinceDate })
+      });
+      await this._readSSE(resp, {  // 【调用函数】消费更新过程的流式日志(step/log/platform_summary/complete/error 五类事件)
+        'step': (d) => { log.innerHTML += `\n<span class="node">[${d.progress}] ${d.label}</span>`; },
+        'log': (d) => { log.innerHTML += `\n<span class="tool">${d.msg}</span>`; },
+        'platform_summary': (d) => {
+          // Render platform summary card
+          const platforms = d.platforms || {};
+          const pct = (count) => d.total ? (count / d.total * 100).toFixed(0) + '%' : '';
+          const platNames = { weibo: '微博', zhihu: '知乎', xhs: '小红书', xueqiu: '雪球', eastmoney_guba: '东财股吧', douyin: '抖音' };
+          let cardsHTML = '<div class="grid grid-3" style="margin-top:12px">';
+          for (const [plat, count] of Object.entries(platforms).sort((a,b) => b[1] - a[1])) {
+            const name = platNames[plat] || plat;
+            cardsHTML += `<div class="stat-card"><div class="stat-val">${count}</div><div class="stat-lbl">${name} (${pct(count)})</div></div>`;
+          }
+          cardsHTML += '</div>';
+          document.getElementById('update-summary').innerHTML =
+            `<div style="font-size:0.84rem;color:var(--text-secondary);margin-bottom:8px">
+              📊 总计 <b>${d.total}</b> 条 · 时间 ${d.earliest} ~ ${d.latest}
+            </div>${cardsHTML}`;
+          document.getElementById('update-stats').textContent = `${Object.keys(platforms).length}平台·${d.total}条`;
+        },
+        'complete': (d) => {
+          log.innerHTML += `\n<span class="report">=== ${d.msg} ===</span>`;
+          this.loadUpdateStats();
+          this.loadUpdateDeltas();  // 【调用函数】刷新「各平台增量」: 本轮刚写下的批次文件会立刻体现出来
+          this.updateSentimentStats();
+          this.loadOverlayChart();
+          this.loadSentimentPosts();
+          this._loadVarieties();
+          this.toast('数据更新完成', 'success');
+        },
+        'error': (d) => { log.innerHTML += `\n<span class="error">${d.msg}</span>`; }
+      });
+      log.scrollTop = log.scrollHeight;
+    } catch (e) {
+      log.innerHTML += `\n<span class="error">ERROR: ${e}</span>`;
+      this.toast('更新失败: ' + e.message, 'error');
+    }
+    btn.disabled = false; btn.textContent = '一键更新';
+  },
+
+  // ═══════════════════════════════════════════════════════
+  // ANALYSIS SUB — 分析工具子区(2026-09-07 由独立分析工具页并入情绪数据页, 7 个子模块)
+  // ═══════════════════════════════════════════════════════
+  _analysisSub: 'comprehensive',  // 【变量】分析工具子区当前子模块(切换时记忆, 返回该页时恢复)
+
+  // 【功能】进入「情绪数据」页时初始化分析工具子区: 填充 3 个品种下拉框, 切到上次的子模块, 加载事件列表
+  // 【输入】无 【渲染】各子模块面板 【后端】GET /api/analysis/events 等
+  initAnalysisTab() {
+    this._populateVarietySelects(['comp-variety', 'trade-variety', 'event-variety']);
+    this.switchAnalysisSub(this._analysisSub);
+    this.loadEvents();
+  },
+
+  // 【功能】分析工具子区的子导航切换(综合分析/作者/事件/框架说明/Agent验证/Agent回测/图谱),
+  //         切换后按需触发对应子模块的数据加载
+  // 【输入】sub: 子模块标识, 如 'comprehensive' / 'agentval'
+  // 【渲染】显示对应 .analysis-sub 面板并高亮子导航按钮
+  // 【后端】视子模块而定 (comprehensive→5 个分析接口; authors→/api/analysis/authors; events→/api/analysis/events)
+  switchAnalysisSub(sub) {
+    this._analysisSub = sub;
+    document.querySelectorAll('.analysis-sub').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('#analysis-subnav button').forEach(b => b.classList.remove('active'));
+    const panel = document.getElementById('asub-' + sub);
+    if (panel) panel.style.display = 'block';
+    const btn = document.querySelector(`[data-asub="${sub}"]`);
+    if (btn) btn.classList.add('active');
+    if (sub === 'comprehensive') this.loadComprehensive();
+    if (sub === 'authors') this.loadAuthors();
+    if (sub === 'events') this.loadEvents();
+    if (sub === 'graph') { this.loadGraphChart(); this.loadSankeyChart(); }
+  },
+
+  // Load ALL comprehensive analysis sections
+  // 【功能】综合分析子模块的总入口: 对当前品种并发/依次加载 5 个分析板块
+  // 【输入】无 (读取 #comp-variety 品种)
+  // 【渲染】异动、分歧度、全品种分歧度、领先滞后、排名、对比 6 块区域
+  // 【后端】/api/analysis/anomalies/{v}、/divergence/{v}、/divergence/all、/leadlag/{v}、/ranking、/compare
+  async loadComprehensive() {
+    const v = document.getElementById('comp-variety').value;
+    this.loadAnomalies(v);
+    this.loadDivergence(v);
+    this.loadDivergenceAll();
+    this.loadLeadLag(v);
+    this.loadRanking();
+    this.loadCompare();
+  },
+
+  // 【功能】把品种列表填充进多个下拉框; 若下拉已有选项(>1 个)则跳过, 避免重复填充
+  // 【输入】ids: 下拉框 id 数组
+  // 【渲染】各下拉框的 <option> 【后端】无 (数据来自 this._varieties)
+  _populateVarietySelects(ids) {
+    ids.forEach(id => {
+      const sel = document.getElementById(id);
+      if (!sel || sel.options.length > 1) return;
+      this._varieties.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.code; o.textContent = `${v.code} - ${v.name}`;
+        sel.appendChild(o);
+      });
+    });
+  },
+
+  // 【品种池】默认品种兜底(2026-09-09):旧兜底 'RB' 已随 20 品种池收缩出池,
+  // 统一回退到下拉第一个池内品种(数据为空时再兜 'SC' 防未加载)。
+  _defaultCode() {
+    return (this._varieties && this._varieties[0] && this._varieties[0].code) || 'SC';
+  },
+
+  // 【功能】情绪异动检测: 用 Z-score(阈值 2.0)找当日情绪显著偏离 7 日均值的日期
+  // 【输入】forceV: 可选的强制品种(不传则读下拉)
+  // 【渲染】#anomalies-result 异动列表或"未检测到"
+  // 【后端】GET /api/analysis/anomalies/{v}?threshold=2.0
+  async loadAnomalies(forceV) {
+    const v = forceV || document.getElementById('comp-variety')?.value || this._defaultCode();
+    const t = 2.0;  // 【变量】Z-score 异动阈值: |Z|>2 视为情绪显著偏离 7 日均值
+    try {
+      const r = await fetch(`/api/analysis/anomalies/${v}?threshold=${t}`);  // 【调用函数】后端接口: Z-score 情绪异动检测(阈值经查询参数传入)
+      const d = await r.json();
+      document.getElementById('anomalies-result').innerHTML = d.anomalies.length === 0
+        ? '<span style="color:var(--green)">未检测到显著异常</span>'
+        : d.anomalies.map(a => `
+          <div class="debate-round ${a.direction === 'bullish' ? 'bull' : 'bear'}">
+            <span class="speaker">${a.date} | Z=${a.z_score} | ${a.type}</span>
+            得分: ${a.score} | MA(7d): ${a.ma_7d}
+          </div>`).join('');
+    } catch(e) { this.toast('检测失败', 'error'); }
+  },
+
+  // 【功能】加载单品种多空分歧度: 1-|看多%-看空%|, 值越高共识越强
+  // 【输入】forceV: 可选品种(不传则读下拉)
+  // 【渲染】#divergence-detail 大号百分比(红<40%黄<70%绿≥70%)与多空占比
+  // 【后端】GET /api/analysis/divergence/{v}
+  async loadDivergence(forceV) {
+    const v = forceV || document.getElementById('comp-variety')?.value || this._defaultCode();
+    try {
+      const r = await fetch(`/api/analysis/divergence/${v}`);  // 【调用函数】后端接口: 单品种多空分歧度(1-|看多%-看空%|)
+      const d = await r.json();
+      const color = d.divergence < 0.4 ? 'var(--red)' : d.divergence < 0.7 ? 'var(--amber)' : 'var(--green)';
+      document.getElementById('divergence-detail').innerHTML = `
+        <div style="font-size:2rem;font-weight:900;color:${color}">${(d.divergence*100).toFixed(0)}%</div>
+        <div>${d.label} · ${d.signal}</div>
+        <div style="margin-top:4px;font-size:0.8rem;color:var(--text-muted)">
+          看多 ${(d.bullish_ratio*100).toFixed(0)}% | 看空 ${(d.bearish_ratio*100).toFixed(0)}% | 中性 ${(d.neutral_ratio*100).toFixed(0)}% | 趋势: ${d.trend}
+        </div>`;
+    } catch(e) {}
+  },
+
+  // 【功能】全品种分歧度: 列表 + 柱状图(红<40%黄<70%绿≥70%)
+  // 【输入】无
+  // 【渲染】#divergence-all-list 逐品种列表; #chart-divergence 柱状图
+  // 【后端】GET /api/analysis/divergence/all
+  async loadDivergenceAll() {
+    try {
+      const r = await fetch('/api/analysis/divergence/all');  // 【调用函数】后端接口: 全品种分歧度(驱动列表与柱状图)
+      const data = await r.json();
+      document.getElementById('divergence-all-list').innerHTML = data.map(d => {
+        const color = d.divergence < 0.4 ? 'var(--red)' : d.divergence < 0.7 ? 'var(--amber)' : 'var(--green)';
+        return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span><b>${d.variety}</b> <small style="color:var(--text-muted)">${d.label}</small></span>
+          <span style="color:${color};font-weight:700">${(d.divergence*100).toFixed(0)}%</span></div>`;
+      }).join('');
+
+      // Chart
+      const chart = this._initChart('chart-divergence');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('全品种多空分歧度'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: data.map(d => d.variety), axisLabel: {rotate:45,fontSize:9} },
+        series: [{
+          type: 'bar', data: data.map(d => (d.divergence * 100).toFixed(1)),
+          itemStyle: { color: p => p.value < 40 ? '#ef4444' : p.value < 70 ? '#fbbf24' : '#22c55e' }
+        }]
+      });
+    } catch(e) {}
+  },
+
+  // 【功能】领先滞后分析: 比较"情绪→价格"与"价格→情绪"的时滞相关系数, 判断谁领先
+  // 【输入】forceV: 可选品种
+  // 【渲染】#leadlag-conclusion 结论文字; #chart-leadlag 双线相关系数图(绿=情绪→价格, 橙=价格→情绪)
+  // 【后端】GET /api/analysis/leadlag/{v}
+  async loadLeadLag(forceV) {
+    const v = forceV || document.getElementById('comp-variety')?.value || this._defaultCode();
+    try {
+      const r = await fetch(`/api/analysis/leadlag/${v}`);  // 【调用函数】后端接口: 领先滞后分析(情绪→价格 vs 价格→情绪相关系数)
+      const d = await r.json();
+      const winner = d.conclusion === 'sentiment_leads' ? '情绪领先于价格' : '价格领先于情绪';
+      document.getElementById('leadlag-conclusion').innerHTML = `
+        <b style="font-size:1.1rem">${winner}</b><br>
+        <small>情绪→价格 max corr: ${d.max_sent_corr} | 价格→情绪 max corr: ${d.max_price_corr} | n=${d.data_points}</small>`;
+
+      const chart = this._initChart('chart-leadlag');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('领先滞后相关系数'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: Object.keys(d.sentiment_leads_price) },
+        series: [
+          { name: '情绪→价格', type: 'line', data: Object.values(d.sentiment_leads_price), lineStyle: {color:'#22c55e'} },
+          { name: '价格→情绪', type: 'line', data: Object.values(d.price_leads_sentiment), lineStyle: {color:CHART.brand} }
+        ]
+      });
+    } catch(e) {}
+  },
+
+  // 【功能】多品种横截面对比: 表格(品种/板块/得分/多空%/帖子/7日趋势) + 柱线图(情绪得分柱 + 趋势线)
+  // 【输入】无
+  // 【渲染】#compare-table 表格; #chart-compare 图
+  // 【后端】GET /api/analysis/compare
+  async loadCompare() {
+    try {
+      const r = await fetch('/api/analysis/compare');  // 【调用函数】后端接口: 多品种横截面对比(得分/板块/多空占比/7日趋势)
+      const data = await r.json();
+      document.getElementById('compare-table').innerHTML = `<table><thead><tr>
+        <th>品种</th><th>板块</th><th>情绪得分</th><th>标签</th><th>看多%</th><th>看空%</th><th>帖子</th><th>7日趋势</th>
+      </tr></thead><tbody>${data.map(d => `
+        <tr><td><b>${d.variety}</b> ${d.name}</td><td>${d.sector}</td>
+        <td style="color:${d.score>0?'var(--green)':d.score<0?'var(--red)':'var(--text-muted)'}">${d.score.toFixed(3)}</td>
+        <td>${d.label}</td><td>${(d.bullish_ratio*100).toFixed(0)}%</td><td>${(d.bearish_ratio*100).toFixed(0)}%</td>
+        <td>${d.total_posts}</td><td style="color:${d.trend_7d>0?'var(--green)':'var(--red)'}">${d.trend_7d.toFixed(3)}</td></tr>`
+      ).join('')}</tbody></table>`;
+
+      const chart = this._initChart('chart-compare');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('多品种情绪对比'),
+        legend: { bottom: 0 },
+        xAxis: { ...this._baseChartOptions('').xAxis, data: data.map(d => d.variety), axisLabel: {rotate:45,fontSize:9} },
+        series: [
+          { name: '情绪得分', type: 'bar', data: data.map(d => d.score.toFixed(2)),
+            itemStyle: { color: p => p.value >= 0 ? '#22c55e' : '#ef4444' } },
+          { name: '7日趋势', type: 'line', data: data.map(d => d.trend_7d.toFixed(3)),
+            lineStyle: { color: CHART.brand }, showSymbol: false }
+        ]
+      });
+    } catch(e) {}
+  },
+
+  // 【功能】品种情绪排名: 表格(前 30) + 得分分布柱状图(前 20, 绿多红空)
+  // 【输入】无
+  // 【渲染】#ranking-table 表格; #chart-ranking 柱状图
+  // 【后端】GET /api/analysis/ranking
+  async loadRanking() {
+    try {
+      const r = await fetch('/api/analysis/ranking');  // 【调用函数】后端接口: 品种情绪得分排名
+      const data = await r.json();
+      document.getElementById('ranking-table').innerHTML = `<table><thead><tr>
+        <th>#</th><th>品种</th><th>板块</th><th>得分</th><th>多空</th><th>帖子</th><th>日期</th>
+      </tr></thead><tbody>${data.slice(0,30).map((d,i) => `
+        <tr><td>${i+1}</td><td><b>${d.code}</b> ${d.name}</td><td>${d.sector}</td>
+        <td style="color:${d.score>0?'var(--green)':'var(--red)'}">${d.score.toFixed(3)}</td>
+        <td>${d.bullish}%/${d.bearish}%</td><td>${d.posts}</td><td>${d.date}</td></tr>`
+      ).join('')}</tbody></table>`;
+
+      const chart = this._initChart('chart-ranking');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('情绪得分分布'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: data.slice(0,20).map(d => d.code), axisLabel: {rotate:45,fontSize:9} },
+        series: [{
+          type: 'bar', data: data.slice(0,20).map(d => ({value: d.score.toFixed(3), itemStyle: {color: d.score>=0?'#22c55e':'#ef4444'}}))
+        }]
+      });
+    } catch(e) {}
+  },
+
+  // 【功能】跨平台情绪对比: 各平台得分/帖子/多空占比表格 + 分歧度与解读 + 柱状图
+  // 【输入】无 (读取 #cp-variety; 注: 当前 HTML 无此下拉, 属保留接口)
+  // 【渲染】#crossplat-detail 表格、#crossplat-interp 解读、#chart-crossplat 图
+  // 【后端】GET /api/analysis/crossplatform/{v}
+  async loadCrossPlatform() {
+    const v = document.getElementById('cp-variety').value;
+    try {
+      const r = await fetch(`/api/analysis/crossplatform/${v}`);  // 【调用函数】后端接口: 跨平台情绪对比(微博/知乎/小红书分歧)
+      const d = await r.json();
+      document.getElementById('crossplat-detail').innerHTML = `<table><thead><tr>
+        <th>平台</th><th>得分</th><th>帖子</th><th>看多%</th><th>看空%</th></tr></thead><tbody>
+        ${Object.entries(d.platforms).map(([p,pd]) => `
+          <tr><td><b>${p}</b></td><td style="color:${pd.avg_score>0?'var(--green)':'var(--red)'}">${pd.avg_score.toFixed(3)}</td>
+          <td>${pd.total_notes}</td><td>${(pd.bullish_ratio*100).toFixed(0)}%</td><td>${(pd.bearish_ratio*100).toFixed(0)}%</td></tr>`
+        ).join('')}</tbody></table>
+        <div style="margin-top:8px">分歧度: <b>${d.spread.toFixed(3)}</b> (${d.conflict_level})</div>`;
+      document.getElementById('crossplat-interp').innerHTML = `<div class="debate-round" style="border-left-color:var(--amber)">${d.interpretation}</div>`;
+
+      const chart = this._initChart('chart-crossplat');
+      if (chart) chart.setOption({
+        ...this._baseChartOptions('跨平台情绪对比'),
+        xAxis: { ...this._baseChartOptions('').xAxis, data: Object.keys(d.platforms) },
+        series: [{
+          type: 'bar', data: Object.values(d.platforms).map(p => p.avg_score.toFixed(3)),
+          itemStyle: { color: p => p.value>=0?'#22c55e':'#ef4444' }
+        }]
+      });
+    } catch(e) {}
+  },
+
+  // 【功能】作者影响力排行(前 30): 表格展示 影响力/帖子/粉丝/互动
+  // 【输入】无
+  // 【渲染】#authors-table 表格
+  // 【后端】GET /api/analysis/authors?limit=30
+  async loadAuthors() {
+    try {
+      const r = await fetch('/api/analysis/authors?limit=30');  // 【调用函数】后端接口: 作者影响力排行(前30, 影响力=发帖×0.3+log粉丝×0.3+log互动×0.4)
+      const data = await r.json();
+      document.getElementById('authors-table').innerHTML = `<table><thead><tr>
+        <th>#</th><th>作者</th><th>影响力</th><th>帖子</th><th>粉丝</th><th>互动</th></tr></thead><tbody>
+        ${data.map((a,i) => `
+          <tr><td>${i+1}</td><td><b>${a.name}</b></td><td>${(a.influence||0).toFixed(1)}</td>
+          <td>${a.posts||0}</td><td>${(a.fans||0)>10000?((a.fans||0)/10000).toFixed(1)+'万':(a.fans||0)}</td>
+          <td>${a.avg_engagement||0}</td></tr>`
+        ).join('')}</tbody></table>`;
+    } catch(e) {}
+  },
+
+  // 【功能】舆情事件提取: 按品种/天数加载事件帖子卡片(含事件类别徽标、品种方向箭头、链接)
+  // 【输入】无 (读取 #event-variety 与 #event-days)
+  // 【渲染】#events-list 事件卡片列表
+  // 【后端】GET /api/analysis/events?variety={v}&days={days}
+  async loadEvents() {
+    const v = document.getElementById('event-variety')?.value || '';
+    const days = document.getElementById('event-days')?.value || 7;
+    try {
+      const r = await fetch(`/api/analysis/events?variety=${v}&days=${days}`);  // 【调用函数】后端接口: 舆情事件提取(按品种与回看天数过滤)
+      const data = await r.json();
+      document.getElementById('events-list').innerHTML = data.length === 0
+        ? '<div style="color:var(--text-muted);padding:12px">未检测到关键词事件</div>'
+        : data.map(e => `
+          <div class="post-card">
+            <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:4px">
+              <span style="font-size:0.75rem;color:var(--text-muted)">${e.date} ${e.platform}</span>
+              <span style="font-size:0.75rem;font-weight:600;color:${(e.sentiment_score||0)>0?'var(--green)':(e.sentiment_score||0)<0?'var(--red)':'var(--text-muted)'}">${(e.sentiment_score||0)>0?'看多':(e.sentiment_score||0)<0?'看空':'中性'}</span>
+            </div>
+            ${e.categories.map(c => `<span class="badge badge-info">${c}</span>`).join(' ')}
+            ${(e.varieties||[]).slice(0,4).map(v => {
+              const s = e.sentiment_score||0;
+              const dir = s > 0.05 ? '↑' : s < -0.05 ? '↓' : '→';
+              const clr = s > 0.05 ? 'var(--green)' : s < -0.05 ? 'var(--red)' : 'var(--text-muted)';
+              return `<span class="badge" style="background:rgba(255,255,255,0.06);border:1px solid ${clr}">${v} <span style="color:${clr}">${dir}</span></span>`;
+            }).join(' ')}
+            ${e.url ? `<a href="${e.url}" target="_blank" rel="noopener" style="color:var(--blue);display:block;margin-top:4px">${e.title}</a>` : `<span style="display:block;margin-top:4px">${e.title}</span>`}
+          </div>`).join('');
+    } catch(e) {}
+  },
+
+  // 【功能】品种-平台-板块关系图(非标数据可视化): ECharts graph 力导向图。
+  // 【输入】无 【渲染】#chart-graph 【后端】GET /api/analysis/graph
+  async loadGraphChart() {
+    try {
+      const r = await fetch('/api/analysis/graph');  // 【调用函数】后端接口: 品种-平台-板块关系图数据
+      const d = await r.json();
+      const chart = this._initChart('chart-graph');
+      if (!chart) return;
+      const nodes = d.nodes || [];
+      const links = d.links || [];
+      if (!nodes.length) {
+        chart.setOption({ title: { text: '暂无数据(先跑一次数据采集)', left: 'center', top: 'center', textStyle: { color: CHART.axis, fontSize: 13 } } });
+        return;
+      }
+      const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+      const TYPE_COLOR = { platform: CHART.brand2, variety: '#4a9eff', sector: '#59c285' };
+      const CAT = { platform: '平台', variety: '品种', sector: '板块' };
+      chart.setOption({
+        backgroundColor: 'transparent',
+        title: { text: '品种-平台-板块关系图', left: 'center', top: 4, textStyle: { color: isDark ? CHART.axis : '#666', fontSize: 12 } },
+        tooltip: { trigger: 'item', formatter: p => {
+          if (p.dataType === 'edge') return `${p.data.source} ↔ ${p.data.target}<br>共现 ${p.data.value} 帖`;
+          return `${p.data.name}(${CAT[p.data.type] || ''})<br>${p.data.value} 帖`;
+        } },
+        legend: { top: 30, left: 'center', textStyle: { color: isDark ? CHART.axis : '#666' } },
+        series: [{
+          type: 'graph', layout: 'force', roam: true,
+          categories: [{ name: '平台' }, { name: '品种' }, { name: '板块' }],
+          data: nodes.map(n => ({
+            id: n.id, name: n.name, value: n.value, category: CAT[n.type], type: n.type,
+            symbolSize: Math.max(10, Math.sqrt(n.value) * 2.2),
+            itemStyle: { color: TYPE_COLOR[n.type] || '#aaa' }
+          })),
+          links: links.map(l => ({ source: l.source, target: l.target, value: l.value, lineStyle: { width: Math.max(1, Math.min(9, Math.sqrt(l.value) * 0.7)) } })),
+          label: { show: true, fontSize: 10 },
+          force: { repulsion: 150, edgeLength: [40, 130], gravity: 0.08 },
+          lineStyle: { opacity: 0.45, curveness: 0.1 },
+          emphasis: { focus: 'adjacency', lineStyle: { width: 3 } }
+        }]
+      });
+    } catch (e) { /* ignore */ }
+  },
+
+  // 【功能】平台→品种→多/空 三层桑基流量图(非标数据可视化): ECharts sankey。
+  // 【输入】无 【渲染】#chart-sankey 【后端】GET /api/analysis/sankey
+  async loadSankeyChart() {
+    try {
+      const r = await fetch('/api/analysis/sankey');  // 【调用函数】后端接口: 平台→品种→多/空 桑基数据
+      const d = await r.json();
+      const chart = this._initChart('chart-sankey');
+      if (!chart) return;
+      const nodes = d.nodes || [];
+      const links = d.links || [];
+      if (!links.length) {
+        chart.setOption({ title: { text: '暂无数据(先跑一次数据采集)', left: 'center', top: 'center', textStyle: { color: CHART.axis, fontSize: 13 } } });
+        return;
+      }
+      const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+      const DIR_COLOR = { '看多': '#59c285', '看空': '#e05252', '中性': '#8a8a8a' };
+      chart.setOption({
+        backgroundColor: 'transparent',
+        title: { text: '平台 → 品种 → 多/空 情绪流量', left: 'center', top: 4, textStyle: { color: isDark ? CHART.axis : '#666', fontSize: 12 } },
+        tooltip: { trigger: 'item', triggerOn: 'mousemove' },
+        series: [{
+          type: 'sankey', nodeWidth: 14, nodeGap: 12,
+          data: nodes.map(n => (DIR_COLOR[n.name] ? { ...n, itemStyle: { color: DIR_COLOR[n.name] } } : n)),
+          links: links,
+          lineStyle: { color: 'gradient', opacity: 0.35, curveness: 0.5 },
+          label: { color: isDark ? '#aaa' : '#666', fontSize: 11 },
+          emphasis: { focus: 'adjacency' }
+        }]
+      });
+    } catch (e) { /* ignore */ }
+  },
+
+  // // ── Agent Validation ──
+  _valPoll: null,  // 【变量】Agent 验证进度轮询定时器句柄(启动时创建, 完成时清除)
+
+  // 【功能】启动 Agent 方向预测验证: 对每个品种跑完整 10 节点分析, 与 5 日后实际价格方向对比。
+  //         启动后每 3 秒轮询一次状态。可指定品种(逗号分隔), 空=后端默认全部。
+  // 【输入】无 (读取 #val-date 日期 / #val-varieties 品种列表)
+  // 【渲染】#val-progress 进度与 #val-stats/#val-detail 结果
+  // 【后端】POST /api/agent_validation/start → 轮询 GET /api/agent_validation/status
+  async startAgentValidation() {
+    const date = document.getElementById('val-date').value;
+    const varietiesStr = document.getElementById('val-varieties').value.trim();
+    const varieties = varietiesStr ? varietiesStr.split(',').map(v=>v.trim()).filter(Boolean) : [];
+    const btn = document.getElementById('btn-val-start');
+    btn.disabled = true; btn.textContent = 'Running...';
+    document.getElementById('val-progress').innerHTML = '<span class="node">Starting validation...</span>';
+    document.getElementById('val-stats').innerHTML = '';
+    document.getElementById('val-detail').innerHTML = '';
+
+    try {
+      const r = await fetch('/api/agent_validation/start', {  // 【调用函数】后端接口: 启动 Agent 方向预测验证(逐品种跑完整 10 节点管线)
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({date, varieties})
+      });
+      const d = await r.json();
+      if (d.error) { this.toast(d.error,'error'); btn.disabled=false; return; }
+      document.getElementById('val-progress').innerHTML = `<span class="node">Started: ${d.total} varieties on ${d.date}</span>`;
+      if (this._valPoll) clearInterval(this._valPoll);
+      this._valPoll = setInterval(() => this.pollAgentValidation(), 3000);
+    } catch(e) { this.toast('Failed','error'); btn.disabled=false; }
+  },
+
+  // 【功能】轮询 Agent 验证进度: 更新进度条/阶段/最近结果; 有结果时渲染统计卡、明细表与两幅图
+  //         (方向准确率、高/中/低置信度校准柱状图、SCORE vs 实际涨幅散点图)
+  // 【输入】无
+  // 【渲染】#val-progress / #val-stats / #val-detail / #chart-val-dir / #chart-val-score
+  // 【后端】GET /api/agent_validation/status (由 startAgentValidation 的定时器每 3 秒调用)
+  async pollAgentValidation() {
+    try {
+      const r = await fetch('/api/agent_validation/status');  // 【调用函数】后端接口: 轮询 Agent 验证进度(每3秒, 完成后渲染统计与图表)
+      const d = await r.json();
+      const pct = d.total > 0 ? (d.done / d.total * 100).toFixed(0) : 0;  // 【变量】品种完成度百分比(已完成/总数)
+      const stage = d.current_stage || '';
+      const stageMatch = stage.match(/反驳|裁决|研判|情景/);
+      const stagePct = stage.includes('反驳') ? 70 : stage.includes('裁决') ? 80 : stage.includes('研判') ? 90 : stage.includes('情景') ? 95 : stage.includes('情绪') ? 40 : stage.includes('多方') ? 50 : stage.includes('空方') ? 60 : 10;  // 【变量】阶段名→进度百分比映射(反驳70/裁决80/研判90/情景95/情绪40/多方50/空方60/兜底10)
+      const showPct = Math.max(pct, d.done > 0 ? pct : Math.max(0, Math.min(stagePct, pct || 10)));  // 【变量】显示用进度: 取品种完成度与阶段进度较大者, 避免进度条回退
+      document.getElementById('val-progress').innerHTML = `
+        <div style="margin:8px 0">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span class="node">${d.running?'🔄':'✅'} ${d.done}/${d.total} completed${d.running?' (current: ~'+stagePct+'%)':''}</span>
+            <span style="font-size:0.8rem;color:var(--amber)">${stage||'initializing...'}</span>
+          </div>
+          <div style="background:var(--bg-input);border-radius:4px;height:8px;overflow:hidden">
+            <div style="background:linear-gradient(90deg,var(--brand),var(--green));height:100%;width:${showPct}%;transition:width 0.5s"></div>
+          </div>
+          <div style="font-size:0.72rem;color:var(--amber);margin-top:2px">⚠ 每个品种约需3-5分钟（4位分析师→3轮辩论→研判→情景）</div>
+          ${d.results && d.results.length > 0 ? d.results.slice(-3).map(r =>
+            `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">${r.variety}: ${r.rating||'?'} | ${r.correct===true?'✅':r.correct===false?'❌':'⏳'} | ${r.elapsed||''}</div>`
+          ).join('') : ''}
+        </div>`;
+
+      if (d.results && d.results.length > 0) {
+        const results = d.results;
+        const valid = results.filter(r => r.correct !== undefined);  // 【变量】已有判定结果的有效样本(排除仍在运行中的品种)
+        const correct = valid.filter(r => r.correct).length;
+        const highC = valid.filter(r => r.confidence==='高');
+        const midC = valid.filter(r => r.confidence==='中');
+        const lowC = valid.filter(r => r.confidence==='低');
+
+        // Stats cards
+        document.getElementById('val-stats').innerHTML = `
+          <div class="card"><h3>方向准确率</h3><div style="font-size:2rem;font-weight:700;color:${correct/valid.length>=0.5?'var(--green)':'var(--red)'}">${valid.length>0?(correct/valid.length*100).toFixed(1)+'%':'?'}</div><div style="font-size:0.7rem">${correct}/${valid.length} correct</div></div>
+          <div class="card"><h3>高置信度准确率</h3><div style="font-size:2rem;font-weight:700;color:var(--green)">${highC.length>0?(highC.filter(r=>r.correct).length/highC.length*100).toFixed(1)+'%':'?'}</div><div style="font-size:0.7rem">n=${highC.length}</div></div>
+          <div class="card"><h3>中/低置信度</h3><div>中: ${midC.length>0?(midC.filter(r=>r.correct).length/midC.length*100).toFixed(1)+'%':'?'} (n=${midC.length})</div><div>低: ${lowC.length>0?(lowC.filter(r=>r.correct).length/lowC.length*100).toFixed(1)+'%':'?'} (n=${lowC.length})</div></div>`;
+
+        // Detail table
+        document.getElementById('val-detail').innerHTML = `<table><thead><tr>
+          <th>品种</th><th>RATING</th><th>SCORE</th><th>CONF</th><th>实际方向</th><th>涨幅</th><th>✅</th><th>耗时</th>
+        </tr></thead><tbody>${results.map(r => `
+          <tr><td><b>${r.variety}</b></td>
+          <td style="color:${(r.agent_dir||'')==='BULL'?'var(--green)':(r.agent_dir||'')==='BEAR'?'var(--red)':'var(--text-muted)'}">${r.rating||r.error||'?'}</td>
+          <td>${r.score||'?'}</td><td>${r.confidence||'?'}</td>
+          <td style="color:${(r.actual_dir||'')==='BULL'?'var(--green)':(r.actual_dir||'')==='BEAR'?'var(--red)':'var(--text-muted)'}">${r.actual_dir||'?'}</td>
+          <td>${r.actual_pct!=null?(r.actual_pct>0?'+':'')+r.actual_pct+'%':'?'}</td>
+          <td>${r.correct===true?'✅':r.correct===false?'❌':'?'}</td>
+          <td>${r.elapsed||'?'}</td></tr>`
+        ).join('')}</tbody></table>`;
+
+        // Direction chart
+        const c1 = this._initChart('chart-val-dir');
+        if (c1) c1.setOption({
+          title:{text:'置信度校准',left:'center',textStyle:{color:CHART.axis,fontSize:11}},
+          xAxis:{type:'category',data:['高','中','低']},
+          yAxis:{type:'value',name:'准确率%',max:100},
+          series:[{type:'bar',data:[
+            highC.length>0?+(highC.filter(r=>r.correct).length/highC.length*100).toFixed(1):0,
+            midC.length>0?+(midC.filter(r=>r.correct).length/midC.length*100).toFixed(1):0,
+            lowC.length>0?+(lowC.filter(r=>r.correct).length/lowC.length*100).toFixed(1):0,
+          ],itemStyle:{color:'#22c55e'},label:{show:true,formatter:p=>p.value+'%',color:CHART.axis}}]
+        },true);
+
+        // Score vs return scatter
+        const c2 = this._initChart('chart-val-score');
+        if (c2) c2.setOption({
+          title:{text:'SCORE vs 实际涨幅',left:'center',textStyle:{color:CHART.axis,fontSize:11}},
+          xAxis:{type:'value',name:'SCORE (0-10)',min:0,max:10},
+          yAxis:{type:'value',name:'涨幅%'},
+          series:[{type:'scatter',data:valid.map(r=>[r.score,r.actual_pct]),
+            symbolSize:15,itemStyle:{color:r=>r.correct?'#22c55e':'#ef4444'}}]
+        },true);
+      }
+
+      if (!d.running) {
+        clearInterval(this._valPoll);
+        document.getElementById('btn-val-start').disabled = false;
+        document.getElementById('btn-val-start').textContent = 'Refresh';
+      }
+    } catch(e) {}
+  },
+
+
+
+  // ── Batch Backtest ──
+  _btPollInterval: null,  // 【变量】批量回测进度轮询定时器句柄(启动时创建, 完成时清除)
+
+  // 【功能】启动批量回测: 对比"纯情绪信号" vs "完整 Agent 管线"的方向准确率。
+  //         可选 run_agent 让后端逐个品种跑 Agent; 启动后每 2 秒轮询状态。
+  // 【输入】无 (读取 #bt-date / #bt-run-agent / #bt-varieties)
+  // 【渲染】#bt-summary / #bt-stats / #bt-detail
+  // 【后端】POST /api/batch_backtest/start → 轮询 GET /api/batch_backtest/status
+  async startBatchBacktest() {
+    const date = document.getElementById('bt-date').value;
+    const runAgent = document.getElementById('bt-run-agent').checked;
+    const varietiesStr = document.getElementById('bt-varieties').value.trim();
+    const varieties = varietiesStr ? varietiesStr.split(',').map(v=>v.trim()).filter(Boolean) : [];
+    const btn = document.getElementById('btn-bt-start');
+    btn.disabled = true; btn.textContent = 'Running...';
+
+    document.getElementById('bt-summary').innerHTML = '<span class="node">Starting...</span>';
+    document.getElementById('bt-stats').innerHTML = '';
+    document.getElementById('bt-detail').innerHTML = '';
+
+    try {
+      const r = await fetch('/api/batch_backtest/start', {  // 【调用函数】后端接口: 启动批量回测(纯情绪 vs Agent 方向准确率对比)
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({date, run_agent:runAgent, varieties})
+      });
+      const d = await r.json();
+      if (d.error) { this.toast(d.error,'error'); btn.disabled=false; return; }
+
+      // Poll for results
+      if (this._btPollInterval) clearInterval(this._btPollInterval);
+      this._btPollInterval = setInterval(() => this.pollBatchBacktest(), 2000);
+    } catch(e) { this.toast('Failed to start','error'); btn.disabled=false; }
+  },
+
+  // 【功能】轮询批量回测进度: 更新摘要(纯情绪/Agent 准确率), 有结果即渲染
+  // 【输入】无 【渲染】#bt-summary / #bt-stats / #bt-detail 【后端】GET /api/batch_backtest/status
+  async pollBatchBacktest() {
+    try {
+      const r = await fetch('/api/batch_backtest/status');  // 【调用函数】后端接口: 轮询批量回测进度与结果(每2秒)
+      const d = await r.json();
+      const done = d.done||0, total = d.total||0;
+
+      document.getElementById('bt-summary').innerHTML = `
+        <span class="node">Processing: ${done}/${total} varieties</span>
+        ${d.summary ? `<br><b>Sentiment accuracy: ${(d.summary.sentiment_accuracy*100).toFixed(1)}%</b> (${d.summary.sentiment_pairs} pairs)
+        ${d.summary.agent_pairs>0 ? ` | <b>Agent accuracy: ${(d.summary.agent_accuracy*100).toFixed(1)}%</b> (${d.summary.agent_pairs} pairs)` : ''}` : ''}`;
+
+      if (d.results && d.results.length > 0) {
+        this.renderBatchBacktestResults(d);
+      }
+
+      if (!d.running) {
+        clearInterval(this._btPollInterval);
+        document.getElementById('btn-bt-start').disabled = false;
+        document.getElementById('btn-bt-start').textContent = 'Refresh';
+      }
+    } catch(e) {}
+  },
+
+  // 【功能】把批量回测结果渲染成 3 个统计卡(纯情绪/Agent/增量) + 品种明细表 + 准确率对比柱状图
+  // 【输入】d: 状态接口返回的结果对象 {results, summary, date}
+  // 【渲染】#bt-stats / #bt-detail / #chart-bt-compare 【后端】无(数据来自轮询)
+  renderBatchBacktestResults(d) {
+    const results = d.results||[];
+    const summary = d.summary||{};
+
+    // Stats cards
+    const sAcc = summary.sentiment_accuracy ? (summary.sentiment_accuracy*100).toFixed(1) : '?';
+    const aAcc = summary.agent_accuracy ? (summary.agent_accuracy*100).toFixed(1) : '?';
+    const agentDelta = summary.agent_accuracy && summary.sentiment_accuracy
+      ? ((summary.agent_accuracy - summary.sentiment_accuracy)*100).toFixed(1) : '?';
+    document.getElementById('bt-stats').innerHTML = `
+      <div class="card"><h3>纯情绪准确率</h3><div style="font-size:1.8rem;color:var(--blue)">${sAcc}%</div><div style="font-size:0.7rem">n=${summary.sentiment_pairs||0}</div></div>
+      <div class="card"><h3>Agent准确率</h3><div style="font-size:1.8rem;color:var(--green)">${aAcc}%</div><div style="font-size:0.7rem">n=${summary.agent_pairs||0}</div></div>
+      <div class="card"><h3>Agent增量</h3><div style="font-size:1.8rem;color:${parseFloat(agentDelta)>0?'var(--green)':'var(--red)'}">${parseFloat(agentDelta)>0?'+':''}${agentDelta}%</div><div style="font-size:0.7rem">vs纯情绪</div></div>`;
+
+    // Detail table
+    document.getElementById('bt-detail').innerHTML = `<table><thead><tr>
+      <th>品种</th><th>情绪方向</th><th>Agent方向</th><th>实际方向</th><th>情绪✅</th><th>Agent✅</th>
+    </tr></thead><tbody>${results.map(r => {
+      const sDir = r.sentiment?.direction||'?';
+      const aDir = r.agent?.direction||'?';
+      const actDir = r.actual?.direction||'?';
+      const sOk = r.sentiment_correct ? '✅' : (r.sentiment_correct===false?'❌':'?');
+      const aOk = r.agent_correct ? '✅' : (r.agent_correct===false?'❌':'?');
+      return `<tr>
+        <td><b>${r.variety}</b></td>
+        <td style="color:${sDir==='BULL'?'var(--green)':sDir==='BEAR'?'var(--red)':'var(--text-muted)'}">${sDir}</td>
+        <td style="color:${aDir.includes('BULL')||aDir.includes('偏多')?'var(--green)':aDir.includes('BEAR')||aDir.includes('偏空')?'var(--red)':'var(--text-muted)'}">${aDir}</td>
+        <td style="color:${actDir==='BULL'?'var(--green)':actDir==='BEAR'?'var(--red)':'var(--text-muted)'}">${actDir} (${r.actual?.pct_change||0}%)</td>
+        <td>${sOk}</td><td>${aOk}</td></tr>`;
+    }).join('')}</tbody></table>`;
+
+    // Chart
+    const chart = this._initChart('chart-bt-compare');
+    if (chart && summary.sentiment_accuracy) {
+      chart.setOption({
+        backgroundColor:'transparent',
+        title:{text:`Direction Accuracy Comparison (${d.date||''})`,left:'center',textStyle:{color:CHART.axis,fontSize:12}},
+        tooltip:{trigger:'axis'},
+        legend:{bottom:0,textStyle:{color:CHART.axis}},
+        grid:{left:50,right:30,top:40,bottom:35},
+        xAxis:{type:'category',data:['纯情绪','Agent']},
+        yAxis:{type:'value',name:'Accuracy %',min:0,max:100,axisLabel:{formatter:v=>v+'%'}},
+        series:[{
+          type:'bar',
+          data:[
+            {value:summary.sentiment_accuracy*100,itemStyle:{color:'#60a5fa'}},
+            {value:(summary.agent_accuracy||0)*100,itemStyle:{color:'#22c55e'}}
+          ],
+          label:{show:true,position:'top',formatter:p=>p.value.toFixed(1)+'%',color:CHART.axis}
+        }]
+      });
+    }
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  仓单分析 (warrant) —— 2026-09-14 新增
+  //  数据源: /api/warrant/overview(总览) + /api/warrant/product(单品种细则)
+  //  · 第一栏 总览: 四所汇总卡 + 仓单数量排名 + 当日增减排名
+  //  · 第二栏 细则: 交易所切换 → 品种下拉 → 仓库分布/品牌结构/仓库厂库占比/增减结构
+  //  · 配色沿用国内惯例: 红=增加, 绿=减少
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // 【功能】千分位格式化(空值显示 "-")
+  // 【输入】v: 数值 【返回】字符串 【后端】无
+  _wtFmt(v) {
+    if (v === null || v === undefined || v === '') return '-';
+    const n = Number(v);
+    if (!isFinite(n)) return '-';
+    return n.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+  },
+
+  // 【功能】取当前主题下的图表配色(与 _baseChartOptions 同口径, 但供需要自定义 grid 的图复用)
+  // 【输入】无 【返回】{axis,label,split,text} 【后端】无
+  _wtC() {
+    const dark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    return dark
+      ? { axis: '#333', label: CHART.axis, split: '#1a1a1a', text: '#f5f1eb' }
+      : { axis: '#ddd', label: '#999', split: '#eee', text: '#1a1a1a' };
+  },
+
+  // 【功能】销毁指定容器上的 ECharts 实例并清空 DOM(用于把图表位置换成文字提示)
+  // 【输入】containerId 【渲染】容器被清空 【后端】无
+  _wtClear(containerId) {
+    const inst = this._chartInstances[containerId];
+    if (inst) { try { inst.dispose(); } catch (e) {} delete this._chartInstances[containerId]; }
+    const el = document.getElementById(containerId);
+    if (el) el.innerHTML = '';
+  },
+
+  // 【功能】把仓单数据的新鲜度翻成人话(数据日期 / 是否已是最新 / 采集时间 / 自动采集时点)
+  // 【为什么必须显式说】仓单日报只在**交易日收盘后**发布, 所以白天(以及周末)点「采集最新
+  //   数据」拿到的必然是上一交易日 —— 这是正确行为, 但页面只写「截至 2026-09-18」时会被
+  //   读成"采集了怎么日期不动"(2026-09-21 用户反馈)。这里用后端给的 expected/fresh 把
+  //   两种情况分开: 已是最新(交易所还没发更新的) vs 落后了(可点采集更新)。
+  // 【输入】d: GET /api/warrant/overview 或 /api/warrant/history 的返回
+  // 【返回】{date, wd, state, stateColor, tail}
+  _wtFreshText(d) {
+    const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    const date = d.date || d.as_of || d.latest || '';
+    let wd = '';
+    if (date) {
+      const x = new Date(String(date).replace(/-/g, '/'));
+      if (!isNaN(x)) wd = WD[x.getDay()];
+    }
+    const coll = (d.collected_at || d.generated_at || '').replace('T', ' ').slice(0, 16);
+    const sched = (d.schedule || []).join(' / ');
+    let state = '', stateColor = 'var(--text-secondary)';
+    if (d.expected && date) {
+      if (d.fresh) {
+        state = '已是最新（交易所尚未发布更新的日报）';
+      } else {
+        state = `${d.expected} 的日报可能已发布，可点「采集最新数据」更新`;
+        stateColor = 'var(--warn-ink)';   // 用专用警示色: --amber 在亮色主题下几乎读不出来
+      }
+    }
+    const tail = (coll ? `采集于 ${coll}` : '') + (sched ? `${coll ? ' · ' : ''}自动采集 ${sched}` : '');
+    return {date, wd, state, stateColor, tail};
+  },
+
+  // 【功能】加载仓单分析页: 拉总览 → 渲染汇总卡 / 排行榜 / 交易所标签与品种下拉
+  // 【输入】_ (占位, 便于 onclick 直接调用) 【渲染】#wt-excards #wt-rank-* #wt-extabs #wt-product
+  // 【后端】GET /api/warrant/overview
+  async loadWarrant() {
+    const exBox = document.getElementById('wt-excards');
+    try {
+      const r = await fetch('/api/warrant/overview');
+      const d = await r.json();
+      if (!d.ok) {
+        this._wtOverview = null;
+        document.getElementById('wt-date').textContent = '暂无数据';
+        exBox.innerHTML = `<div class="wt-empty" style="grid-column:1/-1">${d.error || '暂无仓单数据'}</div>`;
+        return;
+      }
+      this._wtOverview = d;
+      // 【2026-09-21】状态条改为"数据日期 + 是否已是最新 + 采集时间 + 自动采集时点":
+      // 之前只写「数据日期 X · 生成于 Y」, 早间/周末采集到的上一交易日数据看起来
+      // 就像"采集没生效", 必须把"交易所还没发更新的"这句话显式写出来。
+      const f = this._wtFreshText(d);
+      document.getElementById('wt-date').innerHTML =
+        `<b style="color:var(--text)">数据日期 ${f.date || '—'}${f.wd ? `（${f.wd}）` : ''}</b>` +
+        (f.state ? ` <span style="color:${f.stateColor}">${d.fresh ? '✓ ' : '⚠ '}${f.state}</span>` : '') +
+        (f.tail ? ` <span style="color:var(--text-muted)">· ${f.tail}</span>` : '') +
+        (d.stale ? ' <span style="color:var(--red)">⚠ 数据超过 3 天未更新</span>' : '');
+      document.getElementById('wt-ov-badge').textContent = `${(d.products || []).length} 个品种`;
+      this._renderWarrantExcards(d);
+      this._renderWarrantRanks();
+      this._renderWarrantTabs();
+      this.loadWarrantHistory();  // ③ 历史走势(2026-09-17 新增; 失败静默, 不影响上面)
+    } catch (e) {
+      exBox.innerHTML = `<div class="wt-empty" style="grid-column:1/-1;color:var(--red)">加载失败: ${e}</div>`;
+    }
+  },
+
+  // 【功能】手工触发一次采集(后台线程), 轮询状态直到完成再刷新页面数据
+  // 【输入】无 【渲染】#wt-refresh-msg 【后端】POST /api/warrant/refresh, GET /api/warrant/status
+  async refreshWarrant() {
+    const msg = document.getElementById('wt-refresh-msg');
+    msg.textContent = '正在采集…';
+    try {
+      const r = await fetch('/api/warrant/refresh', { method: 'POST' });
+      const d = await r.json();
+      if (!d.ok) { msg.textContent = d.error || '启动失败'; return; }
+      // 【2026-09-21】轮询上限 3→10 分钟:DCE 真实浏览器采集偶尔偏慢, 旧上限 180s
+      // 会"采集超时"提前收场且不刷新页面数据(历史走势日期看起来不动的原因之一);
+      // 超时后也不再干等 —— 强制 loadWarrant() 刷新一遍, 结果以后台采集为准。
+      for (let i = 0; i < 200; i++) {
+        await new Promise(res => setTimeout(res, 3000));
+        const s = await (await fetch('/api/warrant/status', { cache: 'no-store' })).json();
+        if (!s.running) {
+          const rc = s.last_run && s.last_run.results
+            ? Object.entries(s.last_run.results).map(([k, v]) => `${k}:${v.ok ? '✓' : '✗'}`).join(' ') : '';
+          // 【2026-09-21】完成提示带上「本次采到的数据日期」: 采集成功后日期仍停在
+          // 上一交易日是常态(日报未发布), 显式说出来, 免得又被读成"采集没生效"。
+          const dd = s.date ? ` 数据日期 ${s.date}` : '';
+          msg.textContent = `采集完成${dd} ${rc}`;
+          await this.loadWarrant();
+          return;
+        }
+        if (i % 10 === 9) await this.loadWarrant();  // 采集期间每 30s 也增量刷新一次
+        msg.textContent = `正在采集… ${(i + 1) * 3}s`;
+      }
+      msg.textContent = '采集超过 10 分钟仍未结束，已展示当前数据；完成后可点「重新加载」';
+      await this.loadWarrant();
+    } catch (e) {
+      msg.textContent = '采集失败: ' + e;
+    }
+  },
+
+  // 【功能】切换排行榜范围后重算可选单位并重绘(保留用户已选单位, 失效才回落)
+  // 【输入】无 【后端】无
+  _onWarrantScope() {
+    const sel = document.getElementById('wt-rank-unit');
+    if (sel) sel.dataset.want = sel.value;   // 记住当前选择
+    this._renderWarrantRanks();
+  },
+
+  // 【功能】渲染总览的两张排行榜: 仓单数量排名 + 当日增减排名
+  // 【输入】无 (读 this._wtOverview 与 #wt-rank-scope / #wt-rank-unit / #wt-rank-n)
+  // 【渲染】#wt-rank-qty #wt-rank-chg #wt-rank-note #wt-rank-unit 【后端】无
+  // 【关键】上期所同时用 吨/千克/桶, 数量级差异巨大 —— 用「单位」筛选把同口径品种
+  //   放在一起排名; 选「全部单位(混排)」才把不同单位塞进同一张图(仅看相对排序)。
+  _renderWarrantRanks() {
+    const d = this._wtOverview;
+    if (!d) return;
+    const c = this._wtC();
+    const q = id => document.getElementById(id);
+    const scope = (q('wt-rank-scope') || {}).value || 'ALL';
+    // 排行条数: 0 = 全部品种(容器高度随条数自适应, 见 _wtRankBar)
+    const nRaw = parseInt((q('wt-rank-n') || {}).value || '20', 10);
+    const wantAll = !(nRaw > 0);
+    let n = wantAll ? 0 : nRaw;
+
+    let all = (d.products || []).filter(p => scope === 'ALL' || p.exchange === scope);
+    // 可选单位 = 当前范围内出现过的单位(按品种数降序)
+    const cnt = {};
+    all.forEach(p => { const u = p.unit || '?'; cnt[u] = (cnt[u] || 0) + 1; });
+    const units = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]);
+
+    // 【关键】2026-09-17 修: 选「四所全部品种」时, 单位下拉默认落在品种数最多的
+    // 那个单位上(如「张」25 个) ⇒ 排行榜只显示这 25 个里的 TOP20, 用户看到的根本
+    // 不是"全部品种"("吨""手""千克""桶"的品种全被过滤掉了)。
+    // 现改为: 多单位时默认「全部单位(分组排名)」, 按单位分组公平分配 TOP N 名额,
+    // 保证每种单位都有代表进入榜单, 组内再按数值降序(组内同口径可比)。
+    const FAIR = '__FAIR__', MIX = '__MIX__';
+    const multi = units.length > 1;
+    const usel = q('wt-rank-unit');
+    const want = usel.dataset.want || usel.value;
+    const opts = [];
+    if (multi) {
+      opts.push(`<option value="${FAIR}">全部单位（分组排名）</option>`);
+      opts.push(`<option value="${MIX}">全部单位（数值混排）</option>`);
+    }
+    units.forEach(u => opts.push(`<option value="${u}">${u}（${cnt[u]} 个品种）</option>`));
+    usel.innerHTML = opts.join('');
+    const validVals = multi ? [FAIR, MIX].concat(units) : units;
+    let unit = (want && validVals.indexOf(want) >= 0) ? want : (multi ? FAIR : units[0]);
+    usel.value = unit;
+    usel.dataset.want = unit;
+
+    let rows, note;
+    if (unit === MIX) {
+      rows = all;
+      note = `混排 ${rows.length} 个品种，跨单位数量级不可直接比较，仅看相对排序。`;
+    } else if (unit === FAIR) {
+      rows = all;   // 名额分配交给下面两张图各自按排序键做(公平分配依赖排序键)
+      note = `分组排名：共 ${all.length} 个品种跨 ${units.length} 种单位，`
+        + `${wantAll ? '全部' : 'TOP ' + n} 名额按各单位品种数占比分配（每种单位至少 1 个），组内同口径按数值降序。`;
+    } else {
+      rows = all.filter(p => (p.unit || '?') === unit);
+      const others = units.filter(u => u !== unit).map(u => `${cnt[u]} 个${u}`).join('、');
+      note = `按单位「${unit}」排名，${rows.length} 个品种` + (others ? `；其余 ${others} 切换单位查看。` : '。');
+    }
+    // 实际条数: 「全部品种」档 = 该范围内全部品种(容器高度随之自适应)
+    const limit = wantAll ? Math.max(1, rows.length) : Math.min(n, Math.max(1, rows.length));
+    const noteEl = q('wt-rank-note');
+    const more = (!wantAll && rows.length > limit)
+      ? `（当前显示 ${limit}/${rows.length} 条，选“全部品种”可看全）` : '';
+    if (noteEl) noteEl.textContent = note + more;
+    const showUnit = (unit === MIX || unit === FAIR);
+
+    // ── 图1: 仓单数量排名(按数量降序) ──
+    const byQty = unit === FAIR
+      ? this._wtFairPick(rows, limit, (a, b) => (b.qty || 0) - (a.qty || 0))
+      : rows.slice().sort((a, b) => (b.qty || 0) - (a.qty || 0)).slice(0, limit);
+    this._wtRankBar('wt-rank-qty', byQty, {
+      c: c, mix: showUnit,
+      valueFn: p => p.qty || 0,
+      tip: p => `<b>${p.name} <span style="color:${c.label}">${p.code}</span></b><br/>${p.exchange_cn}<br/>` +
+        `仓单量 ${this._wtFmt(p.qty)} ${p.unit || ''}<br/>当日 ${(p.change > 0 ? '+' : '') + this._wtFmt(p.change)}<br/>` +
+        `仓库 ${p.warehouse_count} 个${p.has_brand ? ` · 品牌 ${p.brand_count} 个` : ''}`,
+      colors: [CHART.brandGlow, CHART.brand],
+      signed: false
+    });
+
+    // ── 图2: 当日增减排名(按增减绝对值降序, 红=增 绿=减; 增减为 0 的不参与) ──
+    const chgPool = rows.filter(p => (p.change || 0) !== 0);
+    const byChg = unit === FAIR
+      ? this._wtFairPick(chgPool, limit, (a, b) => Math.abs(b.change || 0) - Math.abs(a.change || 0))
+      : chgPool.slice().sort((a, b) => Math.abs(b.change || 0) - Math.abs(a.change || 0)).slice(0, limit);
+    this._wtRankBar('wt-rank-chg', byChg, {
+      c: c, mix: showUnit,
+      valueFn: p => p.change || 0,
+      tip: p => `<b>${p.name} <span style="color:${c.label}">${p.code}</span></b><br/>${p.exchange_cn}<br/>` +
+        `当日增减 <b style="color:${(p.change || 0) > 0 ? '#ef4444' : '#22c55e'}">${(p.change > 0 ? '+' : '') + this._wtFmt(p.change)}</b> ${p.unit || ''}<br/>` +
+        `仓单量 ${this._wtFmt(p.qty)}`,
+      colors: null, signed: true
+    });
+    if (!byChg.length) {
+      const el = q('wt-rank-chg');
+      if (el) { this._wtClear('wt-rank-chg'); el.innerHTML = '<div class="wt-empty">该范围内当日所有品种仓单增减均为 0</div>'; }
+    }
+  },
+
+  // 【功能】跨单位公平挑选 TOP N: 名额按各单位品种数占比分配(每种单位至少 1 个)
+  // 【输入】list 品种数组; n 名额; sortFn 组内降序比较器
+  // 【返回】拼接后的品种数组(按单位分块, 块内已按 sortFn 降序)
+  // 【为什么】不同单位数量级差异巨大(吨/千克/桶 vs 张/手), 直接按绝对值取 TOP N
+  //   会让「吨」这类大数单位霸榜, 「张」「手」一个都进不去 ⇒ 用户选「四所全部品种」
+  //   却看不到全部品种。公平分配保证每种单位都有代表, 组内仍按真实数值排序。
+  _wtFairPick(list, n, sortFn) {
+    const cnt = {};
+    list.forEach(p => { const u = p.unit || '?'; cnt[u] = (cnt[u] || 0) + 1; });
+    const units = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]);
+    const total = list.length || 1;
+    const groups = {};
+    units.forEach(u => { groups[u] = list.filter(p => (p.unit || '?') === u); });
+
+    const quota = {};
+    let used = 0;
+    units.forEach(u => {
+      const k = Math.min(groups[u].length, Math.max(1, Math.floor(n * cnt[u] / total)));
+      quota[u] = k; used += k;
+    });
+    // 名额超了 → 从当前名额最多的组往回减(每组保底 1)
+    let guard = 0;
+    while (used > n && guard++ < 500) {
+      const c = units.filter(u => quota[u] > 1).sort((a, b) => quota[b] - quota[a]);
+      if (!c.length) break;
+      quota[c[0]] -= 1; used -= 1;
+    }
+    // 名额有剩 → 补给"还没取完"的组(按剩余可补量降序)
+    guard = 0;
+    while (used < n && guard++ < 500) {
+      const c = units.filter(u => quota[u] < groups[u].length)
+        .sort((a, b) => (groups[b].length - quota[b]) - (groups[a].length - quota[a]));
+      if (!c.length) break;
+      quota[c[0]] += 1; used += 1;
+    }
+    const out = [];
+    units.forEach(u => {
+      groups[u].slice().sort(sortFn).slice(0, quota[u]).forEach(p => out.push(p));
+    });
+    return out;
+  },
+
+  // 【功能】排行榜通用横向条形图
+  // 【输入】id 容器; rows 品种数组; o {c 配色, mix 是否混排, valueFn, tip, colors, signed}
+  // 【渲染】指定容器 【后端】无
+  _wtRankBar(id, rows, o) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!rows.length) {
+      this._wtClear(id);
+      el.innerHTML = '<div class="wt-empty">该范围内没有可排名的品种</div>';
+      return;
+    }
+    // 【关键】条数多时(如「全部品种」72 条)必须把容器撑高, 否则 520px 里挤 72 条
+    // 会糊成一团、根本读不了。每条约 24px, 下限保持原高度。
+    const needH = Math.max(520, rows.length * 24 + 48);
+    if (parseInt(el.style.height || '0', 10) !== needH) {
+      el.style.height = needH + 'px';
+    }
+    const chart = this._initChart(id);
+    if (!chart) return;
+    chart.resize();
+
+    const c = o.c;
+    const R = rows.slice().reverse();
+    // 跨单位时给 y 轴「·单位」后缀按单位上色, 让"分组"一眼可见(否则块与块之间
+    // 条形长度跳变会像乱序)
+    let axisLabel = { color: c.label, fontSize: 11 };
+    if (o.mix) {
+      const PALETTE = ['#22c55e', '#fbbf24', '#38bdf8', '#f472b6', '#a78bfa', '#fb923c'];
+      const seq = [];
+      R.forEach(p => { const u = p.unit || '?'; if (seq.indexOf(u) < 0) seq.push(u); });
+      const rich = {};
+      seq.forEach((u, i) => {
+        rich['u' + i] = { color: PALETTE[i % PALETTE.length], fontSize: 10 };
+      });
+      axisLabel = {
+        color: c.label, fontSize: 11,
+        formatter: v => {
+          const s = String(v);
+          const k = s.lastIndexOf('·');
+          if (k < 0) return s;
+          const u = s.slice(k + 1);
+          const i = seq.indexOf(u);
+          return i < 0 ? s : `${s.slice(0, k)}{u${i}|·${u}}`;
+        },
+        rich: rich
+      };
+    }
+    const gradient = new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+      { offset: 0, color: (o.colors || [CHART.brandGlow])[0] },
+      { offset: 1, color: (o.colors || [CHART.brandGlow, CHART.brand])[1] }]);
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: ps => o.tip(R[ps[0].dataIndex]) },
+      grid: { left: 8, right: 96, top: 12, bottom: 6, containLabel: true },
+      xAxis: {
+        type: 'value',
+        axisLabel: { color: c.label, fontSize: 10, formatter: v => this._wtFmt(v) },
+        splitLine: { lineStyle: { color: c.split } }, axisLine: { lineStyle: { color: c.axis } }
+      },
+      yAxis: {
+        type: 'category',
+        data: R.map(p => o.mix ? `${p.name}·${p.unit || ''}` : p.name),
+        axisLabel: axisLabel,
+        axisLine: { lineStyle: { color: c.axis } }, axisTick: { show: false }
+      },
+      series: [{
+        type: 'bar', barMaxWidth: 15,
+        data: R.map(p => {
+          const v = o.valueFn(p) || 0;
+          return {
+            value: v,
+            itemStyle: o.signed
+              ? { color: v > 0 ? '#ef4444' : (v < 0 ? '#22c55e' : '#94a3b8'),
+                  borderRadius: v >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] }
+              : { color: gradient, borderRadius: [0, 4, 4, 0] }
+          };
+        }),
+        label: {
+          show: true, position: 'right', fontSize: 10,
+          color: c.label,
+          formatter: p => (o.signed && p.value > 0 ? '+' : '') + this._wtFmt(p.value)
+        }
+      }]
+    });
+  },
+
+  // 【功能】渲染四家交易所的汇总卡(品种数 + 合计仓单量 + 单位构成)
+  // 【输入】d: overview 数据 【渲染】#wt-excards 【后端】无
+  _renderWarrantExcards(d) {
+    const box = document.getElementById('wt-excards');
+    box.innerHTML = (d.exchanges || []).map(e => {
+      // 单位构成: 上期所同时有 吨/千克/桶, 不能合并成一个数
+      const mix = (e.unit_mix || []);
+      const main = mix[0] || { unit: e.unit, qty: 0, count: 0 };
+      const sub = mix.slice(1).map(m => `${this._wtFmt(m.qty)} ${m.unit} × ${m.count}只`).join(' · ');
+      // 【关键】0 个品种是**异常**而不是"该所没有品种" —— 典型原因是接口返回
+      // 「总计」占位空壳被当成有效数据(2026-09-17 广期所静默变 0)。必须显式标红,
+      // 否则用户看到"四所"实际只有三所却毫无提示。
+      const noData = !e.product_count;
+      return `<div class="wt-excard"${noData ? ' style="border-color:var(--red)"' : ''}>
+        <div class="n">${e.name} <span style="color:var(--text-muted)">${e.code}</span></div>
+        <div class="v">${this._wtFmt(main.qty)} <span class="u">${main.unit}</span></div>
+        <div class="s">${e.product_count} 个品种${e.brand_support ? ' · 含品牌' : ' · 无品牌维度'}</div>
+        ${noData ? '<div class="s" style="color:var(--red)">⚠ 当日无数据（日报未发布或采集为空壳）</div>' : ''}
+        ${sub ? `<div class="s">另有 ${sub}</div>` : ''}
+      </div>`;
+    }).join('');
+  },
+
+  // 【功能】渲染交易所切换标签 + 当前交易所的品种下拉, 并自动选第一个品种
+  // 【输入】无 (读 this._wtOverview) 【渲染】#wt-extabs #wt-product 【后端】无
+  _renderWarrantTabs() {
+    const d = this._wtOverview;
+    if (!d) return;
+    const exs = d.exchanges || [];
+    if (!this._wtEx || !exs.some(e => e.code === this._wtEx)) {
+      this._wtEx = exs.length ? exs[0].code : null;
+    }
+    document.getElementById('wt-extabs').innerHTML = exs.map(e =>
+      `<button class="wt-tab ${e.code === this._wtEx ? 'on' : ''}"
+        onclick="App.pickWarrantExchange('${e.code}')">${e.name}</button>`).join('');
+    this._fillWarrantProducts();
+  },
+
+  // 【功能】切换交易所(重新填充品种下拉并加载细则)
+  // 【输入】code: 交易所代码 【后端】无
+  pickWarrantExchange(code) {
+    this._wtEx = code;
+    if (this._wtOverview) {
+      document.querySelectorAll('#wt-extabs .wt-tab').forEach(b => {
+        b.classList.toggle('on', b.textContent.indexOf(
+          (this._wtOverview.exchanges.find(e => e.code === code) || {}).name || '@@') >= 0);
+      });
+    }
+    this._fillWarrantProducts();
+  },
+
+  // 【功能】按当前交易所填充品种下拉(按仓单量降序), 并加载第一个品种的细则
+  // 【输入】无 【渲染】#wt-product 【后端】由 loadWarrantProduct 发起
+  _fillWarrantProducts() {
+    const d = this._wtOverview;
+    if (!d) return;
+    const list = (d.products || []).filter(p => p.exchange === this._wtEx)
+      .sort((a, b) => (b.qty || 0) - (a.qty || 0));
+    const sel = document.getElementById('wt-product');
+    sel.innerHTML = list.map(p =>
+      `<option value="${p.code}">${p.name} (${p.code}) · ${this._wtFmt(p.qty)} ${p.unit}</option>`).join('');
+    const ex = (d.exchanges || []).find(e => e.code === this._wtEx) || {};
+    document.getElementById('wt-product-tip').textContent =
+      `${list.length} 个品种 · 单位 ${ex.unit || ''}` +
+      (ex.brand_support ? '' : ' · 该所日报不含品牌');
+    if (list.length) this.loadWarrantProduct();
+  },
+
+  // 【功能】加载并渲染当前选中品种的四个模块
+  // 【输入】无 (读 this._wtEx 与 #wt-product) 【渲染】#wt-kpi #wt-c1..c4 #wt-table
+  // 【后端】GET /api/warrant/product?exchange=&code=
+  async loadWarrantProduct() {
+    const ex = this._wtEx;
+    const code = document.getElementById('wt-product').value;
+    if (!ex || !code) return;
+    try {
+      const r = await fetch(`/api/warrant/product?exchange=${encodeURIComponent(ex)}&code=${encodeURIComponent(code)}`);
+      const d = await r.json();
+      if (!d.ok) { this.toast(d.error || '加载失败', 'error'); return; }
+      this._wtProduct = d;
+      const ovp = ((this._wtOverview || {}).products || [])
+        .find(p => p.exchange === ex && p.code === code) || {};
+      const up = (ovp.change || 0) > 0;
+      const col = (ovp.change || 0) > 0 ? 'var(--red)' : (ovp.change || 0) < 0 ? 'var(--green)' : 'var(--text-muted)';
+      document.getElementById('wt-kpi').innerHTML = `
+        <div><div class="k">当前仓单量</div><div class="v">${this._wtFmt(ovp.qty)} <span style="font-size:0.74rem;color:var(--text-muted)">${ovp.unit || ''}</span></div></div>
+        <div><div class="k">昨日仓单量</div><div class="v">${this._wtFmt(ovp.last_qty)}</div></div>
+        <div><div class="k">当日增减</div><div class="v" style="color:${col}">${(ovp.change > 0 ? '+' : '') + this._wtFmt(ovp.change)}</div></div>
+        <div><div class="k">仓库 / 厂库数</div><div class="v">${(d.warehouses || []).length}</div></div>
+        <div><div class="k">品牌数</div><div class="v">${(d.brands || []).length || '—'}</div></div>`;
+      this._renderWtWarehouses(d);
+      this._renderWtBrands(d);
+      this._renderWtTypes(d);
+      this._renderWtChanges(d);
+      this._renderWtTable(d, ovp);
+    } catch (e) {
+      this.toast('细则加载失败: ' + e, 'error');
+    }
+  },
+
+  // 【功能】模块1: 仓库仓单数量分布(横向条形图, 取前 15 名)
+  // 【输入】d: 品种细则 【渲染】#wt-c1 【后端】无
+  _renderWtWarehouses(d) {
+    const c = this._wtC();
+    const all = d.warehouses || [];
+    document.getElementById('wt-c1-badge').textContent = `${all.length} 个仓库/厂库`;
+    const chart = this._initChart('wt-c1');
+    if (!chart) return;
+    const ws = all.slice(0, 15).reverse();
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: ps => {
+          const p = ps[0]; const w = ws[p.dataIndex] || {};
+          return `<b>${p.name}</b><br/>${w.type || ''}<br/>仓单量 ${this._wtFmt(p.value)} ${d.unit || ''}` +
+                 (w.change ? `<br/>当日 ${w.change > 0 ? '+' : ''}${this._wtFmt(w.change)}` : '');
+        }
+      },
+      grid: { left: 8, right: 78, top: 10, bottom: 6, containLabel: true },
+      xAxis: {
+        type: 'value', axisLabel: { color: c.label, formatter: v => this._wtFmt(v) },
+        splitLine: { lineStyle: { color: c.split } }, axisLine: { lineStyle: { color: c.axis } }
+      },
+      yAxis: {
+        type: 'category', data: ws.map(w => w.name),
+        axisLabel: { color: c.label, fontSize: 11 }, axisLine: { lineStyle: { color: c.axis } },
+        axisTick: { show: false }
+      },
+      series: [{
+        type: 'bar', data: ws.map(w => w.qty || 0), barMaxWidth: 15,
+        itemStyle: {
+          borderRadius: [0, 4, 4, 0],
+          color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+            { offset: 0, color: CHART.brandGlow }, { offset: 1, color: CHART.brand }])
+        },
+        label: { show: true, position: 'right', color: c.label, fontSize: 10, formatter: p => this._wtFmt(p.value) }
+      }]
+    });
+  },
+
+  // 【功能】模块2: 品牌结构(环形图, 前 8 名 + 其他)
+  // 【输入】d: 品种细则 【渲染】#wt-c2 【后端】无
+  // 【关键】大商所/上期所官方日报不含品牌 → 如实提示, 并给出替代结构
+  //   (大商所用「分库结构」, 上期所用「地区结构」), 不臆造品牌数据。
+  _renderWtBrands(d) {
+    const c = this._wtC();
+    const brands = d.brands || [];
+    const badge = document.getElementById('wt-c2-badge');
+    const el = document.getElementById('wt-c2');
+
+    if (!brands.length) {
+      this._wtClear('wt-c2');
+      badge.textContent = d.brand_support ? '该品种无品牌登记' : '该所不公布品牌';
+      const reason = d.brand_support
+        ? '该交易所公布品牌，但此品种的仓单未按品牌登记（如棉花按等级/年度登记）。'
+        : `${d.exchange === 'SHFE' ? '上期所' : d.exchange === 'DCE' ? '大商所' : '该交易所'}仓单日报只公布「地区 / 仓库 / 仓单量 / 增减」，不含品牌维度。`;
+      const altRegions = (d.regions || []), altSubs = (d.subs || []);
+      if (altRegions.length) {
+        el.innerHTML = `<div style="font-size:0.78rem;color:var(--amber);margin-bottom:8px">${reason}下方改用「地区结构」展示。</div>
+          <div id="wt-c2b" style="height:330px"></div>`;
+        const ch = this._initChart('wt-c2b');
+        const rs = altRegions.slice(0, 12);
+        ch.setOption({
+          backgroundColor: 'transparent',
+          tooltip: { trigger: 'item', formatter: p => `${p.name}<br/>${this._wtFmt(p.value)} ${d.unit || ''} (${p.percent}%)` },
+          legend: { bottom: 0, textStyle: { color: c.label }, type: 'scroll' },
+          series: [{
+            type: 'pie', radius: ['42%', '68%'], center: ['50%', '46%'],
+            data: rs.map((r, i) => ({ name: r.name, value: r.qty || 0, itemStyle: { color: [CHART.candy1,CHART.candy2,CHART.candy3,CHART.candy4,'#60a5fa','#2dd4bf','#a78bfa','#818cf8'][i % 8] } })),
+            label: { color: c.label, fontSize: 10, formatter: '{b}\n{d}%' }
+          }]
+        });
+      } else if (altSubs.length) {
+        el.innerHTML = `<div style="font-size:0.78rem;color:var(--amber);margin-bottom:8px">${reason}下方改用「分库结构」展示。</div>
+          <div id="wt-c2b" style="height:330px"></div>`;
+        const ch = this._initChart('wt-c2b');
+        const ss = altSubs.slice(0, 15).reverse();
+        ch.setOption({
+          backgroundColor: 'transparent',
+          tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+          grid: { left: 8, right: 70, top: 10, bottom: 6, containLabel: true },
+          xAxis: { type: 'value', axisLabel: { color: c.label, formatter: v => this._wtFmt(v) }, splitLine: { lineStyle: { color: c.split } }, axisLine: { lineStyle: { color: c.axis } } },
+          yAxis: { type: 'category', data: ss.map(s => s.name), axisLabel: { color: c.label, fontSize: 11 }, axisLine: { lineStyle: { color: c.axis } }, axisTick: { show: false } },
+          series: [{
+            type: 'bar', data: ss.map(s => s.qty || 0), barMaxWidth: 14,
+            itemStyle: { color: '#2dd4bf', borderRadius: [0, 4, 4, 0] },
+            label: { show: true, position: 'right', color: c.label, fontSize: 10, formatter: p => this._wtFmt(p.value) }
+          }]
+        });
+      } else {
+        el.innerHTML = `<div class="wt-empty">${reason}<br>该品种也没有可替代的地区/分库结构数据。</div>`;
+      }
+      return;
+    }
+
+    badge.textContent = `${brands.length} 个品牌`;
+    const chart = this._initChart('wt-c2');
+    if (!chart) return;
+    const top = brands.slice(0, 8);
+    const rest = brands.slice(8);
+    const data = top.map(b => ({ name: b.name, value: b.qty || 0 }));
+    if (rest.length) data.push({ name: `其他 ${rest.length} 个`, value: rest.reduce((s, b) => s + (b.qty || 0), 0) });
+    const palette = [CHART.brand, CHART.candy1, CHART.candy2, CHART.candy3, CHART.candy4, '#2dd4bf', '#60a5fa', '#a78bfa', '#94a3b8'];
+    chart.setOption({
+      backgroundColor: 'transparent',
+      title: {
+        text: `${this._wtFmt(brands.reduce((s, b) => s + (b.qty || 0), 0))} ${d.unit || ''}`,
+        subtext: '品牌合计', left: 'center', top: '38%',
+        textStyle: { color: c.text, fontSize: 15, fontWeight: 600 },
+        subtextStyle: { color: c.label, fontSize: 11 }
+      },
+      tooltip: {
+        trigger: 'item',
+        formatter: p => `<b>${p.name}</b><br/>${this._wtFmt(p.value)} ${d.unit || ''} (${p.percent}%)`
+      },
+      legend: { bottom: 0, textStyle: { color: c.label, fontSize: 11 }, type: 'scroll' },
+      series: [{
+        type: 'pie', radius: ['48%', '70%'], center: ['50%', '48%'],
+        data: data.map((x, i) => ({ ...x, itemStyle: { color: palette[i % palette.length] } })),
+        label: { color: c.label, fontSize: 10, formatter: '{b}\n{d}%' },
+        labelLine: { lineStyle: { color: c.axis } }
+      }]
+    });
+  },
+
+  // 【功能】模块3: 仓库 / 厂库仓单占比(环形图)
+  // 【输入】d: 品种细则 【渲染】#wt-c3 【后端】无
+  _renderWtTypes(d) {
+    const c = this._wtC();
+    const types = d.types || [];
+    document.getElementById('wt-c3-badge').textContent = types.map(t => t.name).join(' / ') || '—';
+    const chart = this._initChart('wt-c3');
+    if (!chart) return;
+    const pal = { '仓库': CHART.candy1, '厂库': CHART.brand, '集团': CHART.candy4 };
+    const total = types.reduce((s, t) => s + (t.qty || 0), 0);
+    chart.setOption({
+      backgroundColor: 'transparent',
+      title: {
+        text: `${types.length} 类`, subtext: `合计 ${this._wtFmt(total)} ${d.unit || ''}`,
+        left: 'center', top: '36%',
+        textStyle: { color: c.text, fontSize: 15, fontWeight: 600 },
+        subtextStyle: { color: c.label, fontSize: 11 }
+      },
+      tooltip: {
+        trigger: 'item',
+        formatter: p => `<b>${p.name}</b><br/>${this._wtFmt(p.value)} ${d.unit || ''} (${p.percent}%)`
+      },
+      legend: { bottom: 0, textStyle: { color: c.label } },
+      series: [{
+        type: 'pie', radius: ['48%', '70%'], center: ['50%', '46%'],
+        data: types.map((t, i) => ({ name: t.name, value: t.qty || 0, itemStyle: { color: pal[t.name] || ['#2dd4bf', '#a78bfa'][i % 2] } })),
+        label: { color: c.label, fontSize: 11, formatter: '{b} {d}%' },
+        labelLine: { lineStyle: { color: c.axis } }
+      }]
+    });
+  },
+
+  // 【功能】模块4: 当日仓单增减结构(横向条形, 红=增 绿=减, 各取前 12)
+  // 【输入】d: 品种细则 【渲染】#wt-c4 【后端】无
+  _renderWtChanges(d) {
+    const c = this._wtC();
+    const ch = d.changes || { up: [], down: [] };
+    const items = [...(ch.up || []), ...(ch.down || [])].sort((a, b) => (b.change || 0) - (a.change || 0));
+    document.getElementById('wt-c4-badge').textContent =
+      `按${ch.dim || '仓库'} · 增 ${(ch.up || []).length} / 减 ${(ch.down || []).length}`;
+    const chart = this._initChart('wt-c4');
+    if (!chart) return;
+    if (!items.length) {
+      this._wtClear('wt-c4');
+      document.getElementById('wt-c4').innerHTML = '<div class="wt-empty">当日该品种所有仓库仓单增减均为 0，无变动结构。</div>';
+      return;
+    }
+    const rs = items.slice().reverse();
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: ps => {
+          const p = ps[0]; const it = rs[p.dataIndex] || {};
+          return `<b>${p.name}</b><br/>当日增减 ${(it.change > 0 ? '+' : '') + this._wtFmt(it.change)} ${d.unit || ''}<br/>当前仓单 ${this._wtFmt(it.qty)}`;
+        }
+      },
+      grid: { left: 8, right: 66, top: 10, bottom: 6, containLabel: true },
+      xAxis: {
+        type: 'value', axisLabel: { color: c.label, formatter: v => this._wtFmt(v) },
+        splitLine: { lineStyle: { color: c.split } }, axisLine: { lineStyle: { color: c.axis } }
+      },
+      yAxis: {
+        type: 'category', data: rs.map(x => x.name),
+        axisLabel: { color: c.label, fontSize: 11 }, axisLine: { lineStyle: { color: c.axis } },
+        axisTick: { show: false }
+      },
+      series: [{
+        type: 'bar', barMaxWidth: 15,
+        data: rs.map(x => ({
+          value: x.change || 0,
+          itemStyle: { color: (x.change || 0) > 0 ? '#ef4444' : '#22c55e', borderRadius: (x.change || 0) > 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] }
+        })),
+        label: {
+          show: true, color: c.label, fontSize: 10,
+          position: 'right',
+          formatter: p => (p.value > 0 ? '+' : '') + this._wtFmt(p.value)
+        }
+      }]
+    });
+  },
+
+  // 【功能】仓库级明细表(可下钻看具体数字; 增减按国内惯例着色)
+  // 【输入】d: 品种细则, ovp: 总览里的该品种汇总 【渲染】#wt-table 【后端】无
+  _renderWtTable(d, ovp) {
+    const ws = d.warehouses || [];
+    document.getElementById('wt-tbl-badge').textContent =
+      `${ws.length} 行 · ${d.unit || ''}`;
+    if (!ws.length) {
+      document.getElementById('wt-table').innerHTML = '<div class="wt-empty">无仓库级数据</div>';
+      return;
+    }
+    const hasRegion = ws.some(w => w.region);
+    document.getElementById('wt-table').innerHTML = `<table>
+      <thead><tr><th>#</th><th>仓库/厂库</th><th>类型</th>${hasRegion ? '<th>地区</th>' : ''}
+      <th style="text-align:right">仓单量</th><th style="text-align:right">当日增减</th><th style="text-align:right">占比</th></tr></thead>
+      <tbody>${ws.map((w, i) => {
+        const tot = ws.reduce((s, x) => s + (x.qty || 0), 0) || 1;
+        const col = (w.change || 0) > 0 ? 'var(--red)' : (w.change || 0) < 0 ? 'var(--green)' : 'var(--text-muted)';
+        return `<tr>
+          <td style="color:var(--text-muted)">${i + 1}</td>
+          <td><b>${w.name || '—'}</b>${w.no ? ` <span style="color:var(--text-muted);font-size:0.72rem">${w.no}</span>` : ''}</td>
+          <td><span class="badge ${w.type === '厂库' ? 'badge-bear' : 'badge-info'}">${w.type || '仓库'}</span></td>
+          ${hasRegion ? `<td>${w.region || '—'}</td>` : ''}
+          <td style="text-align:right">${this._wtFmt(w.qty)}</td>
+          <td style="text-align:right;color:${col}">${w.change ? (w.change > 0 ? '+' : '') + this._wtFmt(w.change) : '0'}</td>
+          <td style="text-align:right;color:var(--text-muted)">${((w.qty || 0) / tot * 100).toFixed(1)}%</td>
+        </tr>`;
+      }).join('')}</tbody></table>`;
+  },
+
+  // ── ③ 仓单历史走势 (2026-09-17 新增) ─────────────────────────────
+  // 【功能】加载仓单历史时序并填充筛选器。
+  // 【输入】无 【渲染】#wt-h-badge #wt-h-ex #wt-h-product 【后端】GET /api/warrant/history
+  // 【数据】this._wtHist = {dates, products, ex_totals}; 品种键 = "交易所|代码"
+  async loadWarrantHistory() {
+    try {
+      const r = await fetch('/api/warrant/history');
+      const d = await r.json();
+      const note = document.getElementById('wt-h-note');
+      if (!d.ok || !(d.dates || []).length || !Object.keys(d.products || {}).length) {
+        this._wtHist = null;
+        if (note) note.textContent = '暂无历史数据（至少采集一天后可用）';
+        return;
+      }
+      this._wtHist = d;
+      // 品种列表按「最新仓单量」降序, 供下拉与默认选中
+      const dates = d.dates;
+      const latest = p => {
+        for (let i = dates.length - 1; i >= 0; i--) {
+          const v = p.qty[dates[i]];
+          if (v != null) return v;
+        }
+        return -1;
+      };
+      this._wtHistProds = Object.entries(d.products)
+        .map(([key, p]) => ({ key, ...p, _latest: latest(p) }))
+        .sort((a, b) => b._latest - a._latest);
+      // 交易所筛选: 四所全部 + 各所(带品种数)
+      const cnt = {};
+      this._wtHistProds.forEach(p => { cnt[p.exchange] = (cnt[p.exchange] || 0) + 1; });
+      const exSel = document.getElementById('wt-h-ex');
+      exSel.innerHTML = `<option value="ALL">四所全部（${this._wtHistProds.length}）</option>` +
+        Object.keys(cnt).map(ex => {
+          const cn = { CZCE: '郑商所', DCE: '大商所', GFEX: '广期所', SHFE: '上期所' }[ex] || ex;
+          return `<option value="${ex}">仅 ${cn}（${cnt[ex]}）</option>`;
+        }).join('');
+      if (!this._wtHistEx) this._wtHistEx = 'ALL';
+      exSel.value = (this._wtHistEx === 'ALL' || cnt[this._wtHistEx]) ? this._wtHistEx : 'ALL';
+      this._wtHistEx = exSel.value;
+      // 【2026-09-21 修复】历史走势与采集日期显式关联:
+      //   badge 带上「截至日期」, note 带上「采集时间」——交易所日报在收盘后才发布,
+      //   早间点「采集最新数据」拿到的仍是上一交易日, 此前不展示采集口径时会被
+      //   误读为"采集了但日期不动"。
+      const lastDate = dates[dates.length - 1];
+      // 【2026-09-21】徽章直接带上新鲜度结论: 用户盯的就是这一行, 只写「截至 09-18」
+      // 会被读成"日期卡住了"; 明确写「已是最新」/「待更新」才不会被误解。
+      const _f = this._wtFreshText(d);
+      document.getElementById('wt-h-badge').textContent =
+        `${dates.length} 个交易日 · 截至 ${lastDate}` +
+        (d.expected ? (d.fresh ? ' · ✓ 已是最新' : ' · ⚠ 待更新') : '');
+      // 四所合计的口径提示: 主单位以外品种(如上期所千克/桶)已排除
+      const excl = Object.entries(d.ex_totals || {})
+        .filter(([, v]) => (v.excluded || 0) > 0)
+        .map(([k, v]) => `${k} 另有 ${v.excluded} 个非${v.unit}品种未计入`);
+      // 逐所最新日期 vs 全局最新: 点名是哪一所拖住了日期(采集失败/日报未发布)
+      const exCn = { CZCE: '郑商所', DCE: '大商所', GFEX: '广期所', SHFE: '上期所' };
+      const lag = ['CZCE', 'DCE', 'GFEX', 'SHFE']
+        .map(ex => [ex, (d.ex_latest || {})[ex]])
+        .filter(([, dl]) => dl !== lastDate)
+        .map(([ex, dl]) => `${exCn[ex] || ex}最新仅到${dl || '无数据'}`);
+      const coll = d.collected_at ? `采集于 ${d.collected_at.replace('T', ' ').slice(0, 16)}` : '';
+      // 【2026-09-21】note 首段改成"数据日期 + 是否已是最新"的结论句, 后面才是口径说明:
+      // 采集时间/口径都是次要信息, 用户要的答案是"这个日期该不该动"。
+      const freshSeg = d.expected
+        ? `${lastDate}${_f.wd ? `（${_f.wd}）` : ''}${d.fresh ? ' ✓ 已是最新' : ` ⚠ ${d.expected} 的日报可能已发布，可点「采集最新数据」`}`
+        : '';
+      const sched = (d.schedule || []).join(' / ');
+      if (note) note.textContent =
+        (freshSeg ? `${freshSeg} · ` : '') + coll + (sched ? ` · 自动采集 ${sched}` : '') +
+        ` · 合计口径：郑=张 / 大=手 / 广=手 / 上=吨` +
+        (excl.length ? `；${excl.join('，')}` : '') +
+        (lag.length ? `；⚠ ${lag.join('、')}` : '');
+      this._fillWarrantHistProducts();
+    } catch (e) {
+      this._wtHist = null;
+      const note = document.getElementById('wt-h-note');
+      if (note) note.textContent = '历史数据加载失败: ' + e;
+    }
+  },
+
+  // 【功能】按交易所筛选填充历史走势的品种下拉, 并渲染三张图
+  _fillWarrantHistProducts() {
+    const d = this._wtHist;
+    if (!d) return;
+    const ex = this._wtHistEx || 'ALL';
+    const list = this._wtHistProds.filter(p => ex === 'ALL' || p.exchange === ex);
+    const sel = document.getElementById('wt-h-product');
+    const cn = { CZCE: '郑', DCE: '大', GFEX: '广', SHFE: '上' };
+    const prev = sel.value;
+    sel.innerHTML = list.map(p =>
+      `<option value="${p.key}">${p.name} (${p.code}) · ${cn[p.exchange] || p.exchange} · ${this._wtFmt(p._latest)} ${p.unit || ''}</option>`).join('');
+    if (prev && list.some(p => p.key === prev)) sel.value = prev;
+    if (list.length) this._renderWarrantHist();
+    else {
+      ['wt-h-prod', 'wt-h-extotal', 'wt-h-wh'].forEach(id => this._wtClear(id));
+      document.getElementById('wt-h-prod').innerHTML = '<div class="wt-empty">该筛选下没有品种</div>';
+    }
+  },
+
+  // 【功能】交易所切换(只换品种列表, 不重新拉数据)
+  _onWarrantHistEx() {
+    this._wtHistEx = document.getElementById('wt-h-ex').value;
+    this._fillWarrantHistProducts();
+  },
+
+  // 【功能】渲染历史走势三图:
+  //   1) 品种仓单走势(上: 数量折线 / 下: 每日增减柱, 红增绿减)
+  //   2) 四所仓单合计走势(每所一条线, 主单位口径)
+  //   3) 仓库仓单走势 TOP 8(选中品种的仓库级多折线)
+  // 【输入】无 (读 this._wtHist 与 #wt-h-product) 【渲染】#wt-h-prod #wt-h-ex #wt-h-wh
+  // 【后端】GET /api/warrant/history?exchange=&code= (仓库级时序)
+  async _renderWarrantHist() {
+    const d = this._wtHist;
+    if (!d) return;
+    const dates = d.dates;
+    const c = this._wtC();
+    const key = document.getElementById('wt-h-product').value;
+    const p = d.products[key];
+    if (!p) return;
+    const align = obj => dates.map(dt => (obj && obj[dt] != null) ? obj[dt] : null);
+
+    // ── 图1: 品种仓单数量 + 每日增减(双网格) ──
+    const chart = this._initChart('wt-h-prod');
+    if (chart) {
+      document.getElementById('wt-h-prod-badge').textContent =
+        `${p.name} · ${p.unit || ''} · ${dates.length} 天`;
+      chart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'cross', label: { backgroundColor: '#6a7985' } },
+          formatter: ps => {
+            const rows = ps.map(q => {
+              const v = q.value;
+              if (q.seriesName === '仓单量')
+                return `${q.marker}仓单量 ${v == null ? '—' : this._wtFmt(v)} ${p.unit || ''}`;
+              const col = v > 0 ? '#ef4444' : v < 0 ? '#22c55e' : c.label;
+              return `${q.marker}<span style="color:${col}">当日 ${v == null ? '—' : (v > 0 ? '+' : '') + this._wtFmt(v)}</span>`;
+            });
+            return `<b>${p.name} (${p.code})</b> · ${ps[0] ? ps[0].axisValue : ''}<br/>` + rows.join('<br/>');
+          }
+        },
+        legend: { top: 0, textStyle: { color: c.label, fontSize: 11 },
+          data: ['仓单量', '每日增减'] },
+        grid: [
+          { left: 8, right: 16, top: 30, height: '52%', containLabel: true },
+          { left: 8, right: 16, top: '72%', bottom: 6, containLabel: true }
+        ],
+        xAxis: [
+          { type: 'category', gridIndex: 0, data: dates, boundaryGap: false,
+            axisLabel: { color: c.label, fontSize: 10 }, axisLine: { lineStyle: { color: c.axis } }, axisTick: { show: false } },
+          { type: 'category', gridIndex: 1, data: dates,
+            axisLabel: { color: c.label, fontSize: 10 }, axisLine: { lineStyle: { color: c.axis } }, axisTick: { show: false } }
+        ],
+        yAxis: [
+          { type: 'value', gridIndex: 0, scale: true,
+            axisLabel: { color: c.label, fontSize: 10, formatter: v => this._wtFmt(v) },
+            splitLine: { lineStyle: { color: c.split } } },
+          { type: 'value', gridIndex: 1,
+            axisLabel: { color: c.label, fontSize: 10, formatter: v => (v > 0 ? '+' : '') + this._wtFmt(v) },
+            splitLine: { show: false } }
+        ],
+        series: [
+          {
+            name: '仓单量', type: 'line', xAxisIndex: 0, yAxisIndex: 0,
+            data: align(p.qty), smooth: true, connectNulls: false,
+            showSymbol: dates.length <= 20, symbolSize: 6,
+            lineStyle: { color: CHART.brand, width: 2.5 },
+            itemStyle: { color: CHART.brand },
+            areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(249,115,22,0.25)' }, { offset: 1, color: 'rgba(249,115,22,0)' }]) }
+          },
+          {
+            name: '每日增减', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
+            data: align(p.change).map(v => ({
+              value: v,
+              itemStyle: { color: v > 0 ? '#ef4444' : v < 0 ? '#22c55e' : c.axis, borderRadius: v > 0 ? [3, 3, 0, 0] : [0, 0, 3, 3] }
+            })),
+            barMaxWidth: 16
+          }
+        ]
+      }, true);
+    }
+
+    // ── 图2: 四所仓单合计走势(主单位口径) ──
+    // 【注意】容器 id 是 wt-h-extotal, 不能与交易所筛选下拉 #wt-h-ex 重名
+    //   (ECharts.init 会清空容器 innerHTML, 撞名会把下拉的 option 全清掉 —— 实测踩过)。
+    const exChart = this._initChart('wt-h-extotal');
+    if (exChart) {
+      const exMeta = { CZCE: ['郑商所', '#f472b6'], DCE: ['大商所', '#38bdf8'],
+                       GFEX: ['广期所', '#a78bfa'], SHFE: ['上期所', '#fbbf24'] };
+      const exs = Object.keys(d.ex_totals || {});
+      exChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis',
+          formatter: ps => `<b>${ps[0] ? ps[0].axisValue : ''}</b><br/>` +
+            ps.map(q => `${q.marker}${q.seriesName} ${q.value == null ? '—' : this._wtFmt(q.value)} ${q.data.unit || ''}`).join('<br/>') },
+        legend: { top: 0, textStyle: { color: c.label, fontSize: 11 } },
+        grid: { left: 8, right: 16, top: 30, bottom: 6, containLabel: true },
+        xAxis: { type: 'category', data: dates, boundaryGap: false,
+          axisLabel: { color: c.label, fontSize: 10 }, axisLine: { lineStyle: { color: c.axis } }, axisTick: { show: false } },
+        yAxis: { type: 'value', scale: true,
+          axisLabel: { color: c.label, fontSize: 10, formatter: v => this._wtFmt(v) },
+          splitLine: { lineStyle: { color: c.split } } },
+        series: exs.map(ex => {
+          const t = d.ex_totals[ex];
+          return {
+            name: exMeta[ex] ? exMeta[ex][0] : ex, type: 'line', smooth: true,
+            connectNulls: false, showSymbol: dates.length <= 20, symbolSize: 5,
+            data: align(t.qty).map(v => ({ value: v, unit: t.unit })),
+            lineStyle: { color: exMeta[ex] ? exMeta[ex][1] : CHART.brand, width: 2 },
+            itemStyle: { color: exMeta[ex] ? exMeta[ex][1] : CHART.brand }
+          };
+        })
+      }, true);
+      const exb = document.getElementById('wt-h-ex-badge');
+      if (exb) exb.textContent = exs.map(ex =>
+        `${(exMeta[ex] || [ex])[0]}=${d.ex_totals[ex].unit}`).join(' / ');
+    }
+
+    // ── 图3: 仓库仓单走势 TOP 8(需按品种另拉仓库级时序) ──
+    const [ex, code] = key.split('|');
+    try {
+      const r = await fetch(`/api/warrant/history?exchange=${encodeURIComponent(ex)}&code=${encodeURIComponent(code)}`);
+      const wd = await r.json();
+      const whChart = this._initChart('wt-h-wh');
+      const whs = (wd.warehouses || []).slice(0, 8);
+      const badge = document.getElementById('wt-h-wh-badge');
+      if (!whs.length) {
+        if (whChart) this._wtClear('wt-h-wh');
+        document.getElementById('wt-h-wh').innerHTML = '<div class="wt-empty">该品种暂无仓库级历史数据</div>';
+        if (badge) badge.textContent = '—';
+        return;
+      }
+      if (badge) badge.textContent = `${(wd.warehouses || []).length} 个仓库 · 显示 8`;
+      if (!whChart) return;
+      const PAL = [CHART.brand, CHART.candy1, CHART.candy2, CHART.candy3, CHART.candy4, '#60a5fa', '#2dd4bf', '#a78bfa'];
+      whChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis',
+          formatter: ps => `<b>${ps[0] ? ps[0].axisValue : ''}</b><br/>` +
+            ps.map(q => `${q.marker}${q.seriesName} ${q.value == null ? '—' : this._wtFmt(q.value)}`).join('<br/>') },
+        legend: { bottom: 0, textStyle: { color: c.label, fontSize: 10 }, type: 'scroll' },
+        grid: { left: 8, right: 16, top: 12, bottom: 46, containLabel: true },
+        xAxis: { type: 'category', data: dates, boundaryGap: false,
+          axisLabel: { color: c.label, fontSize: 10 }, axisLine: { lineStyle: { color: c.axis } }, axisTick: { show: false } },
+        yAxis: { type: 'value', scale: true,
+          axisLabel: { color: c.label, fontSize: 10, formatter: v => this._wtFmt(v) },
+          splitLine: { lineStyle: { color: c.split } } },
+        series: whs.map((w, i) => ({
+          name: w.name, type: 'line', smooth: true, connectNulls: false,
+          showSymbol: dates.length <= 20, symbolSize: 5,
+          data: align(w.qty),
+          lineStyle: { color: PAL[i % PAL.length], width: 2 },
+          itemStyle: { color: PAL[i % PAL.length] }
+        }))
+      }, true);
+    } catch (e) {
+      this._wtClear('wt-h-wh');
+      document.getElementById('wt-h-wh').innerHTML =
+        `<div class="wt-empty" style="color:var(--red)">仓库走势加载失败: ${e}</div>`;
+    }
+  },
+
+  // ================================================================
+  // ── 品种数据库 (2026-09-18 新增, 原「沥青数据库」泛化) ──
+  // 永安系列《<品种>数据库.xlsx》的离线浏览: 品种 → 工作表模块 → 日期/序列。
+  // 状态: _vdVarieties(品种清单) / _vdVslug(当前品种) / _vdMeta(品种元信息) /
+  //       _bmIndex(当前品种模块索引) / _bmCache(模块数据, 键=品种/模块) /
+  //       _bmSlug(当前模块) / _bmData / _bmSel(选中序列 Set) / _bmLoaded(已加载)
+  // (id 前缀沿用首版 bm-* 命名, 现为通用品种模块共用)
+  // ================================================================
+  _bmPalette: ['#8fd2f5', '#f3bbe1', '#a9ecbf', '#ffd8be', '#c7c7ff',
+               '#9fe0e8', '#e8c9f5', '#d4e8a9', '#f5d98f', '#f5b8a9',
+               '#b8d4f5', '#f0a8c8', '#a0d8b8', '#e8c090', '#c0b8f0'],
+
+  async loadBitumen() {
+    // 懒加载入口: 首次拉品种清单建下拉, 之后只重渲染
+    if (this._bmLoaded) return;
+    this._bmLoaded = true;
+    this._bmCache = {};
+    this._bmSel = new Set();
+    const vsel = document.getElementById('bm-variety');
+    try {
+      const r = await fetch('/api/variety/list');
+      const j = await r.json();
+      const vars = (j && j.varieties) || [];
+      vsel.innerHTML = '';
+      vars.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.slug;
+        o.textContent = (v.name || v.slug) + (v.n_sheets ? `（${v.n_sheets} 表）` : '');
+        vsel.appendChild(o);
+      });
+      if (!vars.length) {
+        this.toast('品种数据库未初始化: 请先运行 variety_convert.py 导入品种文件', 'error');
+        return;
+      }
+      this._vdVarieties = vars;
+      await this.onBitumenVarietyChange();
+    } catch (e) {
+      this._bmLoaded = false;
+      this.toast('品种清单加载失败: ' + e, 'error');
+    }
+  },
+
+  async onBitumenVarietyChange() {
+    // 品种切换: 拉该品种的模块索引 → 重建模块下拉 → 默认打开首个有数据的模块
+    const vs = document.getElementById('bm-variety').value;
+    this._vdVslug = vs;
+    this._bmIndex = [];
+    this._bmSlug = null;
+    try {
+      const r = await fetch('/api/variety/' + encodeURIComponent(vs) + '/index');
+      const j = await r.json();
+      if (!j.ok || !(j.sheets || []).length) {
+        document.getElementById('bm-sheet').innerHTML = '';
+        this._bmData = null;
+        document.getElementById('bm-table').innerHTML = '';
+        this._bmClear('bm-chart');
+        this._bmClear('bm-extotal');
+        this.toast(j.error || (vs + ' 未导入'), 'error');
+        return;
+      }
+      this._bmIndex = j.sheets;
+      this._vdMeta = j.meta || {};
+      const badgeV = document.getElementById('bm-variety-badge');
+      if (badgeV) {
+        badgeV.textContent = (this._vdMeta.name || vs)
+          + (this._vdMeta.imported_at ? ` · 导入 ${this._vdMeta.imported_at.slice(0, 10)}` : '');
+      }
+      // 按分组建 optgroup
+      const sel = document.getElementById('bm-sheet');
+      sel.innerHTML = '';
+      const groups = {};
+      j.sheets.forEach(s => { (groups[s.group] = groups[s.group] || []).push(s); });
+      Object.keys(groups).forEach(g => {
+        const og = document.createElement('optgroup'); og.label = g;
+        groups[g].forEach(s => {
+          const o = document.createElement('option');
+          o.value = s.slug;
+          o.textContent = `${s.name}（${s.type === 'table' ? '表格' : s.n_series + ' 序列'}）`;
+          og.appendChild(o);
+        });
+        sel.appendChild(og);
+      });
+      // 默认选第一个有序列数据的模块
+      const first = j.sheets.find(s => s.n_series > 0) || j.sheets[0];
+      sel.value = first.slug;
+      await this.onBitumenSheetChange();
+    } catch (e) {
+      this.toast('品种索引加载失败: ' + e, 'error');
+    }
+  },
+
+  async onBitumenSheetChange() {
+    // 模块切换: 拉数据(带缓存, 键=品种/模块) → 重建序列多选 → 渲染
+    const slug = document.getElementById('bm-sheet').value;
+    const meta = (this._bmIndex || []).find(s => s.slug === slug);
+    if (!meta) return;
+    const vs = this._vdVslug || '';
+    this._bmSlug = slug;
+    const ck = vs + '/' + slug;
+    if (!this._bmCache[ck]) {
+      try {
+        const r = await fetch('/api/variety/' + encodeURIComponent(vs) + '/sheet/' + slug);
+        this._bmCache[ck] = await r.json();
+      } catch (e) { this.toast('数据加载失败: ' + e, 'error'); return; }
+    }
+    this._bmData = this._bmCache[ck];
+    const note = document.getElementById('bm-note');
+    const badge = document.getElementById('bm-meta-badge');
+    badge.textContent = `${(this._vdMeta || {}).name || vs} · ${meta.name} · ${meta.group}`;
+    // 日期输入范围
+    const startIn = document.getElementById('bm-start'), endIn = document.getElementById('bm-end');
+    if (meta.date_min && meta.date_max) {
+      startIn.min = meta.date_min; startIn.max = meta.date_max;
+      endIn.min = meta.date_min; endIn.max = meta.date_max;
+      startIn.value = meta.date_min; endIn.value = meta.date_max;
+      document.getElementById('bm-quick').style.display = '';
+    } else {
+      startIn.value = ''; endIn.value = '';
+    }
+    // 序列多选(表格型模块隐藏)
+    const wrap = document.getElementById('bm-series-wrap');
+    const chartCard = document.getElementById('bm-chart').closest('.card');
+    const tblCard = document.getElementById('bm-table').closest('.card');
+    const sel = document.getElementById('bm-series');
+    sel.innerHTML = '';
+    this._bmSel = new Set();
+    if (this._bmData.type === 'table') {
+      wrap.style.display = 'none';
+      chartCard.style.display = 'none';
+      document.getElementById('bm-quick').style.display = 'none';
+      note.textContent = '原样表格模块(不规则版式, 不做图表)。';
+      this._bmClear('bm-chart');
+      this._bmRenderTable();
+      return;
+    }
+    wrap.style.display = ''; chartCard.style.display = '';
+    const isSeries = this._bmData.type === 'series';
+    const items = isSeries ? this._bmData.series.map(s => s.name) : this._bmData.entities.map(e => e.name);
+    // 默认选前 3 个非空序列/实体
+    let picked = 0;
+    items.forEach(n => {
+      const o = document.createElement('option'); o.value = n; o.textContent = n;
+      if (picked < 3) {
+        const hasData = isSeries
+          ? (this._bmData.series.find(s => s.name === n).points.length > 0)
+          : true;
+        if (hasData) { o.selected = true; this._bmSel.add(n); picked++; }
+      }
+      sel.appendChild(o);
+    });
+    const units = (meta.units || []).join(' / ');
+    const axisKind = isSeries ? (this._bmData.axis === 'month' ? '月度' : this._bmData.axis === 'year' ? '年度' : '日度')
+                              : '周期';
+    note.textContent = `共 ${items.length} 个${isSeries ? '序列' : '实体'}, ${axisKind}数据`
+      + (units ? `, 单位: ${units}` : '')
+      + (meta.date_min ? `, 范围 ${meta.date_min} ~ ${meta.date_max}` : '')
+      + '。序列多选用 Ctrl/Shift; 图表底部缩放条可放大区间。';
+    this._bmRenderChart();
+    this._bmRenderTable();
+  },
+
+  onBitumenRangeChange() { this._bmRenderChart(); this._bmRenderTable(); },
+  onBitumenSeriesChange() {
+    const sel = document.getElementById('bm-series');
+    this._bmSel = new Set(Array.from(sel.selectedOptions).map(o => o.value));
+    this._bmRenderChart(); this._bmRenderTable();
+  },
+
+  setBitumenRange(days) {
+    // 快捷区间: days=0 → 全部; 否则以模块 date_max 往前推
+    const meta = (this._bmIndex || []).find(s => s.slug === this._bmSlug);
+    if (!meta || !meta.date_max) return;
+    const startIn = document.getElementById('bm-start'), endIn = document.getElementById('bm-end');
+    endIn.value = meta.date_max;
+    if (!days) { startIn.value = meta.date_min || ''; }
+    else {
+      const d = new Date(meta.date_max + 'T00:00:00');
+      d.setDate(d.getDate() - days);
+      const iso = d.toISOString().slice(0, 10);
+      startIn.value = iso < (meta.date_min || '') ? meta.date_min : iso;
+    }
+    this.onBitumenRangeChange();
+  },
+
+  _bmInRange(iso) {
+    const s = document.getElementById('bm-start').value;
+    const e = document.getElementById('bm-end').value;
+    if (s && iso < s) return false;
+    if (e && iso > e) return false;
+    return true;
+  },
+
+  _bmRenderChart() {
+    const d = this._bmData;
+    if (!d || d.type === 'table') return;
+    const chart = this._initChart('bm-chart');
+    if (!chart) return;
+    const pick = [...this._bmSel];
+    let series = [], axisCats = null;
+    if (d.type === 'series') {
+      d.series.filter(s => pick.includes(s.name)).forEach((s, i) => {
+        const pts = s.points.filter(p => this._bmInRange(p[0])).map(p => [p[0], p[1]]);
+        series.push({ name: s.name, type: 'line', showSymbol: false, connectNulls: false,
+                      data: pts, lineStyle: { width: 1.6 }, color: this._bmPalette[i % this._bmPalette.length] });
+      });
+    } else {  // entity: 实体×周期
+      const dated = d.axis.every(a => a.date);
+      let axis = d.axis.filter(a => {
+        const iso = a.date || a.label;
+        // 分类轴(周标签)不做日期过滤
+        return a.date ? this._bmInRange(a.date) : true;
+      });
+      if (!dated) axisCats = axis.map(a => a.label);
+      d.entities.filter(e => pick.includes(e.name)).forEach((e, i) => {
+        const pts = axis.map((a, k) => {
+          const v = e.values[d.axis.indexOf(a)];
+          const x = a.date || a.label;
+          return v == null ? [x, null] : [x, v];
+        });
+        series.push({ name: e.name, type: 'line', connectNulls: false,
+                      data: pts, lineStyle: { width: 1.6 },
+                      symbolSize: dated ? 0 : 5, color: this._bmPalette[i % this._bmPalette.length] });
+      });
+    }
+    const axisBase = axisCats
+      ? { type: 'category', data: axisCats, axisLabel: { color: CHART.axis } }
+      : { type: 'time', axisLabel: { color: CHART.axis, hideOverlap: true } };
+    chart.setOption({
+      backgroundColor: 'transparent',
+      textStyle: { color: CHART.axis },
+      tooltip: { trigger: 'axis', confine: true },
+      legend: { type: 'scroll', top: 0, textStyle: { color: CHART.axis } },
+      grid: { left: 56, right: 24, top: 42, bottom: 64 },
+      xAxis: { ...axisBase, axisLine: { lineStyle: { color: CHART.line } },
+               splitLine: { show: false } },
+      yAxis: { type: 'value', scale: true, axisLabel: { color: CHART.axis },
+               splitLine: { lineStyle: { color: CHART.grid } } },
+      dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 8, height: 22 }],
+      series: series,
+    }, true);
+    const meta = (this._bmIndex || []).find(s => s.slug === this._bmSlug);
+    document.getElementById('bm-chart-badge').textContent =
+      `${series.length} 条序列 · ${pick.length} 选中`;
+  },
+
+  _bmRenderTable() {
+    const d = this._bmData;
+    const el = document.getElementById('bm-table');
+    const badge = document.getElementById('bm-tbl-badge');
+    if (!d) { el.innerHTML = ''; return; }
+    const pick = [...this._bmSel];
+    if (d.type === 'table') {
+      badge.textContent = `${d.rows.length} 行`;
+      let html = '<table class="delta-tbl" style="width:100%;min-width:640px"><thead><tr>';
+      d.headers.forEach(h => { html += `<th>${h}</th>`; });
+      html += '</tr></thead><tbody>';
+      d.rows.forEach(r => {
+        html += '<tr>' + r.map(c => `<td>${c}</td>`).join('') + '</tr>';
+      });
+      el.innerHTML = html + '</tbody></table>';
+      return;
+    }
+    // 汇合日期(降序) → 行
+    const rowsBy = {};
+    if (d.type === 'series') {
+      d.series.filter(s => pick.includes(s.name)).forEach(s => {
+        s.points.forEach(p => {
+          if (!this._bmInRange(p[0])) return;
+          (rowsBy[p[0]] = rowsBy[p[0]] || {})[s.name] = p[1];
+        });
+      });
+    } else {
+      d.axis.forEach((a, k) => {
+        if (a.date && !this._bmInRange(a.date)) return;
+        const row = rowsBy[a.date || a.label] = {};
+        d.entities.forEach(e => { if (pick.includes(e.name)) row[e.name] = e.values[k]; });
+      });
+    }
+    const dates = Object.keys(rowsBy).sort().reverse().slice(0, 400);
+    badge.textContent = `${dates.length}${Object.keys(rowsBy).length > 400 ? '+' : ''} 行`;
+    const fmt = v => (v == null ? '—' : (typeof v === 'number' ? (Math.abs(v) >= 1000 ? v.toLocaleString('en-US') : v) : v));
+    let html = '<table class="delta-tbl" style="width:100%;min-width:640px"><thead><tr><th>日期</th>';
+    pick.forEach(n => { html += `<th>${n}</th>`; });
+    html += '</tr></thead><tbody>';
+    if (!dates.length) {
+      html += `<tr><td colspan="${pick.length + 1}" style="text-align:center;color:var(--text-muted)">⚠ 所选区间内无数据, 请调整日期范围</td></tr>`;
+    }
+    dates.forEach(dt => {
+      html += `<tr><td>${dt}</td>` + pick.map(n => `<td>${fmt(rowsBy[dt][n])}</td>`).join('') + '</tr>';
+    });
+    el.innerHTML = html + '</tbody></table>';
+  },
+
+  _bmClear(id) {
+    const c = this._chartInstances[id];
+    if (c) { try { c.clear(); } catch (e) {} }
+  },
+
+  async runMultiCompare() {
+    // ── 【未接 UI 说明 2026-09-29】────────────────────────────────────────
+    // 本函数是「交易回测页」的多策略对比; 该页已于 2026-09-11 整体下线,
+    // 现按用户要求把实现补回为**可调用的代码资产**, 但**不接任何 UI 入口**
+    // (导航无 tab、页面无按钮), 因此日常不会被触发。
+    // 接回 UI 时需一并提供这些宿主元素:
+    //   #trade-variety #trade-start #trade-end  +  .multi-cb(策略勾选, 值=策略代码)
+    //   #risk-enabled #risk-stop #risk-trail / #cost-enabled #cost-comm #cost-slip
+    //   #trading-summary #trading-stats #trading-detail #chart-trading-pnl
+    // 守卫: 缺必需元素(品种/日期/三个输出容器) → 明确提示并退出, 不白屏崩。
+    const _need = ['trade-variety', 'trade-start', 'trade-end',
+                   'trading-summary', 'trading-stats', 'trading-detail'];
+    const _miss = _need.filter(id => !document.getElementById(id));
+    if (_miss.length) {
+      this.toast('多策略对比未接入页面(缺少: ' + _miss.join(', ') + '); 该功能已下线, 需先补 UI 宿主元素', 'error');
+      return;
+    }
+    const v = document.getElementById('trade-variety').value;
+    const startDate = document.getElementById('trade-start').value;
+    const endDate = document.getElementById('trade-end').value;
+    const cbs = document.querySelectorAll('.multi-cb:checked');
+    if (cbs.length === 0) { this.toast('Select at least one strategy','error'); return; }
+    const riskOn = !!document.getElementById('risk-enabled')?.checked;  // 【变量】风控开关(元素缺失时按关闭处理, 防未接 UI 时崩溃)
+    const stopLoss = riskOn ? parseFloat(document.getElementById('risk-stop').value) || 0 : 0;  // 【变量】止损百分比(风控开启时生效)
+    const trailStop = riskOn ? parseFloat(document.getElementById('risk-trail').value) || 0 : 0;  // 【变量】移动止盈百分比(风控开启时生效)
+    const costOn = !!document.getElementById('cost-enabled')?.checked;
+    const commRate = costOn ? (parseFloat(document.getElementById('cost-comm').value) || 0) / 10000 : 0;  // 【变量】手续费率: UI 输入为"万分之", ÷10000 转小数(如 3→0.0003)
+    const slipTick = costOn ? (parseFloat(document.getElementById('cost-slip').value) || 0) : 0;  // 【变量】滑点(每笔交易额外支付的价格 tick 数)
+    const strategies = Array.from(cbs).map(cb => cb.value);  // 【变量】从多策略面板勾选得到的策略代码数组
+    const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'};  // 【变量】策略代码 → 中文显示名(多策略卡片标题与图例)
+    const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#a78bfa','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#a78bfa','bollinger_sent':'#8b5cf6','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#e879f9','atr_sent':'#d946ef'};  // 【变量】策略代码 → 曲线颜色(与卡片左边框色一致)
+    document.getElementById('trading-summary').innerHTML = '<span class="node">Fetching...</span>';
+
+    // Build per-strategy per-date PnL maps for common x-axis
+    const allPnlMaps = {};  // {strategy: {date: pnl_delta}}
+    const allStats = {};
+    const allToday = {};    // {strategy: today_signal|null} — 仅具体品种时非 null
+    const allDatesSet = new Set();
+    const D = {start_date: startDate || "2025-01-01", end_date: endDate || ""};
+
+    for (const s of strategies) {
+      try {
+        let url, body;
+        if (s === 'fixed') { url = '/api/trading/run'; body = JSON.stringify(Object.assign({variety:v||'', horizon:3}, D)); }
+        else if (s === 'trailing') { url = '/api/trading/trailing'; body = JSON.stringify(Object.assign({variety:v||'', threshold:0.2, max_holding:10}, D)); }
+        else if (s === 'donchian') { url = '/api/trading/donchian'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'momentum') { url = '/api/trading/momentum_strat'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'momentum_ad') { url = '/api/trading/momentum_adaptive'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'adaptive_sent') { url = '/api/trading/adaptive_sentiment'; body = JSON.stringify(Object.assign({variety:v||'', horizon:3}, D)); }
+        else if (s === 'contrarian') { url = '/api/trading/contrarian'; body = JSON.stringify(Object.assign({variety:v||'', horizon:3}, D)); }
+        else if (s === 'ma_cross') { url = '/api/trading/ma_cross'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'ma_cross_sent') { url = '/api/trading/ma_cross_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'macd') { url = '/api/trading/macd'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'macd_sent') { url = '/api/trading/macd_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'rsi') { url = '/api/trading/rsi'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'rsi_sent') { url = '/api/trading/rsi_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'bollinger') { url = '/api/trading/bollinger'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'bollinger_sent') { url = '/api/trading/bollinger_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'turtle') { url = '/api/trading/turtle'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'turtle_sent') { url = '/api/trading/turtle_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'atr') { url = '/api/trading/atr'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else if (s === 'atr_sent') { url = '/api/trading/atr_sent'; body = JSON.stringify(Object.assign({variety:v||''}, D)); }
+        else continue;
+
+        const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body});
+        const d = await r.json();
+        allToday[s] = (v ? d.today_signal : null);
+
+        // Build per-date PnL map
+        let pnlMap = {}; let cum = 0;
+        let trades = d.recent_trades || [];
+
+        // Apply risk management via backend (uses real price data).
+        // 成本不在这一层预扣:apply_risk 会对止损单重算 pnl(预扣会被抹掉),
+        // 统一在下方 pnlMap 累计后一次扣减 → 与单卡回测口径一致,避免双重扣减。
+        let riskApplied = false;  // 【变量】风控是否实际应用(apply_risk 会改写被止损单的 pnl/outcome/exit)
+        if (stopLoss > 0 || trailStop > 0) {
+          try {
+            const riskR = await fetch('/api/trading/apply_risk', {  // 【调用函数】后端接口: 对交易明细应用风控(与单卡回测同口径, 先风控后成本)
+              method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({variety: v||this._defaultCode(), trades, stop_loss: stopLoss, trail_stop: trailStop})
+            });
+            const riskD = await riskR.json();
+            if (riskD.trades) { trades = riskD.trades; riskApplied = true; }
+          } catch(e) {}
+        }
+        // `recent_trades` format: each trade has {entry, exit, pnl}
+        trades.forEach(t => {
+          const dt = t.entry || t.exit || '';
+          if (dt) { allDatesSet.add(dt); pnlMap[dt] = (pnlMap[dt]||0) + (t.pnl||0); }
+        });
+        // `curves` format: has `dates` array and `curves.{key}` array
+        // 子策略 prefer 口径(与单卡回测一致): 自适应类策略优先取与自身同名的子曲线
+        // (adaptive_sent→adaptive, contrarian→contrarian, momentum_ad→adaptive),
+        // 因为后端返回的 curves 里子键顺序不固定, 若不 prefer 可能取到 consensus 顶替同名子策略。
+        if (Object.keys(pnlMap).length === 0 && d.curves && d.dates) {
+          const prefer = s === 'adaptive_sent' ? 'adaptive' :
+                         s === 'contrarian' ? 'contrarian' :
+                         s === 'momentum_ad' ? 'adaptive' : null;
+          const key = prefer && d.curves[prefer] ? prefer :
+                      Object.keys(d.curves).find(k => k !== 'price' && k !== 'momentum');
+          if (key && d.curves[key] && d.dates) {
+            const curve = d.curves[key]; const dates = d.dates;
+            let prev = 0;
+            for (let i = 0; i < dates.length; i++) {
+              const delta = curve[i] - prev; prev = curve[i];
+              if (delta !== 0) { pnlMap[dates[i]] = delta; allDatesSet.add(dates[i]); }
+            }
+          }
+        }
+        if (Object.keys(pnlMap).length === 0 && d.curves && !d.dates) {
+          const key = Object.keys(d.curves).find(k => k !== 'momentum');
+          if (key && d.curves[key]) {
+            const curve = d.curves[key]; let prev = 0;
+            curve.forEach((val, i) => {
+              const delta = val - prev; prev = val;
+              if (delta !== 0) { const fakeDt = 'd' + i; pnlMap[fakeDt] = delta; allDatesSet.add(fakeDt); }
+            });
+          }
+        }
+        // Apply costs to pnlMap entries
+        // 成本扣减: 注意这里是在"累计成 pnlMap 后"对整个 Map 的每个日期统一减一次 costPerTrade,
+        // 而不是逐笔减 —— 因为风控(apply_risk)改写 pnl 会抹掉预扣成本,
+        // 所以先让风控跑完, 再一次性扣成本, 与单卡回测先风控后成本的顺序等价。
+        if (costOn && commRate > 0) {
+          const costPerTrade = (commRate * 2) + (slipTick * 0.02);  // 【变量】单笔往返交易成本(%) = 手续费×2 + 滑点×0.02, 与单卡回测 cpt 同口径
+          for (const d of Object.keys(pnlMap)) {
+            pnlMap[d] = (pnlMap[d] || 0) - costPerTrade;
+          }
+        }
+
+        allPnlMaps[s] = pnlMap;
+        // Extract stats from API response
+        let stTrades = d.total_trades ?? d.adaptive?.trades ?? d.contrarian?.trades ?? d.consensus?.trades ?? d.stats?.weighted?.trades ?? d.hybrid?.trades ?? trades.length;
+        let stWR = d.win_rate ?? d.adaptive?.win_rate ?? d.contrarian?.win_rate ?? d.consensus?.win_rate ?? d.stats?.weighted?.win_rate ?? d.hybrid?.win_rate ?? 0;
+        let stBE = d.breakeven_count ?? d.adaptive?.breakeven_count ?? 0;  // 【变量】打平笔数(后端统计,风控重算后覆盖)
+        // 风控开启时:笔数/胜率必须从"风控重算后的 trades"重新统计,与 total_pnl 同口径。
+        // 否则会出现"胜率100%(原始 outcome) 但收益 -0.9%(风控重算后 pnl)"的矛盾展示
+        // (worklog 2026-08-31 红枣模拟案例)。outcome 已由 apply_risk 同步更新。
+        if (riskApplied && trades.length > 0) {
+          stTrades = trades.length;
+          // 胜率排除打平: 盈利/(盈利+亏损)。打平(breakeven)不计入分子也不计入分母,
+          // 避免"胜率0%但收益0.00%"的矛盾展示(worklog/2026-09-01-纯碱全打平场景)。
+          const stWins = trades.filter(t => t.outcome === 'win').length;   // 【变量】盈利笔数
+          const stLosses = trades.filter(t => t.outcome === 'loss').length;  // 【变量】亏损笔数
+          stBE = trades.filter(t => t.outcome === 'breakeven').length;  // 【变量】打平笔数
+          stWR = (stWins + stLosses) > 0 ? stWins / (stWins + stLosses) : 0;
+        }
+        // Extract advanced metrics
+        let stAdv = d.advanced_metrics ?? d.adaptive?.advanced_metrics ?? d.contrarian?.advanced_metrics ?? d.consensus?.advanced_metrics ?? d.stats?.weighted?.advanced_metrics ?? d.hybrid?.advanced_metrics ?? null;
+        let totalPnl = 0;
+        for (const v of Object.values(pnlMap||{})) { totalPnl += (v||0); }
+        const stopped = stopLoss||trailStop ? trades.filter(t=>t.stopped_out).length : 0;
+        allStats[s] = {trades: stTrades, win_rate: stWR, breakeven: stBE, total_pnl: parseFloat(totalPnl.toFixed(2)), stopped: stopped, advanced: stAdv};
+        const loaded = Object.keys(allPnlMaps).length;
+        document.getElementById('trading-summary').innerHTML =
+          `<span class="node">Loaded ${loaded}/${strategies.length}...</span>`;
+      } catch(e) { allStats[s] = {error: e.message}; }
+    }
+
+    document.getElementById('trading-stats').innerHTML = `
+      <div class="card" style="grid-column:1/-1;background:var(--bg-input);padding:12px 16px;font-size:0.82rem;color:var(--text-secondary);border-left:3px solid var(--amber)">
+        <b>💡 为什么交易次数少？</b> 情绪策略因情绪数据稀疏(29个数据点)且阈值过滤严苛(|score|>0.2)；动量策略使用每日价格信号更频繁。在更长回测区间中交易数会增加。
+      </div>
+      ` + strategies.map(s => {
+      const st = allStats[s]||{};
+      const pnl = (st.total_pnl||0);
+      const noTrades = !st.trades;   // 0 笔交易 → 无数据,避免误导性「0.0%」
+      // 胜率展示: 全打平(有效胜负=0)时显示 "—" 而非误导性 0%; 打平笔数单独标注
+      const effN = (st.trades||0) - (st.breakeven||0);  // 【变量】有效胜负样本数(打平不计入)
+      const wrText = (st.trades && effN <= 0) ? '—' : ((st.win_rate||0)*100).toFixed(0);  // 【变量】胜率文本(全打平→无有效胜负)
+      const beText = (st.breakeven||0) ? ` | 打平 ${st.breakeven} 笔` : '';  // 【变量】打平笔数标注
+      const adv = st.advanced || {};
+      const sharpeColor = (adv.sharpe_ratio||0) >= 1 ? 'var(--green)' : (adv.sharpe_ratio||0) >= 0 ? 'var(--amber)' : 'var(--red)';
+      const pf = adv.profit_factor != null ? adv.profit_factor : '—';
+      const ts = allToday[s] || null;
+      const todayLine = ts ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">今日:<b style="color:${ts.action==='buy'?'var(--green)':ts.action==='sell'?'var(--red)':'var(--text-muted)'}">${ts.action==='buy'?'买入':ts.action==='sell'?'卖出':'不动'}</b> @ ${ts.date}${ts.strength_pct!=null?' 强度 '+this.fmtStrengthPct(ts):''}</div>` : '';
+      return `<div class="card" style="border-left:3px solid ${colors[s]}">
+        <h3>${names[s]}</h3>
+        ${noTrades ? `<div style="font-size:1.6rem;font-weight:700;color:var(--text-muted)">无数据</div>`
+                   : `<div style="font-size:1.6rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>0?'+':''}${pnl.toFixed(1)}%</div>`}
+        <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px">
+          ${st.trades||0}笔 | 胜率 ${wrText}%${beText} | 夏普 <span style="color:${sharpeColor}">${adv.sharpe_ratio||'—'}</span>
+        </div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">
+          盈亏比${pf} | 回撤${adv.max_drawdown_pct!=null?adv.max_drawdown_pct+'%':'—'}
+        </div>
+        ${todayLine}
+      </div>`;
+    }).join('');
+
+    document.getElementById('trading-detail').innerHTML =
+      `<div style="color:var(--text-muted);padding:12px">${strategies.length} strategies loaded. Note: different strategies trade on different dates, curves may differ in length.</div>`;
+
+    // Fetch price data for common date grid (only for specific variety)
+    let commonDates = [];  // 【变量】多策略曲线对齐的公共日期轴(有价格数据时用交易日, 否则回退到交易日期集合)
+    let priceCurve = [];  // 【变量】品种价格基准曲线(相对窗口起始价涨跌%, 虚线绘制在次坐标轴)
+    let marketReturn = 0;  // 【变量】市场买入持有收益(窗口内价格末点涨幅%), 用于与各策略收益对比
+    const priceVariety = v && v.trim() ? v : this._defaultCode();  // 【品种池】默认基准品种随下拉首项(原 RB 已出池)
+    try {
+      // 基准必须与策略用同一窗口: 取数天数按所选区间跨度动态计算(覆盖区间+30天缓冲, 上限730天)。
+      // 旧代码写死 days=365 且 base 钉在「整个取数窗口第一天」→ 买入持有收益恒等于「近365日涨幅」,
+      // 调整区间(改 startDate)时数值不变, 与随窗口变化的策略曲线脱节。
+      let fetchDays = 365;
+      const s0 = startDate || '';
+      const e0 = endDate || new Date().toISOString().slice(0, 10);  // 【变量】endDate 为空时按今天估算取数跨度
+      if (s0) {
+        const span = Math.round((new Date(e0) - new Date(s0)) / 86400000);  // 【变量】区间跨度(天)
+        if (span > 0) fetchDays = Math.min(730, span + 30);  // 【变量】取数天数: 覆盖所选区间 + 30 天缓冲, 上限 730(接口上限)
+      }
+      const pr = await fetch('/api/price/' + priceVariety + '?days=' + fetchDays);  // 【调用函数】后端接口: 拉取市场基准品种价格(按所选区间, 计算买入持有收益)
+      const pd = await pr.json();
+      const prices = pd.prices || pd;
+      if (prices.length > 1) {
+        let base = prices[0].close;  // 【变量】买入持有锚点: 窗口内第一条价格(而非整个取数窗口第一条), 随所选区间变化
+        prices.forEach(p => {
+          const d = p.date;
+          if (d >= startDate && d <= endDate) {
+            if (commonDates.length === 0) base = p.close;  // 区间内首条 → 作为基准锚点
+            commonDates.push(d);
+            priceCurve.push(((p.close - base) / base * 100).toFixed(1));
+          }
+        });
+        marketReturn = parseFloat(priceCurve[priceCurve.length-1]) || 0;
+      }
+    } catch(e) {}
+    // Fallback: use collected trade dates
+    if (commonDates.length === 0) {
+      commonDates = [...allDatesSet].sort();
+    }
+
+    // Build aligned curves: forward-fill cumulative PnL across common dates
+    const alignedCurves = {};
+    for (const s of strategies) {
+      const pnlMap = allPnlMaps[s] || {};
+      let cum = 0; const curve = [];
+      for (const d of commonDates) {
+        if (pnlMap[d]) cum += pnlMap[d];
+        curve.push(cum.toFixed(2));
+      }
+      alignedCurves[s] = curve;
+      allStats[s].total_pnl = parseFloat(cum.toFixed(2));
+    }
+
+    // Chart — 多策略对比曲线(每条策略一条累计PnL线, 叠加品种价格基准)
+    // 同样先 dispose 旧实例再 init, 避免上一张单卡图表残留。
+    const el = document.getElementById('chart-trading-pnl');
+    if (el) {
+      el.style.display = 'block'; el.style.height = '350px';
+      if (this._chartInstances['chart-trading-pnl']) {
+        try { this._chartInstances['chart-trading-pnl'].dispose(); } catch(e) {}
+      }
+      const chart = echarts.init(el);  // 【调用函数】ECharts: 手动创建多策略对比曲线图(此路径绕开 _initChart, 自行登记实例)
+      this._chartInstances['chart-trading-pnl'] = chart;
+      const seriesData = strategies.map(s => ({
+        name:names[s], type:'line', data:alignedCurves[s]||[], smooth:true, showSymbol:false,
+        lineStyle:{color:colors[s],width:3},
+      }));
+      if (priceCurve.length > 0) {
+        seriesData.push({
+          name:'品种价格', type:'line', data:priceCurve.map(Number), smooth:true, showSymbol:false,
+          lineStyle:{color:'#888',width:1,type:'dashed'}, yAxisIndex:1,
+        });
+      }
+      chart.setOption({
+        title:{text: v ? (v + ' Strategy Comparison') : 'Multi-Strategy PnL', left:'center', textStyle:{color:'#888',fontSize:12}},
+        tooltip:{trigger:'axis'},
+        legend:{data:[...strategies.map(s=>names[s]),'品种价格'].filter(Boolean),bottom:0,textStyle:{color:'#888',fontSize:9}},
+        grid:{left:60,right:70,top:40,bottom:35},
+        xAxis:{type:'category', data:commonDates, axisLabel:{show:false}},
+        yAxis:[
+          {type:'value',axisLabel:{formatter:v=>v+'%'}},
+          {type:'value',axisLabel:{formatter:v=>v+'%'},splitLine:{show:false}}
+        ],
+        series: seriesData
+      }, true);
+      chart.resize();
+    }
+
+    // Update summary with aligned values + market comparison
+    document.getElementById('trading-summary').innerHTML =
+      (marketReturn !== 0 ? `<span style=\"display:inline-block;margin:4px 12px 4px 0;padding:6px 12px;border-radius:6px;background:var(--bg-input);border-left:3px solid #888\"><b>市场(买入持有)</b> <span style=\"margin-left:4px;font-size:1.1rem;font-weight:700;color:${marketReturn>=0?'var(--green)':'var(--red)'}\">${marketReturn>0?'+':''}${marketReturn.toFixed(1)}%</span></span>` : '') +
+      strategies.map(s => {
+        const st = allStats[s]||{};
+        const costAdj = costOn ? (st.trades||0) * ((commRate||0)*2 + (slipTick||0)*0.02) : 0;
+        const pnl = (st.total_pnl||0) - costAdj; const vsMkt = pnl - marketReturn;
+        const ts = allToday[s] || null;
+        const todayChip = ts ? `<span style=\"font-size:0.72rem;color:${ts.action==='buy'?'var(--green)':ts.action==='sell'?'var(--red)':'var(--text-muted)'}\">今日:${ts.action==='buy'?'买入':ts.action==='sell'?'卖出':'不动'}${ts.strength_pct!=null?' '+Math.round(ts.strength_pct*100)+'%':''}</span>` : '';
+        const noTrades = !st.trades;
+        return `<span style=\"display:inline-block;margin:4px 12px 4px 0;padding:6px 12px;border-radius:6px;background:var(--bg-input);border-left:3px solid ${colors[s]}\"><b style=\"color:${colors[s]}\">${names[s]}</b> ${noTrades ? `<span style=\"font-size:1.05rem;font-weight:700;color:var(--text-muted)\">无数据</span>` : `<span style=\"font-size:1.05rem;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}\">${pnl>0?'+':''}${pnl.toFixed(1)}%</span> <span style=\"font-size:0.72rem;color:${vsMkt>=0?'var(--green)':'var(--red)'}\">vs市场${vsMkt>0?'+':''}${vsMkt.toFixed(1)}%</span>`} <span style=\"font-size:0.72rem;color:var(--text-muted)\">${st.trades||0}笔/${((st.win_rate||0)*100).toFixed(0)}%</span> ${todayChip}</span>`;
+      }).join('');
+  },
+
+  // 【功能】情绪强度条渲染(2026-09-29 随 runMultiCompare 一并补回):
+  //   把 today_signal.strength_pct(0~1) 画成"小色条 + 百分比"; buy=红? 不 —— 沿用本项目
+  //   涨跌语义: buy→var(--green) 是原交易页口径(该页为西方涨跌色), 现按国内语义校正为
+  //   buy→var(--red) / sell→var(--green), 与量化页一致。
+  fmtStrengthPct(ts) {
+    if (!ts || ts.strength_pct == null) return "";
+    const pct = Math.round((ts.strength_pct || 0) * 100);
+    const c = ts.action === 'buy' ? 'var(--red)' : ts.action === 'sell' ? 'var(--green)' : 'var(--text-muted)';
+    return "<span style='display:inline-flex;align-items:center;gap:4px;vertical-align:middle'>" +
+      "<span style='width:36px;height:6px;border-radius:3px;background:rgba(127,127,127,.25);overflow:hidden;display:inline-block;vertical-align:middle'>" +
+      "<span style='display:block;height:100%;width:" + pct + "%;background:" + c + ";border-radius:3px'></span></span>" +
+      "<b style='color:" + c + ";font-size:0.72rem'>" + pct + "%</b></span>";
+  },
+
+  // (系统运维页已于 2026-09-08 删除: loadSystemTab/loadSchedulerStatus/schedulerControl/
+  //  loadDbStats/ackAlert/loadAlerts 随之移除, 备份见 backup/web_template_pre_tab_merge_2026-09-08.html;
+  //  后端 /api/scheduler/* 与 /api/db/* 接口保留, 定时调度仍由 scheduler.py 后台运行)
+
+};
+
+// Diagnostic: test ECharts loading
+// 启动引导: DOM 就绪后先诊断两个外部库是否加载成功(失败则页顶红色警告条),
+// 一切正常就调用 App.init() 完成页面初始化。
+// 【2026-09-24 局域网登录】遮罩控制 + 登录流程
+function showLogin() { const o = document.getElementById('login-overlay'); if (o) o.style.display = 'flex'; }
+function hideLogin() { const o = document.getElementById('login-overlay'); if (o) o.style.display = 'none'; }
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/auth/status');
+    if (r.status === 401) { showLogin(); }
+    else {
+      hideLogin();
+      // 【2026-09-24 改密】已登录才显示改密码入口
+      const b = document.getElementById('change-pw-btn');
+      if (b) b.style.display = 'inline-block';
+    }
+  } catch (e) { showLogin(); }
+}
+function showPwModal() {
+  const o = document.getElementById('pw-overlay'); if (!o) return;
+  document.getElementById('pw-old').value = '';
+  document.getElementById('pw-new').value = '';
+  document.getElementById('pw-new2').value = '';
+  const e = document.getElementById('pw-err'), k = document.getElementById('pw-ok');
+  if (e) e.style.display = 'none'; if (k) k.style.display = 'none';
+  o.style.display = 'flex';
+  document.getElementById('pw-old').focus();
+}
+function hidePwModal() { const o = document.getElementById('pw-overlay'); if (o) o.style.display = 'none'; }
+async function submitPwChange() {
+  const oldPw = document.getElementById('pw-old').value;
+  const newPw = document.getElementById('pw-new').value;
+  const newPw2 = document.getElementById('pw-new2').value;
+  const err = document.getElementById('pw-err'), ok = document.getElementById('pw-ok');
+  if (ok) ok.style.display = 'none';
+  if (!oldPw || !newPw || !newPw2) { err.textContent = '请填写完整'; err.style.display = 'block'; return; }
+  if (newPw !== newPw2) { err.textContent = '两次输入的新密码不一致'; err.style.display = 'block'; return; }
+  if (newPw.length < 8) { err.textContent = '新密码至少 8 位'; err.style.display = 'block'; return; }
+  try {
+    const r = await fetch('/api/auth/change-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_password: oldPw, new_password: newPw }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      err.style.display = 'none';
+      ok.textContent = '✅ 密码已修改';
+      ok.style.display = 'block';
+      setTimeout(hidePwModal, 1200);
+    } else {
+      err.textContent = (d && d.error) || '修改失败';
+      err.style.display = 'block';
+    }
+  } catch (e) { err.textContent = '无法连接服务'; err.style.display = 'block'; }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('login-btn');
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      const u = document.getElementById('login-user').value.trim();
+      const p = document.getElementById('login-pass').value;
+      const err = document.getElementById('login-err');
+      if (!u || !p) { err.textContent = '请输入用户名和密码'; err.style.display = 'block'; return; }
+      try {
+        const r = await fetch('/api/auth/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u, password: p }),
+        });
+        if (r.ok) { location.reload(); }
+        else {
+          const d = await r.json().catch(() => ({}));
+          err.textContent = (d && d.error) || '登录失败, 请检查凭据';
+          err.style.display = 'block';
+        }
+      } catch (e) { err.textContent = '无法连接服务'; err.style.display = 'block'; }
+    });
+  }
+  if (typeof echarts === 'undefined') {
+    document.body.insertAdjacentHTML('afterbegin', '<div style=\"background:red;color:white;padding:10px;text-align:center;position:fixed;top:0;z-index:9999;width:100%\">ERROR: ECharts library failed to load. Charts will not render.</div>');
+  } else {
+    console.log('ECharts loaded OK, version:', echarts.version);
+  }
+  if (typeof marked === 'undefined') {
+    document.body.insertAdjacentHTML('afterbegin', '<div style=\"background:orange;color:white;padding:10px;text-align:center;position:fixed;top:40px;z-index:9999;width:100%\">WARNING: marked.js failed to load.</div>');
+  }
+  checkAuth();  // 【2026-09-24 局域网登录】未登录弹遮罩
+  // 【2026-09-24 改密】入口按钮与弹窗绑定
+  const pwBtn = document.getElementById('change-pw-btn');
+  if (pwBtn) pwBtn.addEventListener('click', showPwModal);
+  const pwCancel = document.getElementById('pw-cancel');
+  if (pwCancel) pwCancel.addEventListener('click', hidePwModal);
+  const pwSubmit = document.getElementById('pw-submit');
+  if (pwSubmit) pwSubmit.addEventListener('click', submitPwChange);
+  App.init();
+});
+
+/* ============================================================
+   移动端增强 (2026-09-11)
+   ------------------------------------------------------------
+   纯前端增强, 桌面端行为不变; 与后端无耦合。
+     【功能1】宽表自动包一层 .table-scroll 容器 → 手机上可横向滑动查看,
+              不会把卡片撑破; ≥6 列的表格在窄屏下给最小宽度, 避免列被压扁。
+     【功能2】窄屏下切换标签页自动回到页首(手机端翻页后停留位置不合理)。
+     【功能3】屏幕旋转/尺寸变化后重扫表格并重绘所有 ECharts。
+     【功能4】给 <html> 打 is-mobile 标记, 便于后续按设备做样式微调。
+   【注意】导出 PDF/图片走的是 _buildViewsExport 自建 HTML, 不读 DOM,
+           因此这里包裹表格不会影响导出排版。
+   ============================================================ */
+(function () {
+  const MOBILE_MAX = 768;  // 【变量】手机断点, 与 CSS @media (max-width:768px) 保持一致
+  const isMobile = () => window.innerWidth <= MOBILE_MAX;
+
+  // 【功能】把表格包进横向滚动容器(.table-scroll); 已在滚动容器内的跳过
+  // 【输入】t: <table> 元素
+  function wrapTable(t) {
+    const p = t.parentElement;
+    if (!p) return;
+    if (p.classList && p.classList.contains('table-scroll')) return;
+    const st = (p.getAttribute && p.getAttribute('style')) || '';
+    if (/overflow-x\s*:\s*(auto|scroll)/i.test(st)) return;  // 已有内联横向滚动的父容器, 不重复包
+    const wrap = document.createElement('div');
+    wrap.className = 'table-scroll';
+    p.insertBefore(wrap, t);
+    wrap.appendChild(t);
+  }
+
+  // 【功能】窄屏 + 宽表(≥6列)时设最小宽度, 保证列可读; 其余情况清除
+  function applyMinWidth(t) {
+    const n = parseInt(t.dataset.cols || '0', 10);
+    if (!n) return;
+    t.style.minWidth = (isMobile() && n >= 6) ? Math.min(n * 92, 1000) + 'px' : '';
+  }
+
+  // 【功能】扫描指定根节点下的所有表格: 记录列数 → 包容器 → 设最小宽度
+  function scan(root) {
+    const list = root && root.querySelectorAll ? root.querySelectorAll('table') : [];
+    list.forEach(t => {
+      if (!t.dataset.cols) {
+        const th = t.querySelectorAll('thead th').length;
+        const n = th || (t.rows[0] ? t.rows[0].cells.length : 0);
+        if (n) t.dataset.cols = String(n);
+      }
+      wrapTable(t);
+      applyMinWidth(t);
+    });
+  }
+
+  // 【功能】全量重扫(窗口尺寸变化时用, 因为最小宽度依赖当前视口)
+  function rescanAll() {
+    document.querySelectorAll('table').forEach(t => { wrapTable(t); applyMinWidth(t); });
+  }
+
+  // 【功能】监听 DOM 变化: 页面大量表格由 JS 动态注入, 注入后自动包裹
+  // 【实现】requestAnimationFrame 合并高频变更, 只扫新增子树, 避免全量遍历
+  let queued = false;
+  const dirty = [];
+  const observer = new MutationObserver(muts => {
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType === 1) dirty.push(n);
+      }
+    }
+    if (queued || !dirty.length) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      while (dirty.length) {
+        const n = dirty.pop();
+        if (n.tagName === 'TABLE') { wrapTable(n); applyMinWidth(n); if (!n.dataset.cols) { const th = n.querySelectorAll('thead th').length; const c = th || (n.rows[0] ? n.rows[0].cells.length : 0); if (c) n.dataset.cols = String(c); } }
+        else scan(n);
+      }
+    });
+  });
+
+  // 【功能】窄屏下点导航切页后回到页首(桌面端不动, 避免打断滚轮阅读)
+  function bindScrollTop() {
+    const nav = document.getElementById('nav');
+    if (!nav) return;
+    nav.addEventListener('click', () => {
+      if (!isMobile()) return;
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { window.scrollTo(0, 0); }
+    });
+  }
+
+  // 【功能】屏幕旋转/尺寸变化: 重扫表格 + 重绘 ECharts(等旋转动画结束再量尺寸)
+  function bindViewport() {
+    let t = null;
+    const onResize = () => {
+      document.documentElement.classList.toggle('is-mobile', isMobile());
+      clearTimeout(t);
+      t = setTimeout(() => { rescanAll(); }, 220);
+    };
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', () => {
+      setTimeout(() => {
+        rescanAll();
+        try { if (window.App && App._resizeAllCharts) App._resizeAllCharts(); } catch (e) {}
+      }, 380);
+    });
+  }
+
+  // 【功能】启动: DOM 就绪后首扫 + 稍后再补扫一次(等待 App.init 的异步渲染完成)
+  function boot() {
+    document.documentElement.classList.toggle('is-mobile', isMobile());
+    scan(document);
+    bindScrollTop();
+    bindViewport();
+    try { observer.observe(document.body, { childList: true, subtree: true }); } catch (e) {}
+    setTimeout(rescanAll, 1500);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(boot, 0));
+  } else {
+    setTimeout(boot, 0);
+  }
+})();

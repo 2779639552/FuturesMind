@@ -1,0 +1,6 @@
+=== light ===
+h1={'size': '56px', 'ls': '-1.96px'}
+body=17px
+横向溢出=False
+emoji=无
+字号分布: 12pxx33, 14pxx20, 15pxx11, 13pxx10, 44pxx5, 19pxx4, 32pxx3, 17pxx3, 21pxx1

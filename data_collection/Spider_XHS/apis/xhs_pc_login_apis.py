@@ -18,6 +18,8 @@ class XHSLoginApi:
         self.base_url = "https://edith.xiaohongshu.com"
         self.as_url = "https://as.xiaohongshu.com"
         self.home_url = 'https://www.xiaohongshu.com/explore'
+        # 【变量】最近一次换取会话失败的原因(供调用方判定"假成功")
+        self.last_login_error = ''
 
     @staticmethod
     def _get_sec_headers():
@@ -166,25 +168,56 @@ class XHSLoginApi:
         success, msg = status_map.get(status, (False, f'未知状态: {status}'))
         return success, msg, cookies
 
-    def _login_by_qrcode_status(self, qr_id, code, cookies):
+    def _login_by_qrcode_status(self, qr_id, code, cookies, retries=3):
+        """扫码确认后换取 web_session。
+
+        ⚠️【坑】小红书被风控时会返回 **HTTP 471**,而响应体**伪装成功**
+        (`{"success":true,"msg":"成功","data":{}}`)。只解析 JSON 不看状态码的实现,
+        会把"被拦"读成"成功" → 静默存下一份没有 `web_session` 的空 cookie,
+        外在表现为「扫码提示成功,但一采集就说未登录」,极易被误判成引擎接口漂移。
+        471 属**临时**拦截(实测冷却后自行恢复),故此处按状态码判定 + 退避重试。
+        """
         api = '/api/sns/web/v1/login/qrcode/status'
         params = {"qr_id": qr_id, "code": code}
         splice_api = splice_str(api, params)
+        self.last_login_error = ''
 
-        headers, _ = generate_headers(cookies['a1'], splice_api, method='GET')
-        resp = requests.get(
-            self.base_url + splice_api,
-            headers=headers, cookies=cookies,
-            timeout=REQUEST_TIMEOUT
-        )
-        for key, value in resp.cookies.items():
-            cookies[key] = value
+        for attempt in range(1, retries + 1):
+            headers, _ = generate_headers(cookies['a1'], splice_api, method='GET')
+            resp = requests.get(
+                self.base_url + splice_api,
+                headers=headers, cookies=cookies,
+                timeout=REQUEST_TIMEOUT
+            )
+            for key, value in resp.cookies.items():
+                cookies[key] = value
 
-        res = resp.json()
-        if res.get('success') and 'login_info' in res.get('data', {}):
-            login_info = res['data']['login_info']
+            if resp.status_code != 200:
+                wait = 20 * attempt  # 471 常为短时风控,退避后多半自行恢复
+                self.last_login_error = (
+                    f'HTTP {resp.status_code} 风控拦截(第 {attempt}/{retries} 次)'
+                )
+                logger.warning(f'[xhs] 换取会话被拦: {self.last_login_error} | body={resp.text[:120]}')
+                if attempt < retries:
+                    time.sleep(wait)
+                    continue
+                return cookies
+
+            res = resp.json()
+            data = res.get('data') or {}
+            login_info = data.get('login_info') or {}
             if 'session' in login_info and 'web_session' not in cookies:
                 cookies['web_session'] = login_info['session']
+                return cookies
+            if 'web_session' in cookies:
+                return cookies
+
+            self.last_login_error = (
+                f'响应缺少 login_info (code_status={data.get("code_status")}): '
+                f'{json.dumps(res, ensure_ascii=False)[:160]}'
+            )
+            if attempt < retries:
+                time.sleep(5)
 
         return cookies
 

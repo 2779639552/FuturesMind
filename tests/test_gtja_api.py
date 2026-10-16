@@ -4,6 +4,9 @@
         configured()/_request()。因此无需配 GTJA key,CI/无网也稳定通过。
 """
 
+import contextlib  # 【调用包】并发写缓存测试里吞掉"提前中断"的哨兵异常
+import os  # 【调用包】比对缓存临时文件名
+
 from tradingagents.dataflows import gtja_api  # 【调用包】被测模块
 
 
@@ -144,7 +147,7 @@ def test_fetch_inventory_df_defaults_to_240d_window(monkeypatch):
     monkeypatch.setattr(gtja_api, "configured", lambda: True)
     seen = {}
 
-    def fake_request(endpoint, body):
+    def fake_request(endpoint, body, **kwargs):  # **kwargs 兼容 _request 的 timeout 形参(2026-09-28 加)
         seen["body"] = body
         return [{"tradingDay": "2026-09-01", "onWarrant": "100"}]
 
@@ -162,7 +165,7 @@ def test_fetch_inventory_df_explicit_range_passed_through(monkeypatch):
     monkeypatch.setattr(gtja_api, "configured", lambda: True)
     seen = {}
 
-    def fake_request(endpoint, body):
+    def fake_request(endpoint, body, **kwargs):  # **kwargs 兼容 _request 的 timeout 形参(2026-09-28 加)
         seen["body"] = body
         return [{"tradingDay": "2026-08-01", "onWarrant": "50"}]
 
@@ -185,3 +188,91 @@ def test_fetch_inventory_df_start_after_end_returns_none(monkeypatch):
     monkeypatch.setattr(gtja_api, "_request", fake_request)
     assert gtja_api.fetch_inventory_df("RB", "2026-09-02", "2026-09-01") is None
     assert called == []
+
+
+# ══════════════════════════════════════════════════════════════════
+# 数据集磁盘缓存:多进程并发写不得互撞(2026-09-30 修 WinError 32)
+# ══════════════════════════════════════════════════════════════════
+
+
+def test_dataset_cache_tmp_name_is_unique_per_writer(tmp_path):
+    """临时文件名必须**每个写者唯一** —— 固定名是多进程并发写互撞的根因。
+
+    旧实现用 `{endpoint}.tmp` 这个固定名:两个进程同时对同一端点刷新缓存时,
+    A 先 os.replace 成功但句柄尚未完全释放,B 的 os.replace 就会撞上
+    `[WinError 32] 另一个程序正在使用此文件`。
+    (实测:6 进程 x 6 轮并发写,旧写法累计失败 28 次;修复后 0 次。)
+    """
+    # 拦截 os.replace,只观察本应是"临时文件名"的那一侧,不落真实文件
+    seen = []
+
+    def fake_replace(src, dst):
+        seen.append((str(src), str(dst)))
+        raise RuntimeError("stop here")  # 提前中断,只要拿到名字
+
+    real_replace = gtja_api.os.replace
+    gtja_api.os.replace = fake_replace
+    try:
+        with contextlib.suppress(RuntimeError):
+            gtja_api._write_dataset_cache(tmp_path, "processProfitData.query", [{"a": 1}])
+    finally:
+        gtja_api.os.replace = real_replace
+
+    assert seen, "应当走到 os.replace"
+    src, dst = seen[0]
+    # 目标名保持稳定(读取端只认它)
+    assert dst.endswith("processProfitData_query.json")
+    # 临时名必须与目标名不同,且不是一个"固定的"后缀 —— 关键:包含随机片段
+    assert os.path.dirname(src) == os.path.dirname(dst)
+    stem = os.path.basename(src)
+    assert stem != os.path.basename(dst)
+    # 用两次调用比对:临时名必须不同(唯一性),固定名写法在这里必挂
+    seen.clear()
+    gtja_api.os.replace = fake_replace
+    try:
+        with contextlib.suppress(RuntimeError):
+            gtja_api._write_dataset_cache(tmp_path, "processProfitData.query", [{"a": 1}])
+    finally:
+        gtja_api.os.replace = real_replace
+    assert seen and seen[0][0] != src, "两次写入的临时名必须不同(否则并发必撞)"
+
+
+def test_dataset_cache_write_succeeds_when_target_exists(tmp_path):
+    """目标文件已存在时仍要写得进去(爬虫/web/前端三方并发刷新的常态)。"""
+    ep = "processProfitData.query"
+    gtja_api._write_dataset_cache(tmp_path, ep, [{"round": 1}])
+    gtja_api._write_dataset_cache(tmp_path, ep, [{"round": 2}, {"round": 3}])
+
+    rows = gtja_api._read_dataset_cache(tmp_path, ep, ttl=10**6)
+    assert rows == [{"round": 2}, {"round": 3}], "后写必须完整覆盖先写"
+
+    # 不许留下任何 .tmp 垃圾
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_dataset_cache_tmp_is_isolated_between_two_concurrent_writers(tmp_path):
+    """模拟"两个写者交叉进行":A 写完 tmp 停顿、B 再写自己的 tmp —— 两者不得同名。
+
+    这是并发互撞的最小可复现骨架(不起真进程也能卡住回归):
+    先让 A 把 tmp 落盘(不 replace),再让 B 用同样的载荷写一遍,
+    旧写法下 B 会写进**同一个** tmp,新写法下必须是两个不同文件。
+    """
+    ep = "processProfitData.query"
+    names = []
+
+    real_replace = gtja_api.os.replace
+
+    def capture_replace(src, dst):
+        names.append(os.path.basename(str(src)))
+        # 真的执行 replace,让流程走完
+        return real_replace(src, dst)
+
+    gtja_api.os.replace = capture_replace
+    try:
+        gtja_api._write_dataset_cache(tmp_path, ep, [{"who": "A"}])
+        gtja_api._write_dataset_cache(tmp_path, ep, [{"who": "B"}])
+    finally:
+        gtja_api.os.replace = real_replace
+
+    assert len(names) == 2
+    assert names[0] != names[1], f"两个写者用了同一个临时文件: {names}"

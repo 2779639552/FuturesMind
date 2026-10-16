@@ -122,6 +122,15 @@ warnings.filterwarnings("ignore", message=r".*非交易日.*", category=UserWarn
 _response_cache: dict[str, tuple[float, pd.DataFrame]] = {}  # 【变量】内存缓存:键 "price:{品种代码}",值 (拉取时间戳, DataFrame)
 _CACHE_TTL = 300  # 5 minutes
 
+# _cache_source: 与 _response_cache 同键,记录**该份缓存实际来自哪个源**("tq" | "akshare")。
+#   【为什么需要(2026-10-13)】缓存命中路径早于天勤接入就存在,它不经过取数函数、
+#   因此不会调用 tq_source.mark_source() ⇒ 同一次请求里 last_source() 保持 "unknown",
+#   前端数据源角标就不显示"天勤"。原先只有**冷启动那一次**会标对,之后 5 分钟 TTL 内
+#   全部退化为 unknown —— 实测日K source=unknown 即此因。
+#   【为什么另开一个 dict 而不把元组扩成三元】_response_cache 的二元组结构被
+#   tests/test_price_cache_guard.py 等外部读点依赖, 扩元组会破坏现有解包; 并行字典零破坏。
+_cache_source: dict[str, str] = {}
+
 # _basis_cache: 基差/现货价内存缓存(键 "basis:{品种代码}")。基差接口 futures_spot_price_daily 是
 #   东财网页爬取,实测单次 13~175s(2026-09-01 实测 175s),是数据看板刷新慢的根因。现货/基差为
 #   日频数据,当天多次刷新无需重爬 → TTL 取 6 小时(价格缓存 5 分钟,基差例外放宽到 6h)。
@@ -1971,15 +1980,20 @@ VARIETY_METADATA = {  # 【变量】33个商品期货品种的元信息字典(�
     },
 }
 
-# 【功能】当前活跃品种池(2026-09-09 起,用户指定):全项目 UI/采集/展示只保留这 20 个品种。
-# 【口径】SC TA PX EG FU LU PG M CF CJ LC RU NR BR LH BU PS SI BZ EB
-#        (能化13 + 农产品4 + 有色新能源3;MEG=EG、多晶硅=PS、工业硅=SI)
+# 【功能】当前活跃品种池(2026-09-09 起,用户指定;2026-09-30 新增棕榈油 P):全项目
+#        UI/采集/展示只保留这 21 个品种。
+# 【口径】SC TA PX EG FU LU PG M CF CJ LC RU NR BR LH BU PS SI BZ EB P
+#        (能化13 + 农产品5 + 有色新能源3;MEG=EG、多晶硅=PS、工业硅=SI、棕榈油=P)
 # 【与 VARIETY_METADATA 的关系】池 ⊆ 元数据;元数据 62 键全部保留,池外品种仅在
 #        /api/varieties 与展示/采集白名单处被 ACTIVE_VARIETIES 过滤("保留但隐藏"),
 #        旧研报中文名回显、盘面利润配方腿(I/J)等历史链路不受影响。
+# 【P 入池实测(2026-09-30)】国君四源全有数据(基差 120 行/仓单 21 行/库存 236 行/
+#        进口利润 7235 行)、AKShare 主力连续 4603 根、东财库存 64 行。
+#        ⚠️ 实时行情接口的中文键是 "棕榈"(非 "棕榈油") —— 见 price_fetcher.REALTIME_NAME_OVERRIDE。
 ACTIVE_VARIETIES = frozenset({
     "SC", "TA", "PX", "EG", "FU", "LU", "PG", "M", "CF", "CJ",
     "LC", "RU", "NR", "BR", "LH", "BU", "PS", "SI", "BZ", "EB",
+    "P",
 })
 
 
@@ -2099,6 +2113,49 @@ def _cached_covers_range(cached_df, start_date: str, end_date: str, tolerance_da
         return False  # 解析失败 → 保守重拉,绝不静默返回旧数据
 
 
+def _fetch_daily_via_tq(code: str, end_date: str):
+    """天勤取日K → DataFrame(英文列名,与 get_futures_price 后续流程同构);不可用返回 None。
+
+    【2026-10-12 接入】天勤优先、AKShare 降级:本函数返回 None 时调用方走原新浪链路,
+    因此**未配置天勤账号时行为与接入前完全一致**(可逆开关,见 tq_source.configured)。
+    【为什么只需英文列名】get_futures_price 后续是"中文列名 → 英文重命名 → 取 date 列过滤
+    → to_csv"。天勤直接给英文列,rename 不改动、keep_cols 正常命中,无缝衔接。
+    """
+    try:
+        from tradingagents.dataflows import tq_source  # 【调用包】懒导入(未启用时零开销)
+        if not tq_source.configured():
+            return None
+        bars = tq_source.fetch_daily_bars(code, length=1200)
+        if not bars:
+            return None
+        import pandas as pd  # 【调用包】构造 DataFrame(与后续流程同构)
+
+        df = pd.DataFrame(bars)
+        if df.empty:
+            return None
+        return df
+    except Exception as e:  # 【异常】天勤任何问题都降级,不影响原链路
+        logger.debug("天勤日K不可用(%s),回退 AKShare: %s", code, e)
+        return None
+
+
+def _mark_cache_source(cache_key: str) -> None:
+    """把某份缓存的**真实来源**标注给 tq_source,供前端数据源角标如实显示。
+
+    【为什么单独一个函数(2026-10-13)】缓存命中路径不经过取数函数, 缺了这一步
+      last_source() 就停在 "unknown", 前端角标空白(实测日K 即此现象)。
+    【容错】来源未记录/天勤模块不可用都静默跳过 —— 标注是辅助信息, 绝不能影响取数。
+    """
+    src = _cache_source.get(cache_key)
+    if not src:
+        return
+    try:
+        from tradingagents.dataflows import tq_source
+        tq_source.mark_source(src)
+    except Exception:  # 【异常】标注失败不影响数据返回
+        pass
+
+
 def get_futures_price(
     symbol: str,
     start_date: str,
@@ -2136,8 +2193,17 @@ def get_futures_price(
             if (now - cached_at < _CACHE_TTL and _cached_covers_end(cached_df, end_date))
             else None
         )
+        if df is not None:  # 【2026-10-13】命中缓存也要标注来源,否则前端角标显示 unknown
+            _mark_cache_source(cache_key)
     else:
         df = None
+
+    if df is None:
+        # 【2026-10-12】天勤优先(可逆开关):可用则用天勤,否则 df 保持 None 走原新浪链路
+        df = _fetch_daily_via_tq(code, end_date)
+        if df is not None:
+            _response_cache[cache_key] = (now, df.copy())  # 【变量】写入缓存:拉取时间戳 + DataFrame 副本
+            _cache_source[cache_key] = "tq"  # 【2026-10-13】记录来源,供后续缓存命中的标注
 
     if df is None:
         try:
@@ -2151,6 +2217,12 @@ def get_futures_price(
                 end_date=end_date,
             )  # 【调用函数】新浪主力连续行情(从 2020 拉全量历史,便于后续指标计算)
             _response_cache[cache_key] = (now, df.copy())  # 【变量】写入缓存:拉取时间戳 + DataFrame 副本
+            _cache_source[cache_key] = "akshare"  # 【2026-10-13】记录来源,供后续缓存命中的标注
+            try:  # 【2026-10-12】标记实际数据源(走的新浪链路),供前端如实标注
+                from tradingagents.dataflows import tq_source
+                tq_source.mark_source("akshare")
+            except Exception:
+                pass
         except ImportError:
             return (
                 "DATA_ERROR: akshare is required for futures data. "

@@ -1,0 +1,12 @@
+import { chromium } from 'file:///C:/Users/lenovo/.workbuddy/binaries/node/workspace/node_modules/playwright-core/index.mjs';
+const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', args: ['--no-sandbox'] });
+const page = await browser.newPage({ viewport: { width: 1600, height: 1200 } });
+await page.goto('http://127.0.0.1:5000', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.waitForTimeout(2000);
+await page.evaluate(() => App.switchTab('gtja'));
+await page.waitForTimeout(6000);
+await page.evaluate(() => { window.scrollTo(0, 0); document.querySelector('#tab-gtja .sec-index')?.scrollIntoView(); });
+await page.waitForTimeout(800);
+await page.screenshot({ path: 'probe/_shot_gtja_default_open.png', fullPage: false });
+console.log('saved');
+await browser.close();

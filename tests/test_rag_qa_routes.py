@@ -52,6 +52,13 @@ class _FakeLLMClient:
             def invoke(self, prompt):
                 client.prompts.append(prompt)
 
+                # 【2026-09-24】LLM 选检索深度路由的 prompt 含特征串 → 直接回 "6",
+                # 不弹预设答案队列(否则会吃掉 rewrite/主回答的答案, 测试错位)。
+                if "只输出一个数字(top_k)" in prompt:
+                    class _R6:
+                        content = "6"
+                    return _R6()
+
                 class _R:
                     content = client.answers.pop(0) if client.answers else "默认回答 [1]。"
 
@@ -130,8 +137,10 @@ def test_qa_ask_first_turn_skips_rewrite_llm(api, monkeypatch):
     monkeypatch.setattr(web_app, "create_llm_client", lambda *a, **k: (seen.append(1), fake)[1])
     body = api.post("/api/research/qa/ask", json={"question": "螺纹钢"}).get_json()
     assert body["ok"] is True and body["rewritten_query"] == ""
-    assert len(fake.prompts) == 1  # 只调用一次(作答),无改写调用
-    assert "研究助理" in fake.prompts[0] and "用户问题:螺纹钢" in fake.prompts[0]
+    # 【2026-09-24】首轮调用 2 次: ①top_k 路由(选检索深度) ②作答; 无改写调用
+    assert len(fake.prompts) == 2, f"prompts={len(fake.prompts)}"
+    assert "只输出一个数字(top_k)" in fake.prompts[0]  # 第一次是检索深度路由
+    assert "研究助理" in fake.prompts[1] and "用户问题:螺纹钢" in fake.prompts[1]
 
 
 def test_qa_ask_rewrite_failure_falls_back(api, monkeypatch):

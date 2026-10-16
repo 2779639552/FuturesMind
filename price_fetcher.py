@@ -108,10 +108,11 @@ NAME_TO_CODE = {  # 【变量】中文品种名→内部代码映射表(实时�
 }
 
 
-# 默认实时行情展示的品种清单:2026-09-09 起跟随 20 品种活跃池(ACTIVE_VARIETIES)。
+# 默认实时行情展示的品种清单:2026-09-09 起跟随 21 品种活跃池(ACTIVE_VARIETIES);
+# 2026-09-30 加入 P 棕榈油 → 21 品种。
 # 首次进入页面只拉前 8 个以加快首屏,随后补全其余品种(见 get_cached_prices)。
 # Default varieties for live ticker (keep < 24 for speed)
-DEFAULT_LIVE_VARIETIES = [  # 【变量】默认实时展示的 20 品种池清单(首屏只取前 8 个提速)
+DEFAULT_LIVE_VARIETIES = [  # 【变量】默认实时展示的 21 品种池清单(首屏只取前 8 个提速)
     "SC",
     "TA",
     "PX",
@@ -129,10 +130,32 @@ DEFAULT_LIVE_VARIETIES = [  # 【变量】默认实时展示的 20 品种池清�
     "CF",
     "CJ",
     "LH",  # 农产品
+    "P",   # 农产品(油脂,2026-09-30 新增)
     "LC",
     "PS",
     "SI",  # 有色(新能源)
 ]
+
+
+# 【★ 别名修正 2026-09-30 —— 修的是"静默取空"而非"名字不好看"】
+# NAME_TO_CODE 的键身兼两职:① 历史价格文件名(通用中文名)② 实时行情接口参数。
+# 但新浪实时行情接口 ak.futures_zh_realtime 的中文键与通用中文名**有 3 处不一致**,
+# 而该接口对未知名抛 KeyError、调用处又只 `logger.debug` 吞掉 ⇒ 这些品种的实时行情
+# **每次刷新都静默取空**,页面上表现为"行情一直缺这几个品种",日志里毫无痕迹。
+# 【权威依据】ak.futures_symbol_mark() 是该接口自己的命名表(86 个 symbol→mark)。
+# 【实测 2026-09-30 / akshare 1.18.94】通用名 → 接口真实键:
+#     棕榈油 → 棕榈   PX 对二甲苯 → 二甲苯   FU 燃料油 → 燃油
+#   (原表里 "对二甲苯"/"LPG" 直接查不到;本表把池内 3 个失配品种全部对齐。)
+# 【另修一处反查覆盖缺陷】code_to_name 用字典推导反查,同名/同码冲突时**后写覆盖先写**:
+#   "燃油"→FU 与 "燃料油"→FU 只留 "燃料油";"液化石油气"→PG 覆盖 "LPG"→PG。
+#   故此处以"覆盖层"形式重写这几个 code 的实时行情名,而不是去动 NAME_TO_CODE
+#   (动它会改掉价格文件名 → 与 ~/.tradingagents 下既有 *_price.json 对不上)。
+REALTIME_NAME_OVERRIDE = {  # 【变量】code → 实时行情接口的真实中文键(仅此接口用)
+    "P": "棕榈",
+    "PX": "二甲苯",
+    "FU": "燃油",
+    "PG": "液化石油气",
+}
 
 
 def fetch_realtime_prices(varieties: list[str] | None = None) -> dict:
@@ -162,31 +185,58 @@ def fetch_realtime_prices(varieties: list[str] | None = None) -> dict:
     try:
         import akshare as ak
     except ImportError:
-        logger.error("akshare not installed")
-        return {}
+        ak = None  # 【变量】akshare 缺失时仍可只走天勤(见下方降级逻辑)
 
     # 反向映射:代码 → 中文名(与 NAME_TO_CODE 方向相反,用于把代码翻译成接口参数)
-    # Build reverse mapping: code → name
+    # Build reverse mapping: code -> name
     code_to_name = {v: k for k, v in NAME_TO_CODE.items()}  # 【变量】code_to_name:代码→中文名反向映射(把代码翻译成接口参数)
+    code_to_name.update(REALTIME_NAME_OVERRIDE)  # 【别名修正】对齐本接口的真实中文键(见 REALTIME_NAME_OVERRIDE)
     target_codes = set(varieties) if varieties else set(DEFAULT_LIVE_VARIETIES)  # 【变量】target_codes:本次要抓取的品种集合
 
+    # 【2026-10-12 天勤优先】一次建连批量取全部品种(WebSocket 推送源,比逐品种轮询新浪更快更准)。
+    #   天勤未配置/失败 → 返回 None → 下面按原逻辑逐品种走 AKShare,行为与接入前一致(可逆开关)。
+    #   天勤只取到部分品种时:命中部分用天勤,剩余品种仍走 AKShare 补齐(不因个别品种缺失而整体退化)。
     result = {}
+    try:
+        from tradingagents.dataflows import tq_source  # 【调用包】天勤适配层(懒导入)
+        tq_result = tq_source.fetch_realtime(sorted(target_codes)) or {}
+        if tq_result:
+            result.update(tq_result)
+            logger.info("天勤实时行情命中 %d/%d 个品种", len(tq_result), len(target_codes))
+    except Exception as e:  # 【异常】天勤任何问题都不影响原链路
+        logger.debug("天勤实时行情不可用,回退 AKShare: %s", e)
+
+    if len(result) >= len(target_codes):  # 天勤已全覆盖 → 无需再拉 AKShare
+        return result
+    if ak is None:
+        logger.error("akshare not installed")
+        return result
+    if not result:  # 天勤完全未命中 → 后续整体走 AKShare,如实标注来源
+        try:
+            from tradingagents.dataflows import tq_source
+            tq_source.mark_source("akshare")
+        except Exception:
+            pass
+    skipped: list[str] = []  # 【变量】本次取空/失败的品种(供诊断,不再静默)
 
     # Fetch all real-time futures data at once
     try:
-        df = ak.futures_zh_realtime(symbol="螺纹钢")  # any symbol triggers full fetch  # 【调用函数】AKShare 实时行情接口(尝试一次性抓全)
-        # Actually, this returns only 螺纹钢. Let's try a broader approach.
+        df = ak.futures_zh_realtime(symbol="螺纹钢")  # 【变量】预热:该接口任何请求都会先拉一次命名表
     except Exception:
         df = None
 
     # Fetch one-by-one for requested varieties
     for code in target_codes:
+        if code in result:  # 【2026-10-12】天勤已覆盖该品种,无需重复拉 AKShare
+            continue
         name = code_to_name.get(code)
         if not name:
+            skipped.append(f"{code}(无中文名映射)")
             continue
         try:
             df = ak.futures_zh_realtime(symbol=name)  # 【调用函数】AKShare 实时行情接口(按中文名拉单品种 DataFrame)
             if df is None or df.empty:
+                skipped.append(f"{code}({name} 返回空表)")
                 continue
             # Get the main contract row (index 0)
             row = df.iloc[0]  # 【变量】row:主连合约第一行(视为该品种主力行情)
@@ -198,7 +248,15 @@ def fetch_realtime_prices(varieties: list[str] | None = None) -> dict:
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         except Exception as e:
-            logger.debug(f"AKShare fetch failed for {name}: {e}")
+            # 【为什么升到 warning】这里原先只 logger.debug —— 接口改中文键(如"棕榈油"→"棕榈")
+            #   会让该品种**永久静默取空**:不报错、日志不显、页面只是少一行行情。
+            #   现在:dim 级降为 warning + 汇总,让"某品种行情一直缺"能被查到根因。
+            skipped.append(f"{code}({name}: {type(e).__name__})")
+            logger.warning(f"AKShare 实时行情取数失败 [{code}/{name}]: {e}")
+
+    if skipped:
+        logger.warning(f"实时行情本次未取到 {len(skipped)}/{len(target_codes)} 个品种: "
+                       f"{', '.join(sorted(skipped))}")
 
     return result
 
@@ -385,9 +443,31 @@ def _update_single_price(code: str, name: str) -> dict:
 
     # Fetch latest daily data
     new_count = 0  # 【变量】new_count:本次新增的日期数
+    # 【2026-10-12 天勤优先】落盘更新也走天勤(未配置/失败 → df 保持 None 走原新浪链路,
+    #   行为与接入前一致)。天勤返回的列名与新浪一致(date/open/high/low/close/volume/
+    #   open_interest),故下方 iterrows 逻辑完全复用。
+    df = None
     try:
-        # Use Sina daily data
-        df = ak.futures_zh_daily_sina(symbol=f"{code}0")  # 【调用函数】AKShare 新浪期货日线接口(主连, code0)
+        from tradingagents.dataflows import tq_source  # 【调用包】天勤适配层(懒导入)
+        if tq_source.configured():
+            bars = tq_source.fetch_daily_bars(code, length=1200)
+            if bars:
+                import pandas as pd  # 【调用包】包成 DataFrame 以复用下方逐行逻辑
+                df = pd.DataFrame(bars)
+                logger.info("天勤日线落盘 %s: %d 根", code, len(df))
+    except Exception as e:  # 【异常】天勤不可用即降级,不影响落盘
+        logger.debug("天勤日线不可用(%s),回退新浪: %s", code, e)
+        df = None
+
+    try:
+        # Use Sina daily data (天勤未命中时的原链路)
+        if df is None:
+            df = ak.futures_zh_daily_sina(symbol=f"{code}0")  # 【调用函数】AKShare 新浪期货日线接口(主连, code0)
+            try:  # 【2026-10-12】标记实际数据源(落盘走的哪条链路)
+                from tradingagents.dataflows import tq_source
+                tq_source.mark_source("akshare")
+            except Exception:
+                pass
         if df is None or df.empty:
             return {"code": code, "error": "no data", "new": 0}
 

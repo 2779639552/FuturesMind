@@ -258,16 +258,61 @@ FuturesMind Web.lnk
 data/*.db
 _web_err.log
 
-# 微信 Bot 运行态(openid→会话映射, 含用户 openid, 不进 git)
-data/wechat_bot_state.json
-
 # 研报批量重跑前的磁盘备份(DB+聚合JSON, 不进 git)
 backup/
 
-# ---- 2026-09-15 仓库整理: 运行态/内部日志不进 git ----
-/data/
-/worklog/
-/work-journal.md
-*.log
-.pytest_cache/
-.ruff_cache/
+# 微信 Bot 运行态(openid→会话映射, 含用户 openid, 不进 git)
+data/wechat_bot_state.json
+
+# ============================================================
+# 2026-10-16 重建仓库时补充(敏感配置/本地调试产物, 不进 git)
+# ============================================================
+
+# 浏览器自动化 profile(含登录态 cookie, 禁止进库)
+.browser_profile/
+
+# 含真实密钥的环境变量备份
+.env.bak*
+*.env.bak*
+
+# 本地调试 SQLite 副本
+_d.db
+_d.db-shm
+_d.db-wal
+
+# 临时调试产物(日志/卡片 JSON/截图/临时目录)
+_tmp_before/
+_*.json
+_*.txt
+_*.png
+_restart_*.sh
+
+# 编辑前的代码备份快照
+*.bak_*
+
+# 隧道公网地址等本地运行态
+public_url.txt
+
+# 旧损坏仓库备份(仅本地保留)
+.git_broken_20261016/
+
+# 运行时数据目录(研报归档/仓单/品种库/PPI, 体量大且持续变化, 不进 git)
+data/foreign/
+data/warrant/
+data/variety/
+data/ppi/
+data/think2_validate/
+data/agentsense.db
+
+# 隧道二进制工具(52MB, 不可移植, 不进 git)
+cloudflared.exe
+
+# WorkBuddy 项目记忆/自动化任务状态(内部工作记录, 不进 git)
+.workbuddy/
+
+# 内部工作日志(远端 2026-09-15 已移出 git 跟踪, 本地未同步删除, 一并忽略)
+worklog/
+work-journal.md
+
+# 运行时情绪/研报索引数据(持续变化, 不进 git)
+data/external_data/

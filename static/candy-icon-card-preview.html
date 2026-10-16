@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>icon-card 组件 1:1 落地预览 · AgentSense</title>
+
+<!-- ============================================================
+     本页只做两件事:
+       ① 把 icon-card 组件按"声明级一致"渲染出来(组件 CSS/DOM 逐字保留);
+       ② 演示四格数字的实时拉取(同源,无 CORS)。
+     ⚠️ 本页自己的样式一律用 .pv-* 前缀,绝不定义 .card/.item/.text/.quantity,
+        这样组件才能用**原选择器**渲染,做到真正的 1:1。
+     ============================================================ -->
+<style>
+/* ===== 预览页自身的外壳(全部前缀 pv-,与组件零冲突) ===== */
+:root {
+  --pv-bg: #04070c;
+  --pv-card: #0a0f17;
+  --pv-border: #19222e;
+  --pv-text: #e9f0f7;
+  --pv-dim: #94a3b5;
+  --pv-muted: #5a687a;
+  --pv-candy1: #c7c7ff;
+  --pv-candy2: #ffd8be;
+  --pv-candy3: #a9ecbf;
+  --pv-candy4: #f3bbe1;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 28px 22px 60px;
+  background-color: var(--pv-bg);
+  background-image:
+    radial-gradient(58rem 38rem at 80% -6%, rgba(149,149,255,0.085), transparent 62%),
+    radial-gradient(44rem 30rem at 6% 4%, rgba(220,91,183,0.050), transparent 64%),
+    radial-gradient(66rem 46rem at 48% 116%, rgba(252,161,71,0.045), transparent 62%);
+  background-attachment: fixed;
+  color: var(--pv-text);
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.6;
+}
+.pv-wrap { max-width: 980px; margin: 0 auto; }
+.pv-title { font-size: 1.35rem; font-weight: 700; margin: 0 0 6px; }
+.pv-sub { color: var(--pv-dim); font-size: 0.82rem; margin: 0 0 22px; }
+.pv-panel {
+  background: linear-gradient(180deg, rgba(199,199,255,0.030), transparent 42%), var(--pv-card);
+  border: 1px solid var(--pv-border);
+  border-top-color: rgba(149,149,255,0.34);
+  border-radius: 10px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+.pv-panel h3 {
+  font-size: 0.9rem; font-weight: 700; margin: 0 0 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.pv-tag {
+  font-size: 0.66rem; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+  background: rgba(149,149,255,0.16); color: var(--pv-candy1);
+}
+.pv-tag--warn { background: rgba(251,191,36,0.15); color: #fbbf24; }
+.pv-btn {
+  font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+  padding: 6px 14px; border-radius: 8px;
+  border: 1px solid rgba(149,149,255,0.34);
+  background: linear-gradient(180deg, #f4f0ff 0%, #d3cdff 100%);
+  color: #0c0a1f;
+}
+.pv-btn--ghost {
+  background: rgba(149,149,255,0.10); color: var(--pv-candy1);
+}
+.pv-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.pv-kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 0.78rem; }
+.pv-kv dt { color: var(--pv-dim); }
+.pv-kv dd { margin: 0; font-family: ui-monospace, Consolas, monospace; color: var(--pv-text); }
+.pv-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.pv-dot--live { background: #c7c7ff; box-shadow: 0 0 8px rgba(149,149,255,0.8); }
+.pv-dot--static { background: #5a687a; }
+.pv-note { font-size: 0.76rem; color: var(--pv-muted); margin: 10px 0 0; }
+.pv-code {
+  font-family: ui-monospace, Consolas, monospace; font-size: 0.74rem;
+  background: #0d131c; border: 1px solid var(--pv-border); border-radius: 8px;
+  padding: 10px 12px; white-space: pre; overflow-x: auto; color: #b9c6d6;
+  margin: 8px 0 0;
+}
+
+/* ===== 「舞台」:只负责给组件一块底色,不碰组件本身的任何声明 ===== */
+.pv-stage {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 300px; border-radius: 10px;
+  transition: background-color 0.2s ease;
+}
+/* 原样舞台:与组件原出处一致的浅底,便于逐像素对照 */
+.pv-stage--original { background: #ffffff; }
+/* 项目舞台:AgentSense 深色糖果底,看它落到项目里的观感 */
+.pv-stage--project { background: #05080e; border: 1px dashed var(--pv-border); }
+
+/* ============================================================
+   ↓↓↓ 以下为 icon-card 组件本体:选择器与声明按原样保留 ↓↓↓
+   ============================================================ */
+.card {
+  width: 190px;
+  height: 254px;
+  color: white;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 5px;
+  overflow: visible;
+}
+
+.card .item {
+  border-radius: 10px;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.item:hover {
+  transform: scale(1.95);
+  transition: all 1s ease-in-out;
+  rotate: 360deg;
+}
+
+.item svg {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 7px;
+}
+
+.item--1 {
+  background: #c7c7ff;
+}
+
+.item--2 {
+  background: #ffd8be;
+}
+
+.item--3 {
+  background: #a9ecbf;
+}
+
+.item--4 {
+  background: #f3bbe1;
+}
+
+.quantity {
+  font-size: 25px;
+  font-weight: 600;
+}
+
+.text {
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 600;
+}
+
+.text--1 {
+  color: rgba(149,149,255,1);
+}
+
+.text--2 {
+  color: rgba(252,161,71,1);
+}
+
+.text--3 {
+  color: rgba(66,193,110,1);
+}
+
+.text--4 {
+  color: rgba(220,91,183,1);
+}
+/* ↑↑↑ icon-card 组件本体结束 ↑↑↑ */
+</style>
+</head>
+<body>
+<div class="pv-wrap">
+
+  <h1 class="pv-title">icon-card 组件 · 1:1 落地预览</h1>
+  <p class="pv-sub">
+    组件 CSS 与 DOM 逐字保留（类名/层级未动）；四格数字接 AgentSense 真实接口实时拉取。
+    本页位于 <code>/static/</code> 下，与接口同源，因此无 CORS 问题。
+  </p>
+
+  <!-- ===== 组件本体：DOM 结构原样，仅替换 .quantity / .text 的文字内容 ===== -->
+  <div class="pv-panel">
+    <h3>组件本体 <span class="pv-tag">悬停任意一格看动效</span></h3>
+    <div class="pv-row" style="margin-bottom:14px">
+      <button class="pv-btn pv-btn--ghost" id="pv-toggle-stage">切到「项目深色」舞台</button>
+      <button class="pv-btn pv-btn--ghost" id="pv-refetch">重新拉取数据</button>
+      <span class="pv-note" id="pv-fetch-state" style="margin:0">准备拉取…</span>
+    </div>
+
+    <div class="pv-stage pv-stage--original" id="pv-stage">
+      <div class="card">
+        <div class="item item--1">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill="none" d="M0 0h24v24H0z"></path><path d="M17 15.245v6.872a.5.5 0 0 1-.757.429L12 20l-4.243 2.546a.5.5 0 0 1-.757-.43v-6.87a8 8 0 1 1 10 0zm-8 1.173v3.05l3-1.8 3 1.8v-3.05A7.978 7.978 0 0 1 12 17a7.978 7.978 0 0 1-3-.582zM12 15a6 6 0 1 0 0-12 6 6 0 0 0 0 12z" fill="rgba(149,149,255,1)"></path></svg>
+          <span class="quantity" data-tile="reports"> 450+ </span>
+          <span class="text text--1"> 研报 </span>
+        </div>
+        <div class="item item--2">
+          <svg height="24" width="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M0 0L24 0 24 24 0 24z" fill="none"></path><path fill="rgba(252,161,71,1)" d="M16 16c1.657 0 3 1.343 3 3s-1.343 3-3 3-3-1.343-3-3 1.343-3 3-3zM6 12c2.21 0 4 1.79 4 4s-1.79 4-4 4-4-1.79-4-4 1.79-4 4-4zm10 6c-.552 0-1 .448-1 1s.448 1 1 1 1-.448 1-1-.448-1-1-1zM6 14c-1.105 0-2 .895-2 2s.895 2 2 2 2-.895 2-2-.895-2-2-2zm8.5-12C17.538 2 20 4.462 20 7.5S17.538 13 14.5 13 9 10.538 9 7.5 11.462 2 14.5 2zm0 2C12.567 4 11 5.567 11 7.5s1.567 3.5 3.5 3.5S18 9.433 18 7.5 16.433 4 14.5 4z"></path></svg>
+          <span class="quantity" data-tile="varieties"> 20 </span>
+          <span class="text text--2"> 监测品种 </span>
+        </div>
+        <div class="item item--3">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill="none" d="M0 0h24v24H0z"></path><path d="M20.083 15.2l1.202.721a.5.5 0 0 1 0 .858l-8.77 5.262a1 1 0 0 1-1.03 0l-8.77-5.262a.5.5 0 0 1 0-.858l1.202-.721L12 20.05l8.083-4.85zm0-4.7l1.202.721a.5.5 0 0 1 0 .858L12 17.65l-9.285-5.571a.5.5 0 0 1 0-.858l1.202-.721L12 15.35l8.083-4.85zm-7.569-9.191l8.771 5.262a.5.5 0 0 1 0 .858L12 13 2.715 7.429a.5.5 0 0 1 0-.858l8.77-5.262a1 1 0 0 1 1.03 0zM12 3.332L5.887 7 12 10.668 18.113 7 12 3.332z" fill="rgba(66,193,110,1)"></path></svg>
+          <span class="quantity" data-tile="publishers"> 31 </span>
+          <span class="text text--3"> 来源机构 </span>
+        </div>
+        <div class="item item--4">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill="none" d="M0 0h24v24H0z"></path><path d="M12 20h8v2h-8C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10a9.956 9.956 0 0 1-2 6h-2.708A8 8 0 1 0 12 20zm0-10a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm-4 4a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm8 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm-4 4a2 2 0 1 1 0-4 2 2 0 0 1 0 4z" fill="rgba(220,91,183,1)"></path></svg>
+          <span class="quantity" data-tile="chunks"> 4326 </span>
+          <span class="text text--4"> 检索块 </span>
+        </div>
+      </div>
+    </div>
+    <p class="pv-note">
+      舞台底色只影响四周，不影响组件本身（四格底色不透明）。
+      「项目深色」舞台用于预判它放进 AgentSense 后的观感。
+    </p>
+  </div>
+
+  <!-- ===== 数据来源说明 ===== -->
+  <div class="pv-panel">
+    <h3>四格数据来源</h3>
+    <dl class="pv-kv">
+      <dt><span class="pv-dot pv-dot--static"></span>研报</dt>
+      <dd>450（静态）· 库内总数，含已完成 358 / 失败 92</dd>
+      <dt><span class="pv-dot pv-dot--live"></span>监测品种</dt>
+      <dd>实时 · GET /api/varieties → 数组长度</dd>
+      <dt><span class="pv-dot pv-dot--static"></span>来源机构</dt>
+      <dd>31（静态）· 库内 distinct source</dd>
+      <dt><span class="pv-dot pv-dot--live"></span>检索块</dt>
+      <dd>实时 · GET /api/research/rag/status → chunks</dd>
+    </dl>
+    <p class="pv-note">
+      ⚠️ 「研报总数」与「来源机构数」当前**没有接口**：<code>/api/research</code> 内部写死
+      <code>limit=50</code>，拿不到全量 450 条，因此这两格显示的是**静态值**（带灰点），
+      而不是一个算错的"实时值"。若要它们也实时，最干净的做法是加一个只读的
+      <code>/api/system-stats</code>（需重启一次服务）。
+    </p>
+  </div>
+
+  <!-- ===== 1:1 校验读数 ===== -->
+  <div class="pv-panel">
+    <h3>1:1 校验读数 <span class="pv-tag">getComputedStyle 实测</span></h3>
+    <dl class="pv-kv" id="pv-computed">
+      <dt>悬停某一格后</dt><dd>等待读数…</dd>
+    </dl>
+    <p class="pv-note">
+      原组件 CSS 里**没有 @keyframes**——动效全部来自
+      <code>transition: all 1s ease-in-out</code> 与 <code>rotate: 360deg</code>，
+      所以不存在"必须保留的 keyframes"；这两条已按原样保留。
+    </p>
+  </div>
+
+  <!-- ===== 插入指南 ===== -->
+  <div class="pv-panel">
+    <h3>插入指南 <span class="pv-tag pv-tag--warn">本轮未插入生产页</span></h3>
+    <p class="pv-note" style="margin-top:0">
+      你选择了「先不放了」，所以 <code>web_template.html</code> 里**没有**这段组件。
+      将来要放进去时，有一个必须先处理的冲突：
+    </p>
+    <p class="pv-note">
+      <strong>类名冲突</strong>：本项目已把 <code>.card</code> 当作主面板类用（<code>padding:18px 20px</code>、
+      <code>border-radius</code>、<code>box-shadow</code>、<code>background</code> 等），而组件根节点也叫
+      <code>.card</code>。直接贴进去，那 190×254 的盒子会被加上内边距、圆角、阴影与卡面底色，1:1 立刻破功。
+      隔离配方（不改组件任何声明，只加一层前缀祖先 + 抵消泄漏）：
+    </p>
+    <div class="pv-code">/* 1) 外面套一层带前缀的容器（新加，不动原组件选择器） */
+&lt;div class="acx-showcase"&gt;&lt;div class="card"&gt;…&lt;/div&gt;&lt;/div&gt;
+
+/* 2) 组件选择器整体前缀化，前缀化后特异性(0,2,0)高于项目 .card(0,1,0)，
+      组件自己声明的 6 个属性会自动赢 */
+.acx-showcase .card { /* 原 6 行声明逐字保留 */ }
+.acx-showcase .card .item { /* 原样 */ }
+.acx-showcase .item:hover { /* 原样 */ }
+
+/* 3) 只补"组件没声明、但项目 .card 会泄漏进来"的属性，把它们清零 */
+.acx-showcase .card {
+  padding: 0; border: 0; border-radius: 0;
+  background: none; box-shadow: none; transition: none;
+}
+
+/* 4) 组件本身无 @keyframes，无需处理作用域问题 */</div>
+    <p class="pv-note">
+      另外两点注意：① <code>.item:hover</code> 的放大 1.95 倍 + <code>overflow: visible</code> 会盖住相邻元素，
+      这是原组件在"展示墙"语境下的设计，放进密集的业务页面需谨慎（本轮按你的选择只在组件内保留原样）；
+      ② 四格里的 <code>.quantity</code> 继承 <code>.card</code> 的 <code>color: white</code>，
+      白字压在浅紫底 <code>#c7c7ff</code> 上对比度很低，这是原组件的特征，已按原样保留。
+    </p>
+  </div>
+
+</div>
+
+<script>
+// ============================================================
+// 实时拉取:每格声明自己的来源;拉不到就回退到静态值(不是显示错数)
+// ============================================================
+const PV = {
+  reports:    { fallback: '450+',  live: false, note: '库内总数(无接口)' },
+  varieties:  { fallback: '20',    live: true,  url: '/api/varieties' },
+  publishers: { fallback: '31',    live: false, note: 'distinct source(无接口)' },
+  chunks:     { fallback: '4326',  live: true,  url: '/api/research/rag/status' },
+};
+
+function setTile(name, text) {
+  const el = document.querySelector(`.quantity[data-tile="${name}"]`);
+  if (el) el.textContent = text;
+}
+
+async function fetchTiles() {
+  const state = document.getElementById('pv-fetch-state');
+  state.textContent = '拉取中…';
+  let ok = 0, fail = 0;
+
+  const tasks = Object.entries(PV).filter(([, c]) => c.live).map(async ([name, cfg]) => {
+    try {
+      const r = await fetch(cfg.url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      let v = null;
+      if (name === 'varieties') v = Array.isArray(d) ? d.length : (d.varieties || []).length;
+      if (name === 'chunks')    v = d.chunks;
+      if (v == null) throw new Error('字段缺失');
+      setTile(name, String(v));
+      ok++;
+      return name + '=' + v;
+    } catch (e) {
+      setTile(name, cfg.fallback);   // 回退静态值
+      fail++;
+      return name + '✗(' + e.message + ')';
+    }
+  });
+
+  const done = await Promise.all(tasks);
+  // 无接口的两格始终用静态值
+  Object.entries(PV).forEach(([name, cfg]) => { if (!cfg.live) setTile(name, cfg.fallback); });
+
+  state.textContent = fail
+    ? `实时 ${ok} 格成功 / ${fail} 格回退静态 · ${done.join(' ')}`
+    : `实时拉取成功 ${ok} 格 · ${done.join(' ')}`;
+}
+
+document.getElementById('pv-refetch').addEventListener('click', fetchTiles);
+fetchTiles();
+
+// 舞台切换
+const stage = document.getElementById('pv-stage');
+const toggle = document.getElementById('pv-toggle-stage');
+toggle.addEventListener('click', () => {
+  const toProject = stage.classList.contains('pv-stage--original');
+  stage.classList.toggle('pv-stage--original', !toProject);
+  stage.classList.toggle('pv-stage--project', toProject);
+  toggle.textContent = toProject ? '切到「原样白底」舞台' : '切到「项目深色」舞台';
+});
+
+// ============================================================
+// 1:1 读数:悬停后读 computed style(等过渡跑完再读,否则读到的是插值中间态)
+// ============================================================
+const box = document.getElementById('pv-computed');
+function readout(el) {
+  const s = getComputedStyle(el);
+  return [
+    ['transform', s.transform],
+    ['rotate', s.rotate],
+    ['transition-duration', s.transitionDuration],
+    ['transition-timing-function', s.transitionTimingFunction],
+    ['overflow(卡片)', getComputedStyle(document.querySelector('.card')).overflow],
+    ['四格底色', getComputedStyle(el).backgroundColor],
+  ];
+}
+function renderReadout(pairs, title) {
+  box.innerHTML = `<dt>${title}</dt><dd></dd>` +
+    pairs.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+renderReadout(readout(document.querySelector('.item--1')), '静止态（默认）');
+document.querySelectorAll('.item').forEach(el => {
+  el.addEventListener('mouseenter', () => {
+    setTimeout(() => renderReadout(readout(el), '悬停 1.1s 后（' + el.className + '）'), 1150);
+  });
+});
+</script>
+</body>
+</html>

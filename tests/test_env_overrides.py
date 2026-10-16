@@ -135,3 +135,33 @@ def test_unknown_env_var_is_ignored(monkeypatch):
         TRADINGAGENTS_NONEXISTENT_KEY="oops",
     )
     assert "nonexistent_key" not in dc.DEFAULT_CONFIG
+
+
+# ── 【回归护栏】reload 污染必须被还原 ──────────────────────────────────────
+# 两个用例**成对**使用(依赖 pytest 同文件内的定义顺序):前一个故意往
+# DEFAULT_CONFIG 里塞哨兵键,后一个断言它已被清掉。
+#
+# 【为什么能真击杀】本文件的 reload 会把 DEFAULT_CONFIG 改成怪值却不还原;负责
+# 复位的是 ``tests/conftest.py::_isolate_config``(autouse,每用例前后把
+# DEFAULT_CONFIG 就地还原 + 重灌全局配置)。把那里的还原逻辑去掉,哨兵键就会留在
+# 模块级 DEFAULT_CONFIG 里(monkeypatch 管不到它)→ 第二个用例必红。这是"污染是否
+# 被还原"的直接判据,不依赖真实 .env 取值(CI 无 .env 时 backend_url 本就是 None,
+# 用真实键断言不可移植)。
+_SENTINEL = "__env_overrides_leak_probe__"
+
+
+def test_reload_pollution_plants_sentinel():
+    """故意制造模块级污染(模拟 ``importlib.reload`` 改 DEFAULT_CONFIG 的效果)。"""
+    default_config_module.DEFAULT_CONFIG[_SENTINEL] = "dirty"
+
+
+def test_reload_pollution_is_rolled_back():
+    """【护栏】上一条用例的污染必须已被 fixture 清掉。
+
+    若此条变红 ⇒ autouse fixture 失效 ⇒ 本文件会把脏配置(实测是
+    ``backend_url=None``)经 conftest 的 ``_isolate_config`` 灌进全局配置,导致
+    后续文件里 ``web_app.create_llm_client(provider, model)`` 抛
+    ``ValueError: Provider 'openai_compatible' requires a base_url``
+    (即"rag 用例全量必红、单跑全绿"的假象源头)。
+    """
+    assert _SENTINEL not in default_config_module.DEFAULT_CONFIG

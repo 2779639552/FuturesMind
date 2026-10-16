@@ -233,6 +233,10 @@ class TestIngestOneIdempotency:
         # 否则 from database import get_db 拿到的是已绑定 self 的方法,get_db() 会多传一参。
         database_mod = types.ModuleType("database")
         database_mod.get_db = lambda: db
+        # 【2026-09-29】_ingest_one 现在还会 import guess_report_type(reportType 缺失时
+        #   回退标题启发式);桩模块必须一并暴露,否则 ImportError 让整个用例红。
+        import database as _real_database
+        database_mod.guess_report_type = _real_database.guess_report_type
         web_app_mod = types.ModuleType("web_app")
         web_app_mod.RESEARCH_UPLOAD_DIR = tmp_path
         web_app_mod._process_research_report = web._process_research_report
@@ -396,13 +400,13 @@ class TestWeeklyChannel:
 
 class TestModuleConstants:
     def test_target_varieties_is_active_pool(self):
-        """2026-09-09 品种池收缩:TARGET 统一引用 ACTIVE_VARIETIES(20 品种)。"""
+        """品种池:TARGET 统一引用 ACTIVE_VARIETIES(2026-09-30 起 21 品种,含 P 棕榈油)。"""
         from tradingagents.dataflows.commodity_futures import ACTIVE_VARIETIES
 
         assert set(rc.TARGET_VARIETIES) == set(ACTIVE_VARIETIES)
-        assert len(rc.TARGET_VARIETIES) == 20
+        assert len(rc.TARGET_VARIETIES) == 21
         # 池内新入品种的别名表必须齐备(标题兜底匹配依赖)
-        for code in ["M", "CF", "CJ", "LH", "BZ", "BR", "PS", "SI"]:
+        for code in ["M", "CF", "CJ", "LH", "BZ", "BR", "PS", "SI", "P"]:
             assert code in rc.CODE_ALIASES
 
     def test_sh_is_caustic_not_synthetic_rubber(self):

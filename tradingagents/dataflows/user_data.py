@@ -24,9 +24,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 USER_DATA_DIR = Path.home() / ".tradingagents" / "user_datasets"  # 【变量】自传数据文件落盘目录
 MAX_USER_DATASET_ROWS = 2000  # 【变量】单文件归一化行数上限(超出截断并在 notes 标注)
@@ -245,10 +248,102 @@ def ingest_file(dataset_id: int, file_path: str, filename: str, hint_variety: st
         )
     except Exception as e:  # 任何失败都落 status=error,前端可见原因
         db.update_user_dataset(dataset_id, status="error", error=str(e)[:300])
+        return
+    # 【上传后自检】2026-09-29:入库成功 ≠ 注入有效。渲染一次注入文本核出静默缺陷
+    # (尾部取样踩脏区导致注入表格大片空白,而 status 一直 done、无任何报错)。
+    # 单独兜异常:体检失败绝不能把已成功的解析结果带崩成 error。
+    try:
+        warning = _self_check_dataset(db.get_user_dataset(dataset_id) or {})
+        if warning:
+            db.update_user_dataset(dataset_id, ingest_warning=warning)
+            logger.warning("自传数据 %s 入库自检告警: %s", dataset_id, warning)
+    except Exception:
+        logger.warning("自传数据 %s 入库自检异常(不影响解析结果)", dataset_id, exc_info=True)
+
+
+# 【变量】判定日期列的候选列名(规格没给对时的兜底;吸收多块表格的表头漂移)
+_DATE_COL_CANDIDATES = ("Code", "Unnamed: 0", "AssessDate", "Date", "date",
+                        "日期", "时间", "交易日", "DateTime", "Datetime")
+
+
+def _parseable_date(val) -> bool:
+    """该值能否解析成日期(与 _norm_date 同套格式,只判真假不改写值)。"""
+    s = str(val).strip() if val is not None else ""
+    if not s:
+        return False
+    try:
+        datetime.fromisoformat(s.replace("/", "-").replace(".", "-"))
+        return True
+    except ValueError:
+        pass
+    for fmt in ("%Y/%m/%d %H:%M", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d"):
+        try:
+            datetime.strptime(s, fmt)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+def _is_data_row(row: dict, date_col: str, cols=None) -> bool:
+    """该行属于本数据集吗(真实数据行 vs 表头/单位/别的数据块的行)?
+
+    【为什么需要】read_file_rows 只按首个 sheet 的首行定表头:当同一 sheet 里
+    横排了第二块**列结构不同**的数据时,入库行里会混进「表头文本行 / 单位行 /
+    另一块数据的行」—— 这些行在本数据集的列名(cols)下取值全为 None。
+    若按位置取尾 N 行,恰好踩在这片脏区,注入给分析师的表格会大片空白。
+    【判据】(1) 在 cols 上至少有一个非空值(列结构一致);且
+            (2) 规格给的 date_col 值可解析为日期 —— 若不能,再试候选日期列
+                (表头漂移时真正的日期列可能叫 Code/Unnamed: 0/日期 等)。
+    【兜底】cols 未传 或 数据集确无日期列时,退化为「是否有任一非空值」。
+    【注意】两个条件都必须满足:'AssessDate' 这种表头文本行在 cols 上有值
+            (非空)但日期不可解析;而别的数据块的行日期可解析却在 cols 上全空。
+    """
+    if cols:
+        if not any(row.get(c) is not None for c in cols):
+            return False  # 列结构对不上 ⇒ 不是本数据集的行
+    if not date_col:
+        if cols:
+            return True  # 无日期列:能在本列结构上取到值即视为数据行
+        return any(v is not None for v in row.values())
+    if _parseable_date(row.get(date_col)):
+        return True
+    for cand in _DATE_COL_CANDIDATES:
+        if cand != date_col and cand in row and _parseable_date(row.get(cand)):
+            return True
+    return False
+
+
+def _tail_data_rows(rows: list[dict], date_col: str, cols, n: int) -> list[dict]:
+    """从尾部倒扫取最近 n 个**真实数据行**(保持原顺序);全是脏行时退回最后 n 行。"""
+    real = [r for r in rows if _is_data_row(r, date_col, cols)]
+    if not real:
+        return rows[-n:]
+    return real[-n:]
+
+
+def _render_cols(rows: list[dict], spec: dict) -> list | None:
+    """注入表格用哪些列(与 _render_dataset_block 同口径,自检须共用防两套口径漂移)。
+
+    【关键逻辑】列名取材于首行的**键**(表头行的值不可用,但键与表头一致);
+                只保留规格里声明过的列或日期列;对不上时兜底首行前 8 个键。
+    """
+    if not rows:
+        return None
+    date_col = (spec.get("date_column") or "").strip()
+    col_specs = {c.get("name") for c in (spec.get("columns") or []) if isinstance(c, dict)}
+    cols = [c for c in rows[0] if c in col_specs or c == date_col]
+    if not cols:  # 规格列对不上(表头漂移)→ 兜底用首行全部键
+        cols = list(rows[0].keys())[:8]
+    return cols
 
 
 def _render_dataset_block(ds: dict) -> str:
-    """单个数据集 → 注入文本段(列说明 + 最近 N 行表格)。"""
+    """单个数据集 → 注入文本段(列说明 + 最近 N 行表格)。
+
+    【关键逻辑】列名与取样都以**真实数据行**为准:倒扫尾部取最近 N 个真实行,
+    跳过表头/单位/别块的行(否则注入表格大片空白,数据等于没注入)。
+    """
     try:
         spec = json.loads(ds.get("spec") or "{}")
         rows = json.loads(ds.get("data") or "[]")
@@ -258,9 +353,9 @@ def _render_dataset_block(ds: dict) -> str:
         return ""
     date_col = (spec.get("date_column") or "").strip()
     col_specs = {c.get("name"): c for c in (spec.get("columns") or []) if isinstance(c, dict)}
-    cols = [c for c in rows[0] if c in col_specs or c == date_col]
-    if not cols:  # 规格列对不上(表头漂移)→ 兜底用首行全部键
-        cols = list(rows[0].keys())[:8]
+    cols = _render_cols(rows, spec) or []
+    real = [r for r in rows if _is_data_row(r, date_col, cols)]
+    recent = _tail_data_rows(rows, date_col, cols, MAX_RENDER_ROWS)
     lines = [
         f"### 数据集:《{ds.get('filename')}》({ds.get('data_type') or '未分类'};"
         f"{spec.get('frequency') or '频率未知'};共 {len(rows)} 行)"
@@ -273,19 +368,80 @@ def _render_dataset_block(ds: dict) -> str:
         lines.append("列含义: " + ";".join(meanings))
     if spec.get("notes"):
         lines.append(f"口径说明: {spec['notes']}")
-    recent = rows[-MAX_RENDER_ROWS:]
     lines.append("| " + " | ".join(cols) + " |")
     lines.append("|" + "---|" * len(cols))
     for r in recent:
         lines.append("| " + " | ".join("" if r.get(c) is None else str(r.get(c)) for c in cols) + " |")
-    if len(rows) > MAX_RENDER_ROWS:
-        first_d = rows[0].get(date_col, "") if date_col else ""
-        last_d = recent[0].get(date_col, "") if date_col else ""
+    n_data = len(real) or len(rows)
+    if n_data > MAX_RENDER_ROWS:
+        first_d = (real[0] if real else rows[0]).get(date_col, "") if date_col else ""
+        last_d = recent[-1].get(date_col, "") if date_col else ""
         lines.append(
-            f"(仅展示最近 {MAX_RENDER_ROWS} 行;完整 {len(rows)} 行自 {first_d} 至 {last_d},"
+            f"(仅展示最近 {len(recent)} 行;有效数据 {n_data} 行自 {first_d} 至 {last_d},"
             "分析请以整体趋势与最新值为准)"
         )
     return "\n".join(lines)
+
+
+def _self_check_dataset(ds: dict) -> str:
+    """上传后自检:真的渲染一次注入文本,核出可疑就返回告警文案(无问题返回 "")。
+
+    【为什么需要】入库成功(status=done)不等于**注入有效**。真实案例
+    (Data_Platts.xlsx,2026-09-29):文件里横排了列结构不同的第二块数据,尾部
+    12 行取样踩进脏区 → 注入给分析师的表格 8/12 行全空、页脚只剩 "AssessDate 至"
+    —— 状态一直是 done、没有任何报错,系统"看起来在工作"却等于没注入。
+    【检查项】
+      ① 文件里混入的非本数据集行(表头/单位/其他数据块的横排行)有多少 ——
+         这些行会被取样器跳过,**注入不受影响**,但用户该知道自己的文件里
+         揉进了别的内容(常见于一个 sheet 横排两块数据的导出);
+      ② 注入取样里有没有**整行全空**的行 —— 取样器一旦退化(改回按位置取尾 N 行)
+         就会重现真实缺陷,这一项是那道回归的探测器;
+      ③ 日期列没取到有效值(页脚只剩 "至")或全库无真实数据行 —— 注入了等于没注入。
+    【纪律】只读不改 —— 不改 ds 的 data/spec,不参与归一化,纯粹体检。
+    【失败模式】任何异常都返回 "",绝不因体检把解析结果带崩(与 render_user_data_context
+                同纪律:自检是附加能力,不是链路的一环)。
+    """
+    try:
+        spec = json.loads(ds.get("spec") or "{}")
+        rows = json.loads(ds.get("data") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not rows:
+        return "解析结果为空:没有读到任何数据行。"
+    date_col = (spec.get("date_column") or "").strip()
+    cols = _render_cols(rows, spec) or list(rows[0].keys())[:8]
+    real = [r for r in rows if _is_data_row(r, date_col, cols)]
+    recent = _tail_data_rows(rows, date_col, cols, MAX_RENDER_ROWS)
+    warns: list[str] = []
+    if not real:
+        # 一行都认不出来 ⇒ 注入等于没注入,这一条覆盖"日期列全不可解析"与"列名对不上"
+        warns.append(
+            f"没有识别出可注入的真实数据行(共 {len(rows)} 行):日期列 "
+            f"'{date_col or '未指定'}' 未取到可解析的日期,列名可能与实际表头不符"
+        )
+    else:
+        skipped = len(rows) - len(real)
+        if skipped:
+            warns.append(
+                f"文件里有 {skipped} 行不属于本数据集的内容(表头/单位/其他数据块),"
+                f"已自动跳过;注入使用 {len(real)} 行真实数据"
+            )
+        blanks = sum(1 for r in recent if all(r.get(c) is None for c in cols))
+        if blanks:
+            warns.append(
+                f"注入取样有 {blanks}/{len(recent)} 行整行空白(通常是文件里混了列结构不同的数据块)"
+            )
+        if date_col and recent:
+            first_d = real[0].get(date_col)
+            last_d = recent[-1].get(date_col)
+            if not _parseable_date(first_d) or not _parseable_date(last_d):
+                # 独立于上一条:行是靠**候选列**的日期被认出来的,而规格给的
+                # date_col 本身取不到值(日期列名认错)⇒ 页脚会渲染成无意义文本。
+                warns.append(
+                    f"页脚日期无法解析(自 {first_d} 至 {last_d}):日期列 '{date_col}' "
+                    "未取到有效值,实际日期可能藏在别的列里"
+                )
+    return ";".join(warns)
 
 
 def render_user_data_context(variety: str, client_tag: str = "") -> str:

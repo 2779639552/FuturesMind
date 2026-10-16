@@ -18,6 +18,12 @@ def clean_records(records: list[dict], verbose: bool = True) -> list[dict]:
     Checks:
       1. 必要字段缺失 → 跳过
       2. publish_time 异常(未来/太久远) → 跳过
+         【2026-09-17 补充 · 防线分工】这里的**区间闸**拦不住"落在
+         [min_valid_date, max_future] 区间内的垃圾时间戳" —— 实测 xhs 有 4 条
+         被 UUID 前缀算成 2020/2022/2024 年(看似合法的过去日期),区间闸放行。
+         区间内的错误值只能靠**上游解码器的格式白名单**拦:
+         xhs_scraper.decode_objectid_timestamp(只认 24 位 hex 的 ObjectId)。
+         两层缺一不可,不要删任何一层。
       3. sentiment_score 超出[-1,1] → 截断
       4. author_fans 异常值(负数/过大) → 修正
       5. like_count/comment_count 缺失 → 填0

@@ -66,15 +66,35 @@ def get_db() -> "AgentSenseDB":
     return _local.db
 
 
-# 【功能】按标题启发式猜研报类型(日报/周报),给无类型信号的采集源与存量回填共用。
-# 【关键逻辑】顺序敏感:先判「日报」再判周报类 —— "碳酸锂日报…周度去库"这类日报
-#           标题含"周度"子串,先判日报才不会误判成周报;都不含 → ''(未知,待 LLM 自愈)。
+# 【功能】按标题启发式猜研报类型(日报/周报/季报),给无类型信号的采集源与存量回填共用。
+# 【关键逻辑】顺序敏感:先判「日报」→「周报」→ 最后才判季报 ——
+#           ① "碳酸锂日报…周度去库"这类日报标题含"周度"子串,先判日报才不会误判成周报;
+#           ② "XX周报…季度展望"这类周报标题含"季度",先判周报才不会误判成季报;
+#           ③ 季报判据:「季报/季刊/季度」字样,或 Q1~Q4 / 第X季度 标识。
+#              判据放在日报/周报之后是因为它们更强:实测"XX周报:二季度供需展望"这类
+#              周报标题含"季度",若不先判周报会被误判成季报(已用全库标题回归验证)。
+#              含 bare「季度」是必要的:真季报里存在"海外铅锌矿企业季度运营分析"这类
+#              **没有 Q 标识**的标题;全库实测该规则精确命中 2 条真季报、零误伤。
+#           都不含 → ''(未知,待 LLM 自愈)。
+def _season_q_re():
+    """季报季度标识正则（惰性编译,避免在模块顶部新增 import）。"""
+    global _SEASON_Q_RE
+    try:
+        _SEASON_Q_RE
+    except NameError:
+        import re as _re
+        _SEASON_Q_RE = _re.compile(r"[Qq][1-4](?![0-9])|第[一二三四1-4]季度")
+    return _SEASON_Q_RE
+
+
 def guess_report_type(title: str) -> str:
     t = title or ""
     if "日报" in t:
         return "日报"
     if "周报" in t or "周度" in t or "周刊" in t:
         return "周报"
+    if "季报" in t or "季刊" in t or "季度" in t or _season_q_re().search(t):
+        return "季报"
     return ""
 
 
@@ -124,10 +144,29 @@ class AgentSenseDB:
                 self._backfill_report_type(c)
             if cols and "layout_text" not in cols:
                 c.execute("ALTER TABLE research_reports ADD COLUMN layout_text TEXT DEFAULT ''")
+            if cols and "file_deleted" not in cols:
+                # 【2026-09-11 需求三】研报原件 14 天清理后置 1(原件已删,结论/聚合/RAG 保留)。
+                c.execute("ALTER TABLE research_reports ADD COLUMN file_deleted INTEGER DEFAULT 0")
+            if cols and "processing_started_at" not in cols:
+                # 【2026-09-17】处理起点(UTC,= _process_research_report 进入时刻)。
+                # 为什么需要:采集器在**独立进程**里 insert + 同步处理,其崩溃后行会永远
+                # 停在 processing,而 web 进程对"这份行正被别的进程处理"一无所知——
+                # 只看 status 无法区分「真在跑」与「留下的僵尸」。有此列后,web 侧的
+                # 僵尸回收线程可判"processing 且起点已远早于现在 ⇒ 处理者已死"。
+                c.execute("ALTER TABLE research_reports ADD COLUMN processing_started_at TEXT DEFAULT ''")
+            if cols and "source_url" not in cols:
+                # 【2026-09-21】外部源的原始文章链接(首个使用者:公众号「合集」采集)。
+                # 为什么需要:research_reports 此前**没有任何 url 列**,外部源接入后
+                # 既无法标注出处、也无法判重 —— 每轮采集都会重复入库、重复烧 LLM。
+                c.execute("ALTER TABLE research_reports ADD COLUMN source_url TEXT DEFAULT ''")
             # qa_messages.feedback(2026-09-14 自进化 P0:👍👎 反馈信号,错题本数据源)
             qa_cols = {row[1] for row in c.execute("PRAGMA table_info(qa_messages)").fetchall()}
             if qa_cols and "feedback" not in qa_cols:
                 c.execute("ALTER TABLE qa_messages ADD COLUMN feedback TEXT DEFAULT ''")
+            # user_datasets.ingest_warning(2026-09-29 上传后自检:done 但注入段可疑时的告警)
+            ud_cols = {row[1] for row in c.execute("PRAGMA table_info(user_datasets)").fetchall()}
+            if ud_cols and "ingest_warning" not in ud_cols:
+                c.execute("ALTER TABLE user_datasets ADD COLUMN ingest_warning TEXT DEFAULT ''")
 
     def _backfill_report_type(self, c):
         """存量研报类型(日报/周报)回填(加列后立即执行,幂等可重跑)。
@@ -331,6 +370,7 @@ class AgentSenseDB:
                     ingest_source TEXT DEFAULT 'manual',  -- 入库来源:manual=网页人工上传 / auto=采集/本地批量接入(数据仓库"研报库"来源徽标用)
                     title TEXT DEFAULT '',
                     source TEXT DEFAULT '',
+                    source_url TEXT DEFAULT '',        -- 原始文章链接(公众号「合集」采集等外部源;空=无)
                     filename TEXT DEFAULT '',
                     file_path TEXT DEFAULT '',
                     status TEXT DEFAULT 'processing',  -- processing / done / error
@@ -342,11 +382,40 @@ class AgentSenseDB:
                     confidence REAL,
                     error TEXT DEFAULT '',
                     publish_date TEXT DEFAULT '',      -- 研报真实发布日期(YYYY-MM-DD,采集源接口/LLM 抽取回填;空则日期分组回退 uploaded_at)
-                    report_type TEXT DEFAULT '',       -- 研报类型:日报/周报(采集源 tag/reportType/标题启发式/LLM 抽取;空=未知)
+                    report_type TEXT DEFAULT '',       -- 研报类型:日报/周报/季报(采集源 tag/reportType/标题启发式/LLM 抽取;空=未知)
                     uploaded_at TEXT DEFAULT (datetime('now')),
-                    created_at TEXT DEFAULT (datetime('now'))
+                    created_at TEXT DEFAULT (datetime('now')),
+                    file_deleted INTEGER DEFAULT 0,     -- 原件 14 天清理后置 1(结论/聚合/RAG 保留,2026-09-11)
+                    processing_started_at TEXT DEFAULT ''  -- 处理起点(UTC):判"真在跑"还是"僵尸行"的凭据(2026-09-17)
                 );
                 CREATE INDEX IF NOT EXISTS idx_research_variety ON research_reports(variety);
+
+                CREATE TABLE IF NOT EXISTS news (               -- 新闻速递(2026-09-22 彭博公开新闻聚合):独立于研报/情绪,不参与观点统计
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT DEFAULT '',            -- 数据源标识,如 '彭博-GoogleNews聚合'
+                    title TEXT DEFAULT '',
+                    url TEXT DEFAULT '',               -- 还原后的原文链接(如 www.bloomberg.com/...)
+                    google_url TEXT DEFAULT '',        -- Google News 跳转链接(备用/审计)
+                    published_at TEXT DEFAULT '',      -- 新闻发布时间(RSS pubDate,本地串)
+                    summary TEXT DEFAULT '',           -- RSS 摘要(去 HTML)
+                    varieties TEXT DEFAULT '',         -- 品种打标(逗号分隔;未命中=空)
+                    dedup_key TEXT DEFAULT '' UNIQUE,  -- 去重键(URL 归一 或 source|title|date 兜底)
+                    collected_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
+                CREATE TABLE IF NOT EXISTS research_summaries (  -- 两周前研报归档总结(2026-09-24):按(日期×品种)聚合,替代原文进 RAG
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sum_key TEXT NOT NULL UNIQUE,      -- 聚合键 '<publish_date>|<variety>'(去重/幂等)
+                    publish_date TEXT DEFAULT '',      -- 该组研报发布日
+                    variety TEXT DEFAULT '',           -- 品种代码
+                    report_ids TEXT DEFAULT '[]',      -- JSON 数组:该组覆盖的原研报 id
+                    sources TEXT DEFAULT '[]',         -- JSON 数组:来源机构(逗号展示)
+                    direction_summary TEXT DEFAULT '', -- 方向统计(如 '看多1/看空2/中性1')
+                    summary_md TEXT DEFAULT '',        -- 聚合总结(markdown, 头部元数据+各篇结论合并)
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_rsum_date ON research_summaries(publish_date DESC);
+                CREATE INDEX IF NOT EXISTS idx_rsum_variety ON research_summaries(variety);
                 CREATE TABLE IF NOT EXISTS user_datasets (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     filename TEXT DEFAULT '',          -- 原始文件名(展示用)
@@ -359,6 +428,7 @@ class AgentSenseDB:
                     row_count INTEGER DEFAULT 0,       -- 归一化后行数
                     status TEXT DEFAULT 'processing',  -- processing / done / error
                     error TEXT DEFAULT '',             -- 失败原因(status=error 时)
+                    ingest_warning TEXT DEFAULT '',    -- 入库自检告警(2026-09-29):done 但注入文本可疑时非空,前端黄标提示
                     created_at TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_user_datasets_variety ON user_datasets(variety);
@@ -667,13 +737,15 @@ class AgentSenseDB:
         【关键逻辑】status 初始为 'running',结束时由 finish_collection 改写。
         """
         with self._conn() as c:
-            cur = c.execute(  # 【关键 2026-09-10】lastrowid 在 cursor 上,Connection 没有 ——
-                # 旧写法 `return c.lastrowid` 必抛 AttributeError,导致调度管道四平台
-                # 采集在第一条日志写入即死(2026-09-07 10:00 同秒四错误,与本文件
-                # create_alert 旧错同款,当时漏改此处)
+            cur = c.execute(
                 "INSERT INTO collection_log (platform, keywords_count, status) VALUES (?, ?, 'running')",
                 (platform, keywords_count),
             )
+            # 【关键 2026-09-15】lastrowid 在 cursor 上,Connection 没有 —— 与 create_alert
+            # 2026-09-07 修的是同一个坑,但当时漏改了这里。旧写法 `return c.lastrowid` 每次
+            # 必抛 AttributeError,而 scheduler._run_platform_collection 在 try 之外调用它,
+            # 于是子进程 batch_collect.py 根本没机会启动,采集静默停摆(collection_log 恒空,
+            # 每日 08:00/18:00 四个平台各写一条 collection_error 告警,但管道仍报 complete)。
             return cur.lastrowid
 
     def finish_collection(
@@ -710,6 +782,52 @@ class AgentSenseDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_latest_collection_per_platform(self, scan: int = 500) -> dict[str, dict]:
+        """每个平台**各自最近一次**采集记录(按 started_at 倒序取首个)。
+
+        【功能】返回 {platform: 最近一条采集日志} 的映射,供健康检查判断
+                "当前哪些平台是坏的"。
+        【参数】scan: 最多扫描多少条历史记录(默认 500,足够覆盖每个平台多轮)。
+        【返回】dict[str, dict]: 平台名 → 采集日志字典。
+        【关键逻辑】
+            【为什么需要它】健康检查此前用"全局最近 N 条"(N=5)。该窗口跨平台混合:
+              - 一条失败会被**后续其他平台**的记录挤出去 → 判断"哪个平台坏了"过早丢失;
+              - 但两次采集之间(每天只有 08:00/18:00 两轮)又**没有任何新记录**,
+                那条失败会长期滞留在窗口里 → 每 30 分钟重复告警同一次失败。
+              改成"按平台取各自最新一条"后,语义才正确:某平台只要**下一次采集成功**,
+              它的失败状态就会被自然覆盖,不需要"把记录挤出窗口"。
+        """
+        latest: dict[str, dict] = {}
+        for row in self.get_collection_history(limit=scan):
+            p = row.get("platform")
+            if p and p not in latest:
+                latest[p] = row
+        return latest
+
+    def get_latest_alert(self, alert_type: str, hours: int | None = None) -> dict | None:
+        """取某类型最近一条告警(可选限定时间窗),用于**告警抑制**。
+
+        【功能】返回 alert_type 类型最近的一条告警;给了 hours 则只在该时间窗内查找。
+        【参数】alert_type: 告警类型(如 "health_warning")。
+                hours:      只查找最近 N 小时内的告警;None=不限时间。
+        【返回】dict | None: 告警字典;无匹配返回 None。
+        【关键逻辑】时间窗比较在 **SQL 里用 julianday('now')** 做,与 created_at 的
+                    CURRENT_TIMESTAMP(UTC) 同源,避免 Python 侧的本地时区/UTC 混算。
+        """
+        with self._conn() as c:
+            if hours is None:
+                row = c.execute(
+                    "SELECT * FROM alerts WHERE alert_type = ? ORDER BY id DESC LIMIT 1",
+                    (alert_type,),
+                ).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT * FROM alerts WHERE alert_type = ? "
+                    "AND created_at >= datetime('now', ?) ORDER BY id DESC LIMIT 1",
+                    (alert_type, f"-{int(hours)} hours"),
+                ).fetchone()
+        return dict(row) if row else None
+
     # ── Users / Auth ───────────────────────────────────────────────────
 
     def create_user(self, username: str, password: str, is_admin: bool = False) -> bool:
@@ -745,6 +863,21 @@ class AgentSenseDB:
                 "SELECT id FROM users WHERE username=? AND password_hash=?", (username, pwd_hash)
             ).fetchone()
         return row is not None
+
+    def update_password(self, username: str, new_password: str) -> bool:
+        """更新用户密码(调用方须已校验旧密码)。
+
+        【功能】将指定用户密码哈希更新为新密码的 SHA256 摘要。
+        【参数】username: 用户名;new_password: 新明文密码(内部立即哈希)。
+        【返回】bool: 更新成功返回 True,用户不存在返回 False。
+        【关键逻辑】绝不存明文;改密后旧密码立即失效(哈希整体替换)。
+        """
+        pwd_hash = hashlib.sha256(new_password.encode()).hexdigest()  # 【调用函数】SHA256 哈希新密码;【变量】pwd_hash:新密码摘要
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE users SET password_hash=? WHERE username=?", (pwd_hash, username)
+            )
+        return cur.rowcount > 0
 
     def ensure_default_user(self):
         """确保存在默认管理员账号(首次启动时自动创建)。
@@ -909,6 +1042,7 @@ class AgentSenseDB:
         ingest_source: str = "manual",
         publish_date: str = "",
         report_type: str = "",
+        source_url: str = "",
     ) -> int:
         """新增一条研报记录(状态默认 processing,由后台线程处理后更新)。
 
@@ -919,16 +1053,19 @@ class AgentSenseDB:
                 本地批量接入),数据仓库"研报库"据此打"上传/自动"来源徽标;
                 publish_date: 研报真实发布日期 YYYY-MM-DD(采集源接口自带;
                 空=未知,日期分组回退 uploaded_at 入库时间);
-                report_type: 研报类型('日报'/'周报',采集源 tag/reportType/标题
-                启发式;空=未知,LLM 第一步抽取后自愈补写)。
+                report_type: 研报类型('日报'/'周报'/'季报',采集源 tag/reportType/标题
+                启发式;空=未知,LLM 第一步抽取后自愈补写);
+                source_url: 原始文章链接(公众号「合集」采集等外部源;手动上传留空)。
         【返回】int: 新研报的自增 id(后台线程据此处理并回写)。
         """
         with self._conn() as c:
             cur = c.execute(  # 【变量】cur:插入游标(lastrowid 取新记录自增 id)
                 "INSERT INTO research_reports "
-                "(variety, title, source, filename, file_path, status, ingest_source, publish_date, report_type) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (variety, title, source, filename, file_path, status, ingest_source, publish_date, report_type),
+                "(variety, title, source, source_url, filename, file_path, status, "
+                " ingest_source, publish_date, report_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (variety, title, source, source_url, filename, file_path, status,
+                 ingest_source, publish_date, report_type),
             )
             return cur.lastrowid
 
@@ -945,6 +1082,7 @@ class AgentSenseDB:
             "title", "source", "variety", "filename", "file_path", "status",
             "extracted_text", "layout_text", "structured_data", "conclusion_md",
             "direction", "confidence", "error", "varieties", "publish_date", "report_type",
+            "file_deleted", "processing_started_at", "source_url",
         }
         sets, params = [], []
         for key, value in fields.items():
@@ -963,7 +1101,7 @@ class AgentSenseDB:
     def list_research_reports(
         self,
         variety: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
         ingest_source: str | None = None,
         report_type: str | None = None,
     ) -> list[dict]:
@@ -972,12 +1110,19 @@ class AgentSenseDB:
         【功能】获取研报列表;可按品种、入库来源(manual/auto)与类型
                 (日报/周报)组合过滤,默认返回最近 50 条。
         【参数】variety: 品种代码(可选);limit: 条数上限,默认 50;
+                **limit=None 表示不限条数(全部)**——⚠️ 不能靠 SQL `LIMIT NULL`,
+                那会 `datatype mismatch` 报错,必须真的不拼 LIMIT 子句;
                 ingest_source: 入库来源('manual'/'auto',可选);None 不过滤;
-                report_type: 研报类型('日报'/'周报',可选);None 不过滤。
+                report_type: 研报类型('日报'/'周报'/'季报',可选);None 不过滤。
         【返回】list[dict]: 研报记录字典列表(按 uploaded_at 倒序)。
         【关键逻辑】多品种研报的 varieties 列是逗号分隔列表;过滤时用
                    ','||varieties||',' 包裹后做 LIKE 精确匹配(避免 "RB"
                    误匹配到 "IRB")。旧行 varieties 为空时回退匹配主品种列。
+        【为什么有 limit=None】周期性列表(周报/季报的可用周期)必须扫**全表**筛选:
+                   研报逐日累积,固定 LIMIT 会把"久未出现"的类型整体挤出窗口
+                   —— 实测 LIMIT 500 只覆盖最近 8 天,季报 2 条被 **100% 漏掉**、
+                   周报 316 条丢 194 条(2026-09-29 实测),表现为前端"选季报
+                   什么都不显示"。(日报口径量大且天然贴近日,仍用 LIMIT。)
         """
         where, params = [], []
         if variety:
@@ -995,8 +1140,10 @@ class AgentSenseDB:
         sql = "SELECT * FROM research_reports"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY uploaded_at DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY uploaded_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
         with self._conn() as c:
             rows = c.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
@@ -1029,6 +1176,34 @@ class AgentSenseDB:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_research_report_by_external_key(self, key: str, source_url: str = "") -> dict | None:
+        """按「外部源去重键」查一条研报(公众号采集等外部源幂等用)。
+
+        【功能】先按 source_url 精确匹配;不中再按 filename 的「键_」前缀匹配。
+        【参数】key: 外部源稳定去重键(公众号 = biz_mid_idx,也是采集器写的文件名前缀);
+                source_url: 原始文章链接(可选)。
+        【返回】dict | None: 已入库的研报行,或 None。
+        【为什么】① 采集/入库崩溃发生在"md 已落盘 → DB 插入"之间时,只看文件是否
+                存在无法判重,必须以 DB 行为准(与 get_research_report_by_filename 同因);
+                ② 公众号的**签名链接(sn)有时效**,url 不适合当唯一键,故以 key 为准,
+                source_url 只作加速匹配(命中即省一次 LIKE);
+                ③ _ 在 LIKE 里是通配符,必须 ESCAPE 转义,否则键会串味。
+        【用途】每轮增量入库前判重 ⇒ 重复的正文不会再喂给 LLM。
+        """
+        with self._conn() as c:
+            row = None
+            if source_url:
+                row = c.execute(
+                    "SELECT * FROM research_reports WHERE source_url=?", (source_url,)
+                ).fetchone()
+            if row is None and key:
+                row = c.execute(
+                    "SELECT * FROM research_reports WHERE filename=? OR filename LIKE ? ESCAPE '\\' "
+                    "ORDER BY id LIMIT 1",
+                    (f"{key}_.md", f"{key}\\_%"),
+                ).fetchone()
+        return dict(row) if row else None
+
     def list_research_reports_since(self, since: str) -> list[dict]:
         """查询 uploaded_at >= since 的研报行(同名日报跨日去重用)。
 
@@ -1053,6 +1228,152 @@ class AgentSenseDB:
         """
         with self._conn() as c:
             cur = c.execute("DELETE FROM research_reports WHERE id=?", (report_id,))
+            return cur.rowcount > 0
+
+    def list_done_report_meta(self, limit: int = 5000) -> list[dict]:
+        """轻量取 done 研报的 {id, publish_date, varieties, report_type}(2026-09-22)。
+
+        【为什么】RAG 保底通道(_merge_recent_reports)原先每次 store.get_metadatas()
+        把全库 6,416 条 chunk metadata 拉一遍(占检索 72% 耗时);改为从 SQLite 直查
+        轻量 4 列注入,零全库扫描。**只取 4 列** —— list_research_reports 全列会拉
+        extracted_text 大字段(600 行 = 数 MB),不可用于每检索一次的高频路径。
+        【口径】status='done' 且 publish_date 非空,按日期倒序 —— 与旧逻辑"只记
+        publish_date 非空的行"完全一致。
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, publish_date, varieties, report_type FROM research_reports "
+                "WHERE status='done' AND publish_date != '' "
+                "ORDER BY publish_date DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── News 新闻速递(2026-09-22 彭博公开新闻聚合,独立于研报/情绪) ────────
+
+    def insert_news(self, item: dict) -> int | None:
+        """插入一条新闻;dedup_key 冲突时跳过(幂等)。返回新 id 或 None(重复)。
+
+        item 键:source/title/url/google_url/published_at/summary/varieties/dedup_key。
+        """
+        if not (item.get("title") or "").strip():
+            return None
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO news "
+                "(source, title, url, google_url, published_at, summary, varieties, dedup_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    (item.get("source") or "").strip(),
+                    (item.get("title") or "").strip(),
+                    (item.get("url") or "").strip(),
+                    (item.get("google_url") or "").strip(),
+                    (item.get("published_at") or "").strip(),
+                    (item.get("summary") or "").strip(),
+                    (item.get("varieties") or "").strip(),
+                    (item.get("dedup_key") or "").strip(),
+                ),
+            )
+            if cur.rowcount <= 0:
+                return None
+            return cur.lastrowid
+
+    def news_dedup_exists(self, dedup_key: str) -> bool:
+        """该去重键是否已存在(批量前预判用;入库本身仍靠 UNIQUE 兜底)。"""
+        if not dedup_key:
+            return False
+        with self._conn() as c:
+            r = c.execute("SELECT 1 FROM news WHERE dedup_key=? LIMIT 1", (dedup_key,)).fetchone()
+        return r is not None
+
+    def list_news(self, limit: int = 100, variety: str = "") -> list[dict]:
+        """取新闻列表,按发布时间倒序(published_at 为空回退 collected_at)。
+
+        【参数】variety: 品种代码(逗号串模糊匹配,空=全部)。
+        【返回】list[dict]: 新闻记录(id/source/title/url/published_at/summary/varieties/...)。
+        """
+        limit = max(1, min(int(limit or 100), 500))
+        sql = (
+            "SELECT * FROM news "
+            "ORDER BY COALESCE(NULLIF(published_at,''), collected_at) DESC LIMIT ?"
+        )
+        args: list = [limit]
+        if (variety or "").strip():
+            v = variety.strip().upper()
+            # 品种字段是逗号分隔串;用 LIKE '%<code>%' 做宽松匹配(单代码传入场景)
+            sql = sql.replace("ORDER BY", "WHERE varieties LIKE ? ORDER BY")
+            args = [f"%{v}%", limit]
+        with self._conn() as c:
+            rows = c.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_news(self) -> int:
+        with self._conn() as c:
+            return c.execute("SELECT COUNT(*) FROM news").fetchone()[0]
+
+    # ── Research Summaries(两周前研报归档总结, 2026-09-24) ──────────────
+
+    def upsert_research_summary(self, item: dict) -> int:
+        """按 sum_key 幂等写入一份(日期×品种)聚合总结。
+
+        【功能】INSERT ... ON CONFLICT(sum_key) DO UPDATE: 重复 sum_key 时**覆盖**
+                (2026-09-24 方案 B: 总结内容源从 conclusion_md 组装改为每日总结
+                裁剪, 换内容源后须覆盖旧版, 否则查询永远命中旧内容)。
+        【参数】item: {sum_key, publish_date, variety, report_ids(JSON str),
+                sources(JSON str), direction_summary, summary_md}。
+        【返回】int: 该总结行 id。
+        """
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO research_summaries "
+                "(sum_key, publish_date, variety, report_ids, sources, direction_summary, summary_md) "
+                "VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(sum_key) DO UPDATE SET "
+                "publish_date=excluded.publish_date, variety=excluded.variety, "
+                "report_ids=excluded.report_ids, sources=excluded.sources, "
+                "direction_summary=excluded.direction_summary, summary_md=excluded.summary_md",
+                (item["sum_key"], item.get("publish_date", ""), item.get("variety", ""),
+                 item.get("report_ids", "[]"), item.get("sources", "[]"),
+                 item.get("direction_summary", ""), item.get("summary_md", "")),
+            )
+            row = c.execute("SELECT id FROM research_summaries WHERE sum_key=?", (item["sum_key"],)).fetchone()
+            return row["id"] if row else 0
+
+    def list_research_summaries(self, variety: str = "", date_from: str = "", date_to: str = "") -> list[dict]:
+        """列总结(可按品种/日期范围过滤, 日期倒序)。"""
+        sql = "SELECT * FROM research_summaries WHERE 1=1"
+        args: list = []
+        if variety:
+            sql += " AND variety=?"
+            args.append(variety)
+        if date_from:
+            sql += " AND publish_date>=?"
+            args.append(date_from)
+        if date_to:
+            sql += " AND publish_date<=?"
+            args.append(date_to)
+        sql += " ORDER BY publish_date DESC, variety"
+        with self._conn() as c:
+            return [dict(r) for r in c.execute(sql, args)]
+
+    def count_research_summaries(self) -> int:
+        """统计总结总数。"""
+        with self._conn() as c:
+            return c.execute("SELECT COUNT(*) FROM research_summaries").fetchone()[0]
+
+    def delete_research_summary(self, sum_key: str) -> bool:
+        """按 sum_key 删除一份总结(重建用)。"""
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM research_summaries WHERE sum_key=?", (sum_key,))
+            return cur.rowcount > 0
+
+    def update_research_summarized(self, report_id: int) -> bool:
+        """软删归档: 把原研报行 status done → summarized(数据保留, 前端隐藏)。"""
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE research_reports SET status='summarized' WHERE id=? AND status='done'",
+                (report_id,),
+            )
             return cur.rowcount > 0
 
     # ── User Datasets(自传数据,2026-09-07) ─────────────────────────────
@@ -1081,7 +1402,8 @@ class AgentSenseDB:
     def list_user_datasets(self, variety: str | None = None,
                            client_tag: str | None = None) -> list[dict]:
         """自传数据列表(元数据,不含 data/spec 大字段);variety/client_tag 过滤可选。"""
-        sql = ("SELECT id, filename, variety, client_tag, data_type, row_count, status, error, created_at"
+        sql = ("SELECT id, filename, variety, client_tag, data_type, row_count, status, error,"
+               " ingest_warning, created_at"
                " FROM user_datasets")
         conds = []
         params: list = []

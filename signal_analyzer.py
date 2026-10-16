@@ -52,6 +52,7 @@ cross-platform divergence, author profiling, event extraction, simulated trading
 import json  # 【调用包】JSON 数据的读写与解析(情绪/趋势/价格文件均为 JSON)
 import math  # 【调用包】数值运算:标准差、开方、对数等指标计算
 import os  # 【调用包】环境变量/用户目录扩展(expanduser 定位外部数据目录)
+import time  # 【调用包】实时价格 TTL 缓存时间戳(2026-10-12 回测价格链修复)
 from collections import defaultdict  # 【调用包】按品种汇总统计时"键不存在则给默认值"
 from dataclasses import dataclass  # 【调用包】定义 TradeRecord 等定长数据类
 from datetime import datetime, timedelta  # 【调用包】日期解析与回测窗口天数计算
@@ -144,16 +145,77 @@ def _load_trends(variety: str) -> dict | None:
     return None
 
 
+# ── 实时价格链(2026-10-12 修复回测价格陈旧) ──────────────────────────────
+# 【背景】回测价格原先只读思路2 离线的 output/trends/*_price.json, 该产物已随
+#   旧管道停更(数据停在 2026-09-18)。现把"实时主连(akshare 后复权, 与看板 K 线
+#   同口径)"提升为第一优先源, 思路2 JSON 降级为兜底。
+# 【TTL】日频数据盘中不变 ⇒ 15 分钟足够; 进程内缓存防多策略并发重复拉。
+_PRICE_LIVE_CACHE: dict[str, tuple[float, dict | None]] = {}  # 【变量】variety → (时间戳, 解析结果)
+_PRICE_LIVE_TTL = 900  # 【变量】实时价格缓存 TTL(秒, 15min)
+_PRICE_LIVE_DAYS = 650  # 【变量】实时主连回看天数(覆盖回测默认窗口 2025-01-01 起)
+
+
+def _load_price_live(variety: str) -> dict | None:
+    """取实时主连日线(akshare 后复权, 与看板 K 线同口径), 转成与 trends 同构的
+    {prices, latest, date_range} 结构。
+
+    【失败语义】任何异常 → 返回 None, 调用方 _load_price 落回思路2 JSON 兜底。
+    【为什么延迟导入 quant_module】quant_module 在函数体内才 import signal_analyzer,
+      此处反向 import 必须也延迟, 否则循环导入。
+    """
+    now = time.time()
+    hit = _PRICE_LIVE_CACHE.get(variety)
+    if hit is not None and now - hit[0] < _PRICE_LIVE_TTL:
+        return hit[1]
+    out: dict | None = None
+    try:
+        from quant_module import _load_daily_bars  # 【调用包】延迟导入(同 K 线口径的日 K)
+
+        bars = _load_daily_bars(variety, days=_PRICE_LIVE_DAYS) or []
+        if len(bars) >= 20:  # 【阈值】不足 20 根视为取数失败, 避免拿残缺序列去回测
+            prices = []
+            prev_close = None
+            for b in bars:
+                close = float(b["close"])
+                chg = round((close - prev_close) / prev_close * 100, 2) if prev_close else 0.0
+                prices.append({
+                    "date": str(b["date"])[:10],
+                    "open": float(b["open"]),
+                    "high": float(b["high"]),
+                    "low": float(b["low"]),
+                    "close": close,
+                    "volume": float(b["volume"] or 0),
+                    "change_pct": chg,
+                    "open_interest": b.get("open_interest"),
+                })
+                prev_close = close
+            out = {
+                "prices": prices,
+                "latest": prices[-1],
+                "date_range": f"{prices[0]['date']} ~ {prices[-1]['date']}",
+                "source": "akshare-主连后复权(实时)",
+            }
+    except Exception:  # noqa: BLE001 - 实时源失败一律落回兜底, 不抛
+        logging.getLogger(__name__).warning("price live fetch failed (%s)", variety, exc_info=True)
+    _PRICE_LIVE_CACHE[variety] = (now, out)
+    return out
+
+
 def _load_price(variety: str) -> dict | None:
     """Load price JSON, trying multiple naming conventions.
 
-    【功能】读取某品种的"价格/OHLCV"JSON 文件(位于 THINK2_TRENDS 目录)。
+    【功能】读取某品种的"价格/OHLCV"数据。**2026-10-12 起第一优先 = 实时主连**
+    (akshare 后复权, 与看板 K 线同口径, 新鲜到最近交易日);实时源失败/无数据时
+    回退思路2 离线产物 output/trends/*_price.json(旧管道已停更, 仅作兜底)。
     【参数】variety:品种代码,如 "RB" / "HC"。
-    【返回】解析后的 dict;所有尝试都失败时返回 None。
-    【关键逻辑】fallback 顺序与 _load_trends 完全同构,只是把文件名后缀从
-    "_sentiment" 换成 "_price",仍是 4 级:①代码名 → ②meta 中文全称 →
-    ③显式别名 → ④glob 扫描。三级(实际四级)兜底保证按代码尽量拿到行情。
+    【返回】解析后的 dict({prices/latest/date_range[+source]});所有尝试都失败时返回 None。
+    【关键逻辑】实时源命中即返回;否则 fallback 顺序与 _load_trends 完全同构,仍是
+    4 级:①代码名 → ②meta 中文全称 → ③显式别名 → ④glob 扫描。
     """
+    live = _load_price_live(variety)  # 【调用函数】源0: 实时主连(2026-10-12 新增)
+    if live is not None:
+        return live
+
     path = THINK2_TRENDS / f"{variety}_price.json"  # 【变量】候选路径①:直接代码名
     if path.exists():
         with open(path, encoding="utf-8") as f:
@@ -4468,7 +4530,7 @@ def get_all_variety_scores() -> list[dict]:
     百分比整数(bull*100)供前端画占比条。
     """
     varieties = []  # 【变量】全品种得分记录列表(按 |score| 降序)
-    # 【品种池】2026-09-09 起排行榜只出 ACTIVE_VARIETIES(20 品种);池外文件保留不删
+    # 【品种池】2026-09-09 起排行榜只出 ACTIVE_VARIETIES(21 品种);池外文件保留不删
     from tradingagents.dataflows.commodity_futures import ACTIVE_VARIETIES  # 【调用包】活跃品种池
     for f in sorted(SENTIMENT_DIR.glob("*_sentiment.json")):
         var = f.stem.replace("_sentiment", "")  # 【变量】由文件名反推品种代码

@@ -1,8 +1,8 @@
-"""research_collector_htfc.py — 华泰期货官方天玑研报自动接入(能化 21 品种 日报+周报)
+"""research_collector_htfc.py — 华泰期货官方天玑研报自动接入(能化 21 品种 日报+周报+月报)
 
 【模块角色】
   每天开盘前从华泰期货官方"天玑"平台(ent.htfc.com)拉取 21 个目标品种
-  (能化板块 19 码 + 碳酸锂 LC + 液化石油气 PG)的当日研报日报与近一周周报,
+  (能化板块 19 码 + 碳酸锂 LC + 液化石油气 PG)的当日研报日报、近一周周报与近 45 天月报,
   写入本机研报库并复用 web_app._process_research_report 的 LLM 提取链路
   (结构化 + 观点 → research_reports 表 + 按品种聚合 JSON)。这是 fxbaogao 上
   "华泰期货"刮取源被下架后,改走的官方数据源(正文全文、无需 PDF 下载,
@@ -22,6 +22,9 @@
       · 周报集中在周日/周一发布 ⇒ 当日过滤必漏(周一跑漏掉周末的),
         故用 WEEKLY_WINDOW_DAYS=10 回看窗口;跨次重跑由 seen 状态去重兜底。
       · 实测 totalRows 19211,reportType 字段值='周报'。
+    - 栏目 月报 = /bus/report/specificList?item_value=10073(2026-10-08 实测)
+      · 月报集中在月末/月初发布 ⇒ 用 MONTHLY_WINDOW_DAYS=45 回看窗口。
+      · 实测首条 reportType 字段值='月报'(如华泰期货国债月报20261007)。
     - 列表项字段(两频道一致):id(RE…)、itemValue(10070)、reportType
       (日报/周报)、publishDateTime、subclassCodeName(中文品种,逗号分隔,可多品种)。
     - 详情 = /bus/report/reportInfo?articleId&itemValue=10070
@@ -31,9 +34,9 @@
   TARGET_VARIETIES = 能化 19(TA MA FG BU SA EB V PP L EG PX UR PF SC LU FU
   RU NR SH)+ LC + PG。subclassCodeName 按 token 精确匹配(拆 [，,、;；/] 及空白),
   标题作兜底(子串;拉丁别名词边界,挡 "FU" 命中 English "Futures")。
-  日报(当日)与周报(近 10 天)**独立**逐品种挑最新一篇 —— 同一品种可同时进
-  日报与周报两篇(分别喂饱每日总结与周报总结两种口径),多品种报告被首个
-  品种认领后进 union,按 articleId 去重。
+  日报(当日)、周报(近 10 天)与月报(近 45 天)**独立**逐品种挑最新一篇 ——
+  同一品种可同时进日报/周报/月报多篇(分别喂饱对应口径总结),多品种报告被
+  首个品种认领后进 union,按 articleId 去重。
 
 【正文过短剔除】
   去标签后正文 <200 字符(简讯/仅标题类)跳过不入库——不产生 error 行。
@@ -49,7 +52,7 @@
     python research_collector_htfc.py --date 2026-09-02  # 指定日期(回补)
     python research_collector_htfc.py --dry-run          # 只打印命中不写库
     python research_collector_htfc.py --variety SC BU    # 只接指定品种(测试用)
-    python research_collector_htfc.py --channel 周报     # 只接周报频道(缺省=日报+周报)
+    python research_collector_htfc.py --channel 月报     # 只接月报频道(缺省=日报+周报+月报)
     python research_collector_htfc.py --reset-state      # 清 seen(强制重跑)
 """
 
@@ -74,8 +77,10 @@ SOURCE_ORG = "华泰期货"  # 【变量】机构名(研报库目录 + source �
 SOURCE_LABEL = "华泰期货-天玑"  # 【变量】入库 source(区别于 fxbaogao 时代的"发现报告-华泰期货")
 FEED_CHANNEL_DAILY = "10074"  # 【变量】天玑 栏目 日报 的 item_value(实测)
 FEED_CHANNEL_WEEKLY = "10075"  # 【变量】天玑 栏目 周报 的 item_value(ptypes_v2 articleTypeList,2026-09-07 实测)
+FEED_CHANNEL_MONTHLY = "10073"  # 【变量】天玑 栏目 月报 的 item_value(2026-10-08 实测:10073 首条即月报,10074=日报,10075=周报)
 FEED_ITEM_VALUE = FEED_CHANNEL_DAILY  # 【变量】兼容别名(历史外部引用=日报频道)
 WEEKLY_WINDOW_DAYS = 10  # 【变量】周报回看窗口(天):周报集中在周日/周一发布,"上周日→本周一"最大跨 8 天,窗口 7 会漏 → 10 天留裕量;seen 去重 + 每品种只取最新,放大无副作用
+MONTHLY_WINDOW_DAYS = 45  # 【变量】月报回看窗口(天):月报集中在月末/月初发布,回看 45 天覆盖上月末(如 10-07 发布 10 月月报);seen 去重 + 每品种只取最新
 DETAIL_ITEM_DEFAULT = "10070"  # 【变量】详情默认 itemValue(实测列表项即为此值,两频道一致)
 PAGE_SIZE = 100  # 【变量】列表单次拉取条数(实测 curPage 不分页,大 pageSize 才覆盖当日)
 MIN_BODY_CHARS = 200  # 【变量】正文最小可见字符数(去标签后),低于则跳过不入库
@@ -83,8 +88,8 @@ MAX_SEEN = 1000  # 【变量】状态文件 seen 列表上限(滚动丢弃最旧
 PARALLEL_WORKERS = 4  # 【变量】并行处理线程数(LLM 账户并发上限 5,每篇同时只挂 1 个调用,4 并发安全;21 篇 ~15min)
 _STATE_LOCK = threading.Lock()  # 【变量】状态文件落盘互斥锁(并行线程逐篇 persist)
 
-# 【变量】目标品种代码:2026-09-09 起统一引用 ACTIVE_VARIETIES(20 品种池,与
-# GTJA/全项目同一口径),不再各自手抄清单;华泰不发池内部分品种时自然无数据。
+# 【变量】目标品种代码:2026-09-09 起统一引用 ACTIVE_VARIETIES(2026-09-30 起 21 品种池,
+# 含 P 棕榈油,与 GTJA/全项目同一口径),不再各自手抄清单;华泰不发池内部分品种时自然无数据。
 from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】活跃品种池
     ACTIVE_VARIETIES,
 )
@@ -123,6 +128,7 @@ CODE_ALIASES = {
     "CJ": ("红枣", "CJ"),
     "LH": ("生猪", "LH", "猪价"),
     "PG": ("LPG", "液化石油气", "PG"),
+    "P": ("棕榈油", "棕榈", "P", "马棕", "棕油"),  # 2026-09-30 入池
 }
 
 # 【变量】长别名遮蔽串(标题兜底用):子串重叠会误命中——'合成橡胶'是泛称(BR 走
@@ -202,6 +208,23 @@ def fetch_today_items(target_date: str) -> list[dict]:
     【返回】当日项列表(同 _fetch_channel_items 字段)。
     """
     return _fetch_channel_items(FEED_CHANNEL_DAILY, lambda pub: pub == target_date)
+
+
+def fetch_monthly_items(target_date: str, window_days: int = MONTHLY_WINDOW_DAYS) -> list[dict]:
+    """拉月报频道最近 window_days 天(含目标日期当日)的列表。
+
+    【参数】target_date: "YYYY-MM-DD";window_days: 回看窗口天数(默认 45)。
+    【返回】窗口内项列表(同 _fetch_channel_items 字段)。
+    【关键逻辑】月报集中在月末/月初发布,若只过滤"当日"则月初跑必漏上月发布的
+              月报 ⇒ 窗口 [target_date-(window_days-1), target_date] 闭区间;
+              跨次重跑的重复接由 seen 状态(articleId)去重兜底,窗口放大无副作用。
+    """
+    end = datetime.strptime(target_date, "%Y-%m-%d").date()
+    start = end.fromordinal(end.toordinal() - (window_days - 1))
+    start_s, end_s = start.isoformat(), end.isoformat()
+    return _fetch_channel_items(
+        FEED_CHANNEL_MONTHLY, lambda pub: start_s <= pub <= end_s
+    )
 
 
 def fetch_weekly_items(target_date: str, window_days: int = WEEKLY_WINDOW_DAYS) -> list[dict]:
@@ -390,7 +413,7 @@ def _ingest_one(item: dict, body: str, dry_run: bool = False) -> bool:
         print(f"    ! {item['id']} {item['title'][:40]} 正文过短({len(body)}字符),跳过")
         return False
 
-    from database import get_db  # 【调用包】数据库实例(落 research_reports 表)
+    from database import get_db, guess_report_type  # 【调用包】数据库实例(落 research_reports 表) + 标题启发式类型
     from web_app import (  # 【调用包】研报存储目录 + 后台处理函数
         RESEARCH_UPLOAD_DIR,
         _process_research_report,
@@ -428,7 +451,10 @@ def _ingest_one(item: dict, body: str, dry_run: bool = False) -> bool:
             file_path=str(file_path),
             ingest_source="auto",  # 【来源】华泰天玑自动采集入库(数据仓库"研报库"徽标=自动)
             publish_date=str(item.get("publishDateTime") or "")[:10],  # 【发布日期】接口自带,与目标日期一致
-            report_type=str(item.get("reportType") or "").strip(),  # 【类型】接口 reportType 字段现成(日报/周报,直接接前端总结口径)
+            # 【类型】接口 reportType 字段现成(日报/周报/季报,直接接前端总结口径);
+            #        字段缺失时回退标题启发式(季报标题常带 Q1~Q4/季度,不然落空进不了季报口径)
+            report_type=(str(item.get("reportType") or "").strip()
+                         or guess_report_type(item.get("title") or "")),
         )
     _process_research_report(report_id)  # 【调用函数】复用 web_app 后台处理(LLM 提取 → 落库 → 写聚合)
     print(f"    + {item['id']} {item['title'][:50]} -> report_id={report_id}")
@@ -453,7 +479,7 @@ def ingest_today(target_date: str, requested: set[str] | None = None, dry_run: b
     """
     state = {} if reset_state else _load_state()
     seen = set(state.get("seen") or [])
-    want = channels or {"日报", "周报"}  # 【变量】本次要接的栏目集合(缺省两频道都接)
+    want = channels or {"日报", "周报", "月报"}  # 【变量】本次要接的栏目集合(缺省三频道都接)
 
     chosen: list[dict] = []  # 【变量】两频道独立选品的并集(按 id 去重)
     parts: list[str] = []  # 【变量】日志分频道统计片段
@@ -467,6 +493,11 @@ def ingest_today(target_date: str, requested: set[str] | None = None, dry_run: b
         picked = select_today_items(items_weekly, requested=requested)
         chosen += picked
         parts.append(f"周报(近{WEEKLY_WINDOW_DAYS}天) {len(items_weekly)} 篇→命中 {len(picked)}")
+    if "月报" in want:
+        items_monthly = fetch_monthly_items(target_date)
+        picked = select_today_items(items_monthly, requested=requested)
+        chosen += picked
+        parts.append(f"月报(近{MONTHLY_WINDOW_DAYS}天) {len(items_monthly)} 篇→命中 {len(picked)}")
     # 【防御】articleId 若跨频道重复(理论不可能,防御兜底)只保留首个
     uniq: dict[str, dict] = {}
     for it in chosen:
@@ -534,7 +565,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="华泰期货官方天玑研报自动接入(能化 21 品种 日报+周报)")
     ap.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"), help="目标日期 YYYY-MM-DD(默认今天)")
     ap.add_argument("--variety", nargs="+", help="只接入这些品种代码(空格分隔多个),缺省=全部 21")
-    ap.add_argument("--channel", choices=("日报", "周报"), help="只接该栏目(缺省=日报+周报都接)")
+    ap.add_argument("--channel", choices=("日报", "周报", "月报"), help="只接该栏目(缺省=日报+周报+月报都接)")
     ap.add_argument("--dry-run", action="store_true", help="只打印今日命中,不写库不调 LLM")
     ap.add_argument("--reset-state", action="store_true", help="清 seen 状态(强制重跑同日)")
     args = ap.parse_args()
@@ -551,8 +582,14 @@ def main() -> int:
         res = ingest_today(args.date, requested=requested, dry_run=args.dry_run,
                            reset_state=args.reset_state,
                            channels={args.channel} if args.channel else None)
-    except ValueError as e:
-        print(f"错误: {e}")
+    except Exception as e:  # noqa: BLE001
+        # 【2026-09-17 修】原先只接 `ValueError`:任何其他异常都会裸奔出 main(),而进程
+        # 退出时块缓冲的 stdout 会连同异常一起丢失 —— 告警里只剩 faulthandler 的中间
+        # 几帧调用栈(实测 09-15~17 三天),既判不出异常类型,也找不到崩溃线程。
+        # 改为全接 + 打印完整栈(输出已由 collector_crash_log 逐写落盘,不会丢)。
+        import traceback  # 【调用包】完整栈打印(定位崩在哪一行)
+        traceback.print_exc()
+        print(f"接入异常: {e}", flush=True)
         return 1
     for err in res["errors"][:10]:
         print(f"  - {err}")
@@ -562,4 +599,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # 【调用】Windows 控制台 UTF-8
+    # 【2026-09-17】致命错误转储(全线程栈)+ 全量输出落盘。原生崩溃(access violation)
+    # 接不住 try/except,进程被直接终止后已 insert 的研报行会永久停在 processing——
+    # 唯一能留下现场的手段就是这个转储。
+    from collector_crash_log import enable_crash_log  # 【调用包】崩溃转储
+    enable_crash_log("htfc")
     raise SystemExit(main())

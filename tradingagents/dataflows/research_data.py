@@ -55,7 +55,10 @@ logger = logging.getLogger(__name__)
 
 # 与 external_data.py 相同的数据目录,研报文件名用 {品种}_research.json 区分。
 RESEARCH_DIR = Path.home() / ".tradingagents" / "external_data"  # 【变量】研报聚合文件目录 = ~/.tradingagents/external_data
-MAX_REPORTS = 10  # 【变量】每品种聚合文件最多保留最近 MAX_REPORTS 份研报摘要
+MAX_REPORTS = 200  # 【变量】每品种聚合文件最多保留最近 MAX_REPORTS 份研报摘要
+# 【2026-09-11 调整 10→200】用户要求逐品种观点总览与每日/周报总结对齐:
+# 日报单日最多 40+ 篇、周报一周 30+ 篇,10 条截断导致总览缺行(如 SC 本周 4 篇周报
+# 只显示 2 篇/为空)。200 足够覆盖任何日期/周窗口,单文件仍 <1MB。
 
 _research_cache: dict[str, tuple[float, dict]] = {}  # 【变量】内存缓存:variety → (缓存时间, 聚合 dict);60 秒内复用避免反复读盘
 RESEARCH_CACHE_TTL = 60  # 【变量】缓存有效期(秒):研报更新不频繁,60 秒足够
@@ -483,9 +486,33 @@ def upsert_research_report(variety: str, record: dict):
         _save_research(variety, data)
 
 
-# 【功能】从聚合文件中删除某份研报摘要(按 id)。
-# 【参数】variety: 品种代码;report_id: 研报数据库主键。
-# 【返回】无。
+# 【功能】就地更新某份研报在聚合文件里的**指定字段**(其余字段与报告顺序都不动)。
+# 【为什么需要】2026-09-29 发现:观点总览读聚合 JSON,而 report_type 是在 DB 侧
+#           回填的(如存量季报认定),聚合里的旧值会一直是空 → 按季报筛永远查不到。
+#           DB 与聚合的任何"单字段口径回填"都需要这个入口,不必重新跑 LLM。
+# 【参数】variety: 品种代码;report_id: 研报主键;fields: {字段名: 新值}。
+# 【返回】bool: 命中并写入返回 True;该品种无此 id 返回 False。
+# 【关键逻辑】必须与 upsert/remove/sweep 共用 _FILE_LOCK —— 采集线程随时在改同一
+#           文件,无锁读改写会丢更新(模块既有纪律)。
+def update_research_report_fields(variety: str, report_id, fields: dict) -> bool:
+    """Patch specific fields of one report record in the variety aggregate."""
+    if not fields:
+        return False
+    with _FILE_LOCK:
+        data = _load_research(variety)
+        if not data or not data.get("reports"):
+            return False
+        hit = False
+        for rec in data["reports"]:
+            if str(rec.get("id")) == str(report_id):
+                rec.update({k: v for k, v in fields.items() if v is not None})
+                hit = True
+                break
+        if not hit:
+            return False
+        data["updated"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _save_research(variety, data)
+        return True
 # 【关键逻辑】1) 读聚合;2) 过滤掉 id 相等的记录;3) 若删空则直接移除整个
 #           聚合文件(避免留下空壳);4) 仍有剩余则刷新 updated 并写盘。
 #           由 web_app 的删除接口调用,保证聚合 JSON 与数据库记录同步。

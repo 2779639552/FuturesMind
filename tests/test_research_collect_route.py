@@ -72,12 +72,24 @@ def _fake_collectors(monkeypatch, calls):
     gtja.TARGET_VARIETIES = ("MA", "TA", "UR", "SA", "FG")
     dz = types.ModuleType("research_collector_dongzheng")
     dz.ingest_recent = (
-        lambda days=1, dry_run=False, **kw:
-        calls.append(("dz", days, dry_run)) or {"collected": 4}
+        lambda days=1, dry_run=False, include_dynamics=False, **kw:
+        calls.append(("dz", days, dry_run, include_dynamics)) or {"collected": 4}
     )
     monkeypatch.setitem(sys.modules, "research_collector_htfc", htfc)
     monkeypatch.setitem(sys.modules, "research_collector_gtja", gtja)
     monkeypatch.setitem(sys.modules, "research_collector_dongzheng", dz)
+
+    # 【2026-09-17】采集收尾的 RAG 补索引也必须桩掉。
+    # _run() 在 not dry_run 时会调 _rag_index_pending(since_days=3);测试环境里
+    # _RAG_WORKER_MODE 为 False ⇒ 它会**就地加载 embedding 模型 + 逐篇打开 chroma 库**,
+    # 实测 15.7 秒(done=0 / skipped=181,时间全花在重复开库的"已索引?"判定上),
+    # 远超 _wait_idle 的 5 秒超时 ⇒ 4 个用例假失败(04/07/08/10)。
+    # 本文件的契约是"不触真实采集/LLM/网络",它同样属于不该被触发的重 IO。
+    monkeypatch.setattr(
+        web_app,
+        "_rag_index_pending",
+        lambda *a, **k: {"done": 0, "skipped": 0, "failed": 0, "total": 0},
+    )
 
 
 def test_collect_all_runs_all_collectors(monkeypatch):
@@ -93,7 +105,9 @@ def test_collect_all_runs_all_collectors(monkeypatch):
     assert _wait_idle()
     assert ("htfc", time.strftime("%Y-%m-%d"), None, False) in calls
     assert ("gtja", 1, None, False) in calls
-    assert ("dz", 1, False) in calls
+    assert ("dz", 3, False, True) in calls
+    #   ↑ 2026-09-14 修复:东证补上 include_dynamics=True(动态快评原本一条都没采),
+    #     回看窗口 1→3 天(--days 3,避免漏周末档)。见 scheduler/web_app 采集分支注释。
 
 
 def test_collect_fxbaogao_source_removed_400(monkeypatch):

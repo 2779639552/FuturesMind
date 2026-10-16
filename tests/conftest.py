@@ -35,6 +35,8 @@ def _dummy_api_keys(monkeypatch):
         # `or` not a .get default: an env var present but empty (e.g. a key left
         # blank in a .env copied from .env.example) must still get the placeholder.
         monkeypatch.setenv(env_var, os.environ.get(env_var) or "placeholder")
+    # 【2026-09-24 局域网认证】测试默认关闭守卫(生产由 web 进程 .env 未设该键 → 开启)
+    monkeypatch.setenv("AGENTSENSE_AUTH_DISABLE", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +52,28 @@ def _disable_gtja(monkeypatch):
     monkeypatch.setenv("GTJA_ACCESS_KEY_SECRET", "")
 
 
+# 【2026-09-30 根因修复 · reload 污染外溢】
+# ``default_config.DEFAULT_CONFIG`` 是**模块级可变 dict**;有若干测试文件用
+# ``importlib.reload(default_config)`` 重造它(如 test_env_overrides / test_llm_max_retries)。
+# 注意 ``monkeypatch`` 只回滚**环境变量**,管不到这个 dict —— reload 之后它会一直停在
+# "最后一次 reload 的产物"(典型脏值: env 被清空 ⇒ ``backend_url`` 变 None)。
+#
+# 而下面 ``_isolate_config`` 是拿 ``DEFAULT_CONFIG`` 当"干净基准"去灌全局配置的,
+# 于是脏值被**复制进全局配置并外溢到全部后续测试**。后果实测:
+#   web_app 里 ``create_llm_client(provider, model)``(不传 base_url)经工厂兜底
+#   ``_resolve_config_base_url()`` 取到 None ⇒ 抛
+#   ``ValueError: Provider 'openai_compatible' requires a base_url``
+# ⇒ 表现为"某用例(如 tests/test_rag_backfill.py)全量会话必红、单跑全绿"的假象,
+#   极易被误判为随机抖动或跟本次改动有关。最小复现:
+#       pytest tests/test_env_overrides.py tests/test_rag_backfill.py   # 1 failed
+#
+# 修法: 在**任何用例跑之前**抓一份 pristine 快照,每用例前后把 ``DEFAULT_CONFIG``
+# 就地还原(clear+update 保持对象身份,避免 reload 换对象后旧引用失效)。这与本
+# fixture 文档里"every test starts from a clean DEFAULT_CONFIG"的本意一致 ——
+# 原实现只是"消费"干净基准,现在把基准本身也复位。
+_PRISTINE_DEFAULT_CONFIG: dict | None = None
+
+
 @pytest.fixture(autouse=True)
 def _isolate_config():
     """Reset the global dataflows config before and after each test.
@@ -58,14 +82,27 @@ def _isolate_config():
     test that sets e.g. ``tool_vendors`` would otherwise leak into later tests
     and make routing behavior order-dependent. Replace the global outright so
     every test starts from a clean DEFAULT_CONFIG.
+
+    【同时复位 DEFAULT_CONFIG 本身】见上方"reload 污染外溢"说明:快照在首个用例
+    执行**前**建立(此时不可能已被污染),之后每个用例前后都把 DEFAULT_CONFIG 还原,
+    这样 ``importlib.reload`` 留下的脏值不会经本 fixture 外溢到后续文件。
     """
     import copy
 
     import tradingagents.dataflows.config as config_module
     import tradingagents.default_config as default_config
 
+    global _PRISTINE_DEFAULT_CONFIG
+    if _PRISTINE_DEFAULT_CONFIG is None:
+        # 首次调用发生在任何用例体之前 ⇒ 此刻的 DEFAULT_CONFIG 必为初始干净值。
+        _PRISTINE_DEFAULT_CONFIG = copy.deepcopy(default_config.DEFAULT_CONFIG)
+
+    default_config.DEFAULT_CONFIG.clear()
+    default_config.DEFAULT_CONFIG.update(copy.deepcopy(_PRISTINE_DEFAULT_CONFIG))
     config_module._config = copy.deepcopy(default_config.DEFAULT_CONFIG)
     yield
+    default_config.DEFAULT_CONFIG.clear()
+    default_config.DEFAULT_CONFIG.update(copy.deepcopy(_PRISTINE_DEFAULT_CONFIG))
     config_module._config = copy.deepcopy(default_config.DEFAULT_CONFIG)
 
 

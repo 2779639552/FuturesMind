@@ -59,7 +59,7 @@ MAX_REPORTS_DEFAULT = 30  # 【变量】单次运行默认入库上限(LLM 用�
 PARALLEL_WORKERS = 4  # 【变量】并行处理线程数(LLM 账户并发上限 5,每篇同时只挂 1 个调用,4 并发安全)
 _STATE_LOCK = threading.Lock()  # 【变量】状态文件落盘互斥锁(并行线程逐篇 persist)
 
-# 【变量】目标品种代码:2026-09-09 起统一引用 ACTIVE_VARIETIES(20 品种池,与
+# 【变量】目标品种代码:2026-09-09 起统一引用 ACTIVE_VARIETIES(21 品种池,与
 # HTFC/全项目同一口径),不再各自手抄清单;国君不发池内部分品种(如 M/CF)时自然无数据。
 from tradingagents.dataflows.commodity_futures import (  # noqa: E402  # 【调用包】活跃品种池(延迟顶层导入,采集器子进程 cwd=仓库根)
     ACTIVE_VARIETIES,
@@ -98,6 +98,7 @@ TAG_TO_CODE = {
     "红枣": "CJ",
     "生猪": "LH",
     "LPG": "PG", "液化石油气": "PG",
+    "棕榈油": "P", "棕榈": "P", "P": "P", "马棕": "P",  # 2026-09-30 入池
 }
 
 # 【变量】排除类 tag(合集/周报——内容与单品种日报重复或超出日度增量)
@@ -142,6 +143,21 @@ def _row_tags(row: dict) -> list[str]:
 def is_weekly(row: dict) -> bool:
     """周报判定(tag 精确「周报」或标题以「周报」结尾),采集时打 report_type 用。"""
     return "周报" in _row_tags(row) or (row.get("title") or "").strip().endswith("周报")
+
+
+def row_report_type(row: dict) -> str:
+    """一行研报的 report_type(日报/周报/季报;无法判定返回 '')。
+
+    【为什么要这个】原先只认 日报/周报 两种 tag,接口若给「季报」会被丢成空串,
+                    季报口径就永远接不到新数据。这里按同一优先级补齐三种。
+    【关键逻辑】tag 精确匹配优先(日报→周报→季报);tag 全无时回退「标题以周报
+                结尾」这一历史兜底;仍无 → '' 交给 LLM 第一步抽取自愈。
+    """
+    tags = _row_tags(row)
+    for t in ("日报", "周报", "季报"):
+        if t in tags:
+            return t
+    return "周报" if is_weekly(row) else ""
 
 
 def is_collection(row: dict) -> bool:
@@ -319,8 +335,8 @@ def _ingest_one(row: dict, dry_run: bool = False) -> bool:
             file_path=str(file_path),
             ingest_source="auto",  # 【来源】国君云 API 自动采集入库(数据仓库"研报库"徽标=自动)
             publish_date=(row.get("publishTime") or "")[:10],  # 【发布日期】接口自带真实发布日(回看窗口会跨日,入库≠发布)
-            # 【类型】tag 精确「周报」→ 周报;否则 tag 有「日报」→ 日报;都没有留空(LLM 自愈)
-            report_type="周报" if is_weekly(row) else ("日报" if "日报" in _row_tags(row) else ""),
+            # 【类型】tag 精确「日报/周报/季报」→ 对应口径;都没有留空(LLM 自愈)
+            report_type=row_report_type(row),
         )
     _process_research_report(report_id)  # 【调用函数】LLM 提取 → 落库 → 写聚合 JSON
     print(f"    + {info_id} {title[:50]} -> report_id={report_id}")
@@ -457,4 +473,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import sys
+
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # 【调用】Windows 控制台 UTF-8
+    # 【2026-09-17】致命错误转储 + 全量输出落盘(原生崩溃无异常可捕获,只能靠转储留现场)
+    from collector_crash_log import enable_crash_log  # 【调用包】崩溃转储
+    enable_crash_log("gtja")
     raise SystemExit(main())

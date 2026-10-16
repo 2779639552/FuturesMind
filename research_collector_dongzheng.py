@@ -61,9 +61,13 @@ _STATE_LOCK = threading.Lock()  # 【变量】状态文件落盘互斥锁
 _STATE_DIR = Path.home() / ".tradingagents"  # 【变量】状态目录根
 STATE_FILE = _STATE_DIR / "dongzheng_collector_state.json"  # 【变量】{seen: [...], last_run}
 
-FREQ_LABEL = {"weekly": "周度", "monthly": "月度", "yearly": "年度"}  # 【变量】freq → 中文标签
+FREQ_LABEL = {"weekly": "周度", "monthly": "月度", "quarterly": "季度", "yearly": "年度"}  # 【变量】freq → 中文标签
 # 【变量】报告类型映射(type_name → 项目内 report_type 口径;其余留空由 LLM 自愈)
-TYPE_MAP = {"日度报告": "日报", "综合晨报": "日报", "晨报": "日报", "周度报告": "周报"}
+TYPE_MAP = {
+    "日度报告": "日报", "综合晨报": "日报", "晨报": "日报",
+    "周度报告": "周报",
+    "季报": "季报", "季度报告": "季报", "季刊": "季报",  # 季报口径(前端总结按季独立落盘)
+}
 # 【变量】常见别名补映射(繁微 futures 枚举的 sname 用法,元数据 name/name_en 没覆盖的)
 _ALIAS_NAMES = {"LLDPE": "L", "PVC": "V", "聚氯乙烯": "V", "沪胶": "RU", "20号胶": "NR"}
 
@@ -113,7 +117,7 @@ def _variety_name_map() -> dict[str, str]:
 def report_variety_codes(row: dict) -> list[str]:
     """研报行的品种代码:product_names(如 ["铁矿石"])逐一映射到品种代码。
 
-    【品种池】2026-09-09 起只保留 ACTIVE_VARIETIES(20 品种)内的代码;池外品种
+    【品种池】2026-09-09 起只保留 ACTIVE_VARIETIES(21 品种)内的代码;池外品种
     研报由 web_app._process_research_report 的池过滤兜底跳过(不烧 LLM)。
     """
     from tradingagents.dataflows.commodity_futures import (  # 【调用包】元数据 + 活跃池
@@ -132,7 +136,7 @@ def report_variety_codes(row: dict) -> list[str]:
 def view_variety_code(row: dict) -> str:
     """观点行的品种代码:product_code 前缀(如 M.DCE → M)须命中品种元数据。
 
-    【返回】代码(如 "M");不在 ACTIVE_VARIETIES(20 品种池,宏观/股指/外盘及
+    【返回】代码(如 "M");不在 ACTIVE_VARIETIES(21 品种池,宏观/股指/外盘及
             池外商品不在内)返回空串(调用方跳过该条)。
     """
     from tradingagents.dataflows.commodity_futures import ACTIVE_VARIETIES
@@ -522,4 +526,7 @@ if __name__ == "__main__":
     import sys
 
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # 【调用】Windows 控制台 UTF-8
+    # 【2026-09-17】致命错误转储 + 全量输出落盘(原生崩溃无异常可捕获,只能靠转储留现场)
+    from collector_crash_log import enable_crash_log  # 【调用包】崩溃转储
+    enable_crash_log("dz")
     raise SystemExit(main())

@@ -177,6 +177,108 @@ def _clean_html(text: str) -> str:
     return text.strip()
 
 
+def _iter_mblogs(cards: list) -> list:
+    """递归展平 cards 树，取出全部含 mblog 的帖子卡片。
+
+    【功能】从微博搜索返回的 cards 数组中，递归收集所有"帖子"mblog。
+    【参数】cards: data.cards（顶层卡片数组，元素可能是帖子卡，也可能是分组卡）
+    【返回】mblog dict 列表（保持页面内的原始顺序，先顶层后分组内）
+    【关键逻辑】⚠️ 微博移动端搜索把**大部分帖子藏在 card_type=11 的分组卡里**：
+        实测单页 9 个顶层卡 → 只有 2 个是顶层 card_type=9 帖子卡，
+        另外 6 个帖子嵌在 card_type=11 的 card_group[0]（card_type=9）内。
+        只读顶层 card_type=9 会**漏采 75%**（每关键词 8 条 → 只拿到 2 条）。
+      因此判据从"顶层 card_type==9"改为"该卡自身是否有非空 mblog"，
+      并对 card_group 递归下钻（分组可层层嵌套）。
+      card_type 不再参与过滤：分组卡的子项本身就是 card_type=9，
+      而广告/推荐卡一般没有 mblog 字段，天然被排除。
+    """
+    out: list = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        mblog = card.get("mblog")
+        if isinstance(mblog, dict) and mblog:
+            out.append(mblog)
+        group = card.get("card_group")
+        if isinstance(group, list) and group:
+            out.extend(_iter_mblogs(group))  # 递归下钻分组卡
+    return out
+
+
+def _is_signin_response(data: dict) -> bool:
+    """判断微博响应是否为"需要登录"（登录态失效）。
+
+    【功能】识别 m.weibo.cn 的登录失效信号。
+    【参数】data: 搜索接口返回的 JSON
+    【返回】True=响应是 passport 登录跳转；False=其他业务失败
+    【关键逻辑】微博对"未登录但需要登录"的请求返回
+      {"ok": -100, "url": "https://passport.weibo.com/sso/signin?..."}，
+      HTTP 状态码仍是 200 —— 属于**静默失效**，不能只看 HTTP 码。
+      实测：搜索第 1 页匿名可拿，第 2 页起必然返回该响应，
+      所以"每关键词只有 8 条"往往不是没数据，而是**翻不动页**。
+    """
+    if data.get("ok") != -100:
+        return False
+    url = str(data.get("url", "")).lower()
+    return "passport.weibo.com" in url or "signin" in url
+
+
+_SIGNIN_WARNED: set = set()  # 已就"登录失效"告警过的关键词，避免刷屏
+
+
+def _warn_login_required(keyword: str, page: int) -> None:
+    """登录态失效时输出一次性明确告警（每关键词只提示一次）。
+
+    【功能】把"翻页被要求登录"这件事说清楚，而不是笼统的 ok!=1。
+    【参数】keyword: 当前关键词；page: 触发时的页码
+    【返回】None
+    """
+    if keyword in _SIGNIN_WARNED:
+        return
+    _SIGNIN_WARNED.add(keyword)
+    logger.warning(
+        f"Weibo 登录态已失效：'{keyword}' 第 {page} 页被要求登录（ok=-100, passport signin）。"
+        f" 当前仅能采到第 1 页；请运行 python weibo_login.py 重新登录以恢复翻页。"
+    )
+
+
+# 空壳占位卡片的特征文案（微博在"查不到内容"和"被限流"两种情况下都会返回它）
+_EMPTY_PLACEHOLDER_HINTS = ("您可以尝试在全网内搜索", "没有找到", "暂无内容")
+
+
+def _is_empty_placeholder(data: dict, cards: list) -> bool:
+    """判断本次响应是否为"假成功空壳"（限流伪装成无结果）。
+
+    【功能】识别 m.weibo.cn 的静默限流空壳。
+    【参数】data: 接口 JSON；cards: data.cards
+    【返回】True=疑似被限流吞掉的空壳响应
+    【关键逻辑】⚠️ 微博在**被限流**时会返回一个"看起来很正常"的空响应：
+        ok=1（业务成功）、HTTP 200、cards 里只有 card_type=4 / 11 的占位卡，
+        cardlistInfo.total=0 —— 与"这个关键词真的没内容"**完全同形**。
+      实测证据：按采集器真实节奏连打 24 个关键词，随机 1 个（纯苯）返回 total=0，
+        单独重查同一关键词是 429 条；整轮 21% 的关键词会被这样吞掉。
+      ⇒ 判据不能只看"有没有 mblog"，必须能区分"空壳"与"真空"。
+        做法：cards 非空但无 mblog、且 total==0 或命中占位文案 → 判为空壳，值得重试。
+    """
+    if data.get("ok") != 1:
+        return False
+    if _iter_mblogs(cards):
+        return False  # 有帖子卡，正常响应
+    info = data.get("data", {}).get("cardlistInfo") or {}
+    if info.get("total"):
+        return False  # 有总量但本页没帖子卡，属于正常翻页边界
+    # cards 非空且全是占位卡，或直接命中占位文案
+    for card in cards or []:
+        title = str(card.get("title", ""))
+        if any(h in title for h in _EMPTY_PLACEHOLDER_HINTS):
+            return True
+    return bool(cards)  # 有卡但无 mblog 且 total=0 → 视为空壳
+
+
+# 空壳重试节奏（秒）。不要设太短：限流窗口不是毫秒级，立刻重试仍是空壳。
+_EMPTY_RETRY_WAITS = (8.0, 20.0)
+
+
 class WeiboAdapter(PlatformAdapter):
     """微博数据采集适配器 (m.weibo.cn)
 
@@ -192,6 +294,7 @@ class WeiboAdapter(PlatformAdapter):
         """初始化内部状态: 会话与 Cookie 初始为空，由 init() 填充。"""
         self._session: requests.Session | None = None  # 【变量】HTTP 会话(init 时构建, 含重试+常驻 Cookie)
         self._cookie: str = ""  # 【变量】微博登录 Cookie 字符串(须含 SUB 字段)
+        self._login_ok: bool | None = None  # 【变量】登录态自检结论(True=已登录 / False=游客态 / None=未能确认)
 
     # ============================================================
     # 生命周期
@@ -229,6 +332,57 @@ class WeiboAdapter(PlatformAdapter):
         self._cookie = cookie
         self._session = self._build_session(cookie)  # 【调用函数】构建带重试/常驻 Cookie 的 HTTP 会话
         logger.info(f"Weibo session created. Cookie length: {len(cookie)}")
+        self._check_login()  # 【调用函数】自检登录态(失效则告警，避免静默只采第 1 页)
+
+    def _check_login(self) -> None:
+        """自检 Cookie 是否仍是有效登录态（而非游客态）。
+
+        【功能】调 m.weibo.cn/api/config 读 data.login，判断登录是否有效。
+        【参数】无 【返回】None（仅打日志 + 登记降级，不抛异常——游客态仍能采第 1 页）
+        【关键逻辑】⚠️ **有 SUB ≠ 已登录**：微博游客态也会下发 SUB/SUBP。
+          本 Cookie 实测含 SUB 但 api/config 返回 login=False（已过期/游客）。
+          过期后果不是报错，而是**第 2 页起静默返回 ok=-100**，
+          表现为"每关键词只有几条"，极易被误判成"平台没数据"。
+        ⚠️ **发现了必须上报**（2026-09-18）：本方法早在 2026-09-15 就会打印
+          logger.warning，但警告只进日志、不进运行报告，于是 status=ok、
+          auth_failures=0，页面上一切正常——实测该游客态从 09-14 起连续几十轮
+          无人发现。现在除日志外还调 note_degradation() 登记，由 BatchCollector
+          写进 collect_run 报告并透传到前端。日志会被子进程输出淹没，报告不会。
+        """
+        if not self._session:
+            return
+        try:
+            resp = self._session.get(
+                "https://m.weibo.cn/api/config", timeout=REQUEST_TIMEOUT
+            )
+            logged_in = bool(resp.json().get("data", {}).get("login"))
+        except Exception as exc:  # noqa: BLE001 - 自检失败不影响采集
+            logger.warning(f"Weibo 登录态自检失败（忽略）: {exc}")
+            # 自检本身失败 = 我们**不知道**登录态是否有效。这也是降级：此处失手时
+            # 唯一的替代信号是"每关键词恰好 8 条"这种间接指纹，很难被发现。
+            self.note_degradation(
+                "auth_check_unavailable",
+                f"登录态自检请求失败，无法确认 Cookie 是否仍有效: {str(exc)[:120]}",
+                impact="若 Cookie 其实已失效，单关键词只会取到第 1 页(固定约 8 条)",
+                fix_hint="网络恢复后重跑；若轮次产出长期只有 8 条/词，直接跑 python weibo_login.py 重新扫码",
+            )
+            return
+        self._login_ok = logged_in
+        if logged_in:
+            logger.info("Weibo 登录态有效（login=True）")
+        else:
+            logger.warning(
+                "⚠️ Weibo Cookie 已失效/为游客态（login=False）。"
+                " SUB 字段存在但不代表已登录。当前每关键词只能采到第 1 页（约 8 条）；"
+                "请运行 python weibo_login.py 重新扫码登录。"
+            )
+            self.note_degradation(
+                "auth_degraded",
+                "Cookie 含 SUB 字段但 m.weibo.cn/api/config 返回 login=False（游客态/已过期）",
+                "第 1 页匿名可取，第 2 页起返回 ok=-100 + passport 跳转 → "
+                "单关键词产出停在 8 条左右，整轮命中量约少采 3/4",
+                "python weibo_login.py 重新扫码登录",
+            )
 
     def close(self) -> None:
         """释放 HTTP 会话资源。
@@ -276,6 +430,57 @@ class WeiboAdapter(PlatformAdapter):
     # 搜索
     # ============================================================
 
+    def _search_page(self, keyword: str, page: int):
+        """请求单页搜索结果，并对"假成功空壳"做冷却重试。
+
+        【功能】取一页搜索结果；若命中限流空壳则在冷却后重取。
+        【参数】keyword: 关键词；page: 页码
+        【返回】(data, cards, retries)
+                data/cards 为 None 表示网络或解析失败；
+                retries 为实际重试次数（>0 说明该页被限流过）。
+        【关键逻辑】⚠️ 微博被限流时不报错、不弹码，而是返回
+          `ok=1 + cardlistInfo.total=0 + 占位卡片` 的**空壳**，
+          与"这个关键词真没内容"完全同形。实测按采集器真实节奏连打 24 个
+          关键词，随机 1 个被吞；用 --turbo 快档时整轮有 21% (5/24) 被吞，
+          表现为"某几个词突然 0 条"，极易被误判成平台没语料。
+          此处用 _is_empty_placeholder 区分空壳与真空，命中则按
+          _EMPTY_RETRY_WAITS 冷却重取（立刻重试仍是空壳，限流窗口不是毫秒级）。
+        """
+        params = {
+            "containerid": f"100103type=1&q={keyword}",  # 综合搜索接口约定
+            "page": page,
+        }
+        retries = 0
+        data, cards = None, None
+        for attempt in range(len(_EMPTY_RETRY_WAITS) + 1):
+            if attempt:
+                wait = _EMPTY_RETRY_WAITS[attempt - 1]
+                logger.info(
+                    f"  Weibo '{keyword}' p{page} 命中空壳，{wait:.0f}s 冷却后重试 "
+                    f"({attempt}/{len(_EMPTY_RETRY_WAITS)})"
+                )
+                time.sleep(wait)
+                retries = attempt
+            # 发起请求; 网络异常/非 JSON 直接返回 None(由调用方中断翻页,已拿到的结果仍返回)
+            try:
+                response = self._session.get(  # 【调用函数】GET 微博搜索接口(带 params/超时)
+                    WEIBO_SEARCH_URL,
+                    params=params,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()  # 【调用函数】非 2xx 抛异常(配合重试)
+                data = response.json()  # 【调用函数】解析响应 JSON(ok=1 表示业务成功)
+            except (requests.exceptions.RequestException, ValueError):
+                return None, None, retries
+            cards = data.get("data", {}).get("cards", []) or []
+            # 非空壳(正常响应 / 登录失效 / 真无内容) → 直接返回，不再重试
+            if data.get("ok") != 1 or not _is_empty_placeholder(data, cards):
+                return data, cards, retries
+        logger.warning(
+            f"  Weibo '{keyword}' p{page} 连续 {len(_EMPTY_RETRY_WAITS) + 1} 次命中空壳，放弃本页"
+        )
+        return data, cards, retries
+
     def search(self, keyword: str, count: int) -> list[Any]:
         """
         【功能】微博关键词搜索，分页获取帖子。
@@ -284,9 +489,14 @@ class WeiboAdapter(PlatformAdapter):
             count:   期望返回条数
         【返回】清洗后的 mblog dict 列表 (已清除 HTML)。
         【关键逻辑】
-        - 调用 m.weibo.cn 搜索接口，每页约 10 条，循环翻页直到凑够 count。
+        - 调用 m.weibo.cn 搜索接口，每页约 8 条帖子，循环翻页直到凑够 count。
         - 用 seen_mids 集合去重（翻页时同一帖可能重复出现）。
-        - 只保留 card_type=9 的卡片（微博帖子），过滤广告等其他卡片。
+        - ⚠️ 递归展平 cards（含 card_group 内嵌卡），否则每页 8 条只拿得到 2 条。
+        - ⚠️ 第 1 页匿名可取，第 2 页起需有效登录态；失效时返回 ok=-100 + passport 跳转。
+          该情形会调 note_degradation("auth_page2_blocked") 登记降级（**不**让本轮失败），
+          否则"每关键词被砍到 1 页"在运行报告里完全不可见。
+        - ⚠️ 被限流时返回"假成功空壳"(ok=1 + total=0 + 占位卡)，需冷却重试，
+          见 _search_page / _is_empty_placeholder。
         - 页与页之间 sleep 随机延时，配合微博 API 约 15 req/min 的限流。
         从 validator_weibo.py:227-288 平移。
         """
@@ -296,48 +506,48 @@ class WeiboAdapter(PlatformAdapter):
         max_pages = (count // 10) + 3  # 每页约 10 条，多翻几页兜底
 
         while len(items) < count and page <= max_pages:
-            # containerid=100103type=1&q=关键词 是微博"综合搜索"接口约定
-            params = {
-                "containerid": f"100103type=1&q={keyword}",
-                "page": page,
-            }
+            data, cards, retries = self._search_page(keyword, page)  # 【调用函数】取一页(含空壳冷却重试)
+            if data is None:
+                break  # 网络/解析失败，保留已拿到的结果
 
-            # 发起请求; 网络异常直接中断翻页(已拿到的结果仍返回)
-            try:
-                response = self._session.get(  # 【调用函数】GET 微博搜索接口(带 params/超时)
-                    WEIBO_SEARCH_URL,
-                    params=params,
-                    timeout=REQUEST_TIMEOUT,
+            if retries:
+                recovered = len(_iter_mblogs(cards or []))
+                logger.info(
+                    f"  Weibo '{keyword}' p{page} 空壳冷却重试 {retries} 次后"
+                    f"{'恢复 ' + str(recovered) + ' 条' if recovered else '仍无数据'}"
                 )
-                response.raise_for_status()  # 【调用函数】非 2xx 抛异常(配合重试)
-            except requests.exceptions.RequestException:
-                break
-
-            try:
-                data = response.json()  # 【调用函数】解析响应 JSON(ok=1 表示业务成功)
-            except ValueError:
-                break  # 返回非 JSON(如被重定向到验证页)时放弃本页
 
             # 微博 API 用 ok==1 表示业务成功；否则打印失败原因后停止
             if data.get("ok") != 1:
-                logger.warning(
-                    f"Weibo search '{keyword}' page={page} ok!=1: {str(data.get('msg', ''))[:80]}"
-                )
+                # ok==-100 且带 passport signin 链接 = 登录态失效，第 2 页起被要求登录。
+                # ⚠️ 第 1 页匿名可拿，第 2 页起必须有效登录态，否则本关键词只能采到 1 页。
+                if _is_signin_response(data):
+                    _warn_login_required(keyword, page)
+                    # ⚠️ 这里 break 是**优雅降级**：第 1 页的帖子照常返回，采集不会失败。
+                    # 但也正因如此，运行报告里 status 一直是 ok、auth_failures 一直是 0，
+                    # 页面完全看不出来"每关键词被砍到 1 页"。登记降级把它变成可见事实；
+                    # 同一个 code 会被合并计数，因此 count 天然等于"受影响的关键词数"。
+                    self.note_degradation(
+                        "auth_page2_blocked",
+                        f"翻页被要求登录（ok=-100 + passport signin），"
+                        f"首个触发词 '{keyword}' 第 {page} 页",
+                        "受影响的每个关键词只能取到第 1 页（固定约 8 条），后续页全部丢弃",
+                        "python weibo_login.py 重新扫码登录",
+                    )
+                else:
+                    logger.warning(
+                        f"Weibo search '{keyword}' page={page} ok!=1: "
+                        f"{str(data.get('msg', ''))[:80]}"
+                    )
                 break
 
-            cards = data.get("data", {}).get("cards", [])
             if not cards:
                 break  # 没有卡片说明已翻到底/无结果
 
             page_added = 0
-            for card in cards:
-                if card.get("card_type") != 9:  # card_type=9 = 微博帖子; 其余是广告/推荐等
-                    continue
-
-                mblog = card.get("mblog", {})
-                if not mblog:
-                    continue
-
+            # ⚠️ 必须递归展平：微博把多数帖子藏在 card_type=11 的 card_group 内。
+            # 实测单页 8 条帖子里只有 2 条在顶层，另 6 条在分组卡中（漏采 75%）。
+            for mblog in _iter_mblogs(cards):
                 mid = mblog.get("mid", "")  # mid 是微博帖子的唯一 ID
                 if mid in seen_mids:
                     continue  # 翻页/交叉时已见过的帖子直接跳过(去重)

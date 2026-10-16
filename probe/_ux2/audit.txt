@@ -1,0 +1,30 @@
+═══ 桌面 1440px · 双主题 9 页签 ═══
+主题    页签              页高     横向溢出      小目标/总     最小字    字号档
+light run            900    False       3/22      12      8
+light research      1445    False       0/37      12      8
+light sentiment     5632    False       6/30      12     10
+light quant         4148    False      12/44      12      7
+light fund          6674    False       0/16      12     11
+light warrant       4384    False       0/24      12      7
+light foreign       1782    False       1/93      12      6
+light warehouse     4336    False      2/179      12      7
+light gtja          2370    False       0/27      12      7
+dark  run            900    False       3/22      12      8
+dark  research     19693    False       0/94      12      9
+dark  sentiment     5632    False       6/30      12     10
+dark  quant         7763    False      12/44      12      8
+dark  fund          6674    False       0/16      12     11
+dark  warrant       4384    False       0/24      12      7
+dark  foreign       1782    False       1/93      12      6
+dark  warehouse     4336    False      2/179      12      7
+dark  gtja          2370    False       0/27      12      7
+
+═══ 控制台错误 ═══
+  [light] 0 条
+  [dark] 0 条
+
+═══ 移动端 390px ═══
+  run         溢出=False  scrollW=390    winW=390   nav=fixed bottom=0px
+  research    溢出=False  scrollW=401    winW=401   nav=fixed bottom=0px
+  sentiment   溢出=False  scrollW=390    winW=390   nav=fixed bottom=0px
+  warrant     溢出=False  scrollW=390    winW=390   nav=fixed bottom=0px

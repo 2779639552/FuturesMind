@@ -424,3 +424,165 @@ def test_route_verified_quote_unavailable(monkeypatch, tmp_path):
     d = c.get("/api/run_input_data/RB").get_json()
     assert d["verified_quote"]["available"] is False
     assert "VERIFIED_SNAPSHOT_UNAVAILABLE" in d["verified_quote"]["note"]
+
+
+# ---------------------------------------------------------------------------
+# 品种数据库块(2026-09-18 新增): 看板须展示"分析实际会用到的本地产业库读数"
+# ---------------------------------------------------------------------------
+def _write_variety_db(root):
+    """合成极小品种库: 沥青(bitumen, symbols=[BU]) + 一条库存序列。"""
+    import datetime
+
+    d = root / "bitumen"
+    d.mkdir(parents=True)
+    (root / "varieties.json").write_text(json.dumps(
+        [{"slug": "bitumen", "name": "沥青", "symbols": ["BU"]}], ensure_ascii=False), encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps({
+        "slug": "bitumen", "name": "沥青", "source": "source_x.xlsx",
+        "imported_at": "2026-09-18 09:00:00", "symbols": ["BU"],
+        "n_sheets": 1, "n_series": 1, "groups": ["库存仓单"]}, ensure_ascii=False), encoding="utf-8")
+    (d / "index.json").write_text(json.dumps([
+        {"slug": "s01", "name": "库存(钢联)", "type": "series", "group": "库存仓单",
+         "n_series": 1, "date_min": "2026-01-01", "date_max": "2026-06-01",
+         "units": ["万吨"], "recognized_by": "config"}], ensure_ascii=False), encoding="utf-8")
+    pts = [["2026-06-01", 15.5], ["2026-06-08", 13.4]]
+    (d / "s01.json").write_text(json.dumps({
+        "type": "series", "axis": "date",
+        "series": [{"name": "沥青:厂内库存:中国(周)", "unit": "万吨", "points": pts}]},
+        ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_route_variety_db_block_available(monkeypatch, tmp_path):
+    """导入过该品种: 看板 variety_db 块 available + 模块读数到位。"""
+    import tradingagents.dataflows.variety_db as vdb
+
+    _mock_all_sources(monkeypatch, tmp_path)
+    root = tmp_path / "variety"
+    _write_variety_db(root)
+    monkeypatch.setenv("AGENTSENSE_VARIETY_DIR", str(root))
+    monkeypatch.setattr(vdb, "_CACHE", {})
+
+    r = web_app.app.test_client().get("/api/run_input_data/BU")
+    assert r.status_code == 200
+    b = r.get_json()["variety_db"]
+    assert b["available"] is True and b["slug"] == "bitumen"
+    assert b["symbols"] == ["BU"] and b["modules"]
+    row = b["modules"][0]["rows"][0]
+    assert row["latest"] == 13.4 and row["change"] == pytest.approx(-2.1)
+
+
+@pytest.mark.unit
+def test_route_variety_db_unimported_degrades(monkeypatch, tmp_path):
+    """未导入该品种: 只降级本块(note 提示), 其余块照常, 不 500。"""
+    import tradingagents.dataflows.variety_db as vdb
+
+    _mock_all_sources(monkeypatch, tmp_path)
+    root = tmp_path / "variety"
+    _write_variety_db(root)
+    monkeypatch.setenv("AGENTSENSE_VARIETY_DIR", str(root))
+    monkeypatch.setattr(vdb, "_CACHE", {})
+
+    r = web_app.app.test_client().get("/api/run_input_data/RB")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["variety_db"]["available"] is False
+    assert body["variety_db"]["note"].startswith("NO_DATA_AVAILABLE")
+    assert body["price"]["available"] is True  # 其它块不受影响
+
+
+@pytest.mark.unit
+def test_route_variety_db_exception_degrades(monkeypatch, tmp_path):
+    """品种库读取抛异常: 降级为 DATA_ERROR, 不拖垮整个看板。"""
+    import tradingagents.dataflows.variety_db as vdb
+
+    _mock_all_sources(monkeypatch, tmp_path)
+    monkeypatch.setattr(vdb, "variety_db_snapshot",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db boom")))
+
+    r = web_app.app.test_client().get("/api/run_input_data/RB")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["variety_db"]["available"] is False
+    assert "db boom" in body["variety_db"]["note"]
+
+
+# ---------------------------------------------------------------------------
+# 品种数据库块(2026-09-18 新增): 看板须展示"分析实际会用到的本地产业库读数"
+# ---------------------------------------------------------------------------
+def _write_variety_db(root):
+    """合成极小品种库: 沥青(bitumen, symbols=[BU]) + 一条库存序列。"""
+    import datetime
+
+    d = root / "bitumen"
+    d.mkdir(parents=True)
+    (root / "varieties.json").write_text(json.dumps(
+        [{"slug": "bitumen", "name": "沥青", "symbols": ["BU"]}], ensure_ascii=False), encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps({
+        "slug": "bitumen", "name": "沥青", "source": "source_x.xlsx",
+        "imported_at": "2026-09-18 09:00:00", "symbols": ["BU"],
+        "n_sheets": 1, "n_series": 1, "groups": ["库存仓单"]}, ensure_ascii=False), encoding="utf-8")
+    (d / "index.json").write_text(json.dumps([
+        {"slug": "s01", "name": "库存(钢联)", "type": "series", "group": "库存仓单",
+         "n_series": 1, "date_min": "2026-01-01", "date_max": "2026-06-01",
+         "units": ["万吨"], "recognized_by": "config"}], ensure_ascii=False), encoding="utf-8")
+    pts = [["2026-06-01", 15.5], ["2026-06-08", 13.4]]
+    (d / "s01.json").write_text(json.dumps({
+        "type": "series", "axis": "date",
+        "series": [{"name": "沥青:厂内库存:中国(周)", "unit": "万吨", "points": pts}]},
+        ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_route_variety_db_block_available(monkeypatch, tmp_path):
+    """导入过该品种: 看板 variety_db 块 available + 模块读数到位。"""
+    import tradingagents.dataflows.variety_db as vdb
+
+    _mock_all_sources(monkeypatch, tmp_path)
+    root = tmp_path / "variety"
+    _write_variety_db(root)
+    monkeypatch.setenv("AGENTSENSE_VARIETY_DIR", str(root))
+    monkeypatch.setattr(vdb, "_CACHE", {})
+
+    r = web_app.app.test_client().get("/api/run_input_data/BU")
+    assert r.status_code == 200
+    b = r.get_json()["variety_db"]
+    assert b["available"] is True and b["slug"] == "bitumen"
+    assert b["symbols"] == ["BU"] and b["modules"]
+    row = b["modules"][0]["rows"][0]
+    assert row["latest"] == 13.4 and row["change"] == pytest.approx(-2.1)
+
+
+@pytest.mark.unit
+def test_route_variety_db_unimported_degrades(monkeypatch, tmp_path):
+    """未导入该品种: 只降级本块(note 提示), 其余块照常, 不 500。"""
+    import tradingagents.dataflows.variety_db as vdb
+
+    _mock_all_sources(monkeypatch, tmp_path)
+    root = tmp_path / "variety"
+    _write_variety_db(root)
+    monkeypatch.setenv("AGENTSENSE_VARIETY_DIR", str(root))
+    monkeypatch.setattr(vdb, "_CACHE", {})
+
+    r = web_app.app.test_client().get("/api/run_input_data/RB")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["variety_db"]["available"] is False
+    assert body["variety_db"]["note"].startswith("NO_DATA_AVAILABLE")
+    assert body["price"]["available"] is True  # 其它块不受影响
+
+
+@pytest.mark.unit
+def test_route_variety_db_exception_degrades(monkeypatch, tmp_path):
+    """品种库读取抛异常: 降级为 DATA_ERROR, 不拖垮整个看板。"""
+    import tradingagents.dataflows.variety_db as vdb
+
+    _mock_all_sources(monkeypatch, tmp_path)
+    monkeypatch.setattr(vdb, "variety_db_snapshot",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db boom")))
+
+    r = web_app.app.test_client().get("/api/run_input_data/RB")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["variety_db"]["available"] is False
+    assert "db boom" in body["variety_db"]["note"]

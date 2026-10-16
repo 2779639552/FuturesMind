@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentSense — 苹果设计语言改造样张</title>
+<style>
+:root{
+  --f: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --mono: "SF Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+[data-theme="light"]{
+  --bg:#ffffff; --bg-subtle:#f5f5f7; --bg-elev:#ffffff;
+  --text:#1d1d1f; --text2:#6e6e73; --text3:#86868b;
+  --line:#d2d2d7; --line-soft:#e8e8ed;
+  --accent:#0071e3; --accent-hover:#0077ed;
+  --seg-bg:#e8e8ed; --seg-pill:#ffffff;
+  --up:#d70015; --down:#00875a;
+  --header-bg:rgba(255,255,255,.72);
+  --chip:#f5f5f7;
+}
+[data-theme="dark"]{
+  --bg:#000000; --bg-subtle:#1d1d1f; --bg-elev:#1d1d1f;
+  --text:#f5f5f7; --text2:#86868b; --text3:#6e6e73;
+  --line:#424245; --line-soft:#2c2c2e;
+  --accent:#2997ff; --accent-hover:#51adff;
+  --seg-bg:#2c2c2e; --seg-pill:#48484a;
+  --up:#ff453a; --down:#30d158;
+  --header-bg:rgba(0,0,0,.72);
+  --chip:#1d1d1f;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html{-webkit-text-size-adjust:100%;}
+body{
+  font-family:var(--f); background:var(--bg); color:var(--text);
+  font-size:17px; line-height:1.47; letter-spacing:-0.01em;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent); text-decoration:none;}
+a:hover{text-decoration:underline;}
+
+/* ── 顶栏 ───────────────────────────────── */
+header{
+  position:sticky; top:0; z-index:100; height:48px;
+  background:var(--header-bg);
+  backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid var(--line-soft);
+}
+.hwrap{
+  max-width:1024px; margin:0 auto; height:48px; padding:0 22px;
+  display:flex; align-items:center; gap:32px;
+}
+.logo{font-size:15px; font-weight:600; letter-spacing:-0.02em; color:var(--text); white-space:nowrap;}
+.logo span{color:var(--text2); font-weight:400;}
+nav{display:flex; gap:26px; flex:1;}
+nav a{
+  font-size:12px; color:var(--text2); text-decoration:none; font-weight:400;
+  letter-spacing:0; transition:color .2s; white-space:nowrap;
+}
+nav a:hover{color:var(--text); text-decoration:none;}
+nav a.on{color:var(--text); font-weight:500;}
+.tbtn{
+  background:none; border:none; color:var(--text2); cursor:pointer;
+  font-size:12px; font-family:inherit; padding:4px 8px; border-radius:8px;
+  transition:background .2s,color .2s;
+}
+.tbtn:hover{background:var(--chip); color:var(--text);}
+
+/* ── 标题区 ─────────────────────────────── */
+.hero{max-width:1024px; margin:0 auto; padding:76px 22px 52px;}
+.hero h1{
+  font-size:clamp(32px,5.4vw,56px); font-weight:600; line-height:1.07;
+  letter-spacing:-0.035em; margin-bottom:16px;
+}
+.hero p{font-size:clamp(17px,2vw,21px); color:var(--text2); line-height:1.4; letter-spacing:-0.015em; max-width:640px;}
+.hero .meta{margin-top:20px; font-size:12px; color:var(--text3); display:flex; gap:18px; flex-wrap:wrap;}
+
+/* ── 分区 ───────────────────────────────── */
+.sec{padding:60px 0;}
+.sec.alt{background:var(--bg-subtle);}
+.sec-in{max-width:1024px; margin:0 auto; padding:0 22px;}
+.sec h2{
+  font-size:clamp(24px,3.4vw,32px); font-weight:600; letter-spacing:-0.025em;
+  line-height:1.12; margin-bottom:8px;
+}
+.sec .sub{font-size:14px; color:var(--text2); margin-bottom:32px; letter-spacing:-0.01em;}
+
+/* ── 控制台 ─────────────────────────────── */
+.ctl{display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; margin-bottom:26px;}
+.field{display:flex; flex-direction:column; gap:7px; min-width:170px; flex:1 1 170px; max-width:260px;}
+.field label{font-size:12px; color:var(--text2); letter-spacing:0;}
+.field select,.field input{
+  appearance:none; font-family:inherit; font-size:15px; color:var(--text);
+  background:var(--bg-elev); border:1px solid var(--line); border-radius:12px;
+  padding:11px 34px 11px 14px; width:100%; cursor:pointer;
+  transition:border-color .2s, box-shadow .2s;
+}
+.field select{
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' stroke='%2386868b' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 14px center;
+}
+.field select:focus,.field input:focus{
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 3.5px rgba(0,113,227,.16);
+}
+[data-theme="dark"] .field select:focus,[data-theme="dark"] .field input:focus{box-shadow:0 0 0 3.5px rgba(41,151,255,.22);}
+
+/* ── 按钮体系 ───────────────────────────── */
+.btn{
+  font-family:inherit; font-size:15px; font-weight:400; letter-spacing:-0.01em;
+  border:none; border-radius:980px; padding:12px 24px; cursor:pointer;
+  transition:background .2s,color .2s,border-color .2s;
+  display:inline-flex; align-items:center; gap:7px; white-space:nowrap;
+  -webkit-tap-highlight-color:transparent;
+}
+.btn-pri{background:var(--accent); color:#fff;}
+.btn-pri:hover{background:var(--accent-hover);}
+.btn-sec{background:transparent; color:var(--accent); border:1px solid var(--accent);}
+.btn-sec:hover{background:var(--accent); color:#fff;}
+.btn-quiet{background:var(--chip); color:var(--text);}
+.btn-quiet:hover{background:var(--line-soft);}
+[data-theme="dark"] .btn-quiet:hover{background:var(--line);}
+.btn-danger{background:transparent; color:var(--up); border:1px solid var(--up);}
+.btn-danger:hover{background:var(--up); color:#fff;}
+.btn-sm{font-size:13px; padding:8px 16px;}
+.btn-icon{
+  width:40px; height:40px; padding:0; justify-content:center;
+  border-radius:50%; background:var(--chip); color:var(--text2);
+}
+.btn-icon:hover{background:var(--line-soft); color:var(--text);}
+.btn:focus-visible{outline:3px solid rgba(0,113,227,.5); outline-offset:2px;}
+
+/* 分段控件 */
+.seg{
+  display:inline-flex; background:var(--seg-bg); border-radius:980px;
+  padding:3px; gap:2px;
+}
+.seg button{
+  font-family:inherit; font-size:13px; letter-spacing:-0.01em;
+  border:none; background:none; color:var(--text2);
+  padding:7px 18px; border-radius:980px; cursor:pointer;
+  transition:background .22s,color .22s; font-weight:400;
+}
+.seg button:hover{color:var(--text);}
+.seg button.on{
+  background:var(--seg-pill); color:var(--text); font-weight:500;
+  box-shadow:0 1px 3px rgba(0,0,0,.09);
+}
+[data-theme="dark"] .seg button.on{box-shadow:0 1px 4px rgba(0,0,0,.5);}
+
+/* 勾选行 */
+.checks{display:flex; gap:22px; align-items:center; flex-wrap:wrap; font-size:14px; color:var(--text2);}
+.checks .grp{display:flex; gap:16px; align-items:center;}
+.checks .lbl{font-size:12px; color:var(--text3);}
+.chk{display:inline-flex; align-items:center; gap:7px; cursor:pointer; user-select:none;}
+.chk input{appearance:none; width:18px; height:18px; margin:0; cursor:pointer;
+  border:1.5px solid var(--text3); border-radius:5px; background:transparent;
+  transition:background .18s,border-color .18s; position:relative;}
+.chk input:checked{background:var(--accent); border-color:var(--accent);}
+.chk input:checked::after{
+  content:""; position:absolute; left:5.5px; top:1.5px; width:5px; height:9px;
+  border:solid #fff; border-width:0 2px 2px 0; transform:rotate(42deg);
+}
+.divider{width:1px; height:18px; background:var(--line);}
+
+/* ── 指标 ───────────────────────────────── */
+.kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:2px; margin-top:6px;}
+.kpi{padding:0 26px; border-left:1px solid var(--line-soft);}
+.kpi:first-child{border-left:none; padding-left:0;}
+.kpi .v{
+  font-size:clamp(30px,4.2vw,44px); font-weight:600; letter-spacing:-0.035em;
+  line-height:1.05; font-variant-numeric:tabular-nums;
+}
+.kpi .v.na{color:var(--text3);}
+.kpi .k{font-size:13px; color:var(--text2); margin-top:7px; letter-spacing:-0.01em;}
+
+/* ── 规格表（品种信息） ─────────────────── */
+.spec{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:1px;
+  background:var(--line-soft); border-top:1px solid var(--line-soft);
+  border-bottom:1px solid var(--line-soft);}
+.spec .row{background:var(--bg); padding:20px 24px; display:flex; flex-direction:column; gap:6px;}
+.sec.alt .spec .row{background:var(--bg-subtle);}
+.spec .row .k{font-size:12px; color:var(--text3); letter-spacing:0;}
+.spec .row .v{font-size:19px; font-weight:500; letter-spacing:-0.02em;}
+.v.up{color:var(--up);} .v.down{color:var(--down);}
+
+/* ── 表格 ───────────────────────────────── */
+.tbl-wrap{overflow-x:auto;}
+table{width:100%; border-collapse:collapse; font-size:15px;}
+th{
+  text-align:left; font-size:12px; font-weight:400; color:var(--text3);
+  letter-spacing:0; padding:0 16px 12px; border-bottom:1px solid var(--line);
+}
+td{padding:16px; border-bottom:1px solid var(--line-soft); letter-spacing:-0.01em;}
+th:first-child,td:first-child{padding-left:0;}
+th:last-child,td:last-child{padding-right:0; text-align:right;}
+tbody tr{transition:background .15s;}
+tbody tr:hover{background:var(--chip);}
+.num{font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:14px;}
+.pill{
+  display:inline-flex; align-items:center; padding:3px 11px; border-radius:980px;
+  font-size:12px; letter-spacing:0; background:var(--chip); color:var(--text2);
+}
+.pill.up{color:var(--up); background:rgba(215,0,21,.08);}
+.pill.down{color:var(--down); background:rgba(0,135,90,.09);}
+[data-theme="dark"] .pill.up{background:rgba(255,69,58,.12);}
+[data-theme="dark"] .pill.down{background:rgba(48,209,88,.12);}
+
+/* ── 折叠条 ─────────────────────────────── */
+details{border-bottom:1px solid var(--line-soft);}
+summary{
+  cursor:pointer; list-style:none; padding:22px 0; font-size:17px; font-weight:500;
+  letter-spacing:-0.015em; display:flex; align-items:center; justify-content:space-between;
+  color:var(--text); transition:color .2s;
+}
+summary::-webkit-details-marker{display:none;}
+summary:hover{color:var(--accent);}
+summary::after{
+  content:""; width:9px; height:9px; border-right:1.8px solid var(--text3);
+  border-bottom:1.8px solid var(--text3); transform:rotate(45deg);
+  transition:transform .25s; margin-right:4px; flex:none;
+}
+details[open] summary::after{transform:rotate(225deg);}
+details .body{padding:0 0 26px; font-size:15px; color:var(--text2); line-height:1.6; max-width:720px;}
+details .body b{color:var(--text); font-weight:500;}
+
+/* 图标 */
+.ico{width:16px; height:16px; display:inline-block; vertical-align:-3px; flex:none;}
+footer{max-width:1024px; margin:0 auto; padding:40px 22px 64px; font-size:12px; color:var(--text3); border-top:1px solid var(--line-soft);}
+
+@media (max-width:860px){
+  nav{display:none;}
+  .hero{padding:52px 22px 40px;}
+  .sec{padding:44px 0;}
+  .kpi{padding:18px 0 0; border-left:none; border-top:1px solid var(--line-soft);}
+  .kpi:first-child{border-top:none; padding-top:0;}
+  .kpis{gap:0;}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hwrap">
+    <div class="logo">Agent<span>Sense</span></div>
+    <nav>
+      <a href="#" class="on">运行分析</a>
+      <a href="#">研报</a>
+      <a href="#">情绪数据</a>
+      <a href="#">技术面量化</a>
+      <a href="#">基本面量化</a>
+      <a href="#">仓单分析</a>
+      <a href="#">外文研报</a>
+      <a href="#">数据仓库</a>
+      <a href="#">国君数据</a>
+    </nav>
+    <button class="tbtn" onclick="tt()">切换主题</button>
+  </div>
+</header>
+
+<div class="hero">
+  <h1>多智能体期货研判。<br>十节点管线，四位分析师并行。</h1>
+  <p>技术、基本面、宏观、情绪四条线各自出报告，多空辩论三轮收口，再由裁决与综合研判给出带置信度的方向信号。</p>
+  <div class="meta">
+    <span>管线版本 v2.5</span>
+    <span>品种池 21 个</span>
+    <span>最近更新 10-14 08:13</span>
+  </div>
+</div>
+
+<section class="sec alt">
+  <div class="sec-in">
+    <h2>分析配置</h2>
+    <div class="sub">选品种与日期，挑一个深度档位。</div>
+
+    <div class="ctl">
+      <div class="field" style="max-width:300px;">
+        <label>品种</label>
+        <select>
+          <option>BR — 丁二烯橡胶（覆盖 94%）</option>
+          <option>SC — 原油</option>
+          <option>TA — PTA</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>日期</label>
+        <input type="date" value="2026-07-14">
+      </div>
+      <div class="field" style="max-width:230px;">
+        <label>情绪分析师</label>
+        <select>
+          <option>自动（无数据时跳过）</option>
+          <option>始终包含</option>
+          <option>始终排除（仅 3 位）</option>
+        </select>
+      </div>
+      <button class="btn btn-pri">开始分析</button>
+      <button class="btn-icon" title="暂停">
+        <svg class="ico" viewBox="0 0 16 16" fill="currentColor"><rect x="3.5" y="2.5" width="3" height="11" rx="1"/><rect x="9.5" y="2.5" width="3" height="11" rx="1"/></svg>
+      </button>
+      <button class="btn-icon" title="停止">
+        <svg class="ico" viewBox="0 0 16 16" fill="currentColor"><rect x="3.5" y="3.5" width="9" height="9" rx="1.4"/></svg>
+      </button>
+    </div>
+
+    <div class="checks">
+      <span class="lbl">分析深度</span>
+      <div class="seg">
+        <button class="on">完整</button>
+        <button>轻量</button>
+        <button>极简</button>
+      </div>
+      <span class="divider"></span>
+      <div class="grp">
+        <label class="chk"><input type="checkbox" checked>辩论对抗</label>
+        <label class="chk"><input type="checkbox" checked>综合研判</label>
+        <label class="chk"><input type="checkbox" checked>情景分析</label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="sec-in">
+    <div class="kpis">
+      <div class="kpi"><div class="v">21</div><div class="k">品种覆盖</div></div>
+      <div class="kpi"><div class="v">94</div><div class="k">情绪帖数</div></div>
+      <div class="kpi"><div class="v na">—</div><div class="k">上次耗时</div></div>
+      <div class="kpi"><div class="v">就绪</div><div class="k">运行状态</div></div>
+      <div class="kpi"><div class="v na">—</div><div class="k">LLM 费用</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="sec alt" style="padding-top:0;">
+  <div class="sec-in">
+    <div class="spec" style="margin:0 -22px;">
+      <div class="row"><div class="k">品种</div><div class="v">丁二烯橡胶 BR</div></div>
+      <div class="row"><div class="k">情绪方向</div><div class="v up">偏多</div></div>
+      <div class="row"><div class="k">多空比</div><div class="v">57 : 37</div></div>
+      <div class="row"><div class="k">趋势</div><div class="v">情绪转暖</div></div>
+    </div>
+    <div style="padding-top:22px; font-size:13px; color:var(--text3);">
+      数据覆盖 2025-06-30 至 2026-10-12（30 天）· 更新于 2026-10-14 08:13
+    </div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="sec-in">
+    <h2>情绪数据</h2>
+    <div class="sub">六个平台去重后的多空分布。</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>平台</th><th>帖数</th><th>多空比</th><th>热度</th><th>方向</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>雪球</td><td class="num">31</td><td class="num">62 : 24</td><td class="num">0.78</td><td><span class="pill up">偏多</span></td></tr>
+          <tr><td>东方财富</td><td class="num">24</td><td class="num">48 : 31</td><td class="num">0.61</td><td><span class="pill up">偏多</span></td></tr>
+          <tr><td>同花顺</td><td class="num">18</td><td class="num">30 : 29</td><td class="num">0.44</td><td><span class="pill">中性</span></td></tr>
+          <tr><td>微博</td><td class="num">12</td><td class="num">21 : 26</td><td class="num">0.31</td><td><span class="pill down">偏空</span></td></tr>
+          <tr><td>抖音</td><td class="num">6</td><td class="num">9 : 14</td><td class="num">0.19</td><td><span class="pill down">偏空</span></td></tr>
+          <tr><td>论坛</td><td class="num">3</td><td class="num">4 : 3</td><td class="num">0.08</td><td><span class="pill">中性</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:28px; display:flex; gap:18px; align-items:center; flex-wrap:wrap;">
+      <a href="#">查看完整情绪明细</a>
+      <span style="color:var(--text3); font-size:13px;">原文按 note_id 跨批次去重，本轮命中重复率 72%</span>
+    </div>
+  </div>
+</section>
+
+<section class="sec alt">
+  <div class="sec-in">
+    <h2>模块说明</h2>
+    <div style="margin-top:22px;">
+      <details open>
+        <summary>十节点管线跑什么</summary>
+        <div class="body">
+          四位分析师（技术／基本面／宏观／情绪）并行出报告，进入多空辩论三轮 —— 多方开篇、空方反驳、多方再反驳，随后由辩论裁决收口，综合研判给出最终评级与置信度，最后做三情景推演并落到投资计划。<br><br>
+          <b>预计耗时</b> 3–6 分钟，取决于 LLM 响应与数据源状态。<br>
+          <b>产出</b> 每位分析师报告、辩论记录、方向信号与 1–10 的置信度分。
+        </div>
+      </details>
+      <details>
+        <summary>数据源与覆盖范围</summary>
+        <div class="body">情绪侧覆盖六个平台，研报侧接入中信与永安周报、外文研报编译，仓单侧对齐四大交易所每日 16:30 抓取。</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<footer>
+  AgentSense · 设计语言改造样张 — 版面／排版／按钮体系参照 apple.com.cn
+</footer>
+
+<script>
+function tt(){
+  var h=document.documentElement;
+  h.dataset.theme = h.dataset.theme==='light' ? 'dark' : 'light';
+}
+document.querySelectorAll('.seg').forEach(function(s){
+  s.addEventListener('click',function(e){
+    if(e.target.tagName!=='BUTTON')return;
+    s.querySelectorAll('button').forEach(function(b){b.classList.remove('on');});
+    e.target.classList.add('on');
+  });
+});
+</script>
+</body>
+</html>

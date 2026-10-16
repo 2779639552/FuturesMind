@@ -7,7 +7,11 @@ echo   Stopping AgentSense server on :5000 ...
 echo ============================================
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $c = Get-NetTCPConnection -State Listen -LocalPort 5000 -ErrorAction SilentlyContinue; if (-not $c) { Write-Host '  Nothing on :5000 - already stopped.' } else { $pids = @($c.OwningProcess | Select-Object -Unique); foreach ($id in $pids) { $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p) { Write-Host ('  Killing PID {0} ({1})' -f $id, $p.ProcessName); Stop-Process -Id $id -Force } }; Write-Host '  Done. Port :5000 released.' } }"
+rem 2026-09-17: delegate to stop_web.ps1. The old inline version only killed
+rem whatever was LISTENING on :5000, so it missed the rag_worker.py child
+rem process and web_app.py instances stuck at the startup guard without ever
+rem binding the port. Those leftovers are a known cause of double instances.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop_web.ps1"
 
 echo.
 echo If the old server window is still open, it closes on its own now.

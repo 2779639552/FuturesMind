@@ -346,6 +346,25 @@ class TestWebExtractHelpers:
         assert web_app._normalize_variety_code("") is None
         assert web_app._normalize_variety_code(None) is None
 
+    def test_recover_variety_title_hit_wins(self):
+        """标题命中品种关键词即返回(子品种研报兜底, 1 次即中)。"""
+        assert web_app._recover_variety_from_text(
+            "光伏玻璃周度报告：二轮减产尚未落地", "") == {"variety": "FG", "direction": "中性", "confidence": 0.4}
+
+    def test_recover_variety_body_requires_2_occurrences(self):
+        """【2026-10-08 修复】正文扫描需关键词出现 >=2 次, 1 次不命中。
+
+        背景: 铂钯研报(#1599)宏观新闻里"原油"出现 1 次, 旧逻辑误判成 SC
+        并生成编造的原油观点(SPR/WTI/布伦特)。现在 1 次 → 返回 None。
+        """
+        text = "铂：加速下跌\n宏观新闻：美方否认伊朗官媒报道，中东原油运费成本仍高企。\n数据见下"
+        assert web_app._recover_variety_from_text(text, "") is None
+
+    def test_recover_variety_body_hits_when_2_times(self):
+        """正文同词出现 2 次才命中(真正的 SC 研报仍能恢复)。"""
+        text = "能化周报\n中东原油运费高企，原油出口恢复，原油供需紧平衡。"
+        assert web_app._recover_variety_from_text(text, "") == {"variety": "SC", "direction": "中性", "confidence": 0.3}
+
 
 # ---------------------------------------------------------------------------
 # 4) 后台处理线程 _process_research_report(LLM 全 mock)
@@ -1101,7 +1120,9 @@ class TestResearchViewsHelpers:
             "confidence": 0.8, "varieties": ["SC", "LU"],
             "conclusion": self._TWO_PART,
         })
-        assert row["id"] == 47 and row["source"] == "华泰期货"
+        # 发行方名称经 _normalize_source 归一(2026-09-11 用户确认:华泰期货 → 华泰,
+        # 前端来源筛选按标准短名聚合,避免同一机构多种写法被拆成多档)
+        assert row["id"] == 47 and row["source"] == "华泰"
         assert row["direction"] == "看多" and row["confidence"] == 0.8
         assert row["covers"] == ["SC", "LU"]
         assert "SC 看多" in row["key_opinion"]
@@ -1650,7 +1671,9 @@ def test_views_route_filters_by_report_type(isolated_dirs):
     assert daily["dates"] == ["2026-09-04"]          # 周报的 09-05 桶不进日报口径
     assert [r["id"] for r in daily["rows"]] == [3, 1]  # 未打类型行也算日报口径(行按入库时间倒序)
     weekly = client.get("/api/research/views?variety=RB&report_type=周报").get_json()
-    assert weekly["dates"] == ["2026-09-05"]
+    # 周报口径日期桶按「周起点(周日)」归一(2026-09-11 周报优化):
+    # 2026-09-05 是周六,其所属周的周日起点为 2026-08-30。
+    assert weekly["dates"] == ["2026-08-30"]
     assert [r["id"] for r in weekly["rows"]] == [2]
     # 不带类型 → 全量口径(旧行为不变):日期并集含两种类型,缺省仍取最新日期桶
     both = client.get("/api/research/views?variety=RB").get_json()

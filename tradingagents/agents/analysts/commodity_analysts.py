@@ -53,11 +53,18 @@ from tradingagents.agents.utils.commodity_futures_tools import (
     get_futures_price,
     get_futures_supply_demand,
     get_research_report,
+    get_variety_db,  # 【工具】本地品种数据库下钻查询(用户导入的产业一手数据, 2026-09-18)
     get_variety_info,
     get_verified_quote,
     research_macro_context,  # 【调用包】研报宏观事件上下文(确定性注入用,非 @tool)
     user_data_context,  # 【调用包】用户自传数据上下文(确定性注入用,非 @tool)
+    variety_db_context,  # 【调用包】品种数据库关键读数上下文(确定性注入用,非 @tool)
 )  # 【调用包】商品期货行情/指标/库存/基差/宏观/新闻/供需/盘面利润/研报/品种信息/核验报价工具;由 LLM 通过 _run_tool_loop 调度取数
+from tradingagents.dataflows.methodology_context import (  # 【调用包】五书方法论关键读数确定性注入块(技术/基本/宏观三路, 非 @tool, 2026-09-29)
+    fundamental_methodology_context,
+    macro_methodology_context,
+    technical_methodology_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +313,17 @@ End your report with:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
 
+        # --- Methodology Injection (2026-09-29) ---
+        # 【方法论读数注入】五书技能(futures-quant-workflow)可确定性计算的关键读数
+        # (鹿希武双线/分界点A、墨菲 ADXR/RSI背离、多空逻辑估值驱动、Carver 成本上限)
+        # 确定性前置到系统提示 —— 与 @tool 配套: 注入块保证"必到"(上一版此处完全无
+        # 方法论内容, 导致正文只能写通用技术分析), 工具负责"够用"(换周期/更长历史下钻)。
+        # 只给技术面节点注入技术类读数(产业数据不给技术面, 否则模型会拿库存解释 K 线)。
+        methodology_ctx = technical_methodology_context(symbol)
+        if methodology_ctx:
+            system_message = methodology_ctx + "\n\n" + system_message
+        # --- End Methodology Injection ---
+
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [
                 (
@@ -380,6 +398,7 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
             get_futures_basis,
             get_futures_inventory,
             get_futures_supply_demand,
+            get_variety_db,  # 【工具】本地品种数据库(库存/开工/产量/排产/裂差/基差 下钻)
             get_futures_margin,  # 【工具】盘面利润读数(配方合成+历史分位;成本/利润框架取数)
             get_research_report,  # 【工具】人工上传研报摘要(最高优先级数据源)
             get_verified_quote,
@@ -390,6 +409,19 @@ def create_commodity_fundamental_analyst(llm, label="Fundamental", progress_call
 **Your Role**: Analyze supply-demand dynamics, inventory cycles, basis structure, and industrial chain relationships.
 
 **Analysis Framework**:
+
+**0. Local Variety Database (已注入到本提示最前方的 "【品种数据库 · ...】" 块, 零工具成本, 优先阅读)**:
+- 该块是用户导入的产业数据库(永安沥青数据库等)的**关键读数摘要**: 厂内/社会库存、仓单、
+  产能利用率与开工率、产量、炼厂排产、裂差利润、基差月差等, 每条含最新值与日期、环比、
+  近4期变化、区间分位与区间上下限。**权重最高**(一手产业数据): 与 akshare/公开接口或研报
+  转述覆盖同一指标同一时段时以本块为准, 引用时注明"品种数据库"。
+- 块内只放关键读数; 需要其它模块/指标/更长历史时调用
+  get_variety_db(keyword="库存", group="库存仓单", days=180) 下钻
+(如 keyword="稀释沥青"/"裂差"/"排产"; group="需求"/"成本利润")。
+- 缺数日**不补零**, 序列断点如实描述(不要用插值或估计值填空); 若块/工具返回
+  "VARIETY_DB_NO_DATA", 说明该品种未导入数据库 — 如实说明, 不要编造产业数据。
+- 块尾若提示"另有 N 个未来日期点", 那是源表的计划/预测值(如月度平衡表当年剩余月份),
+  不得当作既成事实; 可引用但必须写明"计划值/预测值"。
 
 1. **Price Context**: Call `get_futures_price` for recent OHLCV data as context.
 
@@ -501,6 +533,25 @@ End with:
         if evolution_ctx:
             system_message = evolution_ctx + "\n\n" + system_message
         # --- End Injection ---
+
+        # --- Local Variety Database Injection (2026-09-18) ---
+        # 【品种数据库注入】用户导入的产业数据库(库存/开工/产量/排产/裂差/基差)关键读数
+        # 确定性前置到系统提示 —— 与 @tool get_variety_db 配套: 注入块保证"必到",
+        # 工具负责"够用"(换关键词/分组/更长历史下钻)。该品种未导入数据库时不注入。
+        variety_ctx = variety_db_context(symbol)
+        if variety_ctx:
+            system_message = variety_ctx + "\n\n" + system_message
+        # --- End Variety Database Injection ---
+
+        # --- Methodology Injection (2026-09-29) ---
+        # 【方法论读数注入】基本面节点: 多空逻辑估值驱动二维四象 + 库存/基差序列概况
+        # + Carver 成本-速度上限。放在品种数据库块之后追加 → 拼接后位于其上(品种库
+        # 一手产业数据权重更高, 方法论块的"权重规则"句声明与本块冲突时以本块为准
+        # 仅针对同口径计算指标)。异常静默降级(不注入)。
+        methodology_ctx = fundamental_methodology_context(symbol)
+        if methodology_ctx:
+            system_message = methodology_ctx + "\n\n" + system_message
+        # --- End Methodology Injection ---
 
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [
@@ -693,6 +744,15 @@ End with:
         if user_data:
             system_message = user_data + "\n\n" + system_message
         # --- End User Data Injection ---
+
+        # --- Methodology Injection (2026-09-29) ---
+        # 【方法论读数注入】宏观节点(轻量块): 跨书冲突处置纪律 + 估值驱动现状。
+        # 宏观事件常同时触发多书结论(如政策利多 vs 技术面破位), 本块把"并列陈述、
+        # 禁止取平均/混用"的纪律前置, 防止模型擅自调和两套冲突口径。
+        methodology_ctx = macro_methodology_context(symbol)
+        if methodology_ctx:
+            system_message = methodology_ctx + "\n\n" + system_message
+        # --- End Methodology Injection ---
 
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [

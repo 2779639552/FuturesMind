@@ -110,20 +110,66 @@ XHS_HOME_URL = "https://www.xiaohongshu.com/explore"
 # ============================================================
 
 
-def decode_objectid_timestamp(note_id: str) -> str | None:
-    """
-    从 MongoDB ObjectId (24位hex) 的前8位解码时间戳。
-    小红书 note_id 使用 MongoDB ObjectId 格式，
-    前4字节是 Unix timestamp。
+_OBJECTID_HEX_RE = re.compile(r"\A[0-9a-fA-F]{24}\Z")  # 【变量】标准 Mongo ObjectId:24 位纯 hex
+_CARD_ID_MS_RE = re.compile(r"#(\d{13})\Z")  # 【变量】卡片 DOM 复合 id 尾部的 13 位毫秒时间戳
+_TS_LOWER_BOUND = 1420070400.0  # 【变量】2015-01-01:小红书 2013 成立,更早几无内容
+_TS_UPPER_SLACK = 86400.0  # 【变量】未来容差 1 天(容忍时区/机器时钟偏差)
 
-    >>> decode_objectid_timestamp("6a55fac30000000006036102")
-    "2026-07-14 18:20:19"
+
+def _format_unix_ts(ts: float) -> str | None:
+    """Unix 秒 → "YYYY-MM-DD HH:MM:SS";落在不合理区间返回 None。
+
+    【区间双闸】下限 2015-01-01、上限"此刻 + 1 天"。超出即判为来源错误
+    ——宁可留空(下游按"日期未知"处理),也不要编一个看似合法的时间。
     """
-    if not note_id or len(note_id) < 8:
+    if not (_TS_LOWER_BOUND <= ts <= time.time() + _TS_UPPER_SLACK):
         return None
     try:
-        ts = int(note_id[:8], 16)
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def decode_objectid_timestamp(note_id: str) -> str | None:
+    """从 note_id 反解发布时间字符串;判定不了返回 None(调用方写空串)。
+
+    支持两种 id 形态:
+      ① 标准 24 位 Mongo ObjectId —— 前 8 位 hex 即 Unix 秒;
+      ② 卡片 DOM 的复合 id `<id>#<13位毫秒时间戳>` —— **明确拒绝**(见下)。
+
+    【2026-09-17 修复 · 非 ObjectId 输入静默产出垃圾时间戳】
+    旧实现只检查 `len(note_id) >= 8` 且"前 8 位能当 hex 解析",于是 UUID 形态的
+    卡片 id(如 `f894297b-7000-4433-87fe-...`)前 8 位 "f894297b" 被当成 Unix 秒,
+    **静默**算出 2102 年 —— 实测 952 条 xhs 记录中 33 条落在 2013~2104 年。
+    未来日期一旦建桶,会永远落在下游"最近 N 天"窗口内并参与时效加权,比丢弃更糟。
+
+    【为什么 # 后的毫秒也不能用】该形态是小红书网页版列表卡片的 id 属性,
+    实测 33 条记录的毫秒值**全部等于其所在批次文件的时刻 +1~52 秒**(每批一条、
+    严格单调递增、随卡片处理顺序增长),即**卡片渲染/抓取时刻**,uuid 部分也不是
+    笔记 ObjectId。拿它当发布时间 = 把整批记录错误地归到采集当天,是"看似合法
+    其实错误"的值,比留空更危险(后人会当成真实发布时间),故一律返回 None。
+
+    >>> decode_objectid_timestamp("6a55fac30000000006036102")[:10]
+    '2026-07-14'
+    >>> decode_objectid_timestamp("f894297b-7000-4433-87fe-c90c29a59871#1789461982382") is None
+    True
+    >>> decode_objectid_timestamp("f894297b-7000-4433-87fe-c90c29a59871") is None
+    True
+    >>> decode_objectid_timestamp("") is None
+    True
+    """
+    if not note_id:
+        return None
+    token = str(note_id)
+    # ① 复合 id `<id>#<13 位毫秒>`:一律拒绝(该毫秒是渲染/抓取时刻,非发布时间,
+    #    详见上方 docstring 的实测证据)。
+    if _CARD_ID_MS_RE.search(token):
+        return None
+    # ② 标准 ObjectId:必须 24 位纯 hex(UUID / 纯数字 / 短 id 一律拒绝)
+    if not _OBJECTID_HEX_RE.match(token):
+        return None
+    try:
+        return _format_unix_ts(int(token[:8], 16))
     except (ValueError, OverflowError):
         return None
 
@@ -132,10 +178,15 @@ def parse_like_count(raw: str) -> int:
     """
     清洗点赞数为整数。
 
-    >>> parse_like_count("2562")   → 2562
-    >>> parse_like_count("1.2万")  → 12000
-    >>> parse_like_count("赞")     → 1
-    >>> parse_like_count("")       → 0
+    parse_like_count("2562")   → 2562
+    parse_like_count("1.2万")  → 12000
+    parse_like_count("赞")     → 1
+    parse_like_count("")       → 0
+
+    【2026-09-17】上面几行原本写成 `>>>` 开头,但 `→ 结果` 不是合法的 doctest
+    期望行,`python -m doctest` 会把它当代码执行并抛 SyntaxError,报 4 个假失败
+    (干扰排查)。去掉提示符后恢复为纯说明;本文件真正的 doctest 在
+    decode_objectid_timestamp。
     """
     if not raw:
         return 0
