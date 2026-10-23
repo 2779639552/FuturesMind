@@ -1,0 +1,11 @@
+#!/bin/sh
+# 提交前拦截疑似密钥。找不到 Python 就跳过（不阻塞正常提交）。
+# 启用：git config core.hooksPath .githooks
+for py in python python3 py; do
+  if command -v "$py" >/dev/null 2>&1; then
+    "$py" scripts/check_secrets.py --staged
+    exit $?
+  fi
+done
+echo "[pre-commit] 未找到 Python，跳过密钥扫描" >&2
+exit 0

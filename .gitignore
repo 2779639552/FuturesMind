@@ -327,3 +327,24 @@ _archive_*/
 docs/shots/
 # 回测中间缓存(可由 probe 脚本重算)
 probe/_bt_cache/
+
+# ── 凭据加固（2026-10-23）─────────────────────────────────────────
+# .env 及所有变体：.env / .env.local / .env.production / .env.bak_*
+.env*
+# 示例文件必须入库，按 .gitignore 的"后写规则优先"逐条放行
+!.env.example
+!.env.*.example
+!**/.env.example
+# 私钥 / 证书 / 密钥库
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+# 常见凭据文件名
+secrets.*
+credentials.*
+cookies.json
+*_cookies.json
+service-account*.json
