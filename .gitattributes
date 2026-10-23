@@ -3,3 +3,7 @@
 data_collection/Spider_XHS/static/*.js linguist-vendored
 static/echarts.min.js linguist-vendored
 static/marked.min.js linguist-vendored
+
+# Shell 脚本必须 LF，否则 Git Bash 报 bad interpreter: /bin/sh^M
+.githooks/** text eol=lf
+*.sh text eol=lf
