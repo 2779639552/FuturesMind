@@ -53,7 +53,9 @@ def main() -> int:
     ck('id="f-pi-badge"' not in clean, "② #f-pi-badge 已删")
     ck('id="chart-f-pi"' not in clean, "② #chart-f-pi 容器已删")
     ck("价格 vs 仓单库存 <span" not in clean, "② 该图标题(含徽标)已删")
-    ck('id="f-analysis-badge"' in clean, "② 「价格-库存关联分析」保留(只删了双轴图)")
+    # 【2026-10-16 反转】用户当天追加要求：连「价格-库存关联分析」小模块一起去掉。
+    ck('id="f-analysis-badge"' not in clean, "② 「价格-库存关联分析」小模块已删(2026-10-16)")
+    ck('id="f-analysis-body"' not in clean, "② #f-analysis-body 容器已删")
     ck('id="f-research"' in clean, "③ #f-research 容器仍在")
     ck("<!-- 【2026-10-14" in h, "三处都留了迁移/删除说明注释")
     print()

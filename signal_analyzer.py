@@ -169,9 +169,12 @@ def _load_price_live(variety: str) -> dict | None:
         return hit[1]
     out: dict | None = None
     try:
-        from quant_module import _load_daily_bars  # 【调用包】延迟导入(同 K 线口径的日 K)
+        # 【2026-10-22 收口】走缓存层（内存 5min + 磁盘定稿缓存），与 K 线页同口径。
+        #   本函数已有自己的 `_PRICE_LIVE_TTL` 短期缓存，但那是"回测专用视图"，
+        #   底层日线仍应共用同一份，否则同一品种会分别实拉两遍。
+        from quant_module import _daily_bars_cached  # 【调用包】延迟导入(同 K 线口径的日 K)
 
-        bars = _load_daily_bars(variety, days=_PRICE_LIVE_DAYS) or []
+        bars = _daily_bars_cached(variety, _PRICE_LIVE_DAYS) or []
         if len(bars) >= 20:  # 【阈值】不足 20 根视为取数失败, 避免拿残缺序列去回测
             prices = []
             prev_close = None

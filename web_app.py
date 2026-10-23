@@ -67,6 +67,7 @@ import sys  # 【调用包】模块搜索路径调整、解释器路径获取
 import tempfile  # 【调用包】临时文件(Playwright 打印 PDF 的中转文件)
 import threading  # 【调用包】后台线程与进度锁
 import time  # 【调用包】耗时统计与轮询间隔
+import uuid  # 【调用包】分析运行标识(run_id)
 from collections import defaultdict  # 【调用包】字典计数(缺失键自动给默认值,非标数据聚合用)
 from concurrent.futures import ThreadPoolExecutor  # 【调用包】线程池(数据看板三数据源并行拉取)
 from datetime import datetime, timedelta, timezone  # 【调用包】日期解析与时间窗计算(UTC 判僵尸年龄)
@@ -317,6 +318,16 @@ class ProgressTracker:
         self.trade_date = trade_date
         self.stages = stages if stages is not None else PIPELINE_STAGES
         self.start_time = time.time()
+        # 【2026-10-23 僵尸运行回收】最近一次"有进展"的时刻。
+        #   为什么需要它：`_active_runs` 只看 is_running/is_complete/error 三个标记，
+        #   一旦线程卡在 LLM 调用里再没回来（timeout=300 × max_retries=2 最坏 900s），
+        #   is_running 就永远是 True ⇒ **名额被永久占着**，这是并发上限只能设 3 的直接原因。
+        #   现在由 `_reclaim_stale_runs()` 按"多久没有进展"判定卡死。
+        self.last_progress_at = self.start_time
+        self.stalled_at: float | None = None
+        # 线程句柄，由 api_run_analysis 在 start() 之后挂上；用于区分
+        # 「线程已死但没上报」与「线程还活着只是慢」——两者处置完全不同。
+        self._thread: threading.Thread | None = None
 
         self.is_running = False
         self.is_complete = False
@@ -382,12 +393,18 @@ class ProgressTracker:
     def wait_if_paused(self):
         self._pause_event.wait()
 
+    # 【功能】刷新"最近有进展"时间戳(僵尸回收判据)。调用方已持 self._lock 时可直接改字段。
+    def _touch(self):
+        self.last_progress_at = time.time()
+        self.stalled_at = None
+
     # 【功能】标记某阶段为"进行中"。若已请求停止则忽略(不覆盖 current_stage)。
     def mark_stage_active(self, stage_id: str):
         with self._lock:
             if self.stop_requested:
                 return
             self.current_stage = stage_id
+            self._touch()
 
     # 【功能】标记某阶段完成,并把该阶段的报告摘要存到 stage_reports(截断到 3000 字符)。
     #   · 同一阶段多次完成不会重复加入 completed_stages。
@@ -400,11 +417,17 @@ class ProgressTracker:
             if report:
                 self.stage_reports[stage_id] = report[:3000]
             self.current_stage = ""
+            self._touch()
 
     # 【功能】标记整个分析完成,保存最终状态 final_state 与评级 rating,
     #   复位运行/暂停/停止标记并唤醒可能被暂停的线程。
     def mark_complete(self, final_state: dict, rating=None):
         with self._lock:
+            # 【2026-10-23】已被判定失败/回收的运行，不许被收尾覆盖。
+            #   场景：卡死的线程被 reclaim 释放名额后，它过一会儿又从 LLM 调用里回来了，
+            #   会走到这里把 error 洗成 complete —— 用户看到的是"成功了"，实际是半截结果。
+            if self.error:
+                return
             self.final_state = final_state
             self.rating = rating
             self.is_running = False
@@ -412,6 +435,22 @@ class ProgressTracker:
             self.is_paused = False
             self.stop_requested = False
             self._pause_event.set()
+
+    # 【功能】强制回收一个僵尸运行：标记错误、释放名额，并请求线程在下一个节点前退出。
+    # 【参数】reason: 展示给用户的回收原因（会直接进 /api/progress 的 error 字段）。
+    # 【关键】不"杀线程"——Python 没有安全的线程终止手段；改成置 stop_requested，
+    #   主循环每处理一个节点前都会检查它，最多多跑完当前这一个节点。
+    def reclaim(self, reason: str):
+        with self._lock:
+            # 幂等：两个请求可能同时触发回收（容量判断都先调 _reclaim_stale_runs），
+            # 第二次不要再改写原因、也不要重复记日志。
+            if self.is_complete or self.error:
+                return
+            self.error = reason
+            self.is_running = False
+            self.is_paused = False
+            self.stop_requested = True
+            self._pause_event.set()  # 若正卡在暂停，先放它出来才能走到退出点
 
     # 【功能】记录错误并终止运行状态(不抛异常,前端通过 error 字段获知失败原因)。
     def mark_error(self, err: str):
@@ -431,6 +470,8 @@ class ProgressTracker:
             self.tool_calls = tool
             self.tokens_in = tok_in
             self.tokens_out = tok_out
+            # 每次 LLM/工具调用都会走到这里 ⇒ 这是长节点内部唯一的心跳源。
+            self._touch()
 
     # 【属性】返回自 start_time 起已耗时的秒数。
     @property
@@ -478,10 +519,159 @@ class ProgressTracker:
             }
 
 
-# 全局唯一的分析进度跟踪器(同一时间只允许一次分析)。
-# 由 /api/run_analysis 创建,后台线程与 /api/progress 等接口共享读写。
-# Global tracker instance (one analysis at a time)
-_tracker: ProgressTracker | None = None  # 【变量】全局唯一的分析进度跟踪器(同一时间只允许一次分析)
+# 分析运行注册表：run_id → ProgressTracker。
+# 【2026-10-23 为什么从"单例"改成"注册表"】内网多人使用时，原来只有一个 `_tracker`，
+#   第二个人点「开始分析」会直接覆盖第一个人的进度页（两次分析并行、结果互相覆盖）。
+#   现在每个分析有自己的 tracker，接口用 ?run=<id> 定位；不带 run 时回退到"最近一次"，
+#   所以旧页面/旧脚本不会崩。
+_RUNS: dict[str, ProgressTracker] = {}  # 【变量】运行中与最近完成的分析
+_RUNS_LOCK = threading.RLock()  # 【锁】保护 _RUNS / _LATEST_RUN_ID
+_LATEST_RUN_ID: str | None = None  # 【变量】最近一次启动的分析(无 run 参数时的回退目标)
+MAX_PARALLEL_ANALYSES = 3  # 【常量】同时允许的分析数；超过直接拒绝并说明在跑哪几个
+_KEEP_FINISHED_RUNS = 5  # 【常量】已完成的分析保留几个(每个约 50KB，多了淘汰最旧的)
+
+# ── 僵尸运行回收（2026-10-23）─────────────────────────────────────────────
+# 【为什么必须有】`_active_runs` 原先只看 is_running/is_complete/error 三个标记。
+#   一旦分析线程卡在 LLM 调用里（timeout=300 × max_retries=2，最坏 900s）或收尾路径
+#   被异常跳过，is_running 永远是 True ⇒ **名额被永久占着**，后面前来的人一律 429。
+#   这正是并发上限只能设 3 的直接原因：不是机器扛不住，是"死一个就少一个坑"。
+STALE_HEARTBEAT_SECONDS = 900  # 【常量】连续 15 分钟没有任何进展 ⇒ 判定卡死(正常单次分析约 6 分钟)
+STALE_FORCE_SECONDS = 300  # 【常量】判定卡死后，再等 5 分钟仍未收尾 ⇒ 强制释放名额
+MAX_RUN_SECONDS = 3600  # 【常量】单次分析硬上限 1 小时(无论如何都回收)
+
+
+def _reclaim_stale_runs() -> list[dict]:
+    """回收僵尸运行，返回本次处置记录（供日志/排查）。
+
+    三级判据，从"确定"到"推测"，绝不误伤正常慢跑：
+      ① **线程已退出但状态还是 running** —— 确定是收尾被异常跳过，立即释放；
+      ② **超过 1 小时硬上限** —— 不管在干什么都释放；
+      ③ **连续 15 分钟无任何进展** —— 先标记 stalled（仍占名额），再等 5 分钟还不收尾才强制释放。
+         为什么不一检测到就释放：`update_stats` 是长节点内部唯一的心跳源，但某些极端慢的
+         单次调用可能 10 分钟没有心跳；先观察一轮再动手，比误杀正常分析便宜。
+    """
+    now = time.time()
+    actions: list[dict] = []
+
+    with _RUNS_LOCK:
+        snapshot = list(_RUNS.items())
+
+    for rid, t in snapshot:
+        # 只看"仍被认为是运行中"的条目；已完成/已报错/已请求停止的不归这里管
+        if t.is_complete or t.error or not t.is_running:
+            continue
+
+        elapsed = now - t.start_time
+        idle = now - getattr(t, "last_progress_at", t.start_time)
+        thr = getattr(t, "_thread", None)
+
+        # ① 线程句柄存在且已不存活 ⇒ 收尾路径一定被跳过了（正常结束会走 mark_complete）
+        if thr is not None and not thr.is_alive():
+            t.reclaim("后台线程已退出但未上报结果（收尾异常），名额已自动释放")
+            actions.append({"run": rid, "symbol": t.symbol, "action": "dead_thread"})
+            logger.warning(
+                "[run %s %s] 线程已死但状态仍为 running，已回收（elapsed=%.0fs）",
+                rid, t.symbol, elapsed,
+            )
+            continue
+
+        # ② 硬上限
+        if elapsed > MAX_RUN_SECONDS:
+            t.reclaim(f"运行超过硬上限 {MAX_RUN_SECONDS // 60} 分钟，已强制回收")
+            actions.append({"run": rid, "symbol": t.symbol, "action": "max_duration"})
+            logger.warning("[run %s %s] 超过硬上限，已回收（elapsed=%.0fs）", rid, t.symbol, elapsed)
+            continue
+
+        # ③ 无进展：先观察，再强制
+        if idle >= STALE_HEARTBEAT_SECONDS:
+            if t.stalled_at is None:
+                t.stalled_at = now
+                actions.append({"run": rid, "symbol": t.symbol, "action": "stall_detected"})
+                logger.warning(
+                    "[run %s %s] 已 %.0fs 无任何进展（阶段=%s），标记为疑似卡死",
+                    rid, t.symbol, idle, t.current_stage or "启动中",
+                )
+            elif now - t.stalled_at >= STALE_FORCE_SECONDS:
+                t.reclaim(f"连续 {int(idle // 60)} 分钟没有任何进展，判定卡死，名额已释放")
+                actions.append({"run": rid, "symbol": t.symbol, "action": "stalled"})
+                logger.warning("[run %s %s] 判定卡死，已回收（idle=%.0fs）", rid, t.symbol, idle)
+
+    return actions
+
+
+def _active_runs() -> list[tuple[str, "ProgressTracker"]]:
+    """正在跑（未完成、未报错、未请求停止）的分析。
+
+    【2026-10-23】先回收僵尸运行再计数。放在这里而不是定时任务里，是因为
+      容量判断是唯一会因"名额被占"而拒绝用户的地方 —— 保证每次判断前状态是干净的，
+      比依赖某个后台线程按时扫更可靠（那个线程自己也可能挂）。
+    """
+    _reclaim_stale_runs()
+    with _RUNS_LOCK:
+        return [
+            (rid, t) for rid, t in _RUNS.items()
+            if t.is_running and not t.is_complete and not t.error and not t.stop_requested
+        ]
+
+
+def _resolve_tracker(run_id: str | None = None):
+    """按 run_id 取 tracker；不给则取最近一次。找不到返回 None。"""
+    with _RUNS_LOCK:
+        if run_id:
+            return _RUNS.get(run_id)
+        if _LATEST_RUN_ID:
+            return _RUNS.get(_LATEST_RUN_ID)
+        return None
+
+
+def _find_duplicate_run(symbol: str, trade_date: str, modules: dict) -> tuple[str, "ProgressTracker"] | None:
+    """找「同品种 + 同交易日 + 同模块配置」且正在跑的分析。
+
+    【为什么要拦】LLM 推理不共享，同配置重跑一遍只是把同一件事做两次：token 双花、
+      时间不省（取数缓存只省几秒）。所以不重跑，直接把已有那次运行的 run 交回去，
+      前端接管它的进度页即可。
+    【为什么不只看品种】同品种不同交易日、或完整档 vs 轻量档，是**不同的分析**，
+      必须允许同时跑 —— 只按品种拦会把正常用法挡掉。
+    """
+    for rid, t in _active_runs():
+        if t.symbol != symbol:
+            continue
+        if str(getattr(t, "trade_date", "")) != str(trade_date):
+            continue
+        if getattr(t, "run_modules", None) == modules:
+            return rid, t
+    return None
+
+
+def _register_run(tracker: "ProgressTracker") -> str:
+    """登记一个新分析，返回 run_id；顺带淘汰旧的已完成运行。"""
+    global _LATEST_RUN_ID
+    rid = uuid.uuid4().hex[:12]
+    with _RUNS_LOCK:
+        _RUNS[rid] = tracker
+        _LATEST_RUN_ID = rid
+        finished = sorted(
+            ((k, v) for k, v in _RUNS.items()
+             if v.is_complete or v.error or v.stop_requested),
+            key=lambda kv: kv[1].start_time,
+        )
+        if len(finished) > _KEEP_FINISHED_RUNS:
+            for k, _v in finished[:-_KEEP_FINISHED_RUNS]:
+                _RUNS.pop(k, None)
+    return rid
+
+
+def _run_id_from_request() -> str | None:
+    """从 query string 或 JSON body 取 run 标识（GET/POST 都支持）。"""
+    rid = request.args.get("run")
+    if rid:
+        return rid.strip()
+    try:
+        body = request.get_json(silent=True) or {}
+        rid = body.get("run")
+        return rid.strip() if isinstance(rid, str) and rid.strip() else None
+    except Exception:  # noqa: BLE001 - 取不到就当没传
+        return None
 
 # ── Config persistence ──────────────────────────────────────────────────────
 
@@ -2894,10 +3084,31 @@ def stages_for_run(opts):
 #     进度条随之只显示实际会跑的阶段(前端拿到 d1.stages 后按权威列表重绘)。
 #   · 后端把每个 Agent 节点名映射为阶段 id(stage_map),节点跑完就标记该阶段完成。
 #   · 分析流会检查 _tracker.stop_requested / wait_if_paused(),实现前端"停止/暂停"。
+@app.route("/api/analysis/data_cards")
+def api_analysis_data_cards():
+    """国君四源「数据卡」：每条读数带来源 / 时点 / 算法 / 可比性（2026-10-22）。
+
+    【和注入块的关系】同一份 overview、同一套取数，只是多一层结构化投影。
+      注入块（文本）给模型读；数据卡（JSON）给前端展示与研究内容检查用。
+    【为什么需要】实测 TA 报告里模型靠猜才发现「基差率 7.89%（现货分母）vs 8.56%
+      （期货分母）不可混比」。数据卡把这条写成字段，前端可点开看，检查节点也能据此判定。
+    """
+    code = (request.args.get("variety") or "").strip().upper()
+    if not code:
+        return jsonify({"ok": False, "error": "缺少或非法品种参数(variety)"}), 400
+    try:
+        from tradingagents.dataflows.analysis_bundle import build_cards
+
+        cards = build_cards(code)
+    except Exception as exc:  # noqa: BLE001 - 单接口失败不拖垮整站
+        return jsonify({"ok": False, "error": str(exc)[:160]}), 500
+    return jsonify({"ok": True, "variety": code, "count": len(cards), "cards": cards})
+
+
 @app.route("/api/run_analysis", methods=["POST"])
 def api_run_analysis():
     """Run full analysis with SSE streaming — reports, debate, synthesis, rating."""
-    global _tracker
+    # [2026-10-23] 不再用全局单例，改用本次运行的 tracker
     data = request.json or {}
     symbol = data.get("symbol", "RB").upper()
     trade_date = data.get("date", "2026-07-14")
@@ -2913,8 +3124,61 @@ def api_run_analysis():
     # 阶段列表:按本次启用的模块过滤 PIPELINE_STAGES,进度条也随之只显示实际会跑的阶段。
     stages = stages_for_run(opts)
 
-    _tracker = ProgressTracker(symbol=symbol, trade_date=trade_date, stages=stages)
-    _tracker.is_running = True
+    # 本次运行的模块签名：既是"同品种互斥"的判据，也随响应返回给前端提示档位。
+    run_modules = {
+        "sentiment": include_sentiment,
+        "debate": include_debate,
+        "synthesis": include_synthesis,
+        "scenario": include_scenario,
+    }
+
+    # 【2026-10-23 同品种互斥】完全相同的分析（品种+交易日+模块组合）已经在跑时，
+    #   不重跑 —— LLM 推理不共享，重跑等于把同一件事做两遍（token 双花、时间不省）。
+    #   直接把已有 run 交回去，前端接管它的进度页。返回 409 便于前端区分于 429。
+    _dup = _find_duplicate_run(symbol, trade_date, run_modules)
+    if _dup:
+        _drid, _dt = _dup
+        return jsonify({
+            "error": "duplicate",
+            "run": _drid,
+            "symbol": symbol,
+            "elapsed": round(_dt.elapsed, 1),
+            "current_stage": _dt.current_stage or "启动中",
+            "message": (
+                f"{symbol} 已有一次相同配置的分析在运行"
+                f"（{int(_dt.elapsed)}s，{_dt.current_stage or '启动中'}），已切到那次运行"
+            ),
+            "modules": run_modules,
+            "stages": [s["id"] for s in _dt.stages],
+        }), 409
+
+    # 【2026-10-23 并发控制】内网多人使用时，超过上限直接拒绝并说明在跑哪几个。
+    #   为什么不做排队：一次分析约 6 分钟，排第三位等于无声等 18 分钟，
+    #   不如立刻告诉用户"现在有谁在跑、跑了多久"，让他自己决定换品种还是等。
+    active = _active_runs()
+    if len(active) >= MAX_PARALLEL_ANALYSES:
+        busy = [
+            {
+                "run": rid,
+                "symbol": t.symbol,
+                "elapsed": round(t.elapsed, 1),
+                # 刚启动、还没进入第一个节点时 current_stage 是空的，
+                # 直接返空串会让前端显示成"已 3s，"（后面什么都没有）
+                "current_stage": t.current_stage or "启动中",
+            }
+            for rid, t in sorted(active, key=lambda kv: kv[1].start_time)
+        ]
+        return jsonify({
+            "error": "busy",
+            "message": "当前已有 %d 个分析在运行（上限 %d），请等其中一个结束后再试"
+                       % (len(active), MAX_PARALLEL_ANALYSES),
+            "active": busy,
+        }), 429
+
+    tracker = ProgressTracker(symbol=symbol, trade_date=trade_date, stages=stages)
+    tracker.is_running = True
+    tracker.run_modules = run_modules  # 供"同品种互斥"比对（同配置不重跑）
+    run_id = _register_run(tracker)  # 登记并拿到本次运行的标识
 
     # 【关键逻辑】客户端标识必须在请求处理阶段(有 request 上下文)取好再传进后台线程:
     # _client_tag() 读 request.headers,后台线程里没有请求上下文,直接调用会抛
@@ -2935,14 +3199,34 @@ def api_run_analysis():
         "scenario_analysis": "scenario",
     }
     # Store final reports for retrieval
-    _tracker._stage_reports = {}
-    _tracker._final_rating = None
+    tracker._stage_reports = {}
+    tracker._final_rating = None
 
     # 后台线程实际执行的分析主体:构建图 → 流式驱动 → 汇总报告 → 事后校验。
     # 【功能】后台线程主体:构建图、流式驱动、汇总报告、事后校验(预测背离时写进化记忆)。
     def run_analysis():
-        global _tracker
+        # [2026-10-23] 不再用全局单例，改用本次运行的 tracker
         try:
+            # 【2026-10-22 体检修正】预热必须**先于建图**启动，与 1.54s 的建图并行。
+            #   原来放在建图之后，等技术分析师节点到达时预热才跑了 ~0s，而它要 16.17s ⇒
+            #   第一个节点必然拿不到价格轴视图（实测 8.00s 超时返回空）。
+            #   仍然只起线程、不等待 —— 不拖慢分析启动；但预热窗口提前了整个建图耗时。
+            try:
+                from tradingagents.dataflows.analysis_bundle import gtja_context as _gtja_warm
+
+                threading.Thread(target=_gtja_warm, args=(symbol,), daemon=True,
+                                 name=f"gtja-warm-{symbol}").start()
+            except Exception:  # noqa: BLE001 - 预热失败不影响分析
+                pass
+            try:
+                from tradingagents.dataflows import analyst_views as _views_warm
+
+                # warm() 内部**阻塞到算完**（仅预热线程如此；分析路径仍按 WAIT_SECONDS 等）
+                threading.Thread(target=_views_warm.warm, args=(symbol,), daemon=True,
+                                 name=f"views-warm-{symbol}").start()
+            except Exception:  # noqa: BLE001 - 预热失败不影响分析
+                pass
+
             # 构建 LangGraph 多分析师图;enable_feedback=False 表示本轮不要求用户反馈。
             app_graph, _ = build_commodity_graph(  # 【调用函数】构建 LangGraph 多分析师图(按本次启用的模块接线)
                 config,
@@ -2981,17 +3265,17 @@ def api_run_analysis():
             # 以 "updates" 模式逐步驱动图,每步产出 {节点名: 该节点输出}。
             # 每步之前检查停止标记与暂停事件,使前端"停止/暂停"能即时生效。
             for chunk in app_graph.stream(initial_state, stream_mode="updates"):  # 【调用函数】以 updates 模式逐步驱动 Agent 图
-                if _tracker.stop_requested:
+                if tracker.stop_requested:
                     break
-                _tracker.wait_if_paused()
+                tracker.wait_if_paused()
                 for node_name, node_data in chunk.items():
                     if not node_data:
                         continue
                     if isinstance(node_data, dict):
                         final_state.update(node_data)
                     sid = stage_map.get(node_name)
-                    if sid and sid not in _tracker.completed_stages:
-                        _tracker.mark_stage_done(sid)
+                    if sid and sid not in tracker.completed_stages:
+                        tracker.mark_stage_done(sid)
                     # Store reports
                     if node_name in (
                         "technical_analyst",
@@ -3000,32 +3284,43 @@ def api_run_analysis():
                         "sentiment_analyst",
                     ):
                         key = node_name.replace("_analyst", "") + "_report"
-                        _tracker._stage_reports[node_name] = node_data.get(key, "")[:5000]
+                        tracker._stage_reports[node_name] = node_data.get(key, "")[:5000]
                     elif node_name == "debate_moderator":
-                        _tracker._stage_reports[node_name] = node_data.get(
+                        tracker._stage_reports[node_name] = node_data.get(
                             "discussion_summary", ""
                         )[:5000]
+                    elif node_name == "research_review":
+                        # 【2026-10-23】事前检查（图的正式节点，纯规则、零 LLM）。
+                        #   它的产物 quality_gate 已被 synthesis 读走并注入提示词；
+                        #   这里只负责留痕，供结果接口/前端展示"这次是被哪些问题约束的"。
+                        _pre = node_data.get("research_review") or {}
+                        tracker._stage_reports["_research_review_pre"] = _pre
+                        if node_data.get("quality_gate"):
+                            logger.warning(
+                                "[research_review/pre] %s 质量门未通过(score=%s)，已注入综合研判",
+                                symbol, _pre.get("score"),
+                            )
                     elif node_name == "synthesis":
                         syn = node_data.get("investment_plan", "")
-                        _tracker._stage_reports[node_name] = syn[:5000]
+                        tracker._stage_reports[node_name] = syn[:5000]
                         m = re.search(
                             r"RATING:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(.+?)\s*\|\s*SCORE:\s*(\d+)", syn
                         )
                         if m:
-                            _tracker._final_rating = {
+                            tracker._final_rating = {
                                 "rating": m.group(1).strip(),
                                 "confidence": m.group(2).strip(),
                                 "score": int(m.group(3)),
                             }
                     elif node_name == "scenario_analysis":
-                        _tracker._stage_reports[node_name] = node_data.get("scenario_analysis", "")[
+                        tracker._stage_reports[node_name] = node_data.get("scenario_analysis", "")[
                             :5000
                         ]
                     elif node_name in ("bull_opening", "bear_refute", "bull_rebuttal"):
-                        _tracker._stage_reports[node_name] = node_data.get("debate_state", {}).get(
+                        tracker._stage_reports[node_name] = node_data.get("debate_state", {}).get(
                             "bull_last" if "bull" in node_name else "bear_last", ""
                         )[:3000]
-                    _tracker.update_stats(llm=_tracker.llm_calls + 1)
+                    tracker.update_stats(llm=tracker.llm_calls + 1)
 
             # 机构(研报) vs 散户(社媒) 观点对比卡:确定性计算(无 LLM、无图节点)。
             # 仅在包含情绪分析师时产出,避免"未跑情绪"被误显示为"散户无数据"。
@@ -3034,12 +3329,27 @@ def api_run_analysis():
                     gc = _build_group_compare(symbol)
                     if gc and gc.get("available"):
                         final_state["group_compare"] = gc
-                        _tracker._stage_reports["group_compare"] = gc
+                        tracker._stage_reports["group_compare"] = gc
             except Exception:
                 logger.exception("group_compare 计算失败(非阻断)")
 
-            _tracker._stage_reports["_final_state"] = final_state
-            _tracker.mark_complete(final_state)
+            # 记下"是否被停止"——mark_complete 会把 stop_requested 复位，之后就看不出
+            # 这次到底是跑完的还是被叫停的（落盘判断要用）。
+            _was_stopped = tracker.stop_requested
+            tracker._stage_reports["_final_state"] = final_state
+            tracker.mark_complete(final_state)
+
+            # 【2026-10-23】被回收/判定失败的运行**不许落盘半截报告**。
+            #   历史报告列表是给人看的，混进一份"跑到技术面就断"的残卷比没有更糟，
+            #   而且它会被 /api/history 当成正常分析列出来。
+            #   用户主动"停止"同理：那不是一次完成的分析。
+            #   ⚠ 必须先取 was_stopped —— mark_complete 会把 stop_requested 复位成 False。
+            if tracker.error or _was_stopped:
+                logger.warning(
+                    "[run %s] %s 未正常完成（%s），跳过历史落盘",
+                    run_id, symbol, tracker.error or "用户停止",
+                )
+                return
 
             # 把本次分析落盘为历史报告(与 CLI 相同格式),供 /api/history 与
             # /api/report/<file> 读取。此前 Web 分析从不写盘,历史报告因此停更。
@@ -3056,19 +3366,48 @@ def api_run_analysis():
                     symbol,
                     trade_date,
                     final_state,
-                    elapsed=_tracker.elapsed,
+                    elapsed=tracker.elapsed,
                     modules_note="、".join(skipped_mods),
                 )
             except Exception:
                 logger.exception("Failed to persist analysis report for %s", symbol)
+
+            # 【2026-10-22】研究内容检查（纯规则，零 LLM 成本、不阻塞分析）。
+            #   格式护栏只能保证"结构对"，管不了"结论有没有依据、口径有没有注明、
+            #   缺口有没有被中性顶替"。这六条规则把体检时人工发现的问题固化成可回归的检查：
+            #   R1 缺口顶替 / R2 关键变量缺失 / R3 基差率未注明分母 /
+            #   R4 证据悬空 / R5 失效条件缺失 / R6 周频滞后未标注。
+            #   结果存进 _stage_reports["_research_review"]，前端可展示；不通过只记 warning。
+            try:
+                from tradingagents.research_review import review, summarize
+
+                _reports = tracker._stage_reports or {}
+                # 【2026-10-23 收紧范围】只查综合研判本身，不再拼上技术/基本面报告。
+                #   原因：拼在一起时，分析师报告里写的「失效价位」会给综合研判"顶包" ——
+                #   实测 14 份里，综合研判单独看只有 1 份缺失效条件，拼接后全部通过。
+                #   读者只看最终结论，验收就必须按最终结论判。
+                _review_text = str(_reports.get("synthesis") or "")
+                _cards: list = []
+                try:
+                    from tradingagents.dataflows.analysis_bundle import build_cards
+
+                    _cards = build_cards(symbol)
+                except Exception:  # noqa: BLE001 - 卡片缺失只让 R1/R2/R6 退化
+                    pass
+                _rr = review(_review_text, symbol=symbol, cards=_cards)
+                tracker._stage_reports["_research_review"] = _rr
+                if not _rr.get("pass"):
+                    logger.warning("[research_review] %s", summarize(_rr))
+            except Exception:  # noqa: BLE001 - 检查失败绝不影响分析本身
+                logger.debug("research review skipped", exc_info=True)
 
             # 事后校验:把 Agent 预测方向与真实行情走势对比;若背离则把该案例
             # 存入进化记忆(store_prediction),供后续轮次学习。失败不影响分析完成。
             # Post-mortem: check if prediction diverged from actual outcome
             try:
                 outcome = _get_actual_outcome(symbol, trade_date, horizon_days=5)
-                if outcome and _tracker._final_rating:
-                    agent_dir = _tracker._final_rating.get("rating", "")
+                if outcome and tracker._final_rating:
+                    agent_dir = tracker._final_rating.get("rating", "")
                     actual_dir = outcome.get("direction", "")
                     # Map Chinese rating to BULL/BEAR
                     if "看多" in agent_dir:
@@ -3089,12 +3428,12 @@ def api_run_analysis():
                         store_prediction(  # 【调用函数】把背离案例写入进化记忆,供后续轮次学习
                             symbol,
                             trade_date,
-                            _tracker._final_rating.get("rating", "?"),
-                            _tracker._final_rating.get("confidence", "?"),
-                            _tracker._final_rating.get("score", 5),
+                            tracker._final_rating.get("rating", "?"),
+                            tracker._final_rating.get("confidence", "?"),
+                            tracker._final_rating.get("score", 5),
                         )
                         # Flag the divergence
-                        _tracker._stage_reports["_divergence"] = {
+                        tracker._stage_reports["_divergence"] = {
                             "agent_direction": agent_dir,
                             "actual_direction": actual_dir,
                             "actual_pct": outcome.get("pct_change", 0),
@@ -3104,22 +3443,23 @@ def api_run_analysis():
                 pass  # Non-critical, don't block analysis completion
         except Exception as e:
             # 任何异常都转成 mark_error,避免后台线程静默死亡。
-            _tracker.mark_error(str(e))
+            tracker.mark_error(str(e))
 
     # 启动后台线程执行分析(daemon=True,主进程退出时随之终止),接口立即返回。
     t = threading.Thread(target=run_analysis, daemon=True)
     t.start()
+    # 【2026-10-23】挂上线程句柄：僵尸回收要靠 is_alive() 区分
+    #   「线程已死但没收尾」和「线程还活着只是慢」，两者处置完全不同。
+    tracker._thread = t
 
     return jsonify(
         {
             "status": "started",
+            # 【2026-10-23】本次运行的标识。前端拿它去轮询 /api/progress?run=…
+            #   与 /api/analysis_results?run=…，多个分析并行时互不干扰。
+            "run": run_id,
             "include_sentiment": include_sentiment,
-            "modules": {  # 【变量】本次实际启用的模块(供前端记录/提示档位)
-                "sentiment": include_sentiment,
-                "debate": include_debate,
-                "synthesis": include_synthesis,
-                "scenario": include_scenario,
-            },
+            "modules": run_modules,  # 【变量】本次实际启用的模块(供前端记录/提示档位)
             "stages": [s["id"] for s in stages],
         }
     )
@@ -3133,9 +3473,10 @@ def api_run_analysis():
 #   无任务可暂停时: 400 {"status": "not_running"}。
 @app.route("/api/pause", methods=["POST"])
 def api_pause():
-    global _tracker
-    if _tracker and _tracker.pause():
-        return jsonify({"status": "paused", "progress": _tracker.to_dict()})
+    # 【2026-10-23】按 run_id 定位；不带 run 时回退到最近一次（旧页面仍可用）
+    _t = _resolve_tracker(_run_id_from_request())
+    if _t and _t.pause():
+        return jsonify({"status": "paused", "progress": _t.to_dict()})
     return jsonify({"status": "not_running"}), 400
 
 
@@ -3144,9 +3485,10 @@ def api_pause():
 #   当前未暂停时: 400 {"status": "not_paused"}。
 @app.route("/api/resume", methods=["POST"])
 def api_resume():
-    global _tracker
-    if _tracker and _tracker.resume():
-        return jsonify({"status": "resumed", "progress": _tracker.to_dict()})
+    # 【2026-10-23】按 run_id 定位；不带 run 时回退到最近一次（旧页面仍可用）
+    _t = _resolve_tracker(_run_id_from_request())
+    if _t and _t.resume():
+        return jsonify({"status": "resumed", "progress": _t.to_dict()})
     return jsonify({"status": "not_paused"}), 400
 
 
@@ -3155,9 +3497,10 @@ def api_resume():
 #   无运行任务时: 400 {"status": "not_running"}。
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
-    global _tracker
-    if _tracker and _tracker.request_stop():
-        return jsonify({"status": "stopping", "progress": _tracker.to_dict()})
+    # 【2026-10-23】按 run_id 定位；不带 run 时回退到最近一次（旧页面仍可用）
+    _t = _resolve_tracker(_run_id_from_request())
+    if _t and _t.request_stop():
+        return jsonify({"status": "stopping", "progress": _t.to_dict()})
     return jsonify({"status": "not_running"}), 400
 
 
@@ -3167,10 +3510,12 @@ def api_stop():
 @app.route("/api/progress")
 def api_progress():
     """Get current analysis progress."""
-    global _tracker
-    if _tracker:
-        d = _tracker.to_dict()
-        d["rating"] = getattr(_tracker, "_final_rating", None)
+    # 【2026-10-23】按 run_id 取；不带 run 时回退到最近一次。
+    _t = _resolve_tracker(_run_id_from_request())
+    if _t:
+        d = _t.to_dict()
+        d["rating"] = getattr(_t, "_final_rating", None)
+        d["run"] = _run_id_from_request() or _LATEST_RUN_ID
         return jsonify(d)
     return jsonify({"is_running": False, "is_complete": False})
 
@@ -3197,10 +3542,12 @@ def api_feedback():
     evo_ctx = get_evolution_context(symbol)  # 【调用函数】读取进化记忆作为辩论背景
     # Include current analysis results if available
     current_analysis = ""
-    if _tracker and _tracker.is_complete:
-        reports = getattr(_tracker, "_stage_reports", {})
+    # 【2026-10-23】辩论要针对某一次分析：优先用请求里的 run，否则最近一次
+    _t = _resolve_tracker(_run_id_from_request())
+    if _t and _t.is_complete:
+        reports = getattr(_t, "_stage_reports", {})
         syn = reports.get("synthesis", "")
-        rating = getattr(_tracker, "_final_rating", {})
+        rating = getattr(_t, "_final_rating", {})
         if syn:
             current_analysis = f"## Current Analysis Summary\nRATING: {rating.get('rating', '?')} | CONFIDENCE: {rating.get('confidence', '?')}\n{syn[:1500]}\n\n"
     debate_prompt = (
@@ -3245,11 +3592,12 @@ def api_feedback():
 @app.route("/api/analysis_results")
 def api_analysis_results():
     """Get stored analysis reports and debate after completion."""
-    global _tracker
-    if not _tracker or not _tracker.is_complete:
+    # 【2026-10-23】按 run_id 取；不带 run 时回退到最近一次（旧页面/旧脚本不受影响）。
+    _t = _resolve_tracker(_run_id_from_request())
+    if not _t or not _t.is_complete:
         return jsonify({"ready": False})
-    reports = getattr(_tracker, "_stage_reports", {})
-    rating = getattr(_tracker, "_final_rating", None)
+    reports = getattr(_t, "_stage_reports", {})
+    rating = getattr(_t, "_final_rating", None)
     # Compute predicted magnitude from SCORE (5=neutral, 0/10=extreme)
     predicted_magnitude = None
     if rating and rating.get("score"):
@@ -3261,14 +3609,41 @@ def api_analysis_results():
     )
     if mag_match:
         predicted_magnitude = float(mag_match.group(1))
+    # 【2026-10-23】事后验收：综合研判跑完后，再对"最终文本"跑一次同样的规则。
+    #   事前（research_review 节点）只能约束，不能保证模型真的照做；
+    #   这一遍负责"验收"，未通过就把问题清单**追加到报告正文末尾**，读者直接可见。
+    _rr = reports.get("_research_review")
+    _reports_out = {
+        k: v for k, v in reports.items() if not k.startswith("_") or k == "_divergence"
+    }
+    _accept_sec = ""
+    if _rr and not _rr.get("pass"):
+        try:
+            from tradingagents.research_review import apply_acceptance
+
+            _reports_out, _accept_sec = apply_acceptance(_reports_out, _rr)
+        except Exception:  # noqa: BLE001 - 渲染失败不影响结果返回
+            _accept_sec = ""
+
     return jsonify(
         {
             "ready": True,
-            "reports": {
-                k: v for k, v in reports.items() if not k.startswith("_") or k == "_divergence"
-            },
+            "reports": _reports_out,
             "rating": rating,
             "predicted_magnitude": predicted_magnitude,
+            # 【2026-10-22】研究内容检查结果（纯规则，零 LLM 成本）
+            #   {pass, score, issues[]}；未跑时为 None。前端可据此提示"结论需复核"。
+            "research_review": _rr,
+            # 【2026-10-23】事前那一遍（图里的 research_review 节点）：
+            #   它决定了综合研判被哪些问题约束过，与事后验收分开存，
+            #   才能看出"提出了问题 → 有没有被改掉"。
+            "research_review_pre": reports.get("_research_review_pre"),
+            "quality_gate": {
+                "pre_failed": bool(reports.get("_research_review_pre"))
+                and not (reports.get("_research_review_pre") or {}).get("pass"),
+                "post_failed": bool(_rr) and not _rr.get("pass"),
+                "section": _accept_sec,
+            },
         }
     )
 
@@ -4469,6 +4844,25 @@ def _process_research_report_inner(report_id: int):
             report_id, status="processing", extracted_text=text[:20000], layout_text=layout_text
         )
 
+        # 【2026-10-21 入库去重】同一份 PDF 换个文件名再导一次时，正文完全相同 ⇒ 直接跳过，
+        #   既不重复烧两次 LLM，也不会在观点总览里出现两条一模一样的研报。
+        #   注意比对的是**截断后**的 text[:20000]（入库存的就是这个），否则长文永远判不中。
+        # 用 getattr 取方法：测试里十几个 _FakeDB 桩没有这个方法，
+        # 直接调会把"桩不完整"变成 AttributeError 打断整条入库流水。
+        _find = getattr(db, "find_research_report_by_text", None)
+        _dup = _find(text[:20000], exclude_id=report_id) if callable(_find) else None
+        if _dup:
+            db.update_research_report(
+                report_id, status="skipped",
+                error=("与已有研报正文完全相同（重复导入），已跳过：" 
+                       f"#{_dup.get('id')}《{(_dup.get('title') or '')[:60]}》"),
+            )
+            logger.info(
+                "Research report %s is duplicate of %s (identical text), skipped",
+                report_id, _dup.get("id"),
+            )
+            return
+
         client = create_llm_client(
             config["llm_provider"],
             config.get("quick_think_llm", config["deep_think_llm"]),
@@ -5336,14 +5730,269 @@ def _row_research_fund_metrics(r: dict, fallback_text: str = "") -> list[dict]:
     return _merge_fund_metrics(dp, fallback_text)
 
 
+# ============================================================================
+# 公众号采集通道状态（2026-10-16 新增 · 只读巡检）
+# 【为什么要有它】两条公众号通道（合集 / 微信读书）的运行结果此前**只写进 alerts 表**，
+#   界面完全看不出来 —— 用户是靠肉眼看"今天没有公众号来源的"才发现，而那条
+#   `wechat_weread_collect_failed` 告警已经躺了 3 天（典型的**告警疲劳**）。
+#   ⇒ 本接口把"哪条通道断了 / 断在哪 / 怎么修"变成页面上看得见的一行。
+# 【纪律】**纯只读**：不触发采集、不发任何网络请求；只读 alerts 表 + 本地状态文件。
+# 【判据】"最近一轮"以 `wechat_collect_done` 为时间锚（两条通道同轮触发）——
+#   某通道的 failed 告警若不早于该锚，即判定它**这一轮**是失败的。
+#   ⚠️ **不要用 result 文件的 mtime 判**：通道失败时那个文件根本不会被更新，
+#     于是"旧"会被误读成"压根没跑"（两者修法完全不同）。
+# ============================================================================
+def _wechat_alert_in_round(alert, base_ts: str) -> bool:
+    """★ 某条告警是否属于「最近一轮」。
+
+    【为什么单独抽出来】这是本巡检的**核心判据**：两条通道同轮触发，而告警表里
+      **只有失败才写记录**（成功不写）⇒ "有没有告警"不能直接当状态，
+      必须看它**是不是本轮的**。否则一次历史失败会把该通道永久标成"中断"。
+
+    【判据】created_at 同为 UTC 字符串（CURRENT_TIMESTAMP），可直接字典序比较。
+      base_ts 为空（还没跑过一轮）时，只要告警存在就算本轮
+      —— 宁可多提醒一次，也不要把真问题漏掉。
+    """
+    if not alert:
+        return False
+    ts = str((alert or {}).get("created_at") or "")
+    if not ts:
+        return False
+    return (not base_ts) or ts >= base_ts
+
+
+def _wechat_alert_superseded(alert, ok_ts: str) -> bool:
+    """失败告警是否已被**更晚的采集记录**推翻。
+
+    【为什么需要】告警表只在失败时写记录 ⇒ 一条历史失败会**一直**让界面显示"中断"，
+      哪怕之后已经成功采集过（实测：16:15 的失败告警把界面钉在"中断"，
+      而 17:03 已成功采到 4 篇 ⇒ 用户以为还坏着）。状态要看"现在"，不是"历史上失败过"。
+    【判据】采集结果文件的 `ts` **晚于**告警时间 ⇒ 此后又跑过且**没产生新的失败告警**
+      ⇒ 该告警不代表当前状态。
+    ⚠ **时间口径**：`alerts.created_at` 是 **UTC**（CURRENT_TIMESTAMP），
+      而 result 的 `ts` 是**本地时间** ⇒ 必须 +8 对齐，否则"本地 17:03 vs UTC 16:15"
+      会被算成更早、判定恒为假（这条修复会静默失效）。
+    """
+    import datetime as _d
+    if not alert or not ok_ts:
+        return False
+    ts = str((alert or {}).get("created_at") or "")
+    if not ts:
+        return False
+    try:
+        a = _d.datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S") + _d.timedelta(hours=8)
+        b = _d.datetime.strptime(str(ok_ts)[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return False
+    return b > a
+
+
+def _file_mtime_iso(p) -> str:
+    """文件最后修改时间（本地）→ ISO 字符串。给"只有文本、没有 ts 字段"的通道用。"""
+    import datetime as _d
+    try:
+        return _d.datetime.fromtimestamp(_os.path.getmtime(p)).strftime("%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _wechat_channel_tri_state(failed: bool, new_count) -> str:
+    """★ 通道三态：failed(中断) / empty(跑了但无新文) / ok。
+
+    ⚠ 三者**不可混**：empty 是"内容源没新文"（换关键词/等更新），
+      failed 是"通道本身坏了"（重登）—— 混成一个"没数据"会让用户**修错东西**
+      （去重登一个没坏的账号，或反过来等一个不会自己好的通道）。
+      new_count 为 None（没读到结果文件）时按 ok 处理，不误报。
+    """
+    if failed:
+        return "failed"
+    if new_count == 0:
+        return "empty"
+    return "ok"
+
+
+def _wechat_channels_status() -> dict:
+    import json as _json
+    import os as _os
+    import re as _re
+
+    W = _os.path.join(_os.path.expanduser("~"), ".tradingagents", "wechat")
+    R = _os.path.join(_os.path.expanduser("~"), ".tradingagents", "weread")
+
+    def _load(p, default=None):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                return _json.load(fh)
+        except Exception:
+            return default
+
+    def _text(p):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                return fh.read()
+        except Exception:
+            return ""
+
+    db = get_db()
+
+    def _latest(atype):
+        try:
+            return db.get_latest_alert(atype)
+        except Exception:
+            return None
+
+    # 最近一轮的时间锚（两条通道同轮触发）
+    base = str((_latest("wechat_collect_done") or {}).get("created_at") or "")
+
+    def _this_round(rec) -> bool:
+        return _wechat_alert_in_round(rec, base)
+
+    channels: list[dict] = []
+
+    # ── 通道① 合集通道（免登录 HTTP，按"已登记合集"增量追踪）────────────────
+    acc = (_load(_os.path.join(W, "wechat_accounts.json"), {}) or {}).get("accounts") or {}
+    n_alb = sum(len((a or {}).get("albums") or {}) for a in acc.values())
+    alb_rep = _text(_os.path.join(W, "album_collect_result.txt"))
+    m = _re.search(r"本次新增\s*(\d+)\s*篇", alb_rep)
+    alb_new = int(m.group(1)) if m else None
+    alb_fail = _latest("wechat_collect_failed")
+    alb_bad = _this_round(alb_fail)
+    # ★ 陈旧告警：该文本结果只有 mtime 没有 ts ⇒ 用 mtime 判"之后又跑过"
+    if alb_bad and _wechat_alert_superseded(
+            alb_fail, _file_mtime_iso(_os.path.join(W, "album_collect_result.txt"))):
+        alb_bad = False
+    channels.append({
+        "key": "album",
+        "name": "公众号 · 合集通道",
+        "accounts": len(acc),
+        "units": n_alb,
+        "unit_name": "合集",
+        "state": _wechat_channel_tri_state(alb_bad, alb_new),
+        "new": alb_new,
+        "last_run": base[:19],
+        "error": str((alb_fail or {}).get("message") or "") if alb_bad else "",
+        "hint": "",
+    })
+
+    # ── 通道② 微信读书通道（需扫码登录态 cookie）──────────────────────────
+    mp = (_load(_os.path.join(R, "mp_accounts.json"), {}) or {}).get("accounts") or []
+    mp_rep = _load(_os.path.join(R, "mp_collect_result.json"), {}) or {}
+    wr_fail = _latest("wechat_weread_collect_failed")
+    wr_bad = _this_round(wr_fail)
+    # ★ 陈旧告警：结果文件里的 ts 比告警更晚 ⇒ 之后已成功跑过（详见函数说明）
+    if wr_bad and _wechat_alert_superseded(wr_fail, mp_rep.get("ts")):
+        wr_bad = False
+    channels.append({
+        "key": "weread",
+        "name": "公众号 · 微信读书通道",
+        "accounts": len(mp) if isinstance(mp, list) else 0,
+        "units": len(mp) if isinstance(mp, list) else 0,
+        "unit_name": "个号",
+        "state": _wechat_channel_tri_state(wr_bad, mp_rep.get("new")),
+        "new": mp_rep.get("new"),
+        "last_run": base[:19],
+        "last_ok": str(mp_rep.get("ts") or "")[:19],
+        "error": str((wr_fail or {}).get("message") or "") if wr_bad else "",
+        # 两条路都给：桌面一键入口（用户习惯） + 命令行（可只验证不扫码）
+        "hint": ("桌面「重登公众号读书通道.bat」 或 node probe/_weread_login.mjs"
+                 "（后者加 --check-only 可只验登录态）") if wr_bad else "",
+    })
+
+    # ── 入库侧：inbox 积压（采到了但还没入库）──────────────────────────────
+    inbox = {"total": 0, "latest": "", "since_days": 1}
+    lines = [l for l in _text(_os.path.join(W, "wechat_inbox.jsonl")).split("\n") if l.strip()]
+    inbox["total"] = len(lines)
+    # ⚠ 取**所有行的最大日期**，不能取"最后一行" —— jsonl 是追加式写入，
+    #   但同一批里各号是**分块**写的，date 并非单调递增
+    #   （实测：末行是 09-17，而全量最新其实是 10-14）。
+    _dates = []
+    for l in lines:
+        try:
+            dv = (_json.loads(l) or {}).get("date") or ""
+        except Exception:
+            continue
+        if dv:
+            _dates.append(str(dv))
+    if _dates:
+        inbox["latest"] = max(_dates)
+    try:
+        inbox["since_days"] = int(_os.getenv("WECHAT_INGEST_SINCE_DAYS") or 1)
+    except Exception:
+        pass
+
+    # ── ★ 品种池拦截：解释"采到了却没进库"（这是最容易被误判成故障的一环）──
+    # 【★ 判据选择】必须用**采集器写入的稳定特征**，不能靠 `source LIKE '%公众号%'`：
+    #   实测 `web_app.py` 的处理流程里 `source = structured.publisher or report.source`
+    #   会用 LLM 识别出的发行方**覆盖**采集器写的 `公众号-XXX`（渠道语义丢失）⇒
+    #   同一批同一个号会裂成 `混沌天成研究` / `公众号-混沌天成研究` / `混沌天成研究院`
+    #   三种写法，按 source 统计**必然假阴性**（实测漏掉 15 篇）。
+    #   两条通道的稳定特征：
+    #     · 读书通道 → filename 以 `wxmp_` 开头（采集器写的 key，不被后续流程改写）
+    #     · 合集通道 → source 以 `公众号-` 开头（号名固定，未观察到被覆盖）
+    _WECHAT_SRC = "(filename LIKE 'wxmp_%' OR source LIKE '公众号-%')"
+    pool_block = {"days": 7, "count": 0, "sample": ""}
+    try:
+        import sqlite3 as _sq
+        from database import DB_PATH
+        with _sq.connect(str(DB_PATH)) as c:
+            row = c.execute(
+                "SELECT COUNT(*) FROM research_reports WHERE " + _WECHAT_SRC +
+                " AND status='skipped' AND uploaded_at >= date('now','-7 day')"
+            ).fetchone()
+            pool_block["count"] = int(row[0] or 0)
+            row2 = c.execute(
+                "SELECT error FROM research_reports WHERE " + _WECHAT_SRC +
+                " AND status='skipped' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if row2 and row2[0]:
+                mm = _re.search(r"识别品种\s*([A-Za-z,]+)\s*均不在", str(row2[0]))
+                pool_block["sample"] = mm.group(1) if mm else ""
+    except Exception:
+        pass
+
+    n_fail = sum(1 for c in channels if c["state"] == "failed")
+    n_empty = sum(1 for c in channels if c["state"] == "empty")
+    return {
+        "ok": True,
+        "channels": channels,
+        "failed": [c["key"] for c in channels if c["state"] == "failed"],
+        "empty_channels": [c["key"] for c in channels if c["state"] == "empty"],
+        "summary": "共 %d 条通道：%d 正常 / %d 空转(跑了但无新文) / %d 中断"
+                   % (len(channels), len(channels) - n_fail - n_empty, n_empty, n_fail),
+        "inbox": inbox,
+        "pool_block": pool_block,
+    }
+
+
+@app.route("/api/wechat/channels")
+def api_wechat_channels():
+    """公众号采集通道状态（只读巡检）: 哪条断了 / 断在哪 / 怎么修。
+
+    【渲染】研发库卡片 #res-ingest-status
+    【关键】纯只读 —— 不触发采集、不发网络请求。任何异常都返回 ok:false 而不是 500,
+            避免"巡检本身把页面搞崩"。
+    """
+    try:
+        return jsonify(_wechat_channels_status())
+    except Exception as e:
+        return jsonify({"ok": False, "channels": [], "error": str(e)[:300]})
+
+
 @app.route("/api/research")
 def api_research():
     """研报列表:按品种/来源/类型过滤;剔除超长字段(原文/结构化/结论/路径)只给列表元数据。"""
     variety = (request.args.get("variety") or "").strip().upper()
     ingest_source = (request.args.get("ingest_source") or "").strip() or None
     report_type = (request.args.get("report_type") or "").strip() or None
+    # 【2026-10-19】通道维度：channel=wechat ⇒ 只看公众号（微信读书）入库的研报。
+    #   为什么不复用 ingest_source：那是「入库方式」(manual/auto)，公众号既有自动也有手工补录；
+    #   而用户要的是「来源通道」，用 filename 前缀 `wxmp_` 判定最可靠
+    #   （source 会被 _normalize_source 归一成机构名，认不出通道）。
+    channel = (request.args.get("channel") or "").strip().lower()
+    prefix = "wxmp_" if channel == "wechat" else None
     rows = get_db().list_research_reports(
-        variety or None, ingest_source=ingest_source, report_type=report_type
+        variety or None, ingest_source=ingest_source, report_type=report_type,
+        filename_prefix=prefix,
     )
     for r in rows:
         # 2026-09-04:总览/列表不再带四类基本面(列已换交易要素);指标仍随
@@ -6152,16 +6801,34 @@ def api_research_views():
             date = dates[0]
     elif date in dates:
         rows = [r for r in reports if _rdate(r) == date]
-    else:  # 传入日期不属于该品种(切换品种残留) → 回退最新研报日期
-        rows = [r for r in reports if _rdate(r) == dates[0]]
+    else:
+        # 【2026-10-21 口径变更】缺省不再"只取全品种最新一天"：
+        #   永安这类**只发周报**的机构（每周日），日期永远比工作日日报旧 ⇒ 一到工作日
+        #   整家从表里消失，用户报障的原话是"找不到永安期货的观点了，不是有周报吗"。
+        #   ⇒ 改为**每家发行方各取自己最新一期**再合并。行上本来就渲染 publish_date，
+        #     不同日期混排不会误导（表里能直接看出永安是 10-18、华泰是 10-21）。
+        #   显式传 date 的旧语义（精确到某一天）保持不变。
+        latest_by_src: dict[str, str] = {}
+        for r in reports:
+            d0 = _rdate(r)
+            if not d0:
+                continue
+            s0 = _normalize_source(r.get("source") or "")
+            if d0 > latest_by_src.get(s0, ""):
+                latest_by_src[s0] = d0
+        rows = [r for r in reports
+                if _rdate(r) and _rdate(r) == latest_by_src.get(_normalize_source(r.get("source") or ""))]
         date = dates[0]
-    rows.sort(key=lambda r: str(r.get("uploaded_at") or ""), reverse=True)
+    # 排序:先按研报日期、再按入库时间 —— 各家最新一期混排时,新的在前才符合阅读预期
+    rows.sort(key=lambda r: (_rdate(r), str(r.get("uploaded_at") or "")), reverse=True)
     meta = VARIETY_METADATA.get(code, {})
     return jsonify({
         "variety": code,
         "name": meta.get("name", code),
         "date": date,
         "dates": dates,
+        "latest_per_source": True,   # 【2026-10-21】缺省口径 = 每家发行方各取最新一期
+        "span": {"asof": dates[0], "oldest": min((_rdate(r) for r in rows if _rdate(r)), default="")},
         "rows": [_research_view_row(r) for r in rows],
     })
 
@@ -6781,7 +7448,35 @@ def _merge_same_source_items(
     return merged_out
 
 
-def _collect_daily_report_items(rows: list[dict], date: str, rtype: str = "") -> list[dict]:
+def _fit_prompt_payload(blocks: list[str], budget: int = 28000) -> str:
+    """把材料块按**预算**装载进 prompt；装不下的**显式标注**（不静默丢弃）。
+
+    【为什么需要】本项目的总结 prompt 侧原先写作 `payload[:28000]` —— **从尾部硬切**：
+      ① 会把某条材料切成半句（LLM 看到残缺要点）；
+      ② 更糟的是**不告知**，LLM 会以为后面的品种"今天没研报" ⇒ 可能漏写甚至编造。
+    【为什么"跳过"而不是"遇到装不下的就停"】后者会被一个长条目挡住它后面**所有**的短条目，
+      白丢很多本可放进去的材料。
+    【返回】装载结果；若略过任何条目，末尾附一行注明被略过的**品种/来源**。
+    """
+    keep: list[str] = []
+    used = 0
+    dropped: list[str] = []
+    for blk in blocks:
+        if used + len(blk) + 2 > budget:
+            head = blk.split("】", 1)[0].lstrip("【").strip()
+            dropped.append(head or blk[:12])
+            continue
+        keep.append(blk)
+        used += len(blk) + 2
+    out = "\n\n".join(keep)
+    if dropped:
+        out += ("\n\n（注：以下品种的材料因超出长度预算未列入，请勿据此下结论：%s）"
+                % "、".join(sorted(set(dropped))))
+    return out
+
+
+def _collect_daily_report_items(rows: list[dict], date: str, rtype: str = "",
+                                include_all_types: bool = False) -> list[dict]:
     """某天全部 done 的对应类型研报 → 逐品种结论条目(供总结 prompt,只带要用的字段)。
 
     【关键】多品种研报按 conclusion_md 的「## {code} 结论」段拆成多条;每条的
@@ -6792,6 +7487,8 @@ def _collect_daily_report_items(rows: list[dict], date: str, rtype: str = "") ->
             逐品种置信度,取不到回退:主品种用 DB 行值,次品种不标(—)。
             类型口径(2026-09-07 拆分):日报口径(默认)只收非周报行(未知类型不排斥);
             周报口径(rtype='周报')只收周报行 —— 日报/周报总结互不混收。
+            include_all_types=True(2026-10-21):日报口径下**不再排除周报/季报**,
+            供「观点总表」按「当日有研报（不分类型）」取数;LLM 正文仍用默认口径。
             同源合并(2026-09-14):同一机构同一品种的多篇先交给 _merge_same_source_items
             合并成一条(同篇双采去重 + 方向多数票 + 置信度均值 + 要点拼接),这样观点总表
             不会再出现「发行方 4 个、方向 6 个」的对不上。合并的副作用是**每条对应一家机构**,
@@ -6816,7 +7513,8 @@ def _collect_daily_report_items(rows: list[dict], date: str, rtype: str = "") ->
         if r_norm:
             if rt_row != r_norm:
                 continue
-        elif rt_row in ("周报", "季报"):
+        elif not include_all_types and rt_row in ("周报", "季报"):
+            # 【2026-10-21】观点总表要「当日任意类型」：include_all_types=True 时放行。
             continue
         codes = [c for c in str(r.get("varieties") or "").split(",") if c] or [r.get("variety") or ""]
         codes = [c for c in codes if c in ACTIVE_VARIETIES]  # 【品种池】池外品种段隐藏(存量行保留)
@@ -6824,7 +7522,15 @@ def _collect_daily_report_items(rows: list[dict], date: str, rtype: str = "") ->
             continue
         for code in dict.fromkeys(codes):  # 去重保序
             seg = _daily_variety_segment(r.get("conclusion_md") or "", code)
-            opinion = _extract_key_opinion(seg, max_len=150)  # 单条短摘:一天全品种条目多,预算留给覆盖面
+            # 【2026-10-16 用户报障「观点被截断」】此处原为 max_len=150（把函数默认的 360 收紧了一半多）。
+            # 实测（周报 LU，原文段落 398~418 字）：
+            #     max_len=150 → 产出 124/145/80 字；max_len=360 → 306/312/277 字；
+            #     max_len=100000 → 同样 306/312/277 ⇒ **360 就已经是"不裁"**（再无内容可裁）。
+            # ⇒ 150 是纯粹的人为收紧（注释写的"预算留给覆盖面"），代价是观点被砍掉一半。
+            # ★ 顺带消除一处**口径不一致**：另有一条链路(`_research_view_row` → 逐品种观点总览)
+            #   用的是默认 360 ⇒ 同一份研报在两个页签里长度不同，用户会以为哪边显示错了。
+            # 显示长度改由前端收敛承担（见 web_template.html 的 _decorateViewTable：默认 3 行 + 展开全文）。
+            opinion = _extract_key_opinion(seg, max_len=360)
             if not opinion:
                 continue
             te = _parse_trade_elements(seg)
@@ -6860,7 +7566,18 @@ def _collect_daily_report_items(rows: list[dict], date: str, rtype: str = "") ->
     # flatten=True 让要点压成单行(否则换行会撑破 markdown 表格单元格);
     # text_cap=200 给材料预算封顶(21 品种 × 4 机构 × 200 字仍在 payload 28000 以内)。
     items: list[dict] = []
-    for rec in _merge_same_source_items(recs, flatten=True, text_cap=200, trade_cap=120):
+    # 【2026-10-16】cap 是"合并后文本的软上限(按句读边界截)" —— 它与 ① 是**串联**的：
+    #   ① 放宽到 360 后，若这里还是 200，单篇 306 字的 text 会被立刻截回 200（白改）。
+    #   ⇒ 同步放宽到 360 / 240；"表格会不会太长"交给前端收敛，不再靠丢数据来控制。
+    # 【2026-10-16 ★ 显示与预算解耦】原 `text_cap=200` 是**为 prompt 预算**设的
+    #   （注释原文：21 品种 × 4 机构 × 200 字仍在 payload 28000 以内），
+    #   但它同时把**总表显示**的观点也截了 ⇒ 为了省预算而牺牲显示。
+    #   ⇒ 这里改为 **0（不限）**：items 存**完整**文本，只作**显示**用；
+    #     进 prompt 的材料在组装处单独 `[:320]` 精简（见下方 payload 组装），预算与改前相当。
+    #   ★ 附带好处：若某品种因预算被略过，总表会**回退到 items 的完整拼接**
+    #     （总表逻辑 = LLM 提炼优先、缺失回退 items）⇒ 「略过」不等于「显示缺失」。
+    #   ⚠ trade_cap 放开**零预算影响**：payload 组装只用 opinion、不用 trade。
+    for rec in _merge_same_source_items(recs, flatten=True, text_cap=0, trade_cap=0):
         items.append({
             "variety": f"{rec['code']}({name_map.get(rec['code'], '')})",
             "report_id": rec.get("report_id"),  # 供单品种总结卡的来源观点对比跳转原件(/api/research/{id}/file)
@@ -6949,7 +7666,39 @@ def _parse_llm_views_table(body: str) -> tuple[dict[str, str], dict[str, str]]:
     trades: dict[str, str] = {}
     if not body:
         return views, trades
-    for line in body.splitlines():
+
+    # 【★ 2026-10-19 只解析第一节】本函数收的是 **LLM 全文**，而第一节、第二节都是表格、
+    #   首列都是品种代码。原先不截断 ⇒ 第二节（5 列）的 `cells[-1]`（= 分歧根源，
+    #   如「数据口径不同」）**逐品种覆盖**了第一节的正确观点，中位数掉到 6 字且不报错。
+    #   ⇒ 遇「二、」标题即止（兼容 ## / ### / 无编号写法）。
+    _m2 = _re.search(r"^\s*#{1,4}\s*二[、.．]", body, _re.M)
+    seg = body[:_m2.start()] if _m2 else body
+
+    # 方向列取值（宽松）：用于识别"这一行到底是不是第一节那 6 列结构"。
+    #   第二节的 cells[2] 是「各家观点与逻辑」长文本 ⇒ 必然不匹配 ⇒ 被挡掉。
+    def _looks_dir(x: str) -> bool:
+        """这一格像不像「方向」列（可能是**一家**也可能是**多家**用 / 分隔）。
+
+        ⚠ 判据被"过严"坑过两次（每次都是**静默回退原文拼接**，观点列从 ~90 字暴涨到 700+）：
+          ① `len(x) <= 6` —— 多机构时方向列是「中性/中性/中性/中性」（11 字）⇒ 全部被挡；
+          ② 逐项 `len(p) <= 4` —— LLM 会写「中性偏震荡」（5 字）⇒ 该品种被挡。
+        最终用**句读**做区分（比长度可靠）：方向值不会含逗号/句号/分号，
+          而第二节的「各家观点与逻辑」必然含句读或很长。单项上限给到 8 字。
+        """
+        x = (x or "").strip()
+        if not x or any(ch in x for ch in "，。；,;"):
+            return False
+        parts = [p.strip() for p in x.split("/") if p.strip()]
+        if not parts:
+            return False
+        for p in parts:
+            if len(p) > 8:                      # 「中性偏震荡」5 字、「震荡偏多」4 字
+                return False
+            if not any(k in p for k in ("多", "空", "中性", "震荡", "偏强", "偏弱")):
+                return False
+        return True
+
+    for line in seg.splitlines():
         line = line.strip()
         if not line.startswith("|") or not line.endswith("|"):
             continue
@@ -6963,10 +7712,13 @@ def _parse_llm_views_table(body: str) -> tuple[dict[str, str], dict[str, str]]:
         # 跳过分隔行(|---|---|...)
         if all(set(c) <= {"-", ":", " "} for c in cells):
             continue
-        if len(cells) >= 6:
-            opinion, trade = cells[-2], cells[-1]
-        else:
-            opinion, trade = cells[-1], ""
+        # 【结构校验】方向列必须在 cells[2]（第一节：品种|发行方|方向|置信度|观点|头寸）。
+        #   ⚠ 这不是"锦上添花"：少了它，第二节的行会以「分歧根源」冒充观点且**静默覆盖**。
+        if not _looks_dir(cells[2]):
+            continue
+        # 【按固定列序取】原先 `cells[-2]/cells[-1]` 依赖"恰好 6 列"，列数一变就错位。
+        opinion = cells[4] if len(cells) >= 5 else ""
+        trade = cells[5] if len(cells) >= 6 else ""
         opinion = opinion.strip().replace("|", "/")
         trade = trade.strip().replace("|", "/")
         if opinion and opinion not in ("—", "-"):
@@ -7210,45 +7962,159 @@ def _repair_research_aggregates(dry_run: bool = False) -> dict:
     return result
 
 
-def _prev_variety_view(code: str, all_rows: list[dict], before_date: str, rtype: str = "") -> dict | None:
+def _prev_variety_view(code: str, all_rows: list[dict], before_date: str, rtype: str = "",
+                       max_age_days: int = 14) -> dict | None:
     """取该品种在 before_date 之前最近一份 done 对应类型研报的方向/观点/头寸(延续展示用)。
 
     【为什么】2026-09-11 用户定:当日无新研报的品种,观点不是"—"而是
             「当日无新研报,观点延续{最近日期}(昨日研报观点)」—— 观点有连续性。
     【参数】code: 品种代码;all_rows: 全部研报行(list_research_reports 结果);
             before_date: 严格早于此日期(日报=当日 / 周报=周起点);rtype: 口径。
-    【返回】{"date", "direction", "opinion", "trade"} 或 None(历史也无研报)。
+            max_age_days: 【2026-10-23】超过这么多自然日的旧观点不再延续(默认 14 天)。
+    【返回】{"date", "direction", "opinion", "trade"} 或 None(历史也无研报 / 已超时效)。
     """
     r_norm = _rtype_norm(rtype)
-    cands: list[dict] = []
-    for r in all_rows:
-        if r.get("status") not in ("done", "summarized"):  # 【2026-09-24】含 summarized(延续昨日回溯历史观点)
-            continue
-        rt = (r.get("report_type") or "").strip()
-        # 口径隔离(与总结链路同口径):周期口径只收本类型;日报口径排除周报/季报、保留未知。
-        if r_norm:
-            if rt != r_norm:
+
+    def _collect(allow_periodic: bool) -> list[dict]:
+        out: list[dict] = []
+        for r in all_rows:
+            if r.get("status") not in ("done", "summarized"):  # 【2026-09-24】含 summarized(延续昨日回溯历史观点)
                 continue
-        elif rt in ("周报", "季报"):
-            continue
-        rd = _report_date(r)
-        if not rd or rd >= before_date:
-            continue
-        rcodes = [c.strip().upper() for c in str(r.get("varieties") or "").split(",") if c.strip()] \
-            or [str(r.get("variety") or "").upper()]
-        if code not in rcodes:
-            continue
-        cands.append(r)
+            rt = (r.get("report_type") or "").strip()
+            # 口径隔离(与总结链路同口径):周期口径只收本类型;日报口径默认排除周报/季报、保留未知。
+            if r_norm:
+                if rt != r_norm:
+                    continue
+            elif not allow_periodic and rt in ("周报", "季报"):
+                continue
+            rd = _report_date(r)
+            if not rd or rd >= before_date:
+                continue
+            rcodes = [c.strip().upper() for c in str(r.get("varieties") or "").split(",") if c.strip()] \
+                or [str(r.get("variety") or "").upper()]
+            if code not in rcodes:
+                continue
+            out.append(r)
+        return out
+
+    cands = _collect(allow_periodic=False)
+    carried = False
+    if not cands and not r_norm:
+        # 【2026-10-21 用户报障】"近几日的当日观点总表中也没有永安的"：
+        #   永安只发周报(每周日)，而日报口径此前**显式排除周报** ⇒ 一周六天它连
+        #   "观点延续"都拿不到，整家从总表消失。改为当日无日报时回退到最近一期
+        #   周报/季报（文案会标明来源+类型+日期，口径不混，见 _build_daily_views_table）。
+        cands = _collect(allow_periodic=True)
+        carried = True
     if not cands:
         return None
     cands.sort(key=lambda r: _report_date(r), reverse=True)
     r = cands[0]
+    # 【2026-10-23 用户口径】两周内没有新观点 ⇒ 不再延续（返回 None，调用方显示全 —）。
+    #   没有这道闸：某家 30 天前发过一次，之后一直不出声，总表却天天挂着它"今日仍看多"。
+    if max_age_days and max_age_days > 0:
+        try:
+            if (datetime.fromisoformat(str(before_date)[:10])
+                    - datetime.fromisoformat(_report_date(r))).days > max_age_days:
+                return None
+        except ValueError:
+            pass
     seg = _daily_variety_segment(r.get("conclusion_md") or "", code)
     te = _parse_trade_elements(seg)
     direction = te.get("方向") or r.get("direction") or "中性"
-    opinion = _extract_key_opinion(seg, max_len=150)
+    # 【2026-10-16 用户报障「观点被截断」】此处原为 max_len=150 —— 与
+    #   `_collect_daily_report_items` 是**同一处收紧**（当时两处都写 150），
+    #   而本函数是「观点延续」文案的来源：源头被砍到 150，下游就算放开也只能拿到短文本。
+    #   ⇒ 一并回到函数默认 360。「取第一句」的语义切分保留（那不是字数截断）。
+    opinion = _extract_key_opinion(seg, max_len=360)
     trade = _merge_trade_cell(te, str(r.get("report_advice") or ""))
-    return {"date": _report_date(r), "direction": direction, "opinion": opinion, "trade": trade}
+    return {"date": _report_date(r), "direction": direction, "opinion": opinion, "trade": trade,
+            # 【2026-10-21】回退展示需要来源与类型：总表要写出"观点延续 10-18 永安期货周报"
+            "source": _normalize_source(r.get("source") or ""),
+            "report_type": (r.get("report_type") or "").strip(),
+            "carried": carried}
+
+
+def _brief_opinion(text) -> str:
+    """把一段研报观点压成「一句话核心观点」：优先取「综述：」后首句，否则取首句（≤60 字）。
+
+    总表每行要并排 N 家机构的观点，长文会被前端折叠成 3 行 + 「展开全文」，
+    后面的机构就全看不见了 —— 所以当日机构的完整综述也必须压短。
+    """
+    t = str(text or "").strip().replace("\n", " ").replace("|", "/")
+    m = re.search(r"综述[:：]\s*([^\n。；]{2,60})", t)
+    if m:
+        return m.group(1).strip()
+    first = re.split(r"[。；;]", t)[0].strip()
+    return (first or t)[:60]
+
+
+def _latest_source_views(code: str, all_rows: list[dict], date: str, exclude_sources=(),
+                         max_age_days: int = 14) -> list[dict]:
+    """该品种「截至 date、各发行方各自最新的一篇观点」（**不分日报/周报/季报**）。
+
+    【用户口径 2026-10-21】「当日观点中应该输出的是当日每个公司最新的观点，不分日报周报等，
+      如 10.19 发了周报就应该在当日中看到永安的观点」。
+      所以这里**不看 report_type**：只看"这家公司到这天为止最新说了什么"。
+    【参数】exclude_sources: 当天已经发过研报的机构（归一后）——它们由 it_list 承载，
+            不能再用更早的周报顶掉当天日报。
+    【参数】max_age_days: 【2026-10-23 用户口径】超过这么多**自然日**没有新观点的公司不再返回。
+            默认 14 天（"两周内没有新观点就不显示"）：两周前的判断对当日已无时效，
+            留着反而让用户以为"该机构今天仍这么看"。<=0 表示不限制。
+    【返回】[{date, source, direction, confidence, opinion, trade}]，按日期倒序。
+    """
+    cutoff = date[:10]
+    try:
+        _cut_dt = datetime.fromisoformat(cutoff)
+    except ValueError:
+        max_age_days = 0  # 日期不可解析 ⇒ 放弃时效过滤，宁可多显示也不误删
+    best: dict[str, dict] = {}
+    for r in all_rows:
+        if r.get("status") not in ("done", "summarized"):
+            continue
+        rd = _report_date(r)
+        if not rd or rd >= cutoff:
+            continue
+        # 【2026-10-23】时效闸门：距当日超过 max_age_days 的旧观点整家不显示。
+        if max_age_days and max_age_days > 0:
+            try:
+                if (_cut_dt - datetime.fromisoformat(rd)).days > max_age_days:
+                    continue
+            except ValueError:
+                pass
+        rcodes = [c.strip().upper() for c in str(r.get("varieties") or "").split(",") if c.strip()] \
+            or [str(r.get("variety") or "").upper()]
+        if code not in rcodes:
+            continue
+        src = _normalize_source(r.get("source") or "")
+        if not src or src in exclude_sources or src in ("上传", "本地导入", "未知"):
+            continue
+        if src in best and rd <= best[src]["date"]:
+            continue
+        # 方向/置信度/观点一律取**该品种段落**：多品种研报的行级方向是主品种的，直接用会张冠李戴。
+        seg = _daily_variety_segment(r.get("conclusion_md") or "", code)
+        # 单品种研报的结论段标题往往不是「## BR 结论」（如「## 合成橡胶周报 结论」），
+        # 段抽取会落空 ⇒ 单品种时退回全文；多品种时宁可留空，也不把别品种的观点张冠李戴。
+        if not seg and len(rcodes) == 1:
+            seg = r.get("conclusion_md") or ""
+        te = _parse_trade_elements(seg)
+        direction = str(te.get("方向") or r.get("direction") or "中性").strip()
+        try:
+            cf = float(r.get("confidence"))
+            conf = "%d%%" % (round(cf * 100) if cf <= 1 else round(cf))
+        except Exception:
+            conf = "—"
+        # 只取「综述」那一句：全文还含交易要素/附列信息，整段塞进总表会淹没其他机构。
+        _m = re.search(r"综述[:：]\s*([^\n。；]{2,60})", seg)
+        op = (_m.group(1).strip() if _m else _extract_key_opinion(seg, max_len=60).strip())
+        op = op.replace("\n", " ").replace("|", "/")
+        # 【2026-10-23】总表「头寸建议」列要按家对齐 ⇒ 延续行也必须带该家自己的头寸，
+        #   否则延续行只能显示 —，与当日行并列时看起来像"这家没给建议"。
+        trade = _merge_trade_cell(te, str(r.get("report_advice") or ""))
+        best[src] = {"date": rd, "source": src, "direction": direction,
+                     "confidence": conf, "opinion": op,
+                     "trade": str(trade or "").strip().replace("\n", " ").replace("|", "/")}
+    return sorted(best.values(), key=lambda x: x["date"], reverse=True)
 
 
 def _build_daily_views_table(date: str, items: list[dict], rtype: str = "",
@@ -7259,19 +8125,33 @@ def _build_daily_views_table(date: str, items: list[dict], rtype: str = "",
 
     【功能】需求二扩展(2026-09-11):第一节"当日/本周观点总表"固定 21 品种(无研报也
             列出,观点列为 —),列:
-            品种 | 名称 | 发行方 | 方向 | 置信度 | 一句话核心观点 | 当日/本周研报数 | 是否有新研报
+            品种 | 名称 | 发行方 | 方向 | 置信度 | 一句话核心观点 | 头寸建议 | 最新研报日期
+            （2026-10-23 用户口径：删除「当日研报数 / 当日有新研报」两列，改加日期列）
     【一句话核心观点】2026-09-11 用户定:使用之前的 LLM 提炼模式(参考 8.30 周报总表
             —— 同一品种多家机构合并、观点是精炼一句话)。llm_views 传 _parse_llm_views_table
             的解析结果时优先用 LLM 观点;解析不到该品种时回退 items 的 opinion 首句
             (保证每行有内容、不编造)。发行方/方向/置信度/研报数来自 items 确定性统计。
     【参数】date: 日报=单日 / 周报=周起点;items: _collect_daily_report_items 产物
             (variety 形如 "SC(原油)");rtype: ''=日报 / '周报';llm_views: 可选,品种→观点。
+    【当日观点口径 2026-10-23】列出**所有覆盖过该品种的期货公司**：当日有研报的用当日观点，
+            当日没发的取该公司上一次研报观点（14 天内）。观点列**不写**延续前缀，
+            时效统一由末尾「最新研报日期」列表达（每家一行各自一个日期）。
+            研报数/是否有新研报两列已删除。
     【返回】markdown 表格字符串。
     """
     codes = [c for c in _active_variety_list()]
     name_map = {k: v["name"] for k, v in VARIETY_METADATA.items()}
     llm_views = llm_views or {}
     llm_trades = llm_trades or {}  # 【2026-09-14】与 llm_views 对称归一:两者都可缺省(None→空 dict)
+    # 【2026-10-21 报障「1018 的总结也没有看到永安 LC 周报」】
+    #   「当日有研报」必须是当日**任意类型**的研报，不是「当日有日报」：
+    #   10-18 是周日，当天只有周报 —— LC 有华泰/国君/东证/永安 四份周报，
+    #   日报口径把它们全滤掉 ⇒ items 空 ⇒ 落到「延续」拿 10-16 的混沌天成，
+    #   永安当天的锂产业链周报在**它自己发布的这一天**反而看不到。
+    #   ⚠ 只换「观点总表」的取数；LLM 正文仍用调用方传进来的日报口径 items。
+    if not _rtype_norm(rtype) and all_rows:
+        items = (_collect_daily_report_items(all_rows, date, "", include_all_types=True)
+                 or items)
     by_code: dict[str, list[dict]] = {}
     for it in items:
         code = (it.get("variety") or "").split("(")[0].strip().upper()
@@ -7279,34 +8159,69 @@ def _build_daily_views_table(date: str, items: list[dict], rtype: str = "",
             by_code.setdefault(code, []).append(it)
     r_ = _rtype_norm(rtype)
     if r_ == "周报":
-        count_head, new_head = "本周研报数", "本周有新研报"
         title = "## 一、本周观点总表"
     elif r_ == "季报":
-        count_head, new_head = "本季研报数", "本季有新研报"
         title = "## 一、本季观点总表"
     else:
-        count_head, new_head = "当日研报数", "当日有新研报"
         title = "## 一、当日观点总表"
 
     def _row(c: str) -> str:
         it_list = by_code.get(c, [])
         if not it_list:
+            # 【2026-10-21 用户口径】当日无新研报时同样输出「截至当日各家最新一篇」，
+            #   而不是只挑最近一份做「观点延续」（那样永安这类周报机构会被别家的日报顶掉）。
+            _e0 = _latest_source_views(c, all_rows or [], date, ()) if (not r_ and all_rows) else []
+            if _e0:
+                # 【2026-10-21】每家一行：品种列第一家带「（延续昨日观点）」，观点只放该家一句。
+                _newest = max((x["date"] for x in _e0), default="")
+                try:
+                    from datetime import date as _dt, timedelta as _td
+                    _yday = (_dt.fromisoformat(date[:10]) - _td(days=1)).isoformat()
+                except Exception:
+                    _yday = ""
+                _mark = ("（延续昨日观点）" if _newest == _yday
+                         else f"（延续{(_newest or '—')[5:]}）")
+                _rows0 = []
+                for _i, _x in enumerate(_e0):
+                    # 【2026-10-23 用户口径】去掉「当日研报数 / 当日有新研报」两列，
+                    #   改为每家一行末尾的「最新研报日期」；观点列不再写延续前缀
+                    #   （时效由日期列直接体现，不用在句子里重复"延续"）。
+                    _rows0.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                        (c + _mark) if _i == 0 else "",
+                        name_map.get(c, "") if _i == 0 else "",
+                        _x["source"], _x["direction"], _x["confidence"],
+                        _x["opinion"] or "—",
+                        _x.get("trade") or "—",
+                        _x.get("date") or "—",
+                    ))
+                return "\n".join(_rows0)
             # 【观点延续 2026-09-11 用户定】当日无新研报 → 显示"观点延续{最近日期}(昨日观点)",
             # 方向/头寸也沿用最近一份研报;历史也无研报才显示全 —。
             prev = _prev_variety_view(c, all_rows or [], date, rtype) if all_rows else None
             if prev:
                 op = str(prev.get("opinion") or "").strip().replace("\n", " ").replace("|", "/")
-                # 取第一句(按句号/分号切),延续文案保持"一句话"观感
+                # 【2026-10-16】仍取第一句(那是**语义**切分，不是字数截断)，但**不再硬截 45 字**
+                #   —— 原 [:45] 会把第一句也砍断（第一句长于 45 字时）。显示长度交给前端收敛。
                 first_sent = re.split(r"[。；;\n]", op)[0].strip() if op else ""
-                body_txt = (first_sent or str(prev.get("direction") or "中性"))[:45]
+                body_txt = first_sent or str(prev.get("direction") or "中性")
                 no_new = {"周报": "本周无新研报", "季报": "本季无新研报"}.get(r_, "当日无新研报")
-                view = f"{no_new}，观点延续{prev['date']}（{body_txt}）"
-                t = str(prev.get("trade") or "").strip().replace("|", "/")
-                trade = (t[:60] + "…") if len(t) > 60 else (t or "—")
+                # 【2026-10-21】回退到周报/季报时，把来源与类型写进文案 —— 否则用户只看到
+                #   "观点延续"，仍不知道这是谁的观点（报障原话"总表中也没有永安的"）。
+                _carry_tag = ""
+                if prev.get("carried"):
+                    _cs = str(prev.get("source") or "").strip()
+                    _ct = str(prev.get("report_type") or "").strip()
+                    if _cs or _ct:
+                        _carry_tag = " " + (_cs + _ct)
+                view = f"{no_new}，观点延续{prev['date']}{_carry_tag}（{body_txt}）"
+                # 【2026-10-16 修】同上：补 \n 清洗（原只清 `|`）
+                t = str(prev.get("trade") or "").strip().replace("\n", " ").replace("|", "/")
+                # 【2026-10-16】去掉 [:60] 硬截断
+                trade = t or "—"
                 return (
-                    f"| {c} | {name_map.get(c, '')} | — | {prev.get('direction') or '中性'} | — | {view} | {trade} | 0 | — |"
+                    f"| {c} | {name_map.get(c, '')} | — | {prev.get('direction') or '中性'} | — | {view} | {trade} | {str(prev.get('date') or '—')[:10]} |"
                 )
-            return f"| {c} | {name_map.get(c, '')} | — | — | — | — | — | 0 | — |"
+            return f"| {c} | {name_map.get(c, '')} | — | — | — | — | — | — |"
         # 【源数=观点数不变量 2026-09-14】同源合并后每条 item 对应一家机构,三列天然一一对应;
         # 这里仍按归一后名去重兜底,保证即使合并链路回归也不会出现「发行方 4 个、方向 6 个」。
         triples: list[tuple[str, str, str]] = []
@@ -7317,30 +8232,73 @@ def _build_daily_views_table(date: str, items: list[dict], rtype: str = "",
                 continue  # 合并后不应发生;真发生也只留首条,优先保住三列等长
             _seen_src.add(s)
             triples.append((s, str(x.get("direction") or "中性"), str(x.get("confidence") or "—")))
+        # 【2026-10-21 用户口径】截至当日、各家各自最新一篇观点并入三列（不分日报/周报/季报）。
+        #   不加这段：只发周报的永安在「当日观点总表」里永远不出现（用户连续两次报障）。
+        #   ⚠ 仅日报口径（r_ 为空）；周报/季报口径本来就只收本类型，不能混。
+        # 【2026-10-23 用户口径变更】当日观点总表要列出**所有覆盖过该品种的期货公司**：
+        #   当日有研报的用当日观点；当日没发的，延续该公司上一次研报观点（标「延续 MM-DD」）。
+        #   原 2026-10-21 口径是「只显示当天发研报的发行商」（extra 恒空），结果只发周报的
+        #   机构在它没发日报的日子整家消失 —— 用户改为要求「全部列出 + 各家延续」。
+        #   ⚠ 仅日报口径（r_ 为空）；周报/季报口径仍只收本类型，不能把日报混进来。
+        extra: list[dict] = []
+        if not r_ and all_rows:
+            _today_src = {_normalize_source(str(x.get("source") or "未知")) for x in it_list}
+            extra = _latest_source_views(c, all_rows, date, tuple(_today_src))
+        for _x in extra:
+            triples.append((_x["source"], _x["direction"], _x["confidence"]))
         sources = " / ".join(t[0] for t in triples)
         dirs = " / ".join(t[1] for t in triples)
         confs = " / ".join(t[2] for t in triples)
-        # 一句话核心观点:优先 LLM 提炼(之前模式,总表解析或二节兜底);缺失回退 items opinion 首句。
-        view = (llm_views.get(c) or "").strip()
-        if view and view != "—" and len(view) > 60:  # LLM 观点超长时截断,保持"一句话"观感
-            view = view[:60] + "…"
-        if not view or view == "—":
-            views_tmp = []
-            for x in it_list:
-                op = str(x.get("opinion") or "").strip().replace("\n", " ").replace("|", "/")
-                views_tmp.append(op[:40] if op else "—")
-            view = " ; ".join(v for v in views_tmp if v != "—") or "—"
-            if len(view) > 80:
-                view = view[:80] + "…"
+        # 【2026-10-21 用户要求】观点列必须与发行方**一一对齐**：每家一段、顺序一致、带机构名。
+        #   原实现是「LLM 合并观点在前(无机构名) + 其他机构在后」⇒ 发行方 6 家、观点 7 段且首段无归属。
+        _op_by_src: dict[str, str] = {}
+        _op_date: dict[str, str] = {}   # 该家观点的**实际发布日**，用于标「延续 MM-DD」
+        for x in it_list:
+            _s = _normalize_source(str(x.get("source") or "未知"))
+            if _s in _op_by_src:
+                continue
+            # ⚠ 清洗必须保留：\n 会把 markdown 表格劈成两行；| 是单元格分隔符
+            _op_by_src[_s] = _brief_opinion(x.get("opinion"))
+            _op_date[_s] = str(x.get("rdate") or date)[:10]
+        for _x in extra:
+            _op_by_src.setdefault(_x["source"], _x["opinion"])
+            _op_date.setdefault(_x["source"], _x["date"])
+        # 头寸也按家拆（用户要求整行对齐；合并成一串塞第一行会与发行方错位）
+        _trade_by_src: dict[str, str] = {}
+        for x in it_list:
+            _s2 = _normalize_source(str(x.get("source") or "未知"))
+            if _s2 in _trade_by_src:
+                continue
+            _trade_by_src[_s2] = str(x.get("trade") or "").strip().replace("\n", " ").replace("|", "/")
+        # 【2026-10-23】延续行也要带该家自己的头寸，否则与当日行并列时只显示 —。
+        for _x in extra:
+            _trade_by_src.setdefault(_x["source"],
+                                     str(_x.get("trade") or "").strip().replace("\n", " ").replace("|", "/"))
+        # LLM 提炼的一句话只有「当天只有一家机构」时才有明确归属，才拿来替换；
+        # 多机构时它是合并观点，挂到任何一家都是张冠李戴，宁可不用。
+        _llm_v = (llm_views.get(c) or "").strip()
+        if _llm_v and _llm_v != "—" and len(triples) == 1:
+            _op_by_src[triples[0][0]] = _llm_v
+        # 【2026-10-21】不是当天发的观点，逐家标（延续 MM-DD）——
+        #   否则 10-20/21 这种「每个品种都有当日研报」的日子，用户永远看不到延续提示。
+        views_tmp = []
+        for _t in triples:
+            _d = _op_date.get(_t[0], date)[:10]
+            _tag = "" if _d >= date[:10] else f"（延续 {_d[5:]}）"
+            views_tmp.append(f"{_t[0]}{_tag}: {_op_by_src.get(_t[0]) or '—'}")
+        view = " ; ".join(views_tmp) or "—"
         # 头寸建议列:优先 LLM 一句话概括(2026-09-11 用户定,不用分号罗列);缺失回退
         # 代码合并(每条前带来源机构名、顿号连接,至少能分清建议归属)。
         trade = (llm_trades.get(c) or "").strip()
-        if trade and trade != "—" and len(trade) > 60:
-            trade = trade[:60] + "…"
+        # 【2026-10-16】同 ①：去掉 [:60] 硬截断（头寸建议是操作依据，半句会误导）
         if not trade or trade == "—":
             trades = []
             for x in it_list:
-                t = str(x.get("trade") or "").strip().replace("|", "/")
+                # 【2026-10-16 修】原先只清 `|`、**没清 `\n`** —— 而 opinion 两样都清。
+                # 不对称的后果：头寸建议含换行时，markdown 单元格里出现真换行
+                # ⇒ **整张表被劈成两行**（列数错乱，且不报错）。
+                # 这是老 bug（非本次引入），放开截断时一并补上。
+                t = str(x.get("trade") or "").strip().replace("\n", " ").replace("|", "/")
                 if not t or t == "—":
                     continue
                 src_name = str(x.get("source") or "").strip()
@@ -7348,18 +8306,36 @@ def _build_daily_views_table(date: str, items: list[dict], rtype: str = "",
                 if label not in trades:
                     trades.append(label)
             trade = "，".join(trades) or "—"
-            if len(trade) > 80:
-                trade = trade[:80] + "…"
+            # 【2026-10-16】去掉 [:80] 硬截断（同上：多家机构的建议归属必须完整可辨）
         # 【研报数口径 2026-09-14】合并后一个品种行只对应"家数"条材料,但这一列要显示
         # 真实研报**篇数** → 用 merged_count 求和(与覆盖表同口径,不会因合并而缩水)。
-        n = sum(int(x.get("merged_count") or 1) for x in it_list)
-        return f"| {c} | {name_map.get(c, '')} | {sources} | {dirs} | {confs} | {view} | {trade} | {n} | {'✓' if n > 0 else '—'} |"
+        # 【2026-10-23 用户口径】「当日研报数 / 当日有新研报」两列已删除，此处不再计算。
+        # 【2026-10-21 用户要求】每家机构**单独一行**：品种/名称/头寸/研报数只写第一行，
+        #   其余行留空 ⇒ 发行方、方向、置信度、核心观点横向严格对齐。
+        _llm_trade = (llm_trades.get(c) or "").strip()
+        if _llm_trade == "—":
+            _llm_trade = ""
+        _rows_out = []
+        for _i, _t in enumerate(triples):
+            # 【2026-10-23 用户口径】观点列**不再**写「（延续 MM-DD）」前缀：
+            #   时效统一由末尾的「最新研报日期」列表达，句子里再标一次是重复。
+            _od = str(_op_date.get(_t[0], date))[:10]
+            _op_cell = _op_by_src.get(_t[0]) or "—"
+            _rows_out.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                c if _i == 0 else "",
+                name_map.get(c, "") if _i == 0 else "",
+                _t[0], _t[1], _t[2],
+                _op_cell,
+                (_llm_trade if (len(triples) == 1 and _llm_trade) else (_trade_by_src.get(_t[0]) or "—")),
+                _od or "—",
+            ))
+        return "\n".join(_rows_out)
 
     # 【一二级菜单 2026-09-11 用户定】按板块分块:一级=板块(### 标题,前端包折叠菜单),
     # 二级=板块内品种行;池内未列入板块的品种追加"其他"块,保证不丢。
     header = (
-        f"| 品种 | 名称 | 发行方 | 方向 | 置信度 | 一句话核心观点 | 头寸建议 | {count_head} | {new_head} |\n"
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        "| 品种 | 名称 | 发行方 | 方向 | 置信度 | 一句话核心观点 | 头寸建议 | 最新研报日期 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |"
     )
     blocks = [title]
     seen: set[str] = set()
@@ -7396,6 +8372,12 @@ def _generate_daily_summary(date: str, force: bool = False, rtype: str = "") -> 
     db = get_db()
     _rows = db.list_research_reports(limit=500)  # 【变量】全量行(观点总表的"延续昨日"回溯用)
     items = _collect_daily_report_items(_rows, date, rtype)
+    # 本次材料覆盖的品种代码（按出现顺序去重）—— 用于在 prompt 里列出"必须逐行覆盖"的清单。
+    _variety_codes: list[str] = []
+    for _it in items:
+        _c = (_it.get("variety") or "").split("(")[0].strip().upper()
+        if _c and _c not in _variety_codes:
+            _variety_codes.append(_c)
     if not items:
         _kind = {"周报": "周报", "季报": "季报"}.get(r_norm, "日报")
         return {"ok": False, "error": f"{date} 在库没有已完成分析的{_kind}研报"}
@@ -7404,9 +8386,16 @@ def _generate_daily_summary(date: str, force: bool = False, rtype: str = "") -> 
         """材料抬头里的篇目标识(合并条目列出全部篇目 + 篇数),模块级实现见 _merged_titles_label。"""
         return _merged_titles_label(it)
 
+    # 【2026-10-16 ★ 材料精简放在这里做，而不是在 items 里截】
+    #   同一份 opinion 既要"完整显示"又要"进 prompt"，两者长度需求不同：
+    #     显示 ⇒ 越全越好（用户在读结论）；prompt ⇒ 有 28000 字符预算（见下方 _fit_prompt_payload）。
+    #   放在这里 `[:320]` 精确复现原 text_cap=200 时期的 payload 量级（实测周报约 17860 字符），
+    #   而 items 本身保持完整 ⇒ **显示与预算互不牵制**。
+    _MAT_CAP = 320
     payload = "\n\n".join(
         f"【{i['variety']}】{i['source']}{_titles_label(i)} 方向:{i['direction']}"
-        f"(置信度 {i['confidence']})\n要点: {i['opinion']}"
+        f"(置信度 {i['confidence']})\n要点: {i['opinion'][:_MAT_CAP]}"
+        + ("…" if len(i["opinion"]) > _MAT_CAP else "")
         for i in items
     )
     # 【RAG 增强】检索各品种近期历史研报片段作"历史背景参考"(非当日材料);
@@ -7437,9 +8426,25 @@ def _generate_daily_summary(date: str, force: bool = False, rtype: str = "") -> 
         "严禁为同一机构重复列出两个方向或两个置信度,严禁出现「某机构两篇分别…」"
         "「某机构三份报告观点不一」这类按篇罗列的表述——同一机构的内部倾向请在"
         "「一句话核心观点」里融合成一句;材料中出现的全部品种每行一个全部列出,"
-        "严禁省略、严禁「其余从略/均从略」之类的合并表述;\n"
-        "【重点1】「一句话核心观点」请用精炼一句话概括该品种当日各家逻辑的共识或分歧"
-        "(如「供增需减兑现、冲高回落,均关注海峡通行与进口回升」),不要罗列数据;\n"
+        "严禁省略、严禁「其余从略/均从略」之类的合并表述;"
+        # 【漏行约束 2026-10-19】实测 LLM 会漏品种（10-11 周报漏了 P）⇒ 漏的品种走
+        #   "items 原文拼接"兜底，观点列会变成 700+ 字的综述/利多/利空流水账。
+        #   直接把本次材料覆盖的代码列出来，比"严禁省略"这种抽象要求有效得多。
+        f"本次材料共 {len(_variety_codes)} 个品种({', '.join(_variety_codes)})，"
+        "总表必须**逐行覆盖每一个**，一个都不能少;\n"
+        "【重点1】「一句话核心观点」= 把该品种**全部机构**的逻辑**合成一段**判断"
+        "(60~100 字, 2~3 个分句),结构固定为「驱动变量如何变化 → 由此得到的结论(方向与节奏)」,"
+        "存在分歧时再补一句点明分歧落在哪个变量上。"
+        "★ 注意: 下面材料**按机构分行**只是为了让你看清各家依据,"
+        "**不是**要求你照着分行输出——这一列必须是**一段连贯叙述**, 不是清单;"
+        "正例:「供应端检修与调油分流使近端偏紧、10 月去库延续,价格偏强震荡;"
+        "分歧在于需求负反馈对上方空间的压制程度」。"
+        "整段**只谈逻辑与结论**: 不出现任何机构名称、不标注置信度、不按机构分段分句"
+        "(机构及其方向、置信度已由左侧三列逐家列出, 此处重复即冗余);"
+        "不罗列行情数字与价格区间(区间属「头寸建议」列);"
+        "不写空话套话(「需关注后市」「谨慎观望」「多空交织」单独成句即为套话,"
+        "必须紧跟具体驱动变量);**单元格内严禁出现竖线 |** (会切断 markdown 表格的列);"
+        "输出前自检: 该列每行若出现任何机构名或百分数, 即属不合格, 重写为合并叙述;\n"
         "【重点2】「头寸建议」必须是一句话概括(不超过 40 字):综合该品种各家研报的"
         "头寸/仓位/操作建议后融成一句,有分歧要点明(如「华泰建议轻仓做多而国泰建议观望」"
         "或「两家一致建议多配 10%~20%」),严禁用分号罗列各家原文、严禁照抄交易要素原文)\n"
@@ -7463,7 +8468,7 @@ def _generate_daily_summary(date: str, force: bool = False, rtype: str = "") -> 
         "## 四、综合结论与关注要点\n"
         "(汇总当日净倾向,列出未来 1~2 周最值得跟踪的 2~3 个数据/事件)\n"
         "写作要求:只依据下面材料,严禁编造数据;总表与第二节都必须覆盖全部品种,"
-        "第二节为表格化逐家对比,总篇幅放宽到 2400 字左右。\n"
+        "第二节为表格化逐家对比,总篇幅放宽到 3200 字左右(总表观点口径已放宽到 60~120 字)。\n"
     )
     if hist_ctx:
         prompt += (
@@ -7473,12 +8478,20 @@ def _generate_daily_summary(date: str, force: bool = False, rtype: str = "") -> 
             "「四、综合结论与关注要点」中引用并标注发布日期,严禁与当日材料混写。\n"
         )
     # 【周期归一 2026-09-29】date 为周期键:prompt 里给区间而非单日,口径与前端一致。
+    # 【2026-10-16】此处原为 `{payload[:28000]}` —— **静默从尾部硬切**：
+    #   ① 会把某条材料切成半句（LLM 看到残缺要点）；
+    #   ② 更糟的是**不告知**，LLM 以为后面的品种"今天没研报"⇒ 可能漏写甚至编造。
+    #   ⇒ 改为按条装载：装得下就装、装不下跳过；被略过的品种**显式列出**。
+    #   ⚠ 用"跳过"而不是"遇到装不下的就停"：后者会被一个长条目挡住后面所有短条目。
+    #   ★ 装载逻辑抽成**模块级** `_fit_prompt_payload`：内嵌闭包无法从测试注入，
+    #     而"预算装载"正是最需要护栏咬住的行为（本项目纪律：判据逻辑要能单测）。
+    _payload_txt = _fit_prompt_payload(payload.split("\n\n"))
     if r_norm:
         _start, _end = _period_range(date, r_norm)
         _label = {"周报": "研报周区间(每周日起始)", "季报": "研报季度区间(该季首月 1 日起)"}[r_norm]
-        prompt += f"---\n{_label}:{_start} ~ {_end}\n\n{payload[:28000]}"
+        prompt += f"---\n{_label}:{_start} ~ {_end}\n\n{_payload_txt}"
     else:
-        prompt += f"---\n研报日期:{date}\n\n{payload[:28000]}"
+        prompt += f"---\n研报日期:{date}\n\n{_payload_txt}"
     try:
         client = create_llm_client(
             config["llm_provider"],
@@ -7506,6 +8519,15 @@ def _generate_daily_summary(date: str, force: bool = False, rtype: str = "") -> 
     import re as _re2
 
     try:
+        # 【诊断开关 2026-10-19】解析结果为 0 时最需要看 LLM 的**原始输出格式**
+        #   （本次「观点变 800 字」就是解析全空、静默回退原文拼接）。设 AGENTSENSE_DEBUG_LLM_BODY=1
+        #   ⇒ 把 body 落到 ~/.tradingagents/last_llm_summary_body.md，事后可比对列结构/竖线/列序。
+        if os.environ.get("AGENTSENSE_DEBUG_LLM_BODY"):
+            try:
+                (Path.home() / ".tradingagents" / "last_llm_summary_body.md").write_text(
+                    body, encoding="utf-8")
+            except Exception:  # noqa: BLE001 诊断落盘失败不影响主流程
+                pass
         _llm_views, _llm_trades = _parse_llm_views_table(body)
         if not _llm_views:  # 【2026-09-11】LLM 常不输出总表 → 兜底从"二、观点对比与冲突"节解析观点
             _llm_views = _parse_llm_conflict_views(body)
@@ -7787,9 +8809,13 @@ def _generate_variety_summary(date: str, code: str, rtype: str = "", force: bool
         _start, _end = _period_range(date, r_norm)
         _label = {"周报": "研报周区间", "季报": "研报季度区间"}[r_norm]
         _tail = "(每周日起始)" if r_norm == "周报" else "(该季首月 1 日起)"
-        prompt += f"---\n{_label}:{_start} ~ {_end}{_tail}\n\n{payload[:28000]}{metrics_block[:4000]}"
+        # 【2026-10-16】同日报路径：`payload[:28000]` 是**静默硬切**（会切半句、且不告知，
+        #   本条路径按单品种取数、条数少，触发概率低但缺陷同型）⇒ 一并改为按预算装载。
+        prompt += (f"---\n{_label}:{_start} ~ {_end}{_tail}\n\n"
+                   f"{_fit_prompt_payload(payload.split("\n\n"))}{metrics_block[:4000]}")
     else:
-        prompt += f"---\n研报日期:{date}\n\n{payload[:28000]}{metrics_block[:4000]}"
+        prompt += (f"---\n研报日期:{date}\n\n"
+                   f"{_fit_prompt_payload(payload.split("\n\n"))}{metrics_block[:4000]}")
     try:
         client = create_llm_client(
             config["llm_provider"],
@@ -8094,6 +9120,38 @@ def api_gtja_overview():
     except Exception as exc:  # noqa: BLE001 - 聚合层异常按接口错误上报, 不让 500 冒泡
         logger.warning("GTJA overview 失败(%s): %s", code, exc, exc_info=True)
         return jsonify({"ok": False, "error": f"聚合失败: {type(exc).__name__}: {exc}"[:200]}), 200
+    return jsonify(payload)
+
+
+@app.route("/api/gtja/seasonal")
+def api_gtja_seasonal():
+    """单指标季节性图数据: 多年历史 → 按年分组(年内天数 → 值)。
+
+    【参数】variety(必填) / id(必填, 与 overview 的 indicators[].id 一致) / years(可选, 1~5)。
+    【返回】gtja_module.fetch_indicator_seasonal 的 payload(200)。
+    【为什么单独一个接口】overview 的序列被裁到最近 250 点、基差默认只查 175 天,
+      只够画"近半年"; 季节性图要的是**同一指标跨多年的同日对齐**, 必须单独回取全历史。
+      该接口有 6h 进程内缓存(基差/仓单要分片请求, 不能每点一次都打上游)。
+    【失败】一律 200 + {"ok":False,"error":...}, 前端保持"本地单年图", 不白屏。
+    """
+    code = (request.args.get("variety") or "").strip().upper()
+    iid = (request.args.get("id") or "").strip()
+    if not code:
+        return jsonify({"ok": False, "error": "缺少品种参数(variety)"}), 400
+    if not iid:
+        return jsonify({"ok": False, "error": "缺少指标参数(id)"}), 400
+    try:
+        years = int(request.args.get("years") or 5)
+    except (TypeError, ValueError):
+        years = 5
+    years = max(1, min(years, 5))  # 【护栏】上限与 gtja_module.SEASONAL_YEARS 一致
+    try:
+        import gtja_module  # 【调用包】聚合层(局部导入, 不拖慢主模块加载)
+
+        payload = gtja_module.fetch_indicator_seasonal(code, iid, years)
+    except Exception as exc:  # noqa: BLE001 - 聚合层异常按接口错误上报, 不让 500 冒泡
+        logger.warning("GTJA seasonal 失败(%s/%s): %s", code, iid, exc, exc_info=True)
+        return jsonify({"ok": False, "error": f"取数失败: {type(exc).__name__}: {exc}"[:200]}), 200
     return jsonify(payload)
 
 

@@ -15,6 +15,7 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )  # 【调用包】结构化输出绑定与"结构化优先、自由文本兜底"的调用助手
+from tradingagents.dataflows.analyst_views import reconcile_view  # 【调用包】两方结论对照+裁决纪律(2026-10-19)
 
 
 # 【功能】创建"研究经理"节点(工厂函数):把多空辩论历史综合成结构化投资计划。
@@ -34,9 +35,17 @@ def create_research_manager(llm):
 
         investment_debate_state = state["investment_debate_state"]  # 【变量】多空辩论状态引用,用于回写投资计划
 
+        # 【按轴分发 → 此处统一裁决】(2026-10-19)
+        # 前面四个分析师各拿自己那根轴的量化结论（价格轴给技术、基差/库存/利润给基本面），
+        # 谁都不越界。这里才是把两边放在一起看的地方：只给**结构化对照**（各轴得分 +
+        # 一致性判定），不给一个提前融好的总分，也不给"某方优先"的硬规则。
+        # 数据缺失 → ""，此时退回原本的辩论裁决流程。
+        reconcile_ctx = reconcile_view(str(state.get("company_of_interest") or ""))
+        reconcile_block = f"\n\n---\n\n{reconcile_ctx}" if reconcile_ctx else ""
+
         prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
-{instrument_context}
+{instrument_context}{reconcile_block}
 
 ---
 

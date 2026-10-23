@@ -209,14 +209,44 @@ class TestLegacyConvergence:
 # ─────────────────────────────────────────────────────────────
 # #149 切主题图表重染机制
 # ─────────────────────────────────────────────────────────────
+def _method_body(src: str, name: str) -> str:
+    """按**花括号配平**取一个方法的体。★ 本文件三条测试原先用的正则是坏的，见下。
+
+    【★ 为什么必须换成配平】原判据用"名字 + 非贪婪 + 两空格缩进的 `},` 结尾"去截方法体
+    —— 而模板里这些方法实际以**1 空格**缩进的 `},` 结尾 ⇒ 正则**永远匹配不到方法体本身**：
+      · 方法之后**有**一个 2 空格缩进的 `},` 时 → 截出一段**跨数千行、约 266KB 的无关区间**
+        （"断言碰巧通过"，其实什么都没测到）；
+      · 之后**没有**这种串时 → `re.search` 返回 None ⇒ `assert m` 直接红，
+        **看起来像产品缺陷，其实是判据写错**（实测：同一条测试会因**无关**的模板改动而红/绿翻转）。
+    ⇒ 配平只依赖结构、与方法体怎么改无关。
+
+    【★ 必须定位**定义**而不是首个匹配】`src.index("_initChart(")` 会命中**调用点**
+    （`this._initChart('chart-xxx')`，实测早于定义 223 行）⇒ 配平截出的是一整块无关代码。
+    故用"行首空白 + 可选 async + 名字 + 左括号"定位定义。
+    """
+    m = re.search(r"\n[ \t]*(?:async[ \t]+)?" + re.escape(name) + r"\s*\(", src)
+    if not m:
+        raise AssertionError("找不到方法定义: " + name)
+    b = src.index("{", m.end())
+    d, k = 0, b
+    while k < len(src):
+        ch = src[k]
+        if ch == "{":
+            d += 1
+        elif ch == "}":
+            d -= 1
+            if d == 0:
+                return src[b + 1:k]
+        k += 1
+    raise AssertionError("未配平: " + name)
+
+
 class TestRepaintMechanism:
     def test_state_field(self, src):
         assert "_chartOpts: {}," in src, "需要 option 快照注册表状态字段"
 
     def test_init_chart_records_option(self, src):
-        m = re.search(r"_initChart\(containerId\) \{(.*?)\n  \},", src, re.S)
-        assert m, "_initChart 未找到"
-        body = m.group(1)
+        body = _method_body(src, "_initChart")
         assert "const rec = { option: null, notMerge: false };" in body
         assert "rec.option = option; rec.notMerge = !!notMerge;" in body
         assert "this._chartOpts[containerId] = rec;" in body
@@ -225,16 +255,14 @@ class TestRepaintMechanism:
     def test_snapshot_and_repaint_methods(self, src):
         assert "_snapshotChartColors() {" in src
         assert "_repaintCharts(before) {" in src
-        repaint = re.search(r"_repaintCharts\(before\) \{(.*?)\n  \},", src, re.S).group(1)
+        repaint = _method_body(src, "_repaintCharts")
         assert "CHART_COLOR_KEYS" in src, "色键清单必须存在"
         assert "typeof v === 'function'" in repaint, "遍历必须跳过函数（格式化器/回调）"
         assert "seen.has(node)" in repaint, "遍历必须防环"
         assert "chart.setOption(rec.option, rec.notMerge);" in repaint
 
     def test_toggle_theme_hooks(self, src):
-        m = re.search(r"toggleTheme\(\) \{(.*?)\n  \},", src, re.S)
-        assert m, "toggleTheme 未找到"
-        body = m.group(1)
+        body = _method_body(src, "toggleTheme")
         # 快照必须在 setAttribute 之前（切后旧色取不到）
         assert body.index("this._snapshotChartColors();") < body.index("setAttribute('data-theme', next)")
         assert "this._repaintCharts(before);" in body

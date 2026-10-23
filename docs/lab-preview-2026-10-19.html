@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>改造实验预览 · AgentSense LAB（127.0.0.1:5100）</title>
+<style>
+  :root{
+    --ink:#1d1d1f; --ink2:#424245; --ink3:#6e6e73; --ink4:#86868b;
+    --line:#e5e5ea; --tile:#f5f5f7; --blue:#0071e3; --blue-d:#0058b0; --blue-l:#eaf3fe;
+    --green:#00875a; --amber:#b25000; --red:#d70015;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#f5f5f7;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.65}
+  .wrap{max-width:1360px;margin:0 auto;padding:40px 32px 80px}
+  h1{font-size:34px;letter-spacing:-.02em;margin:0 0 10px}
+  h2{font-size:24px;letter-spacing:-.015em;margin:0 0 6px}
+  h3{font-size:17px;margin:26px 0 10px}
+  p{margin:0 0 12px;color:var(--ink2)}
+  .lead{font-size:17px;color:var(--ink3)}
+  .kicker{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);font-weight:600;margin-bottom:8px}
+  section{margin-top:40px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:22px 24px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:#fff;
+        border:1px solid var(--line);font-size:12px;color:var(--ink2)}
+  .pill.ok{background:#e9f7f0;border-color:#c9e9da;color:var(--green)}
+  .pill.blue{background:var(--blue-l);border-color:#cfe3fb;color:var(--blue-d)}
+  .pill.warn{background:#fdf1e6;border-color:#f6ddc4;color:var(--amber)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--tile);padding:1px 5px;border-radius:4px}
+  table.t{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.t th,table.t td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.t th{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink4);background:#fafafa}
+  table.t tr:last-child td{border-bottom:0}
+  ul{margin:6px 0 12px;padding-left:20px;color:var(--ink2)}
+  li{margin:4px 0}
+
+  /* 对比 */
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px}
+  .shot{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .shot .tag{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;font-size:12px;
+             border-bottom:1px solid var(--line);background:#fafafa;color:var(--ink3)}
+  .shot .tag b{font-size:12px;color:var(--ink)}
+  .shot img{display:block;width:100%;height:auto;cursor:zoom-in}
+  .shot a{display:block}
+  .note{border-left:3px solid var(--blue);background:var(--blue-l);padding:14px 18px;border-radius:0 8px 8px 0;font-size:13.5px;color:#0b3f78;margin:16px 0}
+  .warn{border-left:3px solid var(--amber);background:#fdf6ee;padding:14px 18px;border-radius:0 8px 8px 0;font-size:13.5px;color:#6e3d0e;margin:16px 0}
+  .note p,.warn p{color:inherit;margin:0}
+  .hero{border-bottom:1px solid var(--line);padding-bottom:24px}
+  .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .small{font-size:13px}
+  .muted{color:var(--ink3)}
+  footer{margin-top:48px;border-top:1px solid var(--line);padding-top:16px;color:var(--ink4);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+  <div class="kicker">AgentSense · LAB Preview</div>
+  <h1>改造实验：拷贝一份，跑起来看</h1>
+  <p class="lead">在 <code>D:\AgentSenseLab\AgentSense</code> 的独立副本里应用了「设计系统 v3 / P0 视觉收敛」，原项目一行代码没动。下面是同一批页面在 1600×1000 下的前后实拍。</p>
+  <div class="meta">
+    <span class="pill ok">实验地址 http://127.0.0.1:5100</span>
+    <span class="pill">仅本机监听（未接入局域网）</span>
+    <span class="pill">独立数据库副本</span>
+    <span class="pill">调度器已关闭</span>
+    <span class="pill blue">原项目 5000 端口正常</span>
+  </div>
+</div>
+
+<section>
+  <div class="kicker">状态更新 · 15:20</div>
+  <h2>研报页的二级页签已经进原项目了</h2>
+  <p>用户确认后，只把<b>研报页这一处</b>搬到了 <code>D://AgentSense//AgentSense</code>：页面头 + 4 个二级页签。<b>表面反转等全站样式没有搬</b>（那会改变其余 6 个页），所以原项目的卡片仍是原来的灰底样式。</p>
+  <div class="shot" style="margin-top:12px">
+    <div class="tag"><b>原项目 · 研报页（已生效）</b><span>127.0.0.1:5000</span></div>
+    <a href="assets/_prod_research_tabs.png" target="_blank"><img src="assets/_prod_research_tabs.png" alt="原项目 研报页 二级页签"></a>
+  </div>
+  <div class="note" style="margin-top:14px">
+    <p><b>实现上的一处调整：</b>页签脚本最初单独成块，触发了既有护栏"模板必须恰好 1 个内联脚本块"；已改为并入主脚本尾部。验收时拦截了 <code>POST /api/research/variety-summary/generate</code>，<b>没有触发任何真实生成</b>。</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">隔离</div>
+  <h2>先说怎么保证"不影响原项目"</h2>
+  <div class="grid g3" style="margin-top:14px">
+    <div class="card">
+      <h3 style="margin-top:0">网络隔离</h3>
+      <p class="small">实验副本用 <code>--host 127.0.0.1 --port 5100</code> 启动。<code>netstat</code> 实测：原项目 <code>0.0.0.0:5000</code>，实验副本 <code>127.0.0.1:5100</code> —— <b>只回环地址，局域网内其他机器访问不到</b>。</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">数据隔离</h3>
+      <p class="small">用独立 <code>USERPROFILE=D:\AgentSenseLab\profile</code> 启动，<code>~/.tradingagents</code> 指向副本；数据库用 SQLite <code>backup()</code> 做一致性快照（72MB），研报聚合与日总结目录一并拷贝。原库 mtime 未变。</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">行为隔离</h3>
+      <p class="small">启动时跳过 APScheduler（<code>AGENTSENSE_NO_SCHEDULER=1</code>），不会触发采集/入库；前端再关掉"未生成品种自动排队"，避免误烧 LLM。写操作只落在副本库。</p>
+    </div>
+  </div>
+  <div class="warn">
+    <p><b>一处要说明：</b>第一次进研报页时，前端发现 13 个品种未生成总结，按原逻辑自动排了队（并发 2）。发现后立即停服并加了只读开关，之后不再触发。副本库里的差异不影响原库。</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">改动</div>
+  <h2>这次在副本里改了什么</h2>
+  <table class="t" style="margin-top:12px">
+    <thead><tr><th style="width:180px">层面</th><th>具体改动</th><th style="width:150px">风险</th></tr></thead>
+    <tbody>
+      <tr><td><b>表面反转</b></td><td>页面底 <code>#f5f5f7</code>、卡片 <code>#fff + 1px 边框</code>；暗色卡片加 <code>#2c2c2e</code> 边框。让"卡片"重新成为视觉单位，而不是灰底叠灰底。</td><td>纯 CSS</td></tr>
+      <tr><td><b>卡片节奏</b></td><td>内边距 24/32 → 20/24；卡片标题 21 → 19px、行高 1.35、下距 14px。</td><td>纯 CSS</td></tr>
+      <tr><td><b>KPI 卡</b></td><td><code>.stat-card</code> 与卡片同面同框，数值 26px + 等宽数字，标签 12px 灰。</td><td>纯 CSS</td></tr>
+      <tr><td><b>表格/控件</b></td><td>表头 600 字重；行悬停更轻；按钮/输入圆角统一 8px。</td><td>纯 CSS</td></tr>
+      <tr><td><b>页面头</b></td><td>每个 tab 注入「小标题 + 页面名 + 一句话说明」，挂在 <code>switchTab</code> 上，不进卡片、不进索引。</td><td>新增 DOM 节点（非卡片，<code>_secScan</code> 不收录）</td></tr>
+      <tr><td><b>二级页签（研报）</b></td><td>把「问答 / 每日总结 / 单品种 / 观点总览」拆成页内 4 个视图：只切换顶层卡片的显隐，<b>不改 DOM 归属</b>；研报页的问答卡装在 <code>.page-tools</code> 里，一并联动。</td><td>中（隐藏卡片，不影响数据加载）</td></tr>
+      <tr><td><b>隔离补丁</b></td><td>仅副本：端口/地址可配、跳过调度器、只读开关。</td><td>不入原项目</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <p><b>没做的：</b>数据仓库/量化页的二级页签、表格列组/冻结/抽屉、图表刻度改造（P1 其余部分与 P2）。这次验证了"表面 + 节奏 + 页面头 + 研报二级页签"能带来多少观感提升。</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">对比 01</div>
+  <h2>运行分析</h2>
+  <p class="muted small">同一屏：左是原项目，右是实验副本（点图看原图）。</p>
+  <div class="compare">
+    <div class="shot">
+      <div class="tag"><b>改造前</b><span>原项目 :5000</span></div>
+      <a href="assets/_before_run.png" target="_blank"><img src="assets/_before_run.png" alt="改造前 运行分析"></a>
+    </div>
+    <div class="shot">
+      <div class="tag"><b>改造后</b><span>实验副本 :5100</span></div>
+      <a href="assets/_after_run.png" target="_blank"><img src="assets/_after_run.png" alt="改造后 运行分析"></a>
+    </div>
+  </div>
+  <p class="small" style="margin-top:10px">变化：灰底上的灰卡片 → 浅灰页面 + 白卡片；顶部出现「RUN / 运行分析 / 一句话说明」；统计格从糊在背景里变成一排有边界的大数字。</p>
+</section>
+
+<section>
+  <div class="kicker">对比 02</div>
+  <h2>研报</h2>
+  <div class="compare">
+    <div class="shot">
+      <div class="tag"><b>改造前</b><span>原项目</span></div>
+      <a href="assets/_before_research.png" target="_blank"><img src="assets/_before_research.png" alt="改造前 研报"></a>
+    </div>
+    <div class="shot">
+      <div class="tag"><b>改造后</b><span>实验副本</span></div>
+      <a href="assets/_after_research.png" target="_blank"><img src="assets/_after_research.png" alt="改造后 研报"></a>
+    </div>
+  </div>
+  <p class="small" style="margin-top:10px">这是本轮<b>最明显的一处变化</b>：研报页从一条 6,958px 的长卷，拆成 4 个并列视图。默认落在「每日总结」（图上），页面高度 <b>3,334px</b>；点「问答」只剩问答卡片，高度 <b>1,000px</b>（一屏）。副本里 RAG 未装（未拷向量库），所以问答区显示未启用 —— 与样式无关。</p>
+  <div class="compare" style="margin-top:6px">
+    <div class="shot">
+      <div class="tag"><b>问答视图</b><span>一屏装下</span></div>
+      <a href="assets/_after_research_qa.png" target="_blank"><img src="assets/_after_research_qa.png" alt="研报 问答视图"></a>
+    </div>
+    <div class="shot">
+      <div class="tag"><b>单品种 / 观点总览</b><span>同一批卡片的另两个视图</span></div>
+      <div style="padding:18px;font-size:13px;color:#6e6e73;line-height:1.8">
+        点页签即可切换，<b>不重新请求数据、不刷新页面</b>。<br><br>
+        这正是规划里说的"一页一事"：内容没变，只是不再让用户一次滚完四件事。<br><br>
+        <span style="color:#86868b">下一步可把同样的机制套到数据仓库（4 模块）与量化页（总览/截面/详情）。</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">对比 03</div>
+  <h2>数据仓库</h2>
+  <div class="compare">
+    <div class="shot">
+      <div class="tag"><b>改造前</b><span>原项目</span></div>
+      <a href="assets/_before_warehouse.png" target="_blank"><img src="assets/_before_warehouse.png" alt="改造前 数据仓库"></a>
+    </div>
+    <div class="shot">
+      <div class="tag"><b>改造后</b><span>实验副本</span></div>
+      <a href="assets/_after_warehouse.png" target="_blank"><img src="assets/_after_warehouse.png" alt="改造后 数据仓库"></a>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">对比 04</div>
+  <h2>暗色</h2>
+  <p class="muted small">暗色只加了卡片描边与圆角，不改任何色值——保持"暗色不动"的既有契约。</p>
+  <div class="compare" style="grid-template-columns:1fr">
+    <div class="shot">
+      <div class="tag"><b>改造后 · 暗色</b><span>实验副本</span></div>
+      <a href="assets/_after_warehouse_dark.png" target="_blank"><img src="assets/_after_warehouse_dark.png" alt="改造后 暗色"></a>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">逐页</div>
+  <h2>每一页具体改了什么</h2>
+  <p class="lead">先看"每页都有"的九项（实测计算样式），再看各页特有的一两项。</p>
+
+  <h3>3.1 全局层（7 个页签全部生效）</h3>
+  <table class="t">
+    <thead><tr><th style="width:150px">项目</th><th style="width:300px">改造前（实测）</th><th style="width:300px">改造后（实测）</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><b>页面底色</b></td><td><code>rgb(255,255,255)</code></td><td><code>rgb(245,245,247)</code></td><td>留白从"白"变"浅灰"，卡片才有落点</td></tr>
+      <tr><td><b>卡片表面</b></td><td><code>#F5F5F7</code>，无边框</td><td><code>#FFFFFF</code> + <code>1px #E6E6EB</code></td><td>灰底叠灰底 → 白卡浮在浅灰上</td></tr>
+      <tr><td><b>卡片圆角</b></td><td>10px</td><td>12px</td><td>与页面头、按钮形成同一套几何</td></tr>
+      <tr><td><b>卡片内边距</b></td><td><code>12px 14px</code></td><td><code>20px 24px</code></td><td>原来太挤，内容贴边</td></tr>
+      <tr><td><b>卡片标题</b></td><td>15px</td><td>19px / 行高 1.35 / 下距 14px</td><td>原来和正文同号，分不出层级</td></tr>
+      <tr><td><b>表头</b></td><td>字重 400</td><td>字重 600</td><td>表头终于像表头</td></tr>
+      <tr><td><b>表格行悬停</b></td><td>默认灰</td><td><code>#FAFAFB</code></td><td>更轻，不打断读数</td></tr>
+      <tr><td><b>按钮 / 输入</b></td><td>圆角不一</td><td>统一 8px</td><td>去掉"每个模块各一套"</td></tr>
+      <tr><td><b>页面内边距</b></td><td><code>32 / 40 / 56</code></td><td><code>22 / 32 / 56</code></td><td>首屏多出约 18px 内容</td></tr>
+      <tr><td><b>页面头</b></td><td>无</td><td>新增 72px</td><td>小标题 + 页面名 + 一句话说明</td></tr>
+      <tr><td><b>暗色卡片</b></td><td>无边框</td><td><code>1px #2C2C2E</code> + 12px 圆角</td><td>色值一个没改，只加边界</td></tr>
+    </tbody>
+  </table>
+
+  <h3>3.2 逐页特有</h3>
+  <table class="t">
+    <thead><tr><th style="width:130px">页面</th><th>该页特有的改动</th><th style="width:150px">结构量</th><th style="width:170px">页高变化</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>运行分析</b></td>
+        <td>顶部统计卡（品种覆盖 / 情绪帖数 / 上次耗时 / 状态 / LLM 调用）从"糊在灰底里的小字"变成<b>一排白底 KPI 卡</b>，数值 15px → <b>26px</b>、等宽数字。页面头：<code>RUN</code>。</td>
+        <td>7 张卡 / 0 表</td>
+        <td>1,000 → 1,000（内容本身一屏）</td>
+      </tr>
+      <tr>
+        <td><b>研报</b></td>
+        <td><b>新增二级页签</b>：问答 / 每日总结 / 单品种 / 观点总览。<br>
+            只切换顶层卡片的显隐；<b>问答卡装在 <code>.page-tools</code>（#tab-research-tools）里</b>，所以该容器跟着「问答」页签联动显隐 —— 否则问答会和其它视图同屏。<br>
+            页面头：<code>RESEARCH</code>。</td>
+        <td>3 张卡 + 1 问答容器</td>
+        <td><b>10,492 → 3,334</b>（每日总结）<br><b>→ 1,000</b>（问答）</td>
+      </tr>
+      <tr>
+        <td><b>技术面量化</b></td>
+        <td>10 张卡统一白面；截面表表头 600 字重；页面头 <code>QUANT</code>。<b>未动</b>表格的列与筛选逻辑。</td>
+        <td>10 张卡 / 1 表</td>
+        <td>数据加载后 1,248</td>
+      </tr>
+      <tr>
+        <td><b>基本面量化</b></td>
+        <td>27 张卡统一白面；两张表表头 600；页面头 <code>FUNDAMENTAL</code>。<b>21 列结构没动</b>——所以要靠 P2 的列组/冻结来解决。</td>
+        <td>27 张卡 / 2 表</td>
+        <td>数据加载后 1,254</td>
+      </tr>
+      <tr>
+        <td><b>情绪数据</b></td>
+        <td>6 个日期卡片（情绪起始 / 价格截止 …）数值 15px → <b>26px</b>，连成一条 KPI 带；3 张表表头 600；页面头 <code>SENTIMENT</code>。<b>图表未动</b>（45° 标签、图例压线都还在）。</td>
+        <td>20 张卡 / 3 表</td>
+        <td>4,591 → 4,807（+216 ≈ 页面头）</td>
+      </tr>
+      <tr>
+        <td><b>外文研报</b></td>
+        <td>上传卡与任务列表统一白面；页面头 <code>FOREIGN</code>。任务列表仍是双列铺开（P1 待改）。</td>
+        <td>3 张卡 / 0 表</td>
+        <td>1,022 → 1,141（+119）</td>
+      </tr>
+      <tr>
+        <td><b>数据仓库</b></td>
+        <td>5 张卡统一白面；3 张表表头 600；页面头 <code>WAREHOUSE</code>。季节性图与"明细折叠"保持原样。</td>
+        <td>5 张卡 / 3 表</td>
+        <td>5,568 → 5,850（+282）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <p><b>没动的东西（每页都一样）：</b>元素 id、接口调用、数据口径、图表 option、折叠索引机制、暗色配色值。所有改动都是"追加一层"，删掉 <code>&lt;style id="lab-v3"&gt;</code> 与两个 <code>lab-v3-*</code> 脚本即可完全回到原样。</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">发现</div>
+  <h2>跑起来才看见的三件事</h2>
+  <div class="grid g2" style="margin-top:12px">
+    <div class="card">
+      <h3 style="margin-top:0">① 表面反转确实是最划算的一步</h3>
+      <p class="small">只改 5 条 CSS（页面底、卡片面、边框、圆角、内边距），7 个页面的"设计感"立刻统一了。没有动任何 DOM，风险几乎为零。</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">② 21 列的问题被放大了</h3>
+      <p class="small">等数据算完（17/21），基本面截面表最后一列"综合结论"被挤到屏幕外——这正是 P2 要先做的：列组 + 首列冻结 + 抽屉。<img src="assets/_after_fund.png" alt="" style="width:100%;margin-top:10px;border:1px solid var(--line);border-radius:8px"></p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">③ KPI 条需要"分段"而不是"融合"</h3>
+      <p class="small">6 个日期卡连成一条时，边界感偏弱。P1 里应改成"一条 KPI 条 + 竖线分隔"，而不是 6 个独立卡片拼接。</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">④ 图表没有变</h3>
+      <p class="small">情绪页的 45° 标签、图例压线都还在——因为这次刻意没有动图表配置。它是 P0 的最后一项，需要单独一轮验证（每个图的 option 不同）。</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">下一步</div>
+  <h2>三个选择</h2>
+  <table class="t" style="margin-top:12px">
+    <thead><tr><th style="width:170px">选择</th><th>做什么</th><th style="width:190px">看得到的效果</th></tr></thead>
+    <tbody>
+      <tr><td><b>A · 固化 P0</b></td><td>把 CSS 层 + 页面头搬到原项目，逐页双主题截图验收。</td><td>全站立刻统一（低风险）</td></tr>
+      <tr><td><b>B · P0 + 图表</b></td><td>再加"图例上置 / 轴刻度自适应 / 网格只留横向"三件套。</td><td>情绪页等图表可读</td></tr>
+      <tr><td><b>C · 继续 P1</b></td><td>把研报的二级页签模式复制到数据仓库与量化页，再做表格列组。</td><td>长页问题真正解决</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <p><b>实验副本怎么用：</b>浏览器打开 <code>http://127.0.0.1:5100</code>（只在你这台机器上可访问）。看完可以随时关掉，不会影响 :5000 的原服务。</p>
+  </div>
+</section>
+
+<footer>
+  AgentSense LAB · 2026-10-19 · 副本路径 D:\AgentSenseLab\AgentSense · 数据目录 D:\AgentSenseLab\profile\.tradingagents · 原项目 D:\AgentSense\AgentSense 未改动
+</footer>
+
+</div>
+</body>
+</html>

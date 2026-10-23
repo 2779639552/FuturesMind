@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentSense 前端整体美化与规划 · 2026-10-19</title>
+<style>
+  :root{
+    --ink:#1d1d1f; --ink2:#424245; --ink3:#6e6e73; --ink4:#86868b;
+    --line:#e5e5ea; --line2:#d2d2d7; --tile:#f5f5f7; --tile2:#fafafa;
+    --blue:#0071e3; --blue-d:#0058b0; --blue-l:#eaf3fe;
+    --red:#d70015; --green:#00875a; --amber:#b25000;
+    --r:10px; --r-lg:14px; --r-sm:6px;
+    --maxw:1240px;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,"Courier New",monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:#fff;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.65;
+       -webkit-font-smoothing:antialiased}
+  a{color:var(--blue);text-decoration:none}
+  code{font-family:var(--mono);font-size:.86em;background:var(--tile);padding:1px 5px;border-radius:4px;color:#3a3a3c}
+
+  /* ── 布局 ── */
+  .wrap{display:grid;grid-template-columns:236px minmax(0,1fr);gap:48px;max-width:var(--maxw);margin:0 auto;padding:0 32px}
+  nav.toc{position:sticky;top:0;align-self:start;height:100vh;padding:40px 0;overflow:auto}
+  nav.toc .t{font-size:11px;letter-spacing:.10em;text-transform:uppercase;color:var(--ink4);margin:0 0 12px}
+  nav.toc a{display:block;padding:6px 10px;border-radius:8px;color:var(--ink3);font-size:13.5px;line-height:1.45}
+  nav.toc a:hover{background:var(--tile);color:var(--ink)}
+  nav.toc a.on{background:var(--blue-l);color:var(--blue-d);font-weight:600}
+  nav.toc .sub{padding-left:22px;font-size:12.5px;color:var(--ink4)}
+  main{padding:40px 0 120px;min-width:0}
+
+  /* ── 通用 ── */
+  h1{font-size:40px;line-height:1.16;letter-spacing:-.02em;margin:0 0 14px}
+  h2{font-size:28px;line-height:1.25;letter-spacing:-.015em;margin:0 0 8px}
+  h3{font-size:19px;line-height:1.3;margin:34px 0 12px}
+  h4{font-size:15px;margin:22px 0 8px}
+  p{margin:0 0 12px;color:var(--ink2)}
+  .lead{font-size:18px;color:var(--ink3);line-height:1.7}
+  .muted{color:var(--ink3)}
+  .small{font-size:13px}
+  .tiny{font-size:12px}
+  section{padding-top:56px;scroll-margin-top:24px}
+  section+section{border-top:1px solid var(--line)}
+  .kicker{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);font-weight:600;margin-bottom:10px}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .card{background:var(--tile);border-radius:var(--r);padding:20px 22px}
+  .card.white{background:#fff;border:1px solid var(--line)}
+  .card h4{margin-top:0}
+  .card p:last-child{margin-bottom:0}
+
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:var(--tile);
+        font-size:12px;color:var(--ink2);border:1px solid var(--line)}
+  .pill.blue{background:var(--blue-l);border-color:#cfe3fb;color:var(--blue-d)}
+  .pill.red{background:#fdecee;border-color:#f7d1d6;color:var(--red)}
+  .pill.green{background:#e9f7f0;border-color:#c9e9da;color:var(--green)}
+  .pill.amber{background:#fdf1e6;border-color:#f6ddc4;color:var(--amber)}
+
+  table.t{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0 4px}
+  table.t th,table.t td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.t th{font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink4);font-weight:600;
+             background:var(--tile2);border-bottom:1px solid var(--line2)}
+  table.t td.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  table.t tr:last-child td{border-bottom:0}
+  table.t .em{color:var(--ink);font-weight:600}
+
+  ul,ol{margin:8px 0 14px;padding-left:20px;color:var(--ink2)}
+  li{margin:5px 0}
+  .tight li{margin:2px 0}
+
+  .note{border-left:3px solid var(--blue);background:var(--blue-l);padding:14px 18px;border-radius:0 8px 8px 0;
+        font-size:13.5px;color:#0b3f78;margin:18px 0}
+  .warn{border-left:3px solid var(--amber);background:#fdf6ee;padding:14px 18px;border-radius:0 8px 8px 0;
+        font-size:13.5px;color:#6e3d0e;margin:18px 0}
+  .note p,.warn p{color:inherit;margin:0}
+
+  /* ── 封面 ── */
+  .hero{padding:56px 0 44px;border-bottom:1px solid var(--line)}
+  .hero .meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .hero h1 span{color:var(--blue)}
+  .hero .sub{font-size:19px;color:var(--ink3);max-width:760px}
+
+  /* ── 现状指标 ── */
+  .kpi{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
+  .kpi .n{font-size:30px;line-height:1.1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .kpi .l{font-size:12px;color:var(--ink3);margin-top:6px}
+  .kpi .d{font-size:12px;color:var(--ink4);margin-top:2px}
+
+  /* ── 截图 ── */
+  .shots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+  .shot{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#fff}
+  .shot img{display:block;width:100%;height:auto;cursor:zoom-in}
+  .shot a{display:block}
+  .shot .cap{display:flex;justify-content:space-between;gap:10px;padding:10px 14px;font-size:12.5px;
+             color:var(--ink3);border-top:1px solid var(--line);background:var(--tile2)}
+  .shot .cap b{color:var(--ink);font-weight:600}
+
+  /* ── 色板 ── */
+  .swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(124px,1fr));gap:10px}
+  .sw{border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  .sw .chip{height:56px}
+  .sw .m{padding:8px 10px;background:#fff}
+  .sw .m b{display:block;font-size:12px;color:var(--ink)}
+  .sw .m span{font-size:11px;color:var(--ink4);font-family:var(--mono)}
+
+  /* ── 字阶 ── */
+  .typescale div{display:flex;align-items:baseline;gap:16px;padding:10px 0;border-bottom:1px dashed var(--line)}
+  .typescale .sz{width:110px;flex:none;font-size:11.5px;color:var(--ink4);font-family:var(--mono)}
+  .typescale .demo{flex:1;min-width:0}
+
+  /* ── 线框 ── */
+  .wf{background:#fff;border:1px solid var(--line2);border-radius:12px;overflow:hidden;
+      box-shadow:0 1px 0 rgba(0,0,0,.02)}
+  .wf .bar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--tile);border-bottom:1px solid var(--line)}
+  .wf .bar i{width:8px;height:8px;border-radius:50%;background:#d6d6db;display:block}
+  .wf .bar .addr{margin-left:8px;font-size:10.5px;color:var(--ink4);font-family:var(--mono)}
+  .wf .p{padding:12px 14px}
+  .wf .topnav{display:flex;align-items:center;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:10px}
+  .wf .logo{width:56px;height:9px;border-radius:3px;background:#c9c9cf}
+  .wf .navitem{width:38px;height:7px;border-radius:3px;background:#e3e3e8}
+  .wf .navitem.on{background:var(--blue);opacity:.85}
+  .wf .spacer{flex:1}
+  .subnav{display:flex;gap:6px;margin-bottom:12px}
+  .subnav span{font-size:10.5px;padding:3px 9px;border-radius:999px;background:var(--tile);color:var(--ink3)}
+  .subnav span.on{background:var(--ink);color:#fff}
+  .row{display:flex;gap:10px;margin-bottom:10px}
+  .blk{background:var(--tile);border-radius:7px;min-height:26px;padding:8px 10px}
+  .blk.line{background:#fff;border:1px solid var(--line)}
+  .blk.blue{background:var(--blue-l);border:1px solid #cfe3fb}
+  .lbl{font-size:10.5px;color:var(--ink4);letter-spacing:.02em}
+  .val{font-size:18px;font-weight:600;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .val.s{font-size:14px}
+  .h{height:8px;border-radius:3px;background:#dcdce1;margin:5px 0}
+  .h.w40{width:40%}.h.w60{width:60%}.h.w80{width:80%}.h.w100{width:100%}
+  .wf .cap{padding:8px 14px;border-top:1px dashed var(--line);font-size:11.5px;color:var(--ink4);background:var(--tile2)}
+  .wf-cap{font-size:12.5px;color:var(--ink3);margin:8px 0 0}
+
+  /* ── 时间轴 ── */
+  .phase{display:grid;grid-template-columns:120px minmax(0,1fr);gap:20px;padding:20px 0;border-bottom:1px solid var(--line)}
+  .phase:last-child{border-bottom:0}
+  .phase .tag{font-size:11px;letter-spacing:.08em;color:var(--ink4);text-transform:uppercase}
+  .phase .tag b{display:block;font-size:22px;letter-spacing:-.01em;color:var(--ink);text-transform:none;margin-top:2px}
+  .phase ul{margin-top:4px}
+
+  /* ── 对比条 ── */
+  .bar-cmp{display:grid;grid-template-columns:150px minmax(0,1fr) 64px;gap:12px;align-items:center;margin:9px 0;font-size:12.5px}
+  .bar-cmp .track{height:12px;background:var(--tile);border-radius:6px;overflow:hidden;position:relative}
+  .bar-cmp .fill{height:100%;border-radius:6px;background:var(--blue)}
+  .bar-cmp .fill.old{background:#c9c9cf}
+  .bar-cmp .nv{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink2)}
+
+  footer{border-top:1px solid var(--line);margin-top:56px;padding-top:20px;color:var(--ink4);font-size:12.5px}
+
+  @media (max-width:1000px){
+    .wrap{grid-template-columns:1fr;gap:0}
+    nav.toc{display:none}
+    main{padding-top:16px}
+    .g2,.g3,.g4,.shots{grid-template-columns:1fr}
+    h1{font-size:32px}
+  }
+  @media print{
+    nav.toc{display:none}.wrap{display:block;max-width:none;padding:0}
+    section{page-break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="toc">
+  <p class="t">目录</p>
+  <a href="#summary" class="on">0 · 结论摘要</a>
+  <a href="#audit">1 · 现状体检</a>
+  <a href="#principles">2 · 设计原则</a>
+  <a href="#system">3 · 设计系统 v3</a>
+  <a href="#ia">4 · 信息架构</a>
+  <a href="#pages">5 · 页面蓝图</a>
+  <a href="#roadmap">6 · 分期路线</a>
+  <a href="#effect">7 · 预期效果</a>
+  <a href="#risk">8 · 风险与保障</a>
+</nav>
+
+<main>
+
+<!-- ══════════ 封面 ══════════ -->
+<div class="hero">
+  <div class="kicker">AgentSense · Frontend Refresh</div>
+  <h1>前端整体美化与规划<br><span>不改变任何后端能力，只重做"看见的方式"</span></h1>
+  <p class="sub">这是一份<strong>只规划、不动手</strong>的方案：先把 7 个页面的现状体检清楚，定义一套可被逐条验收的设计系统，再按"视觉 → 导航 → 组件"三期落地。所有改造都不动接口、不动元素 id、不新增依赖。</p>
+  <div class="meta">
+    <span class="pill blue">2026-10-19</span>
+    <span class="pill">v1 · 待确认</span>
+    <span class="pill">7 个页签 / 97 张卡片 / 39 张表</span>
+    <span class="pill">不改后端 · 不改 id · 可随时回滚</span>
+  </div>
+</div>
+
+<!-- ══════════ 0 摘要 ══════════ -->
+<section id="summary">
+  <div class="kicker">Section 0</div>
+  <h2>结论摘要</h2>
+  <p class="lead">当前的问题不是"不好看"，而是<strong>同一套页面里并存着三代设计语言</strong>：Apple 蓝的令牌层、各页残留的内联样式、以及为特定模块临时写的覆盖规则。再加上 7 个页面里有 2 个超过 5 屏，导航靠"模块说明点击展开"承担——于是视觉在漂移、结构在膨胀。</p>
+
+  <div class="grid g3" style="margin-top:22px">
+    <div class="card">
+      <h4>① 先收敛，再美化</h4>
+      <p class="small">模板里有 <b>1508 处内联 style</b>、<b>357 个 hex 色值</b>、<b>59 处 !important</b>。不先收敛，任何视觉规则都会被内联样式顶回去——这正是 10-14 那轮返工的原因。P0 只做这件事，收益最大、风险最低。</p>
+    </div>
+    <div class="card">
+      <h4>② 长页靠"二级页签"，不靠折叠</h4>
+      <p class="small">研报页 <b>10492px</b>、数据仓库 <b>5568px</b>、情绪页 <b>4591px</b>。折叠索引只是把长页变短，没有改变"一页塞 4 件事"。计划用页内二级页签把每页压到 <b>≤2.5 屏</b>。</p>
+    </div>
+    <div class="card">
+      <h4>③ 投研终端的"美"= 对齐、密度、层次</h4>
+      <p class="small">不做装饰性渐变/阴影。目标是把 21 列的挤压表变成"分组列 + 首列冻结 + 密度切换"，把 45° 挤在一起的坐标轴变成自适应刻度——<b>可读性就是美观</b>。</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <p><b>一句话：</b>P0 让全站看起来是"一套东西"（2 天）；P1 让每个页面只讲一件事（3~4 天）；P2 让表格与图表真正好用（3~5 天）。三期都可独立上线、独立回滚。</p>
+  </div>
+</section>
+
+<!-- ══════════ 1 现状体检 ══════════ -->
+<section id="audit">
+  <div class="kicker">Section 1</div>
+  <h2>现状体检</h2>
+  <p class="lead">下面 7 张图是刚才在 1600×1000 视口下逐页实拍（亮色主题），不是示意图。</p>
+
+  <h3>1.1 量化指标</h3>
+  <div class="grid g4">
+    <div class="kpi"><div class="n">1508</div><div class="l">内联 style 属性</div><div class="d">改 CSS 时最大的阻力</div></div>
+    <div class="kpi"><div class="n">357</div><div class="l">硬编码 hex 色值</div><div class="d">令牌层管不到的地方</div></div>
+    <div class="kpi"><div class="n">97 / 39</div><div class="l">卡片 / 表格</div><div class="d">卡片是唯一的布局单元</div></div>
+    <div class="kpi"><div class="n">10.5k</div><div class="l">研报页高度(px)</div><div class="d">≈10.5 屏连续滚动</div></div>
+  </div>
+
+  <h3>1.2 逐页实拍</h3>
+  <div class="shots">
+    <div class="shot">
+      <a href="assets/_ui_run.png" target="_blank" title="点击查看原图"><img src="assets/_ui_run.png" alt="运行分析页"></a>
+      <div class="cap"><span><b>运行分析</b> · 首屏只用了上半部分</span><span>1 屏</span></div>
+    </div>
+    <div class="shot">
+      <a href="assets/_ui_research.png" target="_blank" title="点击查看原图"><img src="assets/_ui_research.png" alt="研报页"></a>
+      <div class="cap"><span><b>研报</b> · 问答 + 长文总结连续堆叠</span><span>10.5 屏</span></div>
+    </div>
+    <div class="shot">
+      <a href="assets/_ui_quant.png" target="_blank" title="点击查看原图"><img src="assets/_ui_quant.png" alt="技术面量化页"></a>
+      <div class="cap"><span><b>技术面量化</b> · 只有 1 行数据时大片留白</span><span>1 屏</span></div>
+    </div>
+    <div class="shot">
+      <a href="assets/_ui_fund.png" target="_blank" title="点击查看原图"><img src="assets/_ui_fund.png" alt="基本面量化页"></a>
+      <div class="cap"><span><b>基本面量化</b> · 21 列挤在同一行</span><span>1 屏</span></div>
+    </div>
+    <div class="shot">
+      <a href="assets/_ui_sentiment.png" target="_blank" title="点击查看原图"><img src="assets/_ui_sentiment.png" alt="情绪数据页"></a>
+      <div class="cap"><span><b>情绪数据</b> · 图例挡线、x 轴 45° 密集</span><span>4.6 屏</span></div>
+    </div>
+    <div class="shot">
+      <a href="assets/_ui_foreign.png" target="_blank" title="点击查看原图"><img src="assets/_ui_foreign.png" alt="外文研报页"></a>
+      <div class="cap"><span><b>外文研报</b> · 26 条任务双列铺开</span><span>1 屏</span></div>
+    </div>
+    <div class="shot" style="grid-column:1/-1">
+      <a href="assets/_ui_warehouse.png" target="_blank" title="点击查看原图"><img src="assets/_ui_warehouse.png" alt="数据仓库页"></a>
+      <div class="cap"><span><b>数据仓库</b> · 4 个异构模块同页（卖方数据 / 上传研报 / 自传数据 / 研报库）</span><span>5.6 屏</span></div>
+    </div>
+  </div>
+
+  <h3>1.3 诊断清单（按影响排序）</h3>
+  <table class="t">
+    <thead><tr><th style="width:34px">#</th><th style="width:150px">问题</th><th>证据</th><th style="width:190px">用户实际感受</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="em">一页多事</td><td>研报页把「问答 / 每日总结 / 单品种 / 观点总览」串成 10.5 屏；数据仓库把 4 个模块串成 5.6 屏。</td><td>"想找某个东西要一直往下滚"</td></tr>
+      <tr><td>2</td><td class="em">表格挤压</td><td>基本面 21 列同屏，每列 ~55px；技术面 12 列。</td><td>表头截断、数字贴边、看不出列含义</td></tr>
+      <tr><td>3</td><td class="em">图表读不动</td><td>情绪页 x 轴 45° 密集标签；图例与曲线重叠；多条序列没有主次。</td><td>"这图画的是啥"</td></tr>
+      <tr><td>4</td><td>层级靠字号硬撑</td><td>同一页并存 h3 / div 伪标题 / 加粗正文 / 说明文四种层级，字号取值分散。</td><td>看不出主次，重要信息被淹没</td></tr>
+      <tr><td>5</td><td>空白不均衡</td><td>运行页首屏下半 55% 空白；量化页在"计算中"时整屏无骨架。</td><td>"是不是没加载出来"</td></tr>
+      <tr><td>6</td><td>常驻假加载</td><td>「分析输入数据 · 加载中…」「采集帖子 · 加载中…」长期停留。</td><td>分不清"在跑"与"坏了"</td></tr>
+      <tr><td>7</td><td>导航靠折叠索引</td><td>每页顶部一条"模块说明/指标说明点击展开"，实际承担了页面目录。</td><td>不知道当前在整页的哪个位置</td></tr>
+      <tr><td>8</td><td>样式债</td><td>1508 内联 style / 357 hex / 59 !important。</td><td>（用户看不到，但每次改动都会"只改一半生效"）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ══════════ 2 原则 ══════════ -->
+<section id="principles">
+  <div class="kicker">Section 2</div>
+  <h2>五条设计原则</h2>
+  <p class="lead">不是审美偏好，每一条都对应上面某个具体问题。</p>
+
+  <div class="grid g2" style="margin-top:20px">
+    <div class="card white">
+      <h4>1 · 一屏一焦点</h4>
+      <p class="small">每页首屏只回答一个问题：「我现在该看什么」。答案是一个 KPI 条 + 一块主区域，其余内容进二级页签。对应问题 1、5。</p>
+    </div>
+    <div class="card white">
+      <h4>2 · 数字优先</h4>
+      <p class="small">所有数值用等宽数字（tabular-nums）、右对齐、单位降一级字重与灰色。让"比较"发生在眼睛而不是鼠标。对应问题 2。</p>
+    </div>
+    <div class="card white">
+      <h4>3 · 层次靠留白与分隔线</h4>
+      <p class="small">不用阴影、不用渐变、不用彩色底。层级由字号、字重、灰阶、间距四件事表达——这也是当前令牌层已经定下的方向，只是没被贯彻。对应问题 4。</p>
+    </div>
+    <div class="card white">
+      <h4>4 · 密度可调，默认紧凑</h4>
+      <p class="small">投研场景一屏要有信息量。表格提供「舒适 / 紧凑」两档（行高 40 / 32），默认紧凑；不要用放大间距来"显得高级"。对应问题 2、5。</p>
+    </div>
+    <div class="card white">
+      <h4>5 · 一处定义</h4>
+      <p class="small">颜色、字号、间距、圆角、表格、空态、加载态——每样只有一处定义。新增模块只能组合，不能新写一套。对应问题 8。</p>
+    </div>
+    <div class="card white">
+      <h4>6 · 状态必须可辨</h4>
+      <p class="small">空 / 加载中 / 失败 / 确定无数据 四种状态用四种视觉，绝不复用同一句"加载中…"。这条与后端三态契约一一对应。对应问题 6。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 3 设计系统 ══════════ -->
+<section id="system">
+  <div class="kicker">Section 3</div>
+  <h2>设计系统 v3</h2>
+  <p class="lead">在现有令牌层（已经是 Apple 蓝 + 纯黑白）上补齐"投研终端"缺的三块：语义色分级、表格/图表规范、状态组件。不推翻现有令牌，只做<strong>收敛与补全</strong>。</p>
+
+  <h3>3.1 色板</h3>
+  <h4>中性（承载 90% 的界面）</h4>
+  <div class="swatches">
+    <div class="sw"><div class="chip" style="background:#ffffff;border-bottom:1px solid #eee"></div><div class="m"><b>surface</b><span>#FFFFFF</span></div></div>
+    <div class="sw"><div class="chip" style="background:#f5f5f7"></div><div class="m"><b>canvas / card</b><span>#F5F5F7</span></div></div>
+    <div class="sw"><div class="chip" style="background:#e5e5ea"></div><div class="m"><b>line</b><span>#E5E5EA</span></div></div>
+    <div class="sw"><div class="chip" style="background:#86868b"></div><div class="m"><b>muted</b><span>#86868B</span></div></div>
+    <div class="sw"><div class="chip" style="background:#6e6e73"></div><div class="m"><b>secondary</b><span>#6E6E73</span></div></div>
+    <div class="sw"><div class="chip" style="background:#1d1d1f"></div><div class="m"><b>ink</b><span>#1D1D1F</span></div></div>
+  </div>
+
+  <h4 style="margin-top:24px">语义（只表达含义，不做装饰）</h4>
+  <div class="swatches">
+    <div class="sw"><div class="chip" style="background:#0071e3"></div><div class="m"><b>brand</b><span>#0071E3</span></div></div>
+    <div class="sw"><div class="chip" style="background:#d70015"></div><div class="m"><b>涨 / 看多</b><span>#D70015</span></div></div>
+    <div class="sw"><div class="chip" style="background:#00875a"></div><div class="m"><b>跌 / 看空</b><span>#00875A</span></div></div>
+    <div class="sw"><div class="chip" style="background:#b25000"></div><div class="m"><b>中性 / 警示</b><span>#B25000</span></div></div>
+    <div class="sw"><div class="chip" style="background:#0a5bbd"></div><div class="m"><b>信息 / 链接</b><span>#0A5BBD</span></div></div>
+    <div class="sw"><div class="chip" style="background:#6e6e73"></div><div class="m"><b>禁用</b><span>#6E6E73</span></div></div>
+  </div>
+  <p class="tiny muted" style="margin-top:10px">涨跌沿用中国习惯（红涨绿跌），暗色主题下提高到 <code>#FF453A / #30D158</code> 保证对比度。语义色只允许出现在：方向标签、涨跌数字、K 线、状态点。</p>
+
+  <h4 style="margin-top:22px">图表序列（8 色，与年份色解耦）</h4>
+  <div style="display:flex;gap:6px;margin:6px 0 0">
+    <div style="flex:1;height:34px;border-radius:6px;background:#0071e3"></div>
+    <div style="flex:1;height:34px;border-radius:6px;background:#f56300"></div>
+    <div style="flex:1;height:34px;border-radius:6px;background:#00875a"></div>
+    <div style="flex:1;height:34px;border-radius:6px;background:#70449f"></div>
+    <div style="flex:1;height:34px;border-radius:6px;background:#00b0f0"></div>
+    <div style="flex:1;height:34px;border-radius:6px;background:#c2185b"></div>
+    <div style="flex:1;height:34px;border-radius:6px;background:#8c6d1f"></div>
+    <div style="flex:1;height:34px;border-radius:6px;background:#5c5c61"></div>
+  </div>
+  <p class="tiny muted" style="margin-top:8px">季节性图仍用「绘制包」的 6 色年份映射（2021 黑 → 2026 红），那是跨系统一致性要求，不受这套序列影响。</p>
+
+  <h3>3.2 字阶与数字</h3>
+  <div class="typescale">
+    <div><div class="sz">40 / 1.75</div><div class="demo" style="font-size:40px;letter-spacing:-.02em;line-height:1.1">17,000 <span class="tiny muted">主指标</span></div></div>
+    <div><div class="sz">28 / 1.75</div><div class="demo" style="font-size:28px;letter-spacing:-.015em">5 个品种偏多 <span class="tiny muted">区块标题 / KPI</span></div></div>
+    <div><div class="sz">21 / 1.31</div><div class="demo" style="font-size:21px;letter-spacing:-.01em">当日观点总表 <span class="tiny muted">卡片标题</span></div></div>
+    <div><div class="sz">17 / 1.06</div><div class="demo" style="font-size:17px">强调正文</div></div>
+    <div><div class="sz">15 / .94</div><div class="demo" style="font-size:15px">正文 / 表格 / 按钮 / 输入</div></div>
+    <div><div class="sz">13 / .81</div><div class="demo" style="font-size:13px">次级文字 / 说明</div></div>
+    <div><div class="sz">12 / .75</div><div class="demo" style="font-size:12px">标签 / 表头 / 元信息</div></div>
+    <div><div class="sz">11 / tag</div><div class="demo" style="font-size:11px;letter-spacing:.02em">徽标 / 角标</div></div>
+  </div>
+  <p class="small muted" style="margin-top:12px">规则：<b>正文不小于 12px</b>；所有数字启用 <code>font-variant-numeric: tabular-nums</code>；表格与图表刻度统一 12px；标题只用 21/28 两档。</p>
+
+  <h3>3.3 间距 / 圆角 / 网格</h3>
+  <div class="grid g3">
+    <div class="card white">
+      <h4>间距 9 档</h4>
+      <p class="small">4 / 8 / 12 / 16 / 20 / 24 / 32 / 40 / 56<br>卡片内边距 20；卡片间距 16；区块间距 32；页边距 32。</p>
+    </div>
+    <div class="card white">
+      <h4>圆角 3 档</h4>
+      <p class="small">6（标签/输入）/ 10（卡片）/ 14（弹层）。不再出现 8/9/12/16 混用。</p>
+    </div>
+    <div class="card white">
+      <h4>网格</h4>
+      <p class="small">内容最大宽 1440；可选 12 栏；表格页允许整宽（不设 max-width），避免右侧空一截。</p>
+    </div>
+  </div>
+
+  <h3>3.4 组件规范（本轮要统一的 8 个）</h3>
+  <table class="t">
+    <thead><tr><th style="width:120px">组件</th><th>规范</th><th style="width:220px">解决</th></tr></thead>
+    <tbody>
+      <tr><td class="em">页面头</td><td>标题(28) + 一句话说明(13, muted) + 右侧操作区；固定在卡片外，不与卡片标题重复。</td><td>层级混乱、每页开头不一致</td></tr>
+      <tr><td class="em">二级页签</td><td>胶囊组或下划线组；只在页内，不改变一级导航；当前项用实底。</td><td>长页（问题 1）</td></tr>
+      <tr><td class="em">KPI 条</td><td>2~5 格；数值 28 + 标签 12 + 变化 12；等宽数字；分隔用竖线不用卡片。</td><td>统计格散落、空白</td></tr>
+      <tr><td class="em">数据表</td><td>表头 12px/灰/吸顶；行高紧凑 32、舒适 40；数值右对齐；首列冻结；列分组可切换；斑马纹关闭，用 1px 分隔线。</td><td>21 列挤压（问题 2）</td></tr>
+      <tr><td class="em">图表</td><td>图例置于图上方或右侧（不压线）；x 轴按跨度自适应（≤60 点用日、≤2 年用月）；网格线只留横向；主序列 2px、其余 1px。</td><td>情绪页读不动（问题 3）</td></tr>
+      <tr><td class="em">状态四态</td><td>空态（图标+一句为什么+一个动作）/ 加载（骨架屏）/ 失败（原因+重试）/ 确定无数据（灰字说明口径）。</td><td>假加载（问题 6）</td></tr>
+      <tr><td class="em">标签</td><td>方向用文字+色点，不用大色块；置信度用 46px 进度条；徽标只承载计数。</td><td>颜色语义泛滥</td></tr>
+      <tr><td class="em">按钮</td><td>主按钮实底、次按钮描边、文字按钮无底色；同屏最多 1 个主按钮。</td><td>操作区争夺注意力</td></tr>
+    </tbody>
+  </table>
+
+  <h3>3.5 暗色与响应式（同一套令牌，不做第二套皮肤）</h3>
+  <div class="grid g3">
+    <div class="card white">
+      <h4>暗色</h4>
+      <p class="small">同一套令牌，暗色只换值：面 <code>#000/#1D1D1F</code>、字 <code>#F5F5F7</code>、语义色提亮一档（<code>#FF453A / #30D158</code>）。<b>不新增暗色专用规则</b>；图表通过 <code>CHART.*</code> getter 自动跟随，切主题零重取数。</p>
+    </div>
+    <div class="card white">
+      <h4>窄屏</h4>
+      <p class="small">≥1280 多列 / 768~1279 两列 / &lt;768 单列。表格横向滚动 + 首列冻结；一级页签保持横滚，页内二级页签折叠为下拉。不追求手机端"完整投研"，但保证不溢出、不重叠。</p>
+    </div>
+    <div class="card white">
+      <h4>可访问性底线</h4>
+      <p class="small">正文对比度 ≥4.5:1（灰字 #6E6E73 在白底 5.6:1）；方向不只用颜色区分，同时给文字（看多/看空/中性）；焦点态统一 3px 蓝色外环；所有图标按钮带 <code>title</code>。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 4 信息架构 ══════════ -->
+<section id="ia">
+  <div class="kicker">Section 4</div>
+  <h2>信息架构：7 个页签不变，页内改成"一页一事"</h2>
+  <p class="lead">一级导航已经是 7 项，再拆会碎。真正的问题是<strong>每页内部没有二级结构</strong>。方案：一级不动，页内加二级页签，把长页拆成并列的 3~4 件事。</p>
+
+  <div class="grid g2" style="margin-top:20px">
+    <div class="wf">
+      <div class="bar"><i></i><i></i><i></i><span class="addr">现在 · 一页到底</span></div>
+      <div class="p">
+        <div class="topnav"><div class="logo"></div><div class="navitem"></div><div class="navitem on"></div><div class="navitem"></div><div class="navitem"></div><div class="spacer"></div><div class="navitem"></div></div>
+        <div class="blk line" style="margin-bottom:8px"><div class="h w40"></div><div class="h w80" style="background:#e9e9ee"></div></div>
+        <div class="blk" style="margin-bottom:8px;height:44px"><div class="h w60"></div><div class="h w100" style="background:#e9e9ee"></div><div class="h w100" style="background:#e9e9ee"></div></div>
+        <div class="blk" style="height:52px;margin-bottom:8px"><div class="h w40"></div><div class="h w100" style="background:#e9e9ee"></div><div class="h w100" style="background:#e9e9ee"></div><div class="h w80" style="background:#e9e9ee"></div></div>
+        <div class="blk" style="height:40px;margin-bottom:8px"><div class="h w40"></div><div class="h w100" style="background:#e9e9ee"></div></div>
+        <div class="blk" style="height:28px"><div class="h w40"></div></div>
+        <div style="text-align:center;font-size:11px;color:#86868b;margin-top:8px">︙ 继续向下 10 屏 ︙</div>
+      </div>
+      <div class="cap">4 件事串成一条 10,492px 的长卷；靠顶部"模块说明点击展开"当目录</div>
+    </div>
+
+    <div class="wf">
+      <div class="bar"><i></i><i></i><i></i><span class="addr">目标 · 二级页签</span></div>
+      <div class="p">
+        <div class="topnav"><div class="logo"></div><div class="navitem"></div><div class="navitem on"></div><div class="navitem"></div><div class="navitem"></div><div class="spacer"></div><div class="navitem"></div></div>
+        <div class="subnav"><span class="on">问答</span><span>每日总结</span><span>单品种</span><span>观点总览</span></div>
+        <div class="row">
+          <div class="blk blue" style="flex:2;height:78px"><div class="lbl">主区域 · 当前子页</div><div class="h w80" style="background:#bcd9f8"></div><div class="h w100" style="background:#bcd9f8"></div></div>
+          <div class="blk line" style="flex:1;height:78px"><div class="lbl">上下文 / 引用</div><div class="h w100"></div><div class="h w80"></div><div class="h w60"></div></div>
+        </div>
+        <div class="blk" style="height:34px"><div class="lbl">输入 / 操作条</div><div class="h w60" style="background:#e9e9ee"></div></div>
+        <div style="display:flex;gap:6px;margin-top:10px"><div class="blk line" style="flex:1;height:26px"></div><div class="blk line" style="flex:1;height:26px"></div><div class="blk line" style="flex:1;height:26px"></div></div>
+        <div style="text-align:center;font-size:11px;color:#86868b;margin-top:8px">单页 ≤ 2.5 屏</div>
+      </div>
+      <div class="cap">同一批内容，按"我要做的事"并列；切换不滚页，上下文（品种/日期）跨页签保持</div>
+    </div>
+  </div>
+
+  <h3>4.1 每页的二级结构</h3>
+  <table class="t">
+    <thead><tr><th style="width:120px">一级页</th><th style="width:300px">二级页签</th><th>现在的样子 → 改后</th></tr></thead>
+    <tbody>
+      <tr><td class="em">运行分析</td><td>配置 · 运行 · 结果</td><td>配置与统计格同屏 + 大空白 → 配置完成后自动进入「运行」，跑完停在「结果」（结论卡 + 时间线）</td></tr>
+      <tr><td class="em">研报</td><td>问答 · 每日总结 · 单品种 · 观点总览</td><td>10.5 屏长卷 → 4 个并列子页，默认落在「每日总结」</td></tr>
+      <tr><td class="em">技术面量化</td><td>总览 · 截面 · 单品种</td><td>总览表 + 截面 + 详情堆叠 → 三个子页；截面行点开用右侧抽屉看详情</td></tr>
+      <tr><td class="em">基本面量化</td><td>总览 · 截面 · 仓单 · 策略</td><td>21 列同屏 → 截面表按"价格 / 库存 / 利润 / 结构"列组切换；仓单独立子页</td></tr>
+      <tr><td class="em">情绪数据</td><td>总览 · 事件 · 更新</td><td>4.6 屏 → 总览只留 KPI + 主图；事件与采集更新各自成页</td></tr>
+      <tr><td class="em">外文研报</td><td>上传 · 任务</td><td>上传 + 26 条双列任务 → 上传区固定左侧，右侧单列任务 + 状态筛选</td></tr>
+      <tr><td class="em">数据仓库</td><td>卖方数据 · 上传研报 · 自传数据 · 研报库</td><td>4 个异构模块串成 5.6 屏 → 4 个子页；卖方数据内部保持"查询 / 指标 / 图 / 明细"</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warn">
+    <p><b>结构改动的代价要说清楚：</b>二级页签会让 DOM 层级变化，必须同步 <code>_SEC_IDX_VER</code>、<code>_SEC_OPEN_BY_TAB</code>、以及一批按结构断言的护栏。因此它排在 P1，且 P0 先用"侧边目录"拿到 70% 的导航收益（纯 CSS + 少量 JS，不动卡片归属）。</p>
+  </div>
+</section>
+
+<!-- ══════════ 5 页面蓝图 ══════════ -->
+<section id="pages">
+  <div class="kicker">Section 5</div>
+  <h2>页面蓝图</h2>
+  <p class="lead">线框只表达<strong>布局与优先级</strong>，不表达最终像素。灰块 = 次要信息，蓝块 = 主区域，虚线 = 可折叠。</p>
+
+  <h3>5.1 运行分析：从"表单 + 空白"到"状态机"</h3>
+  <div class="grid g2">
+    <div class="wf">
+      <div class="bar"><i></i><i></i><i></i><span class="addr">before</span></div>
+      <div class="p">
+        <div class="blk line" style="height:54px"><div class="lbl">分析配置（4 字段横排）</div><div class="h w100"></div><div class="h w80"></div></div>
+        <div style="height:10px"></div>
+        <div class="row"><div class="blk" style="flex:1;height:34px"></div><div class="blk" style="flex:1;height:34px"></div><div class="blk" style="flex:1;height:34px"></div><div class="blk" style="flex:1;height:34px"></div><div class="blk" style="flex:1;height:34px"></div></div>
+        <div style="height:10px"></div>
+        <div class="blk" style="height:26px"><div class="h w40"></div></div>
+        <div style="height:150px"></div>
+        <div style="text-align:center;font-size:11px;color:#c9c9cf">—— 首屏下方 55% 空白 ——</div>
+      </div>
+      <div class="cap">配置、统计、动作挤在一起；运行态没有承接区</div>
+    </div>
+
+    <div class="wf">
+      <div class="bar"><i></i><i></i><i></i><span class="addr">after</span></div>
+      <div class="p">
+        <div class="subnav"><span class="on">配置</span><span>运行</span><span>结果</span></div>
+        <div class="row">
+          <div class="blk line" style="flex:2;height:82px">
+            <div class="lbl">参数（品种 / 日期 / 深度 / 选项）</div>
+            <div class="h w100"></div><div class="h w80"></div>
+            <div style="display:flex;gap:6px;margin-top:8px"><span class="pill blue">标准</span><span class="pill">快速</span><span class="pill">辩论</span><span class="pill">情景</span></div>
+          </div>
+          <div class="blk blue" style="flex:1;height:82px">
+            <div class="lbl">前置检查</div>
+            <div class="h w80" style="background:#bcd9f8"></div><div class="h w60" style="background:#bcd9f8"></div><div class="h w80" style="background:#bcd9f8"></div>
+          </div>
+        </div>
+        <div class="blk" style="height:70px">
+          <div class="lbl">运行时间线（分析师 → 辩论 → 决策）</div>
+          <div style="display:flex;gap:6px;margin-top:8px"><div class="h" style="flex:3;background:#0071e3"></div><div class="h" style="flex:2"></div><div class="h" style="flex:2"></div><div class="h" style="flex:1"></div></div>
+        </div>
+        <div style="display:flex;gap:6px"><div class="blk" style="flex:1;height:30px"></div><div class="blk" style="flex:1;height:30px"></div><div class="blk" style="flex:1;height:30px"></div></div>
+      </div>
+      <div class="cap">配置 → 运行 → 结果三段式；每一步都有内容承接，空白消失</div>
+    </div>
+  </div>
+
+  <h3>5.2 研报：从"长卷"到"目录 + 文档"</h3>
+  <div class="grid g2">
+    <div class="wf">
+      <div class="bar"><i></i><i></i><i></i><span class="addr">before · 10,492px</span></div>
+      <div class="p">
+        <div class="blk line" style="height:60px"><div class="lbl">研报问答（454 篇 / 16729 片段）</div><div class="h w80"></div></div>
+        <div class="blk" style="height:44px;margin-top:8px"><div class="h w40"></div><div class="h w100" style="background:#e9e9ee"></div></div>
+        <div class="blk" style="height:120px;margin-top:8px"><div class="lbl">每日总结（Markdown 大表）</div><div class="h w100" style="background:#e9e9ee"></div><div class="h w100" style="background:#e9e9ee"></div><div class="h w100" style="background:#e9e9ee"></div><div class="h w80" style="background:#e9e9ee"></div></div>
+        <div style="text-align:center;font-size:11px;color:#86868b;margin-top:6px">︙ 单品种 / 观点总览 继续往下 ︙</div>
+      </div>
+      <div class="cap">问答→总结→单品种→总览 四段顺序阅读，无法跳转</div>
+    </div>
+
+    <div class="wf">
+      <div class="bar"><i></i><i></i><i></i><span class="addr">after · ≤2.5 屏/页</span></div>
+      <div class="p">
+        <div class="subnav"><span>问答</span><span class="on">每日总结</span><span>单品种</span><span>观点总览</span></div>
+        <div class="row">
+          <div class="blk line" style="flex:1;height:112px">
+            <div class="lbl">品种目录</div>
+            <div class="h w80"></div><div class="h w60"></div><div class="h w80"></div><div class="h w60"></div><div class="h w80"></div>
+          </div>
+          <div class="blk blue" style="flex:3;height:112px">
+            <div class="lbl">正文（表格化，首列冻结）</div>
+            <div class="h w100" style="background:#bcd9f8"></div><div class="h w100" style="background:#bcd9f8"></div><div class="h w80" style="background:#bcd9f8"></div>
+          </div>
+        </div>
+        <div class="blk line" style="height:30px;margin-top:8px"><div class="h w40"></div></div>
+        <div class="blk" style="height:26px;margin-top:8px"><div class="h w60"></div></div>
+      </div>
+      <div class="cap">左目录 + 右正文；四个子页各自独立，切换不滚页</div>
+    </div>
+  </div>
+
+  <h3>5.3 基本面量化：21 列 → 列组 + 抽屉</h3>
+  <div class="wf">
+    <div class="bar"><i></i><i></i><i></i><span class="addr">after</span></div>
+    <div class="p">
+      <div class="subnav"><span class="on">总览</span><span>截面</span><span>仓单</span><span>策略</span></div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+        <span class="pill">全部品种</span><span class="pill">农产品</span><span class="pill">能化</span><span class="pill">能源</span>
+        <span style="flex:1"></span>
+        <span class="pill blue">价格</span><span class="pill">库存</span><span class="pill">利润</span><span class="pill">结构</span>
+        <span class="pill">紧凑</span>
+      </div>
+      <div class="blk line" style="padding:0;overflow:hidden">
+        <div style="display:flex;gap:0;font-size:10.5px;color:#86868b;background:#fafafa;border-bottom:1px solid #e5e5ea">
+          <div style="width:96px;padding:6px 8px;border-right:1px solid #e5e5ea;position:sticky;left:0;background:#fafafa">品种 ▾</div>
+          <div style="flex:1;padding:6px 8px;text-align:right">最新价</div>
+          <div style="flex:1;padding:6px 8px;text-align:right">涨跌</div>
+          <div style="flex:1;padding:6px 8px;text-align:right">基差</div>
+          <div style="flex:1;padding:6px 8px;text-align:right">基差率</div>
+          <div style="flex:1;padding:6px 8px;text-align:right">库存分位</div>
+          <div style="flex:1;padding:6px 8px;text-align:right">仓单5日</div>
+          <div style="flex:1.4;padding:6px 8px">结论</div>
+        </div>
+        <div style="display:flex;font-size:10.5px;color:#3a3a3c;border-bottom:1px solid #f0f0f3">
+          <div style="width:96px;padding:8px;border-right:1px solid #f0f0f3;background:#fff"><b>BR 丁二烯</b></div>
+          <div style="flex:1;padding:8px;text-align:right">15,950</div><div style="flex:1;padding:8px;text-align:right;color:#d70015">-0.84%</div>
+          <div style="flex:1;padding:8px;text-align:right">305</div><div style="flex:1;padding:8px;text-align:right">61.7%</div>
+          <div style="flex:1;padding:8px;text-align:right">45%</div><div style="flex:1;padding:8px;text-align:right">-100</div>
+          <div style="flex:1.4;padding:8px;color:#6e6e73">区间操作</div>
+        </div>
+        <div style="display:flex;font-size:10.5px;color:#3a3a3c">
+          <div style="width:96px;padding:8px;border-right:1px solid #f0f0f3;background:#fff"><b>RU 橡胶</b></div>
+          <div style="flex:1;padding:8px;text-align:right">…</div><div style="flex:1;padding:8px;text-align:right">…</div>
+          <div style="flex:1;padding:8px;text-align:right">…</div><div style="flex:1;padding:8px;text-align:right">…</div>
+          <div style="flex:1;padding:8px;text-align:right">…</div><div style="flex:1;padding:8px;text-align:right">…</div>
+          <div style="flex:1.4;padding:8px">…</div>
+        </div>
+      </div>
+      <div class="wf-cap">7 列 × 4 组；首列冻结；行点开右侧抽屉显示完整 21 项（不跳页、不丢筛选）</div>
+    </div>
+    <div class="cap">列组切换替代 21 列同屏；密度可切；结论列留到最后但可点开</div>
+  </div>
+
+  <h3>5.4 情绪数据：把图还给图</h3>
+  <div class="grid g2">
+    <div class="wf">
+      <div class="bar"><i></i><i></i><i></i><span class="addr">before</span></div>
+      <div class="p">
+        <div class="blk line" style="height:30px"><div class="lbl">回看天数（全宽下拉）</div></div>
+        <div style="height:8px"></div>
+        <div class="row"><div class="blk" style="flex:1;height:30px"></div><div class="blk" style="flex:1;height:30px"></div><div class="blk" style="flex:1;height:30px"></div><div class="blk" style="flex:1;height:30px"></div><div class="blk" style="flex:1;height:30px"></div><div class="blk" style="flex:1;height:30px"></div></div>
+        <div class="blk" style="height:100px;margin-top:8px;position:relative">
+          <div class="lbl">图表</div>
+          <div style="position:absolute;right:10px;top:8px;font-size:9px;color:#86868b">图例 ▮▮▮ 压在线上</div>
+          <div style="position:absolute;left:10px;bottom:6px;font-size:9px;color:#86868b;letter-spacing:1px">11/1 12/1 1/1 2/1 3/1 4/1 … 45° 标签</div>
+        </div>
+      </div>
+      <div class="cap">控件占满整行、6 格统计、图例入图、轴标签 45°</div>
+    </div>
+
+    <div class="wf">
+      <div class="bar"><i></i><i></i><i></i><span class="addr">after</span></div>
+      <div class="p">
+        <div style="display:flex;gap:6px;align-items:center">
+          <span class="pill">7 天</span><span class="pill">30 天</span><span class="pill blue">90 天</span><span class="pill">180 天</span>
+          <span style="flex:1"></span><span class="pill">BR 丁二烯橡胶 ▾</span>
+        </div>
+        <div class="row" style="margin-top:8px"><div class="blk" style="flex:1;height:28px"></div><div class="blk" style="flex:1;height:28px"></div><div class="blk" style="flex:1;height:28px"></div><div class="blk" style="flex:1;height:28px"></div></div>
+        <div class="blk line" style="height:112px;margin-top:8px">
+          <div class="lbl">图例在左上方，不压线；x 轴按跨度自动月/周</div>
+          <div style="display:flex;gap:8px;margin-top:6px;font-size:9px;color:#86868b"><span>● 情绪</span><span>● 价格</span><span>● 7日均线</span></div>
+          <div class="h w100" style="margin-top:16px;background:#e9e9ee"></div><div class="h w100" style="background:#e9e9ee"></div>
+        </div>
+        <div class="blk" style="height:26px;margin-top:8px"><div class="h w60"></div></div>
+      </div>
+      <div class="cap">分段控件 + 品种上下文；图占满宽；图例上置；轴自适应</div>
+    </div>
+  </div>
+
+  <h3>5.5 数据仓库：4 个模块 → 4 个子页</h3>
+  <div class="wf">
+    <div class="bar"><i></i><i></i><i></i><span class="addr">after</span></div>
+    <div class="p">
+      <div class="subnav"><span class="on">卖方数据</span><span>上传研报</span><span>自传数据</span><span>研报库</span></div>
+      <div class="blk line" style="height:42px"><div class="lbl">查询条（品种 / 快捷区间 / 起止 / 查询）</div><div class="h w60"></div></div>
+      <div class="blk" style="height:96px;margin-top:8px"><div class="lbl">指标总览（可排序、可筛选）</div><div class="h w100" style="background:#e9e9ee"></div><div class="h w100" style="background:#e9e9ee"></div></div>
+      <div class="blk line" style="height:78px;margin-top:8px"><div class="lbl">季节性图（170px）+ 折叠明细</div><div class="h w100"></div></div>
+    </div>
+    <div class="cap">模块之间用子页签隔离；每页只保留自己的查询条与主区域</div>
+  </div>
+
+  <h3>5.6 外文研报</h3>
+  <div class="wf">
+    <div class="bar"><i></i><i></i><i></i><span class="addr">after</span></div>
+    <div class="p">
+      <div class="row">
+        <div class="blk line" style="flex:1;height:92px">
+          <div class="lbl">上传区（固定）</div>
+          <div style="border:1.5px dashed #d2d2d7;border-radius:8px;height:52px;margin-top:6px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#86868b">把 PDF 拖到这里</div>
+          <div class="h w60" style="margin-top:8px"></div>
+        </div>
+        <div class="blk" style="flex:2;height:92px">
+          <div class="lbl">任务列表（单列 + 状态筛选）</div>
+          <div class="row" style="margin:6px 0 0"><span class="pill">全部 26</span><span class="pill green">已完成 24</span><span class="pill amber">处理中 1</span><span class="pill red">失败 1</span></div>
+          <div class="h w100" style="margin-top:10px;background:#e9e9ee"></div>
+          <div class="h w100" style="background:#e9e9ee"></div>
+          <div class="h w80" style="background:#e9e9ee"></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap">左固定上传、右单列任务；状态可筛；进度可视化</div>
+  </div>
+</section>
+
+<!-- ══════════ 6 路线 ══════════ -->
+<section id="roadmap">
+  <div class="kicker">Section 6</div>
+  <h2>分期路线：三期，每期都能单独上线</h2>
+  <p class="lead">排序原则：<strong>先做"改动小、收益全院共享"的事</strong>。P0 不碰结构，纯样式收敛；P1、P2 才动 DOM 与组件。</p>
+
+  <div class="phase">
+    <div class="tag">Phase <b>P0</b><span class="tiny">约 2 天</span></div>
+    <div>
+      <h4 style="margin-top:0">视觉收敛：让全站看起来是同一套东西</h4>
+      <ul class="tight">
+        <li><b>令牌补全</b>：语义色分级（涨/跌/中性/信息/禁用）、圆角 3 档、阴影归零；新增的图表色登记进 <code>CHART_COLOR_KEYS</code>，保证切主题能重染。</li>
+        <li><b>内联样式收敛</b>：写脚本把 1508 处 <code>style="…"</code> 中可归类的（字号/颜色/间距/圆角）替换为类名，剩余按"确有动态值"白名单保留；目标降到 400 以内。</li>
+        <li><b>组件样式统一</b>：按钮三级、标签、卡片、表格、输入、空态四态、页头。</li>
+        <li><b>表格基础</b>：表头吸顶、数值右对齐 + tabular-nums、行高紧凑 32、斑马纹关闭。</li>
+        <li><b>图表基础</b>：图例上置、网格只留横向、主序列 2px、轴标签 12px 且禁止 45° 旋转（改自适应刻度）。</li>
+      </ul>
+      <p class="small"><b>验收：</b>双主题逐页截图；全量回归 0 新增红；表格/按钮/空态三个组件在 7 页外观一致；不新增任何元素 id 变更。</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="tag">Phase <b>P1</b><span class="tiny">3~4 天</span></div>
+    <div>
+      <h4 style="margin-top:0">导航与结构：一页一事</h4>
+      <ul class="tight">
+        <li><b>二级页签组件</b>：在研报 / 数据仓库 / 技术面 / 基本面 / 情绪 / 外文六页接入；默认落在最有用的子页。</li>
+        <li><b>页面头组件</b>：标题 + 一句话说明 + 右侧操作区，替换现在"卡片标题即页面标题"的混用。</li>
+        <li><b>全局品种上下文</b>：右上角一个品种选择器，跨页保持（已有 <code>_curVariety</code> 机制，只是没露出）。</li>
+        <li><b>降级方案</b>：若某页结构风险高，先上"侧边吸顶目录"（纯 CSS + 滚动监听），不动卡片归属。</li>
+      </ul>
+      <p class="small"><b>验收：</b><code>_SEC_IDX_VER</code> 同步 +1；div 配平护栏；每页 ≤2.5 屏；深链（hash）可回落；E2E 逐页点开子页签无 JS 错。</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="tag">Phase <b>P2</b><span class="tiny">3~5 天</span></div>
+    <div>
+      <h4 style="margin-top:0">组件深化：表格与图表真正好用</h4>
+      <ul class="tight">
+        <li><b>数据表组件</b>：列分组切换、首列冻结、密度切换、行内展开/右侧抽屉、导出当前视图。</li>
+        <li><b>图表升级</b>：自适应时间刻度、事件标记点、多序列主次与悬停联动、图例折叠。</li>
+        <li><b>详情抽屉</b>：截面行点开看单品种详情，不跳页、不丢筛选条件。</li>
+        <li><b>状态组件</b>：骨架屏、失败重试、确定无数据三态统一（消灭常驻"加载中…"）。</li>
+      </ul>
+      <p class="small"><b>验收：</b>21 列不再同屏；情绪图无标签重叠；每个"加载中"都有对应的骨架或超时提示。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 7 效果 ══════════ -->
+<section id="effect">
+  <div class="kicker">Section 7</div>
+  <h2>预期效果</h2>
+  <p class="lead">下面是可以被测量、也可以被验收的目标值。左侧灰条是现在，蓝色是目标。</p>
+
+  <div class="card white" style="margin-top:18px">
+    <div class="bar-cmp"><span>研报页总高度</span><div class="track"><div class="fill old" style="width:100%"></div></div><span class="nv">10,492px</span></div>
+    <div class="bar-cmp"><span></span><div class="track"><div class="fill" style="width:23%"></div></div><span class="nv">≈2,400px</span></div>
+
+    <div class="bar-cmp"><span>数据仓库页高度</span><div class="track"><div class="fill old" style="width:53%"></div></div><span class="nv">5,568px</span></div>
+    <div class="bar-cmp"><span></span><div class="track"><div class="fill" style="width:17%"></div></div><span class="nv">≈1,800px</span></div>
+
+    <div class="bar-cmp"><span>情绪页高度</span><div class="track"><div class="fill old" style="width:44%"></div></div><span class="nv">4,591px</span></div>
+    <div class="bar-cmp"><span></span><div class="track"><div class="fill" style="width:16%"></div></div><span class="nv">≈1,600px</span></div>
+
+    <div class="bar-cmp"><span>截面表同屏列数</span><div class="track"><div class="fill old" style="width:100%"></div></div><span class="nv">21 列</span></div>
+    <div class="bar-cmp"><span></span><div class="track"><div class="fill" style="width:33%"></div></div><span class="nv">7 列 × 4 组</span></div>
+
+    <div class="bar-cmp"><span>内联样式</span><div class="track"><div class="fill old" style="width:100%"></div></div><span class="nv">1,508</span></div>
+    <div class="bar-cmp"><span></span><div class="track"><div class="fill" style="width:26%"></div></div><span class="nv">&lt;400</span></div>
+
+    <div class="bar-cmp"><span>硬编码色值</span><div class="track"><div class="fill old" style="width:100%"></div></div><span class="nv">357</span></div>
+    <div class="bar-cmp"><span></span><div class="track"><div class="fill" style="width:34%"></div></div><span class="nv">&lt;120</span></div>
+  </div>
+
+  <h3>7.1 能感知到的变化</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h4>找东西变快</h4>
+      <p class="small">以前在研报页找「某品种历史观点」要滚 10 屏；之后点一次子页签就到。跨页看同一品种时，全局品种上下文让你不用每页重选。</p>
+    </div>
+    <div class="card">
+      <h4>表格能读了</h4>
+      <p class="small">21 列不再挤成 55px 一条；按"价格/库存/利润/结构"分组，首列冻结，数字右对齐，一眼能横向比较。</p>
+    </div>
+    <div class="card">
+      <h4>图表不再"糊"</h4>
+      <p class="small">图例离开曲线、轴标签不再 45°、主序列加粗。季节性图已经按这个标准做完，其余图对齐它即可。</p>
+    </div>
+    <div class="card">
+      <h4>状态不再含糊</h4>
+      <p class="small">空 / 在跑 / 失败 / 确实没有，四种状态四种样子。不会再出现"加载中…"挂一整天。</p>
+    </div>
+  </div>
+
+  <h3>7.2 不承诺的部分</h3>
+  <ul class="tight small">
+    <li><b>不改信息口径</b>：所有数字、单位、分位、三态语义原样保留；美化不允许"顺手改个数"。</li>
+    <li><b>不改接口</b>：P0~P2 不新增/不修改任何 <code>/api/*</code>（唯一例外是未来做"列组"时可能需要视图配置，届时单独评审）。</li>
+    <li><b>不追求"看起来高级"</b>：不加阴影、渐变、玻璃拟态；投研终端的高级感来自对齐与密度。</li>
+  </ul>
+</section>
+
+<!-- ══════════ 8 风险 ══════════ -->
+<section id="risk">
+  <div class="kicker">Section 8</div>
+  <h2>风险与保障</h2>
+  <p class="lead">"不影响前端"这条要求，落到工程上就是四件事：不动接口、不动 id、可回滚、每步可验收。</p>
+
+  <table class="t">
+    <thead><tr><th style="width:190px">风险</th><th>为什么会发生</th><th style="width:280px">保障措施</th></tr></thead>
+    <tbody>
+      <tr><td class="em">改了 CSS 不生效</td><td>1508 处内联 style 优先级高于类</td><td>P0 先做收敛脚本；每改一个组件用浏览器 computedStyle 抽查，不靠肉眼</td></tr>
+      <tr><td class="em">结构改动打翻折叠索引</td><td><code>_secScan</code> 按 DOM 扫描，卡片归属一变索引就错</td><td><code>_SEC_IDX_VER</code> +1；div 配平护栏；页面级 E2E 逐页展开/收起</td></tr>
+      <tr><td class="em">切主题图表不换色</td><td>新增色值没登记 <code>CHART_COLOR_KEYS</code></td><td>新色一律走 <code>CHART.*</code> getter；双主题截图对比</td></tr>
+      <tr><td class="em">并发会话互相擦除</td><td>同一份 <code>web_template.html</code> 被两个会话同时改</td><td>改造期锁定单会话；每次改前备份到 <code>backup/</code>，改后核 md5</td></tr>
+      <tr><td class="em">深链/书签失效</td><td>子页签改变锚点语义</td><td>保留 <code>#tab-x</code> 一级锚点；子页签用 <code>#tab-x/sub</code> 并做旧链接回落</td></tr>
+      <tr><td class="em">长页拆分的空态</td><td>某些子页在数据未就绪时是空的</td><td>统一骨架屏 + "为什么空"的文案；禁止空白页</td></tr>
+    </tbody>
+  </table>
+
+  <h3>8.1 每期的"停车条件"</h3>
+  <ul class="tight">
+    <li>全量回归必须与基线逐项一致（当前基线：47~48F / 6E，失败项为既有过期期望，不新增）；</li>
+    <li>7 个页签在 1600 / 1280 / 390 三个宽度下无横向溢出、无元素重叠；</li>
+    <li>亮/暗双主题截图人工过一遍，语义色不得出现在非语义位置；</li>
+    <li>任何一期上线后可一键回滚到上一期备份（<code>backup/web_template_&lt;phase&gt;_&lt;ts&gt;.html</code>）。</li>
+  </ul>
+
+  <div class="note">
+    <p><b>下一步：</b>这份方案先不动手。请你挑一个方向确认——① 只做 P0（2 天，风险最低，全站立刻统一）；② P0 + P1（一周内，长页问题一并解决）；③ 全做（含表格/图表组件）。确认后再按阶段落代码。</p>
+  </div>
+
+  <footer>
+    AgentSense 前端规划 · 2026-10-19 · 基于当时的 7 页实拍与模板静态体检（1508 内联样式 / 357 hex / 97 卡片 / 39 表格）。
+    文中所有"目标值"均为验收口径，不是承诺工期。
+  </footer>
+</section>
+
+</main>
+</div>
+<script>
+(function(){
+  var links = [].slice.call(document.querySelectorAll('nav.toc a'));
+  var secs  = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+  function sync(){
+    var y = window.scrollY + 120, idx = 0;
+    for (var i=0;i<secs.length;i++){ if (secs[i] && secs[i].offsetTop <= y) idx = i; }
+    links.forEach(function(a,i){ a.classList.toggle('on', i===idx); });
+  }
+  window.addEventListener('scroll', sync, {passive:true});
+  window.addEventListener('resize', sync);
+  sync();
+})();
+</script>
+</body>
+</html>

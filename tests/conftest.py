@@ -136,3 +136,29 @@ def mock_llm_client():
         return_value=client,
     ):
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _isolate_quant_daily_cache(monkeypatch):
+    """日线缓存隔离 —— 2026-10-22 引入磁盘缓存后必须要有。
+
+    【为什么】`quant_module._daily_bars_cached` 现在是三层：内存 5min → 磁盘定稿缓存 → 实取。
+    测试里大量用 `monkeypatch.setattr(Q, "_load_daily_bars", fake)` 挡真实取数，但缓存层会在
+    它**前面短路**、在它**后面落盘**，于是出现两种污染：
+
+      · 读到上一轮真实运行留下的缓存 → 假数据根本没被用上，断言随机飘；
+      · 假数据在非交易时段被写进 `~/.tradingagents/cache/daily_bars` → 污染真实数据。
+
+    所以在测试里默认关磁盘 + 每例清内存。要测磁盘行为的用例（`test_daily_bars_disk_cache`）
+    自行 monkeypatch 打开 `_DISK_OFF` 并把 `_DISK_DIR` 重定向到 tmp_path。
+    """
+    import quant_module as Q
+
+    Q._CACHE.clear()
+    # 单飞表的隔离：万一某条用例的 leader 线程被中断，残留的 Event 会让后续
+    # 同 key 请求白等 30 秒（表现为"测试莫名变慢"）。每例清空最省心。
+    Q._INFLIGHT.clear()
+    monkeypatch.setattr(Q, "_DISK_OFF", True)
+    yield
+    Q._CACHE.clear()
+    Q._INFLIGHT.clear()

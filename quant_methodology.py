@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import math  # 【调用包】isfinite 判断
 from typing import Any, Sequence  # 【调用包】类型标注
+import vote_semantics as _vs  # 【调用模块】方向票语义唯一权威来源
 
 # ══════════════════════════════════════════════════════════════════════════
 # 常量: 方法论出处与边界声明(输出里原样带出, 便于用户溯源)
@@ -1555,12 +1556,12 @@ def wyckoff_confirm(wyck: dict, votes: Sequence[dict],
     acc = (wyck.get('counts') or {}).get('accumulation', 0)
     dis = (wyck.get('counts') or {}).get('distribution', 0)
     bias = wyck.get('bias') or '中性'
-    dirmap = {'做多': 1, '单边做多': 1, '做空': -1, '单边做空': -1}
+    # 【2026-10-19】方向映射统一走 vote_semantics（原 dirmap 漏「偏多/偏空」）
     ex = {str(b) for b in (exclude_books or ())}
     # 【调用点】剔除自身票, 避免循环论证
     others = [v for v in votes if str(v.get('book') or '') not in ex]
-    longs = [v for v in others if dirmap.get(v.get('bias'), 0) > 0]
-    shorts = [v for v in others if dirmap.get(v.get('bias'), 0) < 0]
+    longs = [v for v in others if _vs.sign(v.get('bias')) > 0]
+    shorts = [v for v in others if _vs.sign(v.get('bias')) < 0]
     net_txt = '、'.join(f'{v.get("book")}({v.get("bias")})' for v in (longs + shorts)) or '无方向票'
 
     if not wyck.get('ok'):

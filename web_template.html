@@ -143,10 +143,13 @@
  --brand-line: rgba(41,151,255,0.38);
 
  /* 分类色（苹果系统色；仅装饰位，禁用于涨跌语义位） */
- --candy-1: #2997ff;
- --candy-2: #ff9f0a;
- --candy-3: #30d158;
- --candy-4: #ff375f;
+  /* 【2026-10-21】candy-1 原为 #2997ff，与 --chart-brand 完全相同 ⇒
+     [brand, candy1] 这类分类色板前两条系列同色，图例上分不清谁是谁。改紫。 */
+  --candy-1: #a78bfa;
+  /* candy-2/3 原来是 #ff9f0a / #30d158，亮度 0.66/0.65，亮色主题下偏浅 */
+  --candy-2: #ea580c;
+  --candy-3: #16a34a;
+  --candy-4: #ff375f;
 
  /* 底色：纯黑 + 深灰面（苹果深色模式） */
  --bg: #000000;
@@ -178,7 +181,7 @@
  --warn-ink: #ff9f0a;
  --blue: #2997ff;
  --link: #2997ff;
- --teal: #40c8e0;
+ --teal: #0d9488;
  --purple: #ff375f;
 
  /* 图表（ECharts 读不到 CSS 变量，由 JS 侧 __cssVar() 取值） */
@@ -247,7 +250,7 @@
  --chart-k-ma1: #ff9f0a;
  --chart-k-ma2: #2997ff;
  --chart-k-ma3: #98989d;
- --chart-k-ma4: #40c8e0;
+ --chart-k-ma4: #0d9488;
  --chart-k-boll-mid: #2997ff;
  --chart-k-boll-side: #86868b;
  --chart-k-vol: rgba(41,151,255,0.45);
@@ -282,10 +285,10 @@
  --brand-dim: rgba(0,113,227,0.09);
  --brand-line: rgba(0,113,227,0.34);
 
- --candy-1: #0071e3;
- --candy-2: #f56300;
- --candy-3: #00875a;
- --candy-4: #c2185b;
+  --candy-1: #7c3aed;
+  --candy-2: #ea580c;
+  --candy-3: #047857;
+  --candy-4: #be185d;
 
  --warn-ink: var(--amber-d);
  --link: #0066cc;
@@ -957,7 +960,12 @@ label { font-size: var(--fs-xs); color: var(--text-secondary); display: block; m
 /* ============================================================
  REPORT CONTENT
  ============================================================ */
-.report-content { line-height: 1.6; font-size: var(--fs-base); max-height: none; overflow-y: visible; }
+.report-content { line-height: 1.6; font-size: var(--fs-base); max-height: none; overflow-y: visible;
+  /* 【2026-10-23】强制块级流式布局。报告正文里出现 h3 时曾被
+     `.card > div:has(> h3)` 命中而变成 flex 横排（见下方 1950 段注释），
+     这里显式钉住 display:block 作为第二道防线 —— 将来再加 `:has()` 类规则时
+     也不会把正文拆成"标题一列、正文一列"。 */
+  display: block; }
 .report-content h1, .report-content h2, .report-content h3 {
  color: var(--brand);
  margin: 16px 0 8px;
@@ -1114,6 +1122,11 @@ a:hover { text-decoration: underline; }
  CHARTS
  ============================================================ */
 .chart-container { width: 100%; height: 320px; }
+/* 【2026-10-21】横贯整页的「长条图」宽度减半（用户要求：长度占据整页的长图缩短一半）。
+   只缩宽度、不动高度 —— 这类图的问题是横向拉成一条，纵向本来就矮。
+   窄屏回退 100%：手机上半宽图连 x 轴标签都放不下。 */
+.chart-half { max-width: 50%; }
+@media (max-width: 900px) { .chart-half { max-width: 100%; } }
 /* ── 仓单分析专有样式 (2026-09-14) ───────────────────────────────────── */
 .wt-tabs { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-4); }
 .wt-tab {
@@ -1349,6 +1362,84 @@ a:hover { text-decoration: underline; }
 .rv-tbl tbody tr:hover td { background: var(--bg-input); }
 .rv-tbl tbody tr:last-child td { border-bottom: none; }
 .rv-tbl tbody td.rv-num { text-align: right; white-space: nowrap; }
+/* 【方向/置信度可视化 2026-10-16 用户要求】
+   方向配色约定(中国市场惯例): 看多=红、看空=绿、中性=琥珀;
+   置信度进度条用**强度色**: 高=红 / 中=琥珀 / 低=绿 —— 长度表示数值高低,
+   颜色只标强度档位(刻意与"看空=绿"的语义区分, tooltip 里写明它指的是"观点表述明确程度,不是行情胜率")。 */
+/* 【长文本列显示收敛 2026-10-16】数据层已放开截断（观点最长 1485 字），
+   这里只做**显示**收敛：默认 3 行 + 「展开全文」按钮；打印时全部展开（截在 PDF 里等于丢数据）。 */
+.report-content table td.rv-long { cursor: pointer; }
+.report-content table td.rv-long > .clamp3 { display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.report-content table td.rv-long.open > .clamp3 { display:block; overflow:visible; }
+.report-content table td.rv-long .clamp-toggle { display:inline-block; margin-top:4px; padding:0; border:none; background:none; color:var(--brand); font-size:0.75rem; cursor:pointer; }
+@media print {
+  .report-content table td.rv-long > .clamp3 { display:block !important; overflow:visible !important; -webkit-line-clamp:unset !important; }
+  .report-content table td.rv-long .clamp-toggle { display:none !important; }
+}
+.dir-chip { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.75rem; font-weight:600; white-space:nowrap; }
+.dir-chip.up { background:var(--red-bg); color:var(--red); }
+.dir-chip.down { background:var(--green-bg); color:var(--green); }
+.dir-chip.flat { background:var(--amber-bg); color:var(--amber); }
+/* 【2026-10-19 纵向逐机构对齐】总表「发行方 / 方向 / 置信度」三列改为**一家机构一行**。
+   ★ 三列是三个独立单元格，无法共享 grid 行 ⇒ 只能靠
+     「每项固定 20px + 同 gap 5px + td 顶部对齐」让第 k 项严格同高。
+   ★ 任一处漏设高度（或 td 用默认 middle 对齐）都会**整列错行且不报错** —— 已用断言/护栏钉死。
+   ⚠ 行高必须用 box-sizing:border-box，否则 chip 的 padding 会把 20px 撑成 22px ⇒ 逐项累积错位。 */
+.rv-stack { display:flex; flex-direction:column; gap:5px; align-items:flex-start; }
+.src-item { display:flex; align-items:center; height:20px; box-sizing:border-box;
+            white-space:nowrap; font-size:var(--fs-xs); color:var(--text-secondary); }
+.dir-chips { display:flex; flex-direction:column; gap:5px; align-items:flex-start; }
+.dir-chips > .dir-chip { display:inline-flex; align-items:center; height:20px; box-sizing:border-box; }
+.conf-bars { display:flex; flex-direction:column; gap:5px; align-items:flex-start; }
+.conf-bars > .conf-bar { display:inline-flex; align-items:center; gap:4px; white-space:nowrap;
+                         height:20px; box-sizing:border-box; }
+/* 【占位】家数不齐时补的不可见项：占住同一行高，但**不显示任何内容**
+   （不能用 display:none —— 那样高度塌陷、后面所有项上移，反而错位）。 */
+.src-item.ghost, .dir-chip.ghost, .conf-bar.ghost { visibility:hidden; }
+/* 三列的 td 必须顶部对齐：默认 middle 会让内容高度不同的单元格**中心对齐** ⇒ 首项起点错开。 */
+.report-content table td.rv-vstack { vertical-align:top; }
+/* ── 第二节「观点对比与冲突」列宽重排（2026-10-19 用户要求）────────────────────
+   ★★ 关键机制：table-layout:fixed + width:100% 时，若**所有列都有定宽**且总和 < 表宽，
+     浏览器会把这些定宽**等比例放大**填满表宽 —— 那么「分歧状态 76px」实测会是 141px，
+     仍留 73px 空白（本轮用户二次反馈正是这个）。
+     ⇒ 必须让**恰好一列不设定宽（auto）**，由它吃掉剩余空间；其余列才会保持**绝对 px**。
+   本表：品种 62px / 分歧状态 76px / 观点与逻辑 auto / 焦点 20% / 根源 20%。
+   实测（表宽 1652px）：分歧状态 **76px**（不再放大）、观点与逻辑 **约 854px**。
+   ⚠ 判定"有没有真正收窄"不能看 CSS 写了多少，要看**是否有 auto 列** + 真实 DOM 宽度。 */
+.report-content table.rv-conflict-tbl th:nth-child(2),
+.report-content table.rv-conflict-tbl td:nth-child(2) {
+  width: 76px; text-align: center; white-space: nowrap;      /* 分歧状态：4~5 字，够用即止 */
+}
+.report-content table.rv-conflict-tbl th:nth-child(3),
+.report-content table.rv-conflict-tbl td:nth-child(3) {
+  width: auto;                                               /* ★ 唯一 auto 列：吃剩余空间 */
+}
+.report-content table.rv-conflict-tbl th:nth-child(4),
+.report-content table.rv-conflict-tbl td:nth-child(4) { width: 20%; }     /* 分歧焦点 */
+.report-content table.rv-conflict-tbl th:nth-child(5),
+.report-content table.rv-conflict-tbl td:nth-child(5) { width: 20%; }     /* 分歧根源 */
+/* 每家机构独占一段：段间加一条虚线，扫读时能立刻数清"几家" */
+.report-content table td.cf-cell .cf-row { display:block; }
+.report-content table td.cf-cell .cf-row + .cf-row {
+  margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--border-light);
+}
+/* 【列宽重排 2026-10-19】纵向排列后「发行方 / 方向」只需一个 chip 宽 ⇒ 收窄，
+   余量给「一句话核心观点」（目标口径 60~120 字 ≈ 4 行 × 30 字）。
+   ⚠ 必须限定 .rv-views-tbl（总表专属，由 _decorateViewTable 动态加）：
+     nth-child 规则是全局的，直接改会把第二节「各家观点与逻辑」等**列序不同**的表一起压窄。
+   原值：名称 120 / 发行方 110 / 方向 88 / 置信度 78。 */
+.report-content table.rv-views-tbl th:nth-child(2), .report-content table.rv-views-tbl td:nth-child(2) { width: 96px; }
+.report-content table.rv-views-tbl th:nth-child(3), .report-content table.rv-views-tbl td:nth-child(3) { width: 100px; }
+.report-content table.rv-views-tbl th:nth-child(4), .report-content table.rv-views-tbl td:nth-child(4) { width: 68px; }
+.report-content table.rv-views-tbl th:nth-child(5), .report-content table.rv-views-tbl td:nth-child(5) { width: 90px; }
+/* 【列宽重排 2026-10-23】表尾两列由「研报数 / 是否有新研报」换成
+   「头寸建议 / 最新研报日期」⇒ 原 60/64px 的收窄规则会让头寸列只剩 64px（操作依据被压死）。
+   新口径：日期列固定 86px（放得下 2026-10-22），头寸列 280px，余量全给「一句话核心观点」。 */
+.report-content table.rv-views-tbl th:nth-last-child(1), .report-content table.rv-views-tbl td:nth-last-child(1) { width: 100px; white-space: nowrap; }
+.report-content table.rv-views-tbl th:nth-last-child(2), .report-content table.rv-views-tbl td:nth-last-child(2) { width: 280px; }
+.conf-bar .track { width:46px; height:5px; border-radius:3px; background:var(--bg-input); display:inline-block; overflow:hidden; }
+.conf-bar .fill { display:block; height:100%; border-radius:3px; }
+.conf-bar .pct { font-size:0.75rem; font-variant-numeric:tabular-nums; }
 .rv-chip {
  display: inline-block;
  padding: 2px 10px;
@@ -1632,6 +1723,20 @@ small { font-size: var(--fs-xs); }
 table { border-collapse: collapse; }
 table th { font-size: var(--fs-xs); font-weight: 400; color: var(--text-muted); white-space: nowrap; }
 table td { font-size: var(--fs-base); }
+/* 【2026-10-19 · 全品种截面表表头吸顶】
+   为什么挂在 th 而不是 tr：本表是 `border-collapse: collapse`，
+   行级 sticky 在 Chrome 下背景/边框绘制不可靠（内容会从缝隙透出）。
+   为什么需要实色背景：th 默认透明，滚动时下方数据会透上来。
+   滚动容器 = 父级 div（class="table-scroll"，自带 max-height + overflow:auto）。 */
+#q-ov-table thead th,
+#f-rk-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-card);
+  /* 用 inset 阴影代替 border-bottom：collapse 下 sticky 单元格的边框会被裁掉 */
+  box-shadow: inset 0 -1px 0 var(--border);
+}
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -1852,15 +1957,23 @@ svg text, svg textPath { font-size: var(--fs-lg); }
 /* ── 卡片标题行三段式 ───────────────────────────────────────────
  结构：h3 + 操作按钮组 + 描述文字（三个 flex 子元素）。
  只有 h3 与按钮组时，space-between 会把按钮推到最右（正确）；
- 一旦多出描述文字，它会被夹在中间。让描述独占一行即可恢复正确布局。 */
-.card > div:has(> h3):not(.card):not(.grid):not(.sec-block) { display: flex; flex-wrap: wrap; align-items: center; }
-.card > div:has(> h3):not(.card):not(.grid):not(.sec-block) > h3 { margin-bottom: 0; }
-.card > div:has(> h3):not(.card):not(.grid):not(.sec-block) > div:last-child:not(:nth-child(2)) {
+ 一旦多出描述文字，它会被夹在中间。让描述独占一行即可恢复正确布局。
+
+ ★★ 2026-10-23 加 `:not(.report-content)`：此前判据只判断"卡片里含有 h3 的 div"，
+   范围太宽 —— 而运行分析的报告正文（`.report-content`）里只要出现一个
+   `### xxx` 小标题（LC 报告就有 `### Technical Bias`），整个正文就被
+   变成 `display:flex; flex-wrap:wrap`，于是段落与二级标题按内容宽度横排、
+   视觉上"标题挤到右侧一列、正文留在左侧"。实测 LC 报告中招，
+   而没写 h3 的报告完全正常 —— 所以这个坑是"偶发"的。
+   ⚠ 这个坑不会报错、不会红，只是排版错乱，靠人眼发现。
+.card > div:has(> h3):not(.card):not(.grid):not(.sec-block):not(.report-content) { display: flex; flex-wrap: wrap; align-items: center; }
+.card > div:has(> h3):not(.card):not(.grid):not(.sec-block):not(.report-content) > h3 { margin-bottom: 0; }
+.card > div:has(> h3):not(.card):not(.grid):not(.sec-block):not(.report-content) > div:last-child:not(:nth-child(2)) {
  flex-basis: 100%;
  margin-top: var(--sp-3);
 }
 /* 按钮组贴右 */
-.card > div:has(> h3):not(.card):not(.grid):not(.sec-block) > div:nth-child(2) { margin-left: auto; }
+.card > div:has(> h3):not(.card):not(.grid):not(.sec-block):not(.report-content) > div:nth-child(2) { margin-left: auto; }
 
 /* ── 表格表头：不换行、字号统一 ─────────────────────────────── */
 th { font-size: var(--fs-xs); font-weight: 400; }
@@ -2302,11 +2415,11 @@ table td br + br { display: none; }
    问题：h3 与控件组是同一 flex 行的两个子项，控件组被 flex-shrink 压窄后
    内部换行，竖排成三行（用户截图：日期/生成/重新生成 三行竖排）。
    修法：标题 flex:1 吃掉余量，控件组 flex:none 保持自然宽度 ⇒ 一行容纳。 */
-.card > div:has(> h3):not(.card):not(.grid):not(.sec-block) > h3 {
+.card > div:has(> h3):not(.card):not(.grid):not(.sec-block):not(.report-content) > h3 {
   flex: 1 1 auto;
   min-width: 0;
 }
-.card > div:has(> h3):not(.card):not(.grid):not(.sec-block) > div:nth-child(2) {
+.card > div:has(> h3):not(.card):not(.grid):not(.sec-block):not(.report-content) > div:nth-child(2) {
   flex: 0 0 auto;
   margin-left: auto;
 }
@@ -2423,7 +2536,7 @@ table td br + br { display: none; }
 /* ── 移动端：两列回退为一列（窄屏两列会挤爆）───────────────────── */
 @media (max-width: 900px) {
   #fg-list { grid-template-columns: minmax(0, 1fr); }
-  .card > div:has(> h3):not(.card):not(.grid):not(.sec-block) > div:nth-child(2) {
+  .card > div:has(> h3):not(.card):not(.grid):not(.sec-block):not(.report-content) > div:nth-child(2) {
     flex: 0 1 auto;
     margin-left: 0;
     width: 100%;
@@ -2450,6 +2563,60 @@ table td br + br { display: none; }
   justify-content: flex-end;
 }
 
+/* 【2026-10-21 信息架构 A/B 分区】 */
+.f-zone{display:flex;align-items:center;gap:14px;padding:13px 16px;margin:22px 0 12px;
+ border:1px solid var(--border-light,#e8e8ed);border-radius:10px;background:var(--bg-tile,#f5f5f7)}
+.f-zone.sub{margin:14px 0 10px;padding:9px 14px}
+.f-zone-l{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-weight:700;
+ font-size:0.9375rem;background:rgba(0,113,227,.10);color:var(--brand,#0071e3);
+ border:1px solid rgba(0,113,227,.30);flex:0 0 auto}
+.f-zone.b .f-zone-l{background:rgba(255,55,95,.10);color:var(--purple,#ff375f);
+ border-color:rgba(255,55,95,.30)}
+.f-zone-t{flex:1;min-width:0}
+.f-zone-t b{display:block;font-size:0.875rem;letter-spacing:-.005em}
+.f-zone-t span{display:block;font-size:0.75rem;color:var(--text-muted);margin-top:1px;line-height:1.6}
+.f-zone-n{font-size:0.75rem;color:var(--text-muted);white-space:nowrap}
+.f-fold-btn{border:1px solid var(--border,#d2d2d7);background:var(--bg-card,#f5f5f7);
+ color:var(--text-secondary);font:inherit;font-size:0.75rem;padding:4px 10px;border-radius:7px;
+ cursor:pointer;white-space:nowrap}
+.f-fold-btn:hover{color:var(--text)}
+.f-subnav{display:inline-flex;gap:6px;padding:4px;margin:0 0 12px;
+ border:1px solid var(--border-light,#e8e8ed);border-radius:999px}
+/* 【2026-10-22】与研报页二级页签同一视觉：胶囊 + 选中反色（用户要的"气泡"）。
+   原来只有 0.75rem 灰底，更像"小开关"而不是页签。 */
+.f-subnav button{border:0;background:transparent;color:var(--text-secondary);font:inherit;
+ font-size:0.8125rem;padding:7px 18px;border-radius:999px;cursor:pointer;
+ transition:background .15s ease,color .15s ease}
+.f-subnav button:hover{color:var(--text)}
+.f-subnav button.on{background:var(--text);color:var(--bg);font-weight:500}
+[data-theme=dark] .f-subnav button.on{background:#f5f5f7;color:#1d1d1f}
+
+</style>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     【2026-10-19】研报页二级页签（问答 / 每日总结 / 单品种 / 观点总览）
+     来源：实验副本 D:\AgentSenseLab 的 LAB v3，仅搬"研报页"这一处。
+     只切换顶层 .card 的 display，**不改 DOM 归属、不重新请求数据**。
+     研报的问答卡装在 .page-tools(#tab-research-tools) 里，随「问答」联动显隐。
+     回退：删掉 style#rsh-subtabs 与 script#rsh-subtabs 两块即可（注释里不写标签字面量, 否则内联脚本抽取会误判）。
+     ══════════════════════════════════════════════════════════════════ -->
+<style id="rsh-subtabs">
+.rsh-head { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; padding: 2px 2px 14px; }
+.rsh-tt { display: flex; flex-direction: column; gap: 3px; }
+.rsh-kicker { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--brand); font-weight: 600; }
+.rsh-title { margin: 0; font-size: 27px; line-height: 1.2; letter-spacing: -0.02em;
+  font-weight: 650; color: var(--text); }
+.rsh-head p { margin: 0 0 2px; color: var(--text-muted); font-size: 13px; line-height: 1.6; max-width: 720px; }
+.rsh-subnav { display: flex; gap: 6px; padding: 0 2px 14px; flex-wrap: wrap; }
+.rsh-subnav button { border: 1px solid #e6e6eb; background: #fff; color: var(--text-secondary);
+  font-size: 13px; padding: 6px 14px; border-radius: 999px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
+.rsh-subnav button:hover { border-color: #c9c9cf; color: var(--text); }
+.rsh-subnav button.on { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 500; }
+[data-theme="dark"] .rsh-subnav button { background: #1d1d1f; border-color: #2c2c2e; }
+[data-theme="dark"] .rsh-subnav button.on { background: #f5f5f7; color: #1d1d1f; border-color: #f5f5f7; }
+@media (max-width: 900px) { .rsh-title { font-size: 22px; } .rsh-head p { font-size: 12.5px; } }
 </style>
 </head>
 <body>
@@ -2704,7 +2871,7 @@ table td br + br { display: none; }
  <select id="overlay-sym" onchange="App.onOverlaySymChange()" style="width:auto;display:inline;margin-left:10px"></select>
  <span class="badge badge-info" id="overlay-badge"></span>
  </h3>
- <div class="chart-container" id="chart-overlay" style="height:420px"></div>
+ <div class="chart-container chart-half" id="chart-overlay" style="height:420px"></div>
  </div>
 
  <!-- Posts -->
@@ -2958,10 +3125,11 @@ table td br + br { display: none; }
   </div>
   <!-- 表格 -->
   <div class="card">
-   <div style="overflow:auto;max-height:calc(100vh - 300px)">
+   <!-- 【2026-10-19】class="table-scroll" 是**必须的**：全站脚本 wrapTable() 只跳过「父级已带 .table-scroll」或「内联 overflow-x」的表格；本容器写的是 overflow:auto（纵向也要），不匹配它的正则 ⇒ 会被再套一层 wrapper，sticky 就绑到那层**不纵向滚动**的容器上，表头永远不吸顶（实测：页面滚动 500px，表头 226→112）。 -->
+  <div class="table-scroll" style="overflow:auto;max-height:calc(100vh - 300px)">
     <table id="q-ov-table" style="width:100%;border-collapse:collapse;font-size:0.8125rem;white-space:nowrap">
      <thead>
-      <tr style="position:sticky;top:0;z-index:2;background:var(--bg-card);border-bottom:1px solid var(--border)">
+      <tr>
        <th style="text-align:left;padding:8px">品种</th>
        <th style="text-align:left;padding:8px">板块</th>
        <th style="text-align:right;padding:8px">最新价</th>
@@ -3042,7 +3210,7 @@ table td br + br { display: none; }
    <button class="btn btn-sm btn-outline" onclick="App.qBackOverview()">← 返回总览</button>
    <h3 style="margin:0" id="q-detail-sym">单品种详情</h3>
    <span id="q-detail-score" style="font-size:0.8125rem;color:var(--text-secondary)"></span>
-   <span id="q-detail-hint" style="font-size:0.75rem;color:var(--text-muted)">K 线 / 技术指标 / 策略回测 / 方法论研判（技术面体系） / 数据计算 · 截面排行已移至上方的折叠模块</span>
+   <span id="q-detail-hint" style="font-size:0.75rem;color:var(--text-muted)">K 线 / 技术指标 / 策略回测 / 方法论研判（技术面体系） · 截面排行已移至上方折叠模块 · 数据计算面板已移至基本面 A9</span>
   </div>
 
  <div id="tab-quant-tools" class="page-tools">
@@ -3132,12 +3300,13 @@ table td br + br { display: none; }
  迁出判据: 按**分析对象主体**归类 —— 分析对象是库存/仓单的, 属基本面因子而非技术形态。
  迁出清单:
  · 价格-库存关联分析 → 基本面页 ① 三指标系统「库存维度明细」
+    【2026-10-16】用户要求删除该小节(与「库存周期四象限」重复), 已删。
  · 价格 vs 仓单库存 → 同上(双轴对照)
  · 板块相关性总览 → 基本面页 ① 末尾「跨品种」
  · 研报基本面指标 → 基本面页 ③ 之后平铺(#f-research, 随同一接口迁入)
  · 仓单库存 / 库存周期四象限 → 基本面页 ①「库存维度明细」(见下方删除处)
  本页只保留**纯价量持仓派生**的技术模块: K线图 / 技术指标 / 期限结构 / 策略回测 /
- 截面排行 / 方法论研判 / 量化信号 / 数据计算面板。
+ 截面排行 / 方法论研判 / 量化信号（数据计算面板已于 2026-10-21 移至基本面 A9）。
  对应 JS: loadQuantAnalysis / loadQuantInventory / loadQuantSector 已随迁为 loadFund*。 -->
 
  <!-- ── 【2026-10-13 迁出】原 ③「基差期限」(基差走势 / 基差与现货·期货价 / 期限结构) ──
@@ -3260,64 +3429,10 @@ table td br + br { display: none; }
  <div id="q-verdict-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
  </div>
 
- <!-- ── ⑫ 数据计算面板(2026-09-30 新增) ──
- 做什么: 把本模块已有各口径的数据维度列成清单, 用户多选后 → ① 按**并集日期轴**画多条
- 曲线(量纲一致自动同轴, 量纲不同自动分轴, 不硬凑双轴); ② 算所选维度两两之间的相关
- 系数矩阵(每格标注该对维度的**共同有效交易日 n**)。
- ⚠ 口径纪律(两条 n 必须分清, 否则会误读):
- · 曲线 = 并集日期轴 → 每条序列都保持完整, 不因别的维度缺数据而被截短;
- · 相关 = 逐对日期内连接 → 每对的 n 可能不同, 必须逐格标注, 不能显示一个共用 n;
- · 统计一律由后端算(/api/quant/compute), 前端不重复实现 Pearson/Spearman。
- ⚠ 仓单单位: 交易所口径原样(郑商所=张 / 大商所·广期所=手 / 上期所·能源中心=吨或桶),
- 此处**不折手数** —— 相关无量纲, 单位不统一不影响它, 而折算系数缺失会让整列消失。
- 例: 选「收盘价(后复权)」+「仓单日变化」→ 直接读出"价格与仓单变化的相关性"(用户原话场景)。 -->
- <div class="card" id="q-compute">
- <h3 style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
- <span>数据计算面板</span>
- <span class="badge badge-info" id="q-cmp-badge"></span>
- <span style="font-size:0.75rem;color:var(--text-muted);font-weight:400">
- 多选维度 → 曲线 + 相关系数矩阵(相关按共同交易日对齐, 逐对标注 n)
- </span>
- </h3>
- <!-- 维度多选区(由 loadQuantCompute 动态生成, 按 family 分组) -->
- <div id="q-cmp-dims" style="margin-bottom:10px">加载中...</div>
- <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px">
- <div style="min-width:160px">
- <label>相关口径</label>
- <select id="q-cmp-method" onchange="App.loadQuantCompute()">
- <option value="pearson" selected>Pearson 线性相关</option>
- <option value="spearman">Spearman 秩相关</option>
- </select>
- </div>
- <div style="min-width:130px">
- <label>回看天数</label>
- <select id="q-cmp-days" onchange="App.loadQuantCompute()">
- <option value="90">90 天</option>
- <option value="180" selected>180 天</option>
- <option value="365">365 天</option>
- </select>
- </div>
- <button class="btn btn-primary" onclick="App.loadQuantCompute(1)">重新计算</button>
- <button class="btn" onclick="App.loadQuantCompute(0, 1)">恢复默认维度</button>
- <span style="font-size:0.75rem;color:var(--text-muted);padding-bottom:8px" id="q-cmp-note"></span>
- </div>
- <div class="chart-container" id="chart-q-cmp" style="height:360px"></div>
- <div class="grid grid-2" style="margin-top:14px">
- <div>
- <div style="font-size:0.8125rem;font-weight:600;margin-bottom:6px">
- 相关系数矩阵 <span class="badge badge-info" id="q-cmp-corr-badge"></span>
- </div>
- <div id="q-cmp-corr" style="overflow-x:auto;font-size:0.75rem">加载中...</div>
- </div>
- <div>
- <div style="font-size:0.8125rem;font-weight:600;margin-bottom:6px">
- 所选维度明细 <span class="badge badge-info" id="q-cmp-series-badge"></span>
- </div>
- <div id="q-cmp-series" style="overflow-x:auto;font-size:0.75rem">加载中...</div>
- </div>
- </div>
- <div style="font-size:0.75rem;color:var(--text-muted);margin-top:10px" id="q-cmp-legend"></div>
- </div>
+ <!-- ── ⑫ 数据计算面板已于 2026-10-21 整体迁移至「基本面量化 · A9 数据计算面板」──
+     原因: 它做的是「任意多维度的两两相关 + 曲线叠加」，属于相关性核验工具，
+     与技术面的 K 线/指标/策略回测不是一类；而基本面 A 区已有一块「A8 板块相关性」，
+     同主题相邻更好找。容器 id 与 /api/quant/compute 全部沿用，未改后端。 -->
  </div>
 </div>
 
@@ -3423,10 +3538,11 @@ table td br + br { display: none; }
  <span id="f-rk-note" style="font-size:0.75rem;color:var(--text-muted);padding-bottom:8px"></span>
 </div>
 <div id="f-rk-colspanel" style="display:none;border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px"></div>
- <div style="overflow:auto;max-height:calc(100vh - 340px)">
+ <!-- 【2026-10-19】同上：必须带 table-scroll，否则被 wrapTable() 二次包装 ⇒ 表头不吸顶 -->
+ <div class="table-scroll" style="overflow:auto;max-height:calc(100vh - 340px)">
   <table id="f-rk-table" style="width:100%;border-collapse:collapse;font-size:0.8125rem;white-space:nowrap">
    <thead>
-    <tr style="position:sticky;top:0;z-index:2;background:var(--bg-card);border-bottom:2px solid var(--border);color:var(--text-muted);font-size:0.75rem">
+    <tr style="color:var(--text-muted);font-size:0.75rem">
      <th data-col="idx" style="padding:8px;text-align:left">#</th>
      <th data-col="variety" data-metric="variety" onclick="App._fRkClickHead('variety')" style="padding:8px;text-align:left;cursor:pointer">品种<span class="f-rk-caret"></span></th>
      <th data-col="contract" style="padding:8px;text-align:center">合约</th>
@@ -3454,17 +3570,15 @@ table td br + br { display: none; }
 </div>
 </div>
 
-<div id="f-detail-view" style="display:none">
-<!-- 明细视图顶部: 返回按钮(进详情的唯一退路, 与技术面 #q-detail-view 顶部同形) -->
-<div class="card" style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+<div id="f-detail-view" style="display:none"><div class="card" style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
  <button class="btn btn-sm btn-outline" onclick="App.fBackOverview()">← 返回全品种总览</button>
- <span style="font-size:0.75rem;color:var(--text-muted)">单品种明细 · 三指标策略 / 估值驱动四象 / 利润 / 虚实盘比 / 多空逻辑体系研判 / 仓单分析</span>
+ <span style="font-size:0.75rem;color:var(--text-muted)">单品种明细</span><span style="font-size:0.75rem;color:var(--border)">·</span><span class="f-jump" data-zone="a" style="font-size:0.75rem;color:var(--brand,#0071e3);cursor:pointer">A 数据底座 9</span><span style="font-size:0.75rem;color:var(--border)">·</span><span class="f-jump" data-zone="b" style="font-size:0.75rem;color:var(--purple,#ff375f);cursor:pointer">B 信号研判 4</span>
 </div>
- <div id="tab-fund-tools" class="page-tools">
+<div id="tab-fund-tools" class="page-tools">
  <!-- ── 工具条: 品种 + 操作 ── -->
  <div class="card" >
  <h3 style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
- <span>基本面量化</span>
+ <span onclick="App.fBackOverview()" title="点击返回全品种总览" style="cursor:pointer">基本面量化</span>
  <span style="font-size:0.75rem;color:var(--text-muted);font-weight:400">
  方法论: 《期货多空逻辑》— 库存 / 基差 / 利润 三指标系统 + 虚实盘比逼仓识别
  </span>
@@ -3485,115 +3599,35 @@ table td br + br { display: none; }
  </div>
 
  </div>
- <!-- ── ① 三指标策略系统 ── -->
- <div class="card" id="f-strategy-card">
- <h3>① 三指标策略系统 <span class="badge badge-info" id="f-strategy-badge"></span></h3>
- <div id="f-strategy-score" style="font-size:0.8125rem;color:var(--text-secondary);margin-bottom:10px">
- 基本面信号计分：—
- </div>
- <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">
- 库存(<b>社会库存 + 交易所仓单</b> 双口径综合分位) + 利润(加工/进口利润分位) + 基差(期货升贴水) → 单边或跨期。
- 三指标共振才有单边优势; 指标互相矛盾时转跨期(单边易被反复止损)。
- </div>
- <div id="f-strategy-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
-
- <!-- ── 库存维度明细 【2026-10-13 由「量化分析」页迁入】 ──
- 库存是「三指标」之一, 其明细视图(序列 / 周期四象限 / 与价格的统计关联)随指标归位,
- 不再留在量化页 —— 量化页只保留纯价量持仓派生的技术模块(见 _SEC_FLAT_TABS 注释)。
- 口径: 与 ③④ 同源(国君 warehouseStock 优先, 四所官方日报兜底), **不另起一套**。 -->
- <div style="margin-top:16px;padding-top:14px;border-top:1px dashed var(--border,#e5e7eb)">
- <div style="font-size:0.8125rem;color:var(--text-muted);margin-bottom:12px;line-height:1.7">
- <b>库存维度明细</b> —— 交易所注册仓单序列 · 库存周期四象限 · <b>社会库存双口径交叉验证</b>。
- </div>
- <div class="grid grid-2" style="gap:16px">
+<div class="f-subnav" id="f-subnav"><button type="button" data-zone="a" class="on">A · 数据底座 9</button><button type="button" data-zone="b">B · 信号研判 4</button></div>
+<!-- 【2026-10-22】两区都被收起时的引导语：只切 display，不占位 -->
+<div id="f-zone-hint" style="display:none;padding:28px 4px;font-size:0.8125rem;color:var(--text-muted);line-height:2">
+ 点击上方气泡展开内容：<b>A · 数据底座</b> 是 9 块原始数据（库存 / 基差 / 利润 / 仓单 …，用于核验），<b>B · 信号研判</b> 是 4 块结论（计分 / 四象 / 方向票 / 研判，用于决策）。
+ 再点一次当前气泡可收起。
+</div>
+<div class="f-zone a" id="f-zone-a"><div class="f-zone-l">A</div><div class="f-zone-t"><b>A · 数据底座</b><span>原始观测与计算值，用来核验结论；本区不含方向判断。</span></div><div class="f-zone-n">9 块 · 仓单含 3 个子块</div><div class="f-jump" data-zone="b" style="font-size:0.75rem;color:var(--brand,#0071e3);cursor:pointer;white-space:nowrap">跳到结论 ↓</div><button type="button" id="f-fold-a" class="f-fold-btn">收起数据区</button></div>
+<div class="card f-a-block"><h3>A1 库存：社会库存季节性 · 交易所仓单走势 <span class="badge badge-info" id="f-inv-badge"></span></h3>
+ 
+ <!-- 【2026-10-21 用户要求「够多年的图改成季节性图」】
+      社会库存 2023-10 起约 154 点（3 年）⇒ 季节性图；交易所仓单只有半年 ⇒ 保留日频走势。
+      不足 2 个年份的品种隐藏上面那张、下面退回原双口径对照（见 _renderFundInventory）。 -->
+ <!-- 【2026-10-21 用户反馈「A1 图表过大」】拆卡后两张图丢了半宽约束。
+      放进 grid-2 各占一列（≈786px）；**不再挂 .chart-half** —— 那会在 50% 的格子里再砍一半。 -->
+<div class="grid grid-2" style="gap:16px;align-items:start">
  <div>
- <div style="font-size:0.8125rem;font-weight:500;margin-bottom:8px">
- 仓单库存 · 社会库存双口径 <span class="badge badge-info" id="f-inv-badge"></span>
- </div>
- <div class="chart-container" id="chart-f-inv" style="height:300px"></div>
+  <div class="chart-container" id="chart-f-soc" style="height:300px"></div>
  </div>
  <div>
- <div style="font-size:0.8125rem;font-weight:500;margin-bottom:8px">库存周期四象限</div>
+  <div id="f-inv-ck-title" style="font-size:0.75rem;color:var(--text-muted);margin:0 0 6px">交易所仓单 · 日频走势</div>
+  <div class="chart-container" id="chart-f-inv" style="height:240px"></div>
+ </div>
+</div>
+ </div>
+<div class="card f-a-block"><h3>A2 库存周期四象限</h3>
+ 
  <div id="f-cycle-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
  </div>
- </div>
- <!-- 【2026-10-14 用户要求删除】此处原为「价格 vs 仓单库存」双轴图
- (容器 #chart-f-pi + 徽标 #f-pi-badge)。同数据已在 ④ 仓单块与「价格-库存关联分析」
- (Pearson R) 中体现 ⇒ 不重复展示。
- ⚠ loadFundAnalysis 与 _renderDashCharts 的取值点均**保留**(piBadge 有守卫;
-   _renderDashCharts 按 opts 显式指定容器, 不传就不画) —— 零风险、便于回退。 -->
- <div style="font-size:0.8125rem;font-weight:500;margin:16px 0 8px">
- 价格-库存关联分析 <span class="badge badge-info" id="f-analysis-badge"></span>
- </div>
- <div style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.8" id="f-analysis-body">加载中...</div>
- </div>
-
- <!-- ── 跨品种: 板块相关性总览 【2026-10-13 迁入】 ── -->
- <div style="margin-top:16px;padding-top:14px;border-top:1px dashed var(--border,#e5e7eb)">
- <div style="font-size:0.8125rem;font-weight:500;margin-bottom:4px">板块相关性总览</div>
- <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px">
- 同板块各品种的「价格-库存」Pearson R 横向对比 · 按 R 升序(负相关在前)。
- 按钮触发, 会逐品种拉价格+仓单(约 2×N 次请求), 故不自动加载。
- </div>
- <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
- <div style="flex:1;min-width:180px">
- <label>板块</label>
- <select id="f-sector" onchange="App.loadFundSector()">
- <option value="能化" selected>能化（13 品种）</option>
- <option value="农产品">农产品（4 品种）</option>
- <option value="有色">有色（3 品种）</option>
- </select>
- </div>
- <button class="btn btn-green" onclick="App.loadFundSector(true)">拉取/刷新</button>
- <span style="font-size:0.75rem;color:var(--text-muted);padding-bottom:8px" id="f-sector-label"></span>
- </div>
- <div id="f-sector-panel"></div>
- </div>
- </div>
-
-
- <!-- ── ⑤ 量化信号研判 【2026-10-14 由「技术面量化」页迁入】 ──
- 迁入判据: 四个维度(库存+基差 / 反转资金 / 期限结构 / 利润)全部出自《期货多空逻辑》
- (JerryMa) —— 与上方「① 三指标策略系统」同源, 故与技术面分离。
- ⚠ 品种源必须取 #f-variety(loadQuantSignals 内已由 _quantSym 改为 _fundSym): 若仍读
-   #q-variety, 直接从基本面页进入时该下拉未初始化 ⇒ 首行 `if (!sym) return` ⇒ 整卡恒空
-   (跨页迁移最易漏的一处, 本项目 2026-10-13 迁库存族时踩过)。
- ⚠ 容器 id 沿用 q- 前缀**不重命名** —— tests/test_quant_overview.py 与
-   tests/js/quant_signals_profit_harness.mjs 按 id 断言。
- ⚠ 本卡与「① 三指标策略系统」的 #f-strategy-score 是**同一次请求的两个消费端**
-   (见 loadQuantSignals 末尾) ⇒ 两处数字必然一致, 不会各拉一次。 -->
- <div class="card" >
- <h3>⑤ 量化信号研判 <span class="badge badge-info" id="q-signal-badge"></span></h3>
- <div id="q-signal-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
- </div>
- <!-- ── ② 估值 + 驱动二维四象 ── -->
- <div class="card" id="f-vd-card">
- <h3>② 估值 + 驱动 二维四象 <span class="badge badge-info" id="f-vd-badge"></span></h3>
- <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">
- 估值轴 = 基差率(越高 ⇒ 期货越便宜 ⇒ 估值越低 ⇒ 越偏多) · 驱动轴 = 库存分位反向(库存越低 ⇒ 驱动向上)。
- <b>这是品种分类工具, 不是择时工具</b> —— 入场时机仍需技术面。
- </div>
- <div class="grid grid-2" style="gap:16px">
- <div>
- <div id="f-vd-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
- </div>
- <div>
- <div class="chart-container" id="chart-f-vd" style="height:420px"></div>
- </div>
- </div>
- <!-- 全池矩阵气泡图(点"全池矩阵"按钮后渲染) -->
- <div id="f-matrix-wrap" style="display:none;margin-top:14px">
- <div class="chart-container" id="chart-f-matrix" style="height:460px"></div>
- <div id="f-matrix-table" style="margin-top:10px"></div>
- </div>
-
- <!-- ── 估值轴明细 【2026-10-13 由「量化分析」页迁入】 ──
- 四象图的估值轴=基差率, 这里给该轴的**时序与形态明细**, 与 ② 同页同口径:
- · 基差走势 基差柱 + 基差率折线(双轴), 含升贴水状态与历史分位
- · 现货/期货价 两条价格序列对照, 用来看基差变化由哪一侧驱动
- · 期限结构 跨月合约曲线(主力点加粗标注), 四象的"估值"是单点, 这里是曲线
- JS: loadFundBasis → _renderFundBasis / _renderFundTerm(接口仍住 quant_module)。 -->
- <div style="margin-top:14px;border-top:1px dashed var(--border);padding-top:12px">
+<div class="card f-a-block"><h3>A3 基差与期限结构</h3><div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">估值轴的原料：基差率走势、现货/期货价对照、跨月合约曲线。B2 的四象定位读的就是这一轴。</div>
  <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">
  估值轴明细 —— 基差率的时序与形态(与上方四象同口径, 数据源相同)
  </div>
@@ -3609,31 +3643,19 @@ table td br + br { display: none; }
  </div>
  <div class="card">
  <h3 style="font-size:0.9375rem">期限结构（跨月合约曲线） <span class="badge badge-info" id="f-term-badge"></span></h3>
- <div class="chart-container" id="chart-f-term" style="height:240px"></div>
+ <div class="chart-container chart-half" id="chart-f-term" style="height:240px"></div>
  </div>
  </div>
- </div>
-
- <!-- ── ③ 加工 / 进口利润口径 ── -->
- <div class="card" id="f-profit-card">
- <h3>③ 加工 / 进口利润口径 <span class="badge badge-info" id="f-profit-badge"></span></h3>
+<div class="card f-a-block" id="f-profit-card">
+ <h3>A4 加工 / 进口利润口径 <span class="badge badge-info" id="f-profit-badge"></span></h3>
  <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">
  多装置口径<b>分色并列、不合并</b> —— 合并会掩盖"同品种不同装置利润分化"这一关键信息。
  低利润 = 亏损不可持续 → 偏多倾向; 高利润 = 刺激供给增量 → 偏空倾向。
  </div>
  <div id="f-profit-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
  </div>
-
- <!-- ── 研报基本面指标 【2026-10-13 由「量化分析」页迁入】 ──
- 由 _renderResearchSection(d, 'f') 动态填充(基差/仓单/开工率/加工利润/现货价/社会库存/钢厂库存
- 七类口径, 每类一张卡; 无数据则整块不渲染)。
- ⚠ 它随 /api/dashboard/{code} 同一个接口迁入(接口是原子的, 拆开会重复请求);
- 【2026-10-14】用户要求: 七类整合成**一个折叠块**(默认收起) —— 见 _renderResearchSection / toggleResearchSection。 -->
- <div id="f-research"></div>
-
- <!-- ── ④ 虚实盘比与逼仓识别 ── -->
- <div class="card" id="f-vr-card">
- <h3>④ 虚实盘比与逼仓识别 <span class="badge badge-info" id="f-vr-badge"></span></h3>
+<div class="card f-a-block" id="f-vr-card">
+ <h3>A5 虚实盘比与逼仓识别 <span class="badge badge-info" id="f-vr-badge"></span></h3>
  <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">
  虚实盘比 = (主力合约持仓 ÷ 2) ÷ 仓单折手数。比值大 = 钱多货少 → 易涨(多逼空);
  比值小 = 货多钱少 → 易跌(空逼多)。
@@ -3641,25 +3663,8 @@ table td br + br { display: none; }
  </div>
  <div id="f-vr-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
  </div>
-
- <!-- ── ⑥ 多空逻辑体系研判 【2026-10-14 由「技术面量化 → 方法论研判」迁入】 ──
- 迁入判据: 本卡内容全部出自《期货多空逻辑》(JerryMa) —— 该书的**方向票**
- (含 期限结构 / 库存周期 / 利润 三个变体) 与 5 个**扩展读数**(基差折盘面口径审计 /
- 跨期套利四逻辑 / 跨品种套利 / 虚实盘比与逼仓 / 行情反转三信号)。
- ⚠ 与技术面「方法论研判」是**同一接口的不同视图**(/api/quant/verdict): 接口原子
-   (一次算完 5 本书), 前端按 book 前缀与扩展块键切片 ⇒ 后端零改动、零重复计算。
- ⚠ 与 ④ 虚实盘比的关系: ④ 是 fund_module.py 的专卡(带经验档位 2.0/0.5); 本卡的
-   warrant_basis 是 quant_verdict 研判链路的读数 —— **同概念不同口径**, 并列供交叉验证。
- ⚠ 本卡只展示票与读数; 手数/止损等**仓位计算**仍在技术面「方法论研判」的固定读序里
-   (那部分依赖该卡的输入框, 不搬)。 -->
- <div class="card" id="f-verdict-card">
- <h3>⑥ 多空逻辑体系研判 <span class="badge badge-info" id="f-votes-badge"></span></h3>
- <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">
- 《期货多空逻辑》口径的方向票与读数（并列陈列，<b>不取平均、不混用</b>）。
- 技术面体系（鹿希武 / 墨菲 / 威科夫 / Carver）仍在「技术面量化 → 方法论研判」。</div>
- <div id="f-votes-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
- </div>
- <div id="tab-warrant-tools">
+<div class="f-zone sub f-a-block" id="f-zone-a6"><div class="f-zone-t"><b>A6 · 仓单</b><span>本块的选择器（品种范围 / 单位 / 日期）只作用于仓单，与上方页面级「品种」不同。</span></div></div>
+<div id="tab-warrant-tools" class="f-a-block">
  <!-- 品种仓单细则的「品种」选择(2026-09-30 从「② 品种仓单细则」卡提出):
  本页 4 张细则图全依赖这个品种取值, 而它原先是第二栏内部的第一个控件 ——
  折叠/小模块筛选后用户就找不到品种入口了。控制条必须持有本页的品种入口。 -->
@@ -3695,7 +3700,7 @@ table td br + br { display: none; }
  </div>
 
  </div>
- <div class="expander" style="margin-bottom:14px">
+<div class="expander f-a-block" style="margin-bottom:14px">
  <div class="expander-header" onclick="this.parentElement.classList.toggle('open')">
  仓单口径说明 <span style="font-size:0.75rem;color:var(--text-muted)">点击展开</span><span class="arrow"></span>
  </div>
@@ -3709,10 +3714,8 @@ table td br + br { display: none; }
  <span style="color:var(--amber)">涨跌配色：<span style="color:var(--red)">红=仓单增加</span> / <span style="color:var(--green)">绿=仓单减少</span>。</span>
  </div>
  </div>
-
- <!-- ===================== 第一栏: 仓单总览 ===================== -->
- <div class="card" >
- <h3>① 仓单总览 <span class="badge badge-info" id="wt-ov-badge"></span></h3>
+<div class="card f-a-block" >
+ <h3>A6.1 仓单总览 <span class="badge badge-info" id="wt-ov-badge"></span></h3>
  <div class="wt-excards" id="wt-excards"></div>
  <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
  <div style="min-width:170px">
@@ -3748,10 +3751,8 @@ table td br + br { display: none; }
  <div class="card"><h3>当日增减排名</h3><div class="chart-container" id="wt-rank-chg" style="height:520px"></div></div>
  </div>
  </div>
-
- <!-- ===================== 第二栏: 品种仓单细则 ===================== -->
- <div class="card" >
- <h3>② 品种仓单细则</h3>
+<div class="card f-a-block" >
+ <h3>A6.2 品种仓单细则</h3>
  <div class="wt-tabs" id="wt-extabs"></div>
  <div class="wt-kpi" id="wt-kpi"></div>
 
@@ -3780,13 +3781,8 @@ table td br + br { display: none; }
  <div id="wt-table" style="max-height:420px;overflow:auto"></div>
  </div>
  </div>
-
- <!-- ===================== 第三栏: 仓单历史走势 ===================== -->
- <!-- 2026-09-17 新增: 分品种 / 分仓库的每日仓单变化曲线。
- 数据源 /api/warrant/history —— 后端从 out/ 按日归档 JSON 离线聚合
- (含郑商所本地 xlsx 回填更早日期), 缺数日折线留空不连线。 -->
- <div class="card" >
- <h3>③ 仓单历史走势 <span class="badge badge-info" id="wt-h-badge"></span></h3>
+<div class="card f-a-block" >
+ <h3>A6.3 仓单历史走势 <span class="badge badge-info" id="wt-h-badge"></span></h3>
  <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
  <div style="min-width:160px">
  <label>交易所</label>
@@ -3800,7 +3796,7 @@ table td br + br { display: none; }
  </div>
  <div class="card">
  <h3>品种仓单走势 · 数量与每日增减 <span class="badge badge-info" id="wt-h-prod-badge"></span></h3>
- <div class="chart-container" id="wt-h-prod" style="height:420px"></div>
+ <div class="chart-container chart-half" id="wt-h-prod" style="height:420px"></div>
  </div>
  <div class="grid grid-2" style="margin-top:16px">
  <div class="card">
@@ -3813,7 +3809,137 @@ table td br + br { display: none; }
  </div>
  </div>
  </div>
- </div><!-- /#f-detail-view -->
+<div id="f-research" class="f-a-block"></div>
+<div class="card f-a-block"><h3>A8 板块相关性</h3>
+ <div style="font-size:0.8125rem;font-weight:500;margin-bottom:4px">板块相关性总览</div>
+ <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px">
+ 同板块各品种的「价格-库存」Pearson R 横向对比 · 按 R 升序(负相关在前)。
+ 按钮触发, 会逐品种拉价格+仓单(约 2×N 次请求), 故不自动加载。
+ </div>
+ <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+ <div style="flex:1;min-width:180px">
+ <label>板块</label>
+ <select id="f-sector" onchange="App.loadFundSector()">
+ <option value="能化" selected>能化（13 品种）</option>
+ <option value="农产品">农产品（4 品种）</option>
+ <option value="有色">有色（3 品种）</option>
+ </select>
+ </div>
+ <button class="btn btn-green" onclick="App.loadFundSector(true)">拉取/刷新</button>
+ <span style="font-size:0.75rem;color:var(--text-muted);padding-bottom:8px" id="f-sector-label"></span>
+ </div>
+ <div id="f-sector-panel"></div>
+ </div>
+<!-- ── A9 数据计算面板(2026-09-30 新增; 2026-10-21 由技术面 ⑫ 迁入) ──
+ 做什么: 把本模块已有各口径的数据维度列成清单, 用户多选后 → ① 按**并集日期轴**画多条
+ 曲线(量纲一致自动同轴, 量纲不同自动分轴, 不硬凑双轴); ② 算所选维度两两之间的相关
+ 系数矩阵(每格标注该对维度的**共同有效交易日 n**)。
+ ⚠ 口径纪律(两条 n 必须分清, 否则会误读):
+ · 曲线 = 并集日期轴 → 每条序列都保持完整, 不因别的维度缺数据而被截短;
+ · 相关 = 逐对日期内连接 → 每对的 n 可能不同, 必须逐格标注, 不能显示一个共用 n;
+ · 统计一律由后端算(/api/quant/compute), 前端不重复实现 Pearson/Spearman。
+ ⚠ 仓单单位: 交易所口径原样(郑商所=张 / 大商所·广期所=手 / 上期所·能源中心=吨或桶),
+ 此处**不折手数** —— 相关无量纲, 单位不统一不影响它, 而折算系数缺失会让整列消失。
+ 例: 选「收盘价(后复权)」+「仓单日变化」→ 直接读出"价格与仓单变化的相关性"(用户原话场景)。 -->
+ <div class="card f-a-block" id="q-compute">
+ <h3 style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+ <span>A9 数据计算面板</span>
+ <span class="badge badge-info" id="q-cmp-badge"></span>
+ <span style="font-size:0.75rem;color:var(--text-muted);font-weight:400">
+ 多选维度 → 曲线 + 相关系数矩阵(相关按共同交易日对齐, 逐对标注 n)
+ </span>
+ </h3>
+ <!-- 维度多选区(由 loadQuantCompute 动态生成, 按 family 分组) -->
+ <div id="q-cmp-dims" style="margin-bottom:10px">加载中...</div>
+ <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px">
+ <div style="min-width:160px">
+ <label>相关口径</label>
+ <select id="q-cmp-method" onchange="App.loadQuantCompute()">
+ <option value="pearson" selected>Pearson 线性相关</option>
+ <option value="spearman">Spearman 秩相关</option>
+ </select>
+ </div>
+ <div style="min-width:130px">
+ <label>回看天数</label>
+ <select id="q-cmp-days" onchange="App.loadQuantCompute()">
+ <option value="90">90 天</option>
+ <option value="180" selected>180 天</option>
+ <option value="365">365 天</option>
+ </select>
+ </div>
+ <button class="btn btn-primary" onclick="App.loadQuantCompute(1)">重新计算</button>
+ <button class="btn" onclick="App.loadQuantCompute(0, 1)">恢复默认维度</button>
+ <span style="font-size:0.75rem;color:var(--text-muted);padding-bottom:8px" id="q-cmp-note"></span>
+ </div>
+ <!-- 【2026-10-21】曲线与矩阵左右并排：曲线原来独占半宽、右边空 786px。
+      曲线**不挂 chart-half** —— 已经在 50% 格子里，再挂会变 1/4 宽。
+      矩阵紧跟曲线同一视线高度：改口径/天数时两者要一起看。
+      明细表列多（维度 × 日期），放整宽一行更合适。 -->
+ <div class="grid grid-2" style="gap:16px;align-items:start;margin-top:4px">
+ <div>
+ <div style="font-size:0.8125rem;font-weight:600;margin-bottom:6px">所选维度曲线</div>
+ <div class="chart-container" id="chart-q-cmp" style="height:360px"></div>
+ </div>
+ <div>
+ <div style="font-size:0.8125rem;font-weight:600;margin-bottom:6px">
+ 相关系数矩阵 <span class="badge badge-info" id="q-cmp-corr-badge"></span>
+ </div>
+ <div id="q-cmp-corr" style="overflow-x:auto;font-size:0.75rem">加载中...</div>
+ </div>
+ </div>
+ <div style="margin-top:14px">
+ <div style="font-size:0.8125rem;font-weight:600;margin-bottom:6px">
+ 所选维度明细 <span class="badge badge-info" id="q-cmp-series-badge"></span>
+ </div>
+ <div id="q-cmp-series" style="overflow-x:auto;font-size:0.75rem">加载中...</div>
+ </div>
+ <div style="font-size:0.75rem;color:var(--text-muted);margin-top:10px" id="q-cmp-legend"></div>
+ </div>
+<div class="f-zone b" id="f-zone-b"><div class="f-zone-l">B</div><div class="f-zone-t"><b>B · 信号与研判</b><span>由 A 区数据推导，供决策；同一结论只出现一次。</span></div><div class="f-zone-n">4 块 · 全部默认展开</div><div class="f-jump" data-zone="a" style="font-size:0.75rem;color:var(--brand,#0071e3);cursor:pointer;white-space:nowrap">回到数据 ↑</div></div>
+<div class="card f-b-block" id="f-strategy-card">
+ <h3>B1 三指标计分 <span class="badge badge-info" id="f-strategy-badge"></span></h3>
+ <div id="f-strategy-score" style="font-size:0.8125rem;color:var(--text-secondary);margin-bottom:10px">
+ 基本面信号计分：—
+ </div>
+ <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">
+ 库存(<b>社会库存 + 交易所仓单</b> 双口径综合分位) + 利润(加工/进口利润分位) + 基差(期货升贴水) → 单边或跨期。
+ 三指标共振才有单边优势; 指标互相矛盾时转跨期(单边易被反复止损)。
+ </div>
+ <div id="f-strategy-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
+
+ </div>
+<div class="card f-b-block" id="f-vd-card">
+ <h3>B2 估值 × 驱动 四象定位 <span class="badge badge-info" id="f-vd-badge"></span></h3>
+ <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">
+ 估值轴 = 基差率(越高 ⇒ 期货越便宜 ⇒ 估值越低 ⇒ 越偏多) · 驱动轴 = 库存分位反向(库存越低 ⇒ 驱动向上)。
+ <b>这是品种分类工具, 不是择时工具</b> —— 入场时机仍需技术面。
+ </div>
+ <div class="grid grid-2" style="gap:16px">
+ <div>
+ <div id="f-vd-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
+ </div>
+ <div>
+ <div class="chart-container" id="chart-f-vd" style="height:420px"></div>
+ </div>
+ </div>
+ <!-- 全池矩阵气泡图(点"全池矩阵"按钮后渲染) -->
+ <div id="f-matrix-wrap" style="display:none;margin-top:14px">
+ <div class="chart-container" id="chart-f-matrix" style="height:460px"></div>
+ <div id="f-matrix-table" style="margin-top:10px"></div>
+ </div>
+
+ </div>
+<div class="card f-b-block" id="f-verdict-card">
+ <h3>B3 体系方向票 <span class="badge badge-info" id="f-votes-badge"></span></h3>
+ <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px;line-height:1.7">
+ 《期货多空逻辑》口径的方向票与读数（并列陈列，<b>不取平均、不混用</b>）。
+ 技术面体系（鹿希武 / 墨菲 / 威科夫 / Carver）仍在「技术面量化 → 方法论研判」。</div>
+ <div id="f-votes-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
+ </div>
+<div class="card f-b-block" >
+ <h3>B4 逐维读数与综合研判 <span class="badge badge-info" id="q-signal-badge"></span></h3>
+ <div id="q-signal-body" style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.9">加载中...</div>
+ </div></div><!-- /#f-detail-view -->
 </div>
 
 <!-- 【2026-10-14 结构重组】原「仓单分析」页已整块并入「基本面量化」页,
@@ -4028,14 +4154,8 @@ table td br + br { display: none; }
  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:2px">
  <h3 style="margin-bottom:0">研报<span id="res-daily-kind">每日</span>总结 <span class="badge badge-info" id="res-daily-tag"></span></h3>
  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
- <select id="res-daily-type" onchange="App.onDailyTypeChange()" style="min-width:90px" title="日报/周报/季报总结分开:各看各的日期与落盘文件">
- <option value="">日报</option>
- <option value="周报">周报</option>
- <option value="季报">季报</option>
- <option value="月报">月报</option>
- </select>
+
  <select id="res-daily-date" onchange="App.loadDailySummary()" style="min-width:140px"></select>
- <select id="res-daily-quarter" onchange="App.loadDailySummary()" style="min-width:120px;display:none" title="季报口径:选择季度(该卡季报独立落盘)"></select>
  <button class="btn btn-outline btn-sm" id="res-daily-gen" onclick="App.generateDailySummary()" title="把当天全部研报结论汇总成 md(各公司观点/对比冲突/可信程度);已生成过则直接调阅,按住重跑点「重新生成」">生成</button>
  <button class="btn btn-outline btn-sm" id="res-daily-regen" onclick="App.generateDailySummary(true)" title="忽略已有总结,重新调 LLM 生成并覆盖"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" style="vertical-align:-2px"><path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7" stroke-linecap="round"/><path d="M13.4 2.6v3.1h-3.1" stroke-linecap="round" stroke-linejoin="round"/></svg>重新生成</button>
  </div>
@@ -4050,14 +4170,8 @@ table td br + br { display: none; }
  <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:8px">
  <h3 style="margin-bottom:0">单品种总结 <span class="badge badge-info" id="res-vsum-tag"></span></h3>
  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
- <select id="res-vsum-type" onchange="App.onVsumTypeChange()" style="min-width:90px" title="日报/周报/季报总结分开落盘">
- <option value="">日报</option>
- <option value="周报">周报</option>
- <option value="季报">季报</option>
- <option value="月报">月报</option>
- </select>
+
  <select id="res-vsum-date" onchange="App.loadVarietySummaries()" style="min-width:140px"></select>
- <select id="res-vsum-quarter" onchange="App.loadVarietySummaries()" style="min-width:120px;display:none" title="季报口径:选择季度"></select>
  <div style="position:relative">
  <button class="btn btn-outline btn-sm" id="res-vsum-vbtn" onclick="App.toggleVsumVarietyPanel()" title="勾选只看部分品种(只影响显示, 不影响后台生成)">品种: 全部 ▾</button>
  <div id="res-vsum-vpanel" style="display:none;position:absolute;right:0;top:110%;z-index:30;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;max-height:300px;overflow:auto;min-width:200px;box-shadow:var(--shadow)"></div>
@@ -4083,21 +4197,8 @@ table td br + br { display: none; }
  <label>品种(联动: 观点总览)</label>
  <select id="res-views-variety" onchange="App.onViewVarietyChanged()"></select>
  </div>
- <div style="flex:1;min-width:140px">
- <label>研报日期</label>
- <select id="res-views-date" onchange="App.loadResearchViews()"></select>
- <select id="res-views-quarter" onchange="App.loadResearchViews()" style="min-width:120px;display:none" title="季报口径:选择季度"></select>
- </div>
- <div style="flex:1;min-width:110px">
- <label>类型(分开统计)</label>
- <select id="res-views-type" onchange="App.loadResearchViews()">
- <option value="">全部</option>
- <option value="日报">日报</option>
- <option value="周报">周报</option>
- <option value="季报">季报</option>
- <option value="月报">月报</option>
- </select>
- </div>
+
+
  <div style="flex:2;color:var(--text-muted);font-size:0.8125rem;line-height:1.6" id="res-views-note"></div>
  </div>
  <div id="res-views" style="overflow-x:auto">选择品种后, 显示该研报日期各家发行方对它的方向与观点要点。</div>
@@ -4195,19 +4296,29 @@ table td br + br { display: none; }
  <!-- 走势图(点击上表某行「查看」→ 就地渲染在此, 不再跳到别的卡) -->
  <div style="margin-top:16px;padding-top:12px;border-top:1px dashed var(--border,#e5e7eb)">
  <div style="font-size:0.9375rem;font-weight:600;color:var(--text-secondary);margin-bottom:8px">
- 走势图 <span class="badge badge-info" id="gt-chart-badge"></span>
+ 季节性图（按年同比） <span class="badge badge-info" id="gt-chart-badge"></span>
  </div>
- <div id="gt-chart" style="height:340px"></div>
+ <div id="gt-chart" class="chart-half" style="height:170px"></div>
  <div id="gt-chart-note" style="font-size:0.8125rem;color:var(--text-muted);margin-top:8px"></div>
  </div>
 
- <!-- 明细数据(选中指标的逐日数值) -->
- <div style="margin-top:16px;padding-top:12px;border-top:1px dashed var(--border,#e5e7eb)">
- <div style="font-size:0.9375rem;font-weight:600;color:var(--text-secondary);margin-bottom:8px">
+ <!-- 明细数据(选中指标的逐日数值)
+ 【2026-10-19 用户要求】默认**折叠**, 只有点指标行的「查看」才下拉展开 ——
+ 原状是一进页面就铺满 115 行(最高 420px), 把下面的研报上传/研报库全挤出首屏。
+ ⚠ 结构必须保留 #gt-table(测试与 _renderGtjaTable 都按 id 取), 折叠只靠 .expander
+   的 display:none, 不能删 DOM; 也不要用 display:none 直接写在 #gt-table 上
+   (那样「展开」得逐个改内联样式, 与全站折叠组件两套机制)。
+ ⚠ 默认不能带 open 类: 进页会自动渲染第一个指标(showGtjaIndicator(0)), 若那时也展开,
+   就等于"默认展开", 与用户诉求相反 ⇒ 自动渲染不传 expandDetail。 -->
+ <div class="expander" id="gt-detail-expander" style="margin-top:16px;border-top:1px dashed var(--border,#e5e7eb);border-bottom:none">
+ <div class="expander-header" style="padding:8px 0" onclick="App.toggleGtjaDetail()">
  明细数据 <span class="badge badge-info" id="gt-tbl-badge"></span>
+ <span id="gt-detail-hint" style="font-size:0.75rem;color:var(--text-muted)">点击展开</span><span class="arrow"></span>
  </div>
+ <div class="expander-body" style="padding-bottom:12px">
  <div id="gt-table" style="max-height:420px;overflow:auto;font-size:0.8125rem">
  <span style="color:var(--text-muted)">点击上方指标的「查看」载入明细。</span>
+ </div>
  </div>
  </div>
  </div>
@@ -4376,6 +4487,7 @@ table td br + br { display: none; }
  <option value="">全部来源</option>
  <option value="manual">上传(网页人工)</option>
  <option value="auto">自动接入</option>
+ <option value="__wechat">公众号（微信读书）</option>
  </select>
  </div>
  <div style="flex:1;min-width:120px">
@@ -4390,6 +4502,12 @@ table td br + br { display: none; }
  </div>
  <button class="btn btn-outline btn-sm" onclick="App.refreshResearchList()">刷新</button>
  </div>
+ <!-- 【2026-10-16 新增】采集通道状态巡检条。
+ ⚠ 为什么放在**研报库卡内、列表之上**：这里是"研报从哪来"的归口，
+   而通道失败此前只写 alerts 表 —— 用户在页面上完全看不出来，
+   是从"今天没有公众号来源的"这一现象反推出来的（告警已躺 3 天）。
+ 默认 display:none，抓到数据才显示（无数据时不占位）。 -->
+ <div id="res-ingest-status" style="display:none;margin:0 0 10px"></div>
  <div style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.8" id="res-list">加载中...</div>
  </div>
 
@@ -4513,8 +4631,10 @@ const __cssVar = (name, fallback) => {
  } catch (e) { return fallback; }
 };
 const CHART = {
- get brand() { return __cssVar('--chart-brand', '#8fd2f5'); }, // 主序列线/柱
- get brand2() { return __cssVar('--chart-brand-2', '#d8eefc'); }, // 渐变亮端
+ // 【2026-10-21】兜底值原为 #8fd2f5（很浅）。__cssVar 读不到变量时会静默用它，
+ //   表现为"曲线浅到看不见"。兜底必须是可读的实色。
+ get brand() { return __cssVar('--chart-brand', '#2997ff'); }, // 主序列线/柱
+ get brand2() { return __cssVar('--chart-brand-2', '#7cc4ff'); }, // 渐变亮端
  get brandGlow() { return __cssVar('--chart-brand-glow', 'rgba(140,200,250,0.35)'); }, // 面积渐变起色
  get brandA25() { return __cssVar('--chart-brand-a25', 'rgba(140,200,250,0.25)'); },
  get brandA02() { return __cssVar('--chart-brand-a02', 'rgba(140,200,250,0.02)'); },
@@ -4522,19 +4642,28 @@ const CHART = {
  get grid() { return __cssVar('--chart-grid', '#19222e'); }, // 网格线
  get line() { return __cssVar('--chart-line', '#2b3746'); }, // 轴线
  // 糖果族:给分类色板用(装饰性,不承载涨跌语义)
- get candy1() { return __cssVar('--candy-1', '#c7c7ff'); },
- get candy2() { return __cssVar('--candy-2', '#ffd8be'); },
- get candy3() { return __cssVar('--candy-3', '#a9ecbf'); },
- get candy4() { return __cssVar('--candy-4', '#f3bbe1'); },
+ // 【2026-10-21】兜底原为 #c7c7ff（亮度 0.80，白底几乎不可见），改成与深色主题一致的实色
+ get candy1() { return __cssVar('--candy-1', '#a78bfa'); },
+ get candy2() { return __cssVar('--candy-2', '#ea580c'); },
+ get candy3() { return __cssVar('--candy-3', '#16a34a'); },
+ get candy4() { return __cssVar('--candy-4', '#be185d'); },
+ // 【2026-10-21】统一分类色板：多系列图（仓库走势/饼图/排名柱/散点）一律用它。
+ //   选色标准：亮度 0.45~0.68 区间 —— 暗底不发黑、亮底不发白；8 色彼此可区分，
+ //   且**不含** brand，避免"第一条线和第二条线同色"（旧 candy-1 与 brand 同值踩过）。
+ get series() {
+  return ['#2997ff', '#ea580c', '#16a34a', '#f43f5e',
+          '#8b5cf6', '#0d9488', '#ec4899', '#a16207'];
+ },
  // ── K 线图专用令牌（2026-10-12 深蓝金改造新增） ──
  // 为什么单开一族而不复用 --chart-brand：K 线读数密集，"蜡烛涨跌 / 四条均线 / BOLL 三轨 /
  // 量能"需要各自可辨识，共用一条 brand 会糊成一片。
  // 亮色主题取「深蓝金」值（与量化页作用域一致）；暗色保持原硬编码色（"暗色不动"）。
  get kUp() { return __cssVar('--chart-k-up', '#ef4444'); }, // 蜡烛 涨(与 --red 一致)
  get kDown() { return __cssVar('--chart-k-down', '#22c55e'); }, // 蜡烛 跌(与 --green 一致)
- get kMa1() { return __cssVar('--chart-k-ma1', '#fbbf24'); }, // MA5
- get kMa2() { return __cssVar('--chart-k-ma2', '#5ac8fa'); }, // MA10
- get kMa3() { return __cssVar('--chart-k-ma3', 'var(--brand)'); }, // MA20
+ get kMa1() { return __cssVar('--chart-k-ma1', '#d97706'); }, // MA5
+ get kMa2() { return __cssVar('--chart-k-ma2', '#22d3ee'); }, // MA10
+ // 【2026-10-21】fallback 原为 'var(--brand)' —— 一旦 --chart-k-ma3 未定义，
+ get kMa3() { return __cssVar('--chart-k-ma3', '#8e8e93'); }, // MA20
  get kMa4() { return __cssVar('--chart-k-ma4', '#2dd4bf'); }, // MA60
  get kBollMid() { return __cssVar('--chart-k-boll-mid', '#6366f1'); }, // BOLL 中轨
  get kBollSide() { return __cssVar('--chart-k-boll-side', '#94a3b8'); }, // BOLL 上下轨
@@ -4549,6 +4678,13 @@ const CHART = {
  // 会造出"同一含义两种红"的错位（本项目 2026-09-15 换肤踩过，故收敛为读令牌）。
  get up() { return __cssVar('--red', '#ef4444'); }, // 涨 / 正向
  get down() { return __cssVar('--green', '#22c55e'); }, // 跌 / 负向
+ // 季节性图 2021 年线: 配色包给的是纯黑(#000000), 在暗色底上等于隐形 ⇒ 暗色改浅灰。
+ // 用 getter(而不是常量)是为了让 _repaintCharts 切主题时能按 CHART_COLOR_KEYS 换过来。
+ get seasonBlack() {
+ let t = '';
+ try { t = document.documentElement.getAttribute('data-theme') || ''; } catch (e) {}
+ return __cssVar('--chart-season-black', t === 'dark' ? '#b8c0cc' : '#000000');
+ },
 }
 
 ;// ══ 2026-10-14 v3：ECharts 全局默认 —— 清理冗余网格线 ══════════════
@@ -4638,7 +4774,7 @@ window.__barAxisClean = function (ax) {
 const CHART_COLOR_KEYS = ['brand','brand2','brandGlow','brandA25','brandA02','axis','grid','line',
  'candy1','candy2','candy3','candy4',
  'kUp','kDown','kMa1','kMa2','kMa3','kMa4','kBollMid','kBollSide','kVol','kAxis','kGrid','kCross','kYlab','kFont',
- 'up','down'];
+ 'up','down','seasonBlack'];
 
 // ================================================================
 // 前端核心逻辑入口。所有业务逻辑封装在全局单例 App 对象中 (下方 const App = {...})。
@@ -4792,7 +4928,9 @@ const App = {
  // 【后端】无
  _bindNav() {
  document.querySelectorAll('nav button').forEach(btn => {
- btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
+ // 【2026-10-21】点「技术面量化」/「基本面量化」= 回该模块入口：明细视图下直接退回全品种总览。
+ //   fromNav 只在这里传；Ctrl+1~7 不传 ⇒ 仍保留「切走再切回不丢上下文」。
+ btn.addEventListener('click', () => this.switchTab(btn.dataset.tab, { fromNav: true }));
  });
  },
 
@@ -4801,8 +4939,12 @@ const App = {
  // 【输入】t: 标签页标识, 如 'run' / 'sentiment' / 'trading'
  // 【渲染】显示/隐藏 6 个 <div class="tab">; 首次进入某页时拉取该页数据
  // 【后端】视目标页而定, 见各 loadXxx 方法
- switchTab(t) {
+ switchTab(t, opts) {
  this._currentTab = t;
+ // 【2026-10-21】点击模块名 = 回模块入口（用户要求）：两页都是「总览 ⇄ 单品种明细」两视图，
+ //   明细态点顶部模块名直接退回总览；总览态点则无副作用（照常刷新）。
+ //   ⚠ 只认 fromNav：Ctrl+1~7 与程序化切页不传，否则从别的页跳回某品种会被强制弹回总览。
+ if (opts && opts.fromNav) this._navBackToOverview(t);
  // 【2026-10-13】离开量化页即停掉 K 线自动刷新定时器(切回时由 loadQuant 重新起表),
  // 避免用户停在别的页面时后台仍每 30 秒请求一次天勤配额。
  if (t !== 'quant') this._clearKlineRefresh();
@@ -5423,7 +5565,24 @@ const App = {
  include_debate: includeDebate, include_synthesis: includeSynthesis, include_scenario: includeScenario})
  });
  const d1 = await r1.json();
- log.innerHTML += `<span class="node">Analysis started (${d1.status})</span>\n`;
+ // 【2026-10-23】429 = 并发已满（默认上限 3）。把在跑的分析列出来，别让用户以为是自己点错了。
+ //   409 duplicate 例外：同品种同配置已经在跑，**不是错误**，接管那次运行即可（见下方）。
+ if (!r1.ok && d1.error !== 'duplicate') {
+ const busy = (d1.active || []).map(a => `${a.symbol}（已 ${Math.round(a.elapsed)}s，${a.current_stage || '启动中'}）`).join('、');
+ log.innerHTML += `<span class="node" style="color:var(--amber)">${d1.message || '启动失败'}</span>\n`;
+ if (busy) log.innerHTML += `<span class="node" style="color:var(--text-secondary)">正在运行：${busy}</span>\n`;
+ clearInterval(timer);
+ document.getElementById('stat-status').textContent = '忙';
+ const btn = document.getElementById('btn-run');
+ if (btn) btn.disabled = false;
+ return;
+ }
+ this._runId = d1.run || null;   // 记住本次分析；轮询/取结果都带它
+ // 409 duplicate：不重跑，直接接管已在跑的那次（后端已把 run/stages/modules 一并返回）
+ if (!r1.ok && d1.error === 'duplicate') {
+ log.innerHTML += `<span class="node" style="color:var(--amber)">${d1.message || '已有相同分析在运行，已切到那次运行'}</span>\n`;
+ }
+ log.innerHTML += `<span class="node">${r1.ok ? 'Analysis started (' + d1.status + ')' : 'Joined running analysis'}</span>\n`;
  // Backend's authoritative stage list (auto/skip may have dropped modules)
  this._runModules = d1.modules || null; // 【变量】记录本次后端权威启用的模块(供结果区提示档位)
  if (d1.stages && d1.stages.length) {
@@ -5444,7 +5603,7 @@ const App = {
  // Step 2: Poll for progress
  const poll = setInterval(async () => {
  try {
- const r = await fetch('/api/progress'); // 【调用函数】后端接口: 轮询分析进度(阶段状态/llm调用数/是否完成)
+ const r = await fetch('/api/progress' + (this._runId ? '?run=' + encodeURIComponent(this._runId) : '')); // 【调用函数】后端接口: 轮询本次分析的进度
  const d = await r.json();
  document.getElementById('stat-status').textContent = d.is_running ? 'Analyzing...' : d.is_complete ? 'Complete' : d.error ? 'Error' : '?';
  if (d.stages) {
@@ -5482,6 +5641,9 @@ const App = {
 
  _feedbackVisible: false, _feedbackHistory: [], _feedbackSymbol: undefined, // 【变量】讨论进化状态: 面板可见性/对话历史/所属品种(换品种时清空历史)
  _runModules: null, // 【变量】最近一次运行的权威模块开关(来自 /api/run_analysis 的 modules),用于结果区档位提示
+ // 【2026-10-23】本次分析的标识。多人并行时,轮询与取结果都必须带上它,
+ // 否则会读到"别人刚启动的那次"(后端无 run 参数时回退到最近一次)。
+ _runId: null,
 
  // 【功能】展开/收起「讨论进化」对话输入框(与 Agent 多轮辩论)
  // 【输入】无
@@ -5565,7 +5727,7 @@ const App = {
  series:[{
  type:'line',data:prices.map(p=>p.close),smooth:true,showSymbol:false,
  lineStyle:{color:CHART.brand,width:2},
- markLine:{silent:true,symbol:'none',data:[{xAxis:date,lineStyle:{color:'#fbbf24',type:'dashed'}}]}
+ markLine:{silent:true,symbol:'none',data:[{xAxis:date,lineStyle:{color:'#d97706',type:'dashed'}}]}
  }]
  },true);
  chart.resize();
@@ -5599,10 +5761,60 @@ const App = {
  // 【功能】分析完成后拉取全部报告, 按固定顺序渲染 10 份报告 + RATING 信号横幅 + 背离提示
  // 【输入】sym: 品种代码; date: 分析日期
  // 【渲染】#results-area: 分析师/辩论报告卡片、RATING 信号横幅(绿≥6/红≤4/黄中)、预测背离警告卡; 并触发两幅对比图
+ // 【2026-10-23】研究内容检查（质量门）在界面上的落点。
+ // 背景：检查器 2026-10-22 上线后结果只进了 /api/analysis_results，界面搜不到 —— 
+ //   用户看不到的质量门，等于没有。这里把它做成综合研判卡标题栏上的徽标，点开看明细。
+ // 三种状态对应三种语义（不是涨跌色）：事后未通过=红、事前拦下后通过=琥珀、都通过=绿。
+ _esc(s) {
+ return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+ .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+ },
+ _renderQualityGateBadge(d) {
+ const qg = d.quality_gate;
+ if (!qg) return '';   // 历史结果没有该字段 → 保持旧观感
+ const post = d.research_review || {};
+ const pre = d.research_review_pre || {};
+ if (qg.post_failed) {
+ return `<span class="badge badge-bear" style="margin-left:8px;cursor:pointer" onclick="App._toggleQG(event)" title="点击查看问题清单">⚠ 质检未通过 · ${post.score || 0}分</span>`;
+ }
+ if (qg.pre_failed) {
+ const n = (pre.issues || []).length;
+ return `<span class="badge badge-neutral" style="margin-left:8px;cursor:pointer" onclick="App._toggleQG(event)" title="综合研判前拦下问题、最终报告已通过">✓ 质检通过 · 事前拦截 ${n} 项</span>`;
+ }
+ return '<span class="badge badge-bull" style="margin-left:8px">✓ 质检通过</span>';
+ },
+ _renderQualityGateDetail(d) {
+ const qg = d.quality_gate;
+ if (!qg || (!qg.post_failed && !qg.pre_failed)) return '';
+ const blocks = [];
+ const pushGroup = (title, r, cls) => {
+ const issues = (r && r.issues) || [];
+ if (!issues.length) return;
+ blocks.push(`<div style="margin-top:8px;font-size:0.8125rem;color:var(--text-secondary)"><b>${title}</b></div>`);
+ issues.forEach(it => {
+ const sev = it.severity === 'high' ? ['badge-bear', 'HIGH']
+ : it.severity === 'medium' ? ['badge-neutral', 'MED'] : ['badge-info', 'LOW'];
+ blocks.push(`<div style="display:flex;gap:6px;align-items:flex-start;margin:4px 0 0 10px;font-size:0.8125rem">`
+ + `<span class="badge ${sev[0]}" style="flex:0 0 auto">${sev[1]}</span>`
+ + `<span style="color:var(--text-secondary)">${this._esc(it.detail)}</span></div>`);
+ });
+ };
+ pushGroup('事前（综合研判之前，已作为硬约束注入提示词）', d.research_review_pre, 'amber');
+ pushGroup('事后（最终报告仍未交代，建议复核）', d.research_review, 'red');
+ if (!blocks.length) return '';
+ return `<div id="qg-detail" style="display:none;margin:8px 0 10px;padding:8px 12px;border-left:3px solid var(--amber);background:var(--amber-bg);border-radius:var(--radius-sm)">`
+ + '<div style="font-size:0.75rem;color:var(--text-secondary)">由规则自动检出（research_review），不参与评级计算。</div>'
+ + blocks.join('') + '</div>';
+ },
+ _toggleQG(ev) {
+ if (ev && ev.stopPropagation) ev.stopPropagation();   // 别触发卡片折叠
+ const el = document.getElementById('qg-detail');
+ if (el) el.style.display = (el.style.display === 'none' ? 'block' : 'none');
+ },
  // 【后端】GET /api/analysis_results (报告正文用 marked 渲染 Markdown)
  async loadAnalysisResults(sym, date) {
  try {
- const r = await fetch('/api/analysis_results'); // 【调用函数】后端接口: 分析完成后一次性拉取全部报告与 RATING
+ const r = await fetch('/api/analysis_results' + (this._runId ? '?run=' + encodeURIComponent(this._runId) : '')); // 【调用函数】后端接口: 取本次分析的报告与评级
  const d = await r.json();
  if (!d.ready) return;
  const reports = d.reports || {};
@@ -5633,7 +5845,10 @@ const App = {
  const cls = key.includes('bull')?'bull':'bear';
  html += `<div class="debate-round ${cls}"><span class="speaker">${names[key]}</span>${marked.parse(txt)}</div>`;
  } else {
- html += `<div class="card" style="margin-top:12px"><h3>${names[key]}</h3><div class="report-content">${marked.parse(txt)}</div></div>`;
+ // 综合研判卡挂质量门徽标（2026-10-23）：状态 + 可展开明细
+ const qgBadge = key === 'synthesis' ? this._renderQualityGateBadge(d) : '';
+ const qgBody = key === 'synthesis' ? this._renderQualityGateDetail(d) : '';
+ html += `<div class="card" style="margin-top:12px"><h3>${names[key]}${qgBadge}</h3>${qgBody}<div class="report-content">${marked.parse(txt)}</div></div>`;
  }
  });
  // Rating + predicted magnitude
@@ -5727,7 +5942,7 @@ const App = {
  // 【后端】POST /api/pause
  async pauseAnalysis() {
  try {
- const r = await fetch('/api/pause', { method: 'POST' }); // 【调用函数】后端接口: 请求暂停分析(后端进入 paused 状态)
+ const r = await fetch('/api/pause' + (this._runId ? '?run=' + encodeURIComponent(this._runId) : ''), { method: 'POST' }); // 【调用函数】后端接口: 请求暂停分析(后端进入 paused 状态)
  const d = await r.json();
  if (d.status === 'paused') {
  this.toast('分析已暂停', 'info');
@@ -5744,7 +5959,7 @@ const App = {
  // 【后端】POST /api/resume
  async resumeAnalysis() {
  try {
- const r = await fetch('/api/resume', { method: 'POST' }); // 【调用函数】后端接口: 请求恢复已暂停的分析
+ const r = await fetch('/api/resume' + (this._runId ? '?run=' + encodeURIComponent(this._runId) : ''), { method: 'POST' }); // 【调用函数】后端接口: 请求恢复已暂停的分析
  const d = await r.json();
  if (d.status === 'resumed') {
  this.toast('分析已恢复', 'success');
@@ -5761,7 +5976,7 @@ const App = {
  // 【后端】POST /api/stop
  async stopAnalysis() {
  try {
- const r = await fetch('/api/stop', { method: 'POST' }); // 【调用函数】后端接口: 请求停止当前分析
+ const r = await fetch('/api/stop' + (this._runId ? '?run=' + encodeURIComponent(this._runId) : ''), { method: 'POST' }); // 【调用函数】后端接口: 请求停止当前分析
  const d = await r.json();
  if (d.status === 'stopping') {
  this.toast('正在停止...', 'info');
@@ -5781,7 +5996,9 @@ const App = {
  const el = document.getElementById(containerId);
  if (!el) { console.warn('Chart container not found:', containerId); return null; }
  // Ensure container has dimensions
- if (el.clientHeight === 0) { el.style.height = '320px'; }
+ // 【2026-10-19】保留已有内联高度: 原写死 320px 会把 #gt-chart 的 170px 顶掉
+ // (折叠态 clientHeight=0 时触发 ⇒ 展开后变成旧尺寸, 用户会以为缩小没生效)。
+ if (el.clientHeight === 0) { el.style.height = el.style.height || '320px'; }
  if (this._chartInstances[containerId]) {
  try { this._chartInstances[containerId].dispose(); } catch(e) {}
  delete this._chartInstances[containerId];
@@ -5794,6 +6011,9 @@ const App = {
  const rec = { option: null, notMerge: false };
  const rawSetOption = chart.setOption.bind(chart);
  chart.setOption = function(option, notMerge, lazyUpdate) {
+ // 【2026-10-21】未显式写 color 的图（饼图/排名柱/散点）原来吃 ECharts 默认色板
+ //   （#5470c6 等，暗底偏暗），与别处的分类色板也不一致。统一注入。
+ if (option && !Array.isArray(option) && option.color === undefined) option.color = CHART.series;
  rec.option = option; rec.notMerge = !!notMerge;
  return rawSetOption(option, notMerge, lazyUpdate);
  };
@@ -5950,7 +6170,7 @@ const App = {
  // v27 (2026-10-14): ①「量化信号研判」卡迁出至基本面页; ② 单品种详情的
  // 「多品种量化截面排行」迁出至总览页折叠模块(该 tab 卡片数减少, 总览页新增折叠模块)。
  // 按铁律 +1 触发旧浏览器重建索引(否则残留点不开的僵尸索引项)。
- _SEC_IDX_VER: '29',
+ _SEC_IDX_VER: '33',
 
  // ★【2026-10-13 用户要求：取消小模块设计】—— 由"名单制豁免"升级为**全局平铺**。
  // 【本次改动】原先是白名单：名单内的 tab 平铺，其余仍建"小模块索引 + 可折叠卡片"。
@@ -6820,13 +7040,20 @@ const App = {
  legend: {
  data: ['收盘价', '作者加权情绪', '情绪7日均线', '简单平均情绪', '自适应因子'],
  top: 0,
- right: 10, // 【布局】图例移到右上角, 与标题错开, 不再挤占底部空间
+ // 【2026-10-21】原来 right:10 + 内容宽度自适应 ⇒ 5 项长名字一行放不下，
+ //   实测「情绪7日均线」与「简单平均情绪」文字叠在一起。
+ //   改成给图例一个固定的可用宽度（left 定位 + right 约束），ECharts 会折成两行。
+ left: 300, right: 10,
  icon: 'roundRect',
- itemWidth: 14,
+ itemWidth: 12,
  itemHeight: 8,
- textStyle: { color: CHART.axis, fontSize: 11 }
+ itemGap: 8,
+ // 【2026-10-21】5 项长名字在 680px 宽里放不下 ⇒ 后两项文字重叠（截图实测）。
+ //   改 scroll：放不下时出翻页箭头，不再叠字。
+ type: 'scroll',
+ textStyle: { color: CHART.axis, fontSize: 10 }
  },
- grid: { left: 60, right: 88, top: 36, bottom: 50 },
+ grid: { left: 60, right: 88, top: 56, bottom: 50 },
  // 【2026-09-17】滚轮纵向缩放 + 拖动平移(无滑杆, 不占空间): 2 年窗口 480+ 个
  // 交易日时标签密不可读, 缩放后可看清局部细节; 双击图表还原
  dataZoom: [{ type: 'inside', zoomOnMouseWheel: true, moveOnMouseWheel: true, throttle: 60 }],
@@ -6861,7 +7088,12 @@ const App = {
  },
  {
  type: 'value',
- name: '因子', // 【2026-09-24 自适应因子】离散 ±1/0 阶梯轴: +1 顺势 / −1 逆向 / 0 跳过
+ // 【2026-09-24 自适应因子】离散 ±1/0 阶梯轴: +1 顺势 / −1 逆向 / 0 跳过
+ // 【2026-10-21】原来 name 写「因子」，与「情绪得分」同在右上角同一垂直位置 ⇒
+ //   两行字直接叠在一起（截图实测）。nameTextStyle.padding.top 对 yAxis.name 无效，
+ //   nameGap 又把它顶进图例里。干脆不写轴名：这条轴的刻度已是 ±1/0 且带颜色，
+ //   图例里也有「自适应因子」，不会看不懂。
+ name: '',
  nameTextStyle: { color: textColor, fontSize: 10, align: 'left', padding: [0, -14, 0, 0] },
  min: -1.5, max: 1.5, interval: 1,
  axisLine: { show: true, lineStyle: { color: CHART.candy1 } },
@@ -7225,7 +7457,7 @@ const App = {
  lineStyle: { color: CHART.brand, width: 2 },
  markLine: {
  silent: true,
- data: [{ xAxis: date, label: { formatter: '分析日', color: '#fbbf24' }, lineStyle: { color: '#fbbf24', type: 'dashed' } }]
+ data: [{ xAxis: date, label: { formatter: '分析日', color: '#d97706' }, lineStyle: { color: '#d97706', type: 'dashed' } }]
  }
  }]
  });
@@ -7325,6 +7557,54 @@ const App = {
  this._loadVsumDates(); // 单品种总结:独立日期下拉 + 品种多选面板(后台, 不阻塞)
  this._loadRagStatus(); // 研报问答卡片:索引状态(后台, 不阻塞)
  // 2026-09-24 历史会话下拉已隐藏, 不再预拉会话列表(_loadQaSessions 函数保留待恢复)
+ },
+
+ // 【功能】采集通道状态巡检:把"哪条采集通道断了"从 alerts 表搬到页面上(2026-10-16 新增)
+ // 【为什么】此前通道失败**只写 alerts 表**,界面完全看不出来 —— 用户是靠肉眼看
+ //   "今天没有公众号来源的"才发现,而那条告警已经躺了 3 天(典型告警疲劳)。
+ // 【输入】无 【渲染】#res-ingest-status 【后端】GET /api/wechat/channels (纯只读巡检)
+ // 【三态】failed(红·中断,给修复命令) / empty(黄·跑了但无新文) / ok(淡色一行)
+ //   ⚠ "empty" 与 "failed" 必须分开:前者是**内容源没新文**(换关键词才有用),
+ //     后者是**通道本身坏了**(重登才有效) —— 混成一个"没数据"会让用户修错东西。
+ async _loadIngestStatus() {
+ const box = document.getElementById('res-ingest-status');
+ if (!box) return;
+ try {
+ const r = await fetch('/api/wechat/channels');
+ if (!r.ok) return; // 巡检失败静默:它不该影响研报库本体的可用性
+ const d = await r.json();
+ if (!d || d.ok === false) { box.style.display = 'none'; return; }
+ const esc = s => this._escHtml(String(s == null ? '' : s));
+ const chs = d.channels || [];
+ const bad = chs.filter(c => c.state === 'failed');
+ const empty = chs.filter(c => c.state === 'empty');
+ const pb = d.pool_block || {};
+ const parts = [];
+ if (bad.length) {
+ parts.push(bad.map(c => `
+ <div style="display:flex;gap:10px;align-items:flex-start;padding:8px 12px;border-radius:8px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4);margin-bottom:6px">
+ <span style="color:#ef4444;font-weight:700;white-space:nowrap">⚠ 采集通道中断</span>
+ <div style="font-size:0.8125rem;line-height:1.7">
+ <b>${esc(c.name)}</b><span style="color:var(--text-muted)">（覆盖 ${c.accounts} ${esc(c.unit_name || '个')}）</span>
+ <div style="color:var(--text-secondary)">${esc(c.error || '本轮运行失败')}</div>
+ ${c.hint ? `<div style="margin-top:2px">修复：<code style="background:var(--bg-input);padding:1px 6px;border-radius:4px">${esc(c.hint)}</code></div>` : ''}
+ </div></div>`).join(''));
+ }
+ if (empty.length) {
+ parts.push(`<div style="font-size:0.8125rem;line-height:1.7;padding:6px 12px;border-radius:8px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);color:var(--text-secondary)">
+ <b style="color:#f59e0b">◐ 通道跑了但无新文</b>：${empty.map(c => esc(c.name)).join(' / ')}
+ （通道本身正常；若持续为空，多半是内容源近期未更新，或该号有**未登记**的合集）</div>`);
+ }
+ if (pb.count) {
+ parts.push(`<div style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;line-height:1.7">
+ 另有 ${pb.count} 篇公众号文章采集成功但**未入库**（近 ${pb.days} 天）：识别出的品种${pb.sample ? '（如 ' + esc(pb.sample) + '）' : ''}不在当前品种池内 ⇒ 属口径边界，不是通道故障。</div>`);
+ }
+ box.style.display = '';
+ box.innerHTML = parts.length ? parts.join('')
+ : `<div style="font-size:0.75rem;color:var(--text-muted)">采集通道正常 · ${esc(d.summary || '')}</div>`;
+ } catch (e) {
+ box.style.display = 'none';
+ }
  },
 
  // ── 研报问答(RAG·多轮智能知识库, 2026-09-12) ──
@@ -7889,8 +8169,298 @@ const App = {
  // 【一二级菜单 2026-09-11】总表按板块分块(### 油品/能化/农产品/新能源),
  // 渲染后把每个板块标题+子表包成可折叠菜单(默认展开)。
  this._groupSectorMenus(el);
+ // 【2026-10-16】总表方向/置信度可视化：必须在"包折叠菜单"之后做(那时表格已在最终 DOM 里);
+ // ⚠ 顺序反了也能工作(菜单只包外层),但放后面语义更清楚、且不会被后续移动 DOM 影响节点引用。
+ this._decorateViewTable(el);
+ // 【2026-10-19】第二节「观点对比与冲突」：收窄分歧状态列 + 每家机构独占一行。
+ // 放在总表之后：两者定位用的表头不同(方向/置信度 vs 分歧状态/各家观点与逻辑)，互不干扰。
+ this._decorateConflictTable(el);
+ // 【2026-10-21】三/四节横向排列（左「三、可信程度分析」右「四、综合结论与关注要点」）。
+ // 放在最后：前面几处装饰只挪表格内部节点，不改 h2 层级；这里重排的是节级结构。
+ this._layoutDailyTwoCol(el);
  } catch (e) { el.innerHTML = '<span style="color:var(--red)">加载失败</span>'; }
  },
+
+// 【功能】2026-10-21 每日总结把「三、可信程度分析」与「四、综合结论与关注要点」并排
+//   （左三右四），其余节（总表 / 观点对比）保持原来的上下顺序。
+// 【为什么在渲染后改 DOM】两节在 md 里本就是顺序的两个 h2，没有"并排"语义；
+//   若改成两列表格会动 LLM 输出格式(且两节主体是有序列表)，所以只在 DOM 层重组。
+// 【定位】按**标题文本**找节，不按下标 / 字号（与总表同一纪律）⇒ 将来多一节也不会错位。
+// 【幂等】看结构(已有 .rv-twocol 就跳过)；切日期/类型会整段重渲染，容器随之消失，
+//   所以标记挂在容器上而不是 root 上(见下方说明)。
+// 【降级】只找到一节、或两节不在同一父级、或四节不在三节之后 ⇒ **原样返回**，
+//   绝不把半截内容搬进两列（宁可维持上下排列，也不出现"三在左、四没了"）。
+_layoutDailyTwoCol(root) {
+if (!root) return;
+// ★ 幂等判据必须看**结构**(已有两列容器就跳过)，不能用 root 上的 dataset：
+//   loadDailySummary 每次切日期都是 el.innerHTML = ... 重建子节点，root 属性会留下来
+//   ⇒ 拿 dataset 当闸门会让两列只在首次生效，之后静默失效(不报错，只是又变回上下排)。
+if (root.querySelector && root.querySelector('.rv-twocol')) return;
+const norm = h => (h.textContent || '').replace(/\s+/g, '');
+const hs = Array.from(root.querySelectorAll('h2'));
+const i3 = hs.findIndex(h => /^[三3]、/.test(norm(h)) && norm(h).indexOf('可信程度') >= 0);
+const i4 = hs.findIndex(h => /^[四4]、/.test(norm(h)) && norm(h).indexOf('综合结论') >= 0);
+if (i3 < 0 || i4 < 0) return;   // 顺序(四必须在三之后)由下面「必须真的走到 h4」兜住
+const h3 = hs[i3], h4 = hs[i4];
+const host = h3.parentNode;
+if (!host || host !== h4.parentNode) return;
+// ① 收第三节：h3 起、到 h4 前（必须真的走到 h4，中途断链说明结构异常）
+const nodes3 = [];
+let n = h3;
+while (n && n !== h4) { nodes3.push(n); n = n.nextElementSibling; }
+if (n !== h4) return;
+// ② 收第四节：h4 起、到下一个同级 h2 前（四节后面若还有五节，留在外面）
+const nodes4 = [];
+n = h4;
+// ★ 起点 h4 自己就是 H2，停止条件必须放行「第一项」（`n !== h4`），否则一进来就收空 ⇒ 右列变成只有标题的空壳。
+while (n) {
+if (n !== h4 && n.tagName === 'H2') break;
+nodes4.push(n);
+n = n.nextElementSibling;
+}
+const wrap = document.createElement('div');
+wrap.className = 'rv-twocol';
+wrap.dataset.rvTwoCol = '1';   // 标记挂在容器上，随下次重渲染一起清掉
+// 列宽用 auto-fit：宽屏两列均分，容器不足 700px 自动堆叠成单列（不写死断点，避免侧栏/窄窗挤成两半）。
+wrap.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));'
++ 'gap:0 24px;align-items:start;margin:4px 0';
+// ★ 先插 wrap 再搬节点：若先 appendChild 搬走 h3，h3 已不在 host 中，insertBefore 会抛 NotFoundError。
+host.insertBefore(wrap, h3);
+const mkCol = (nodes, cls) => {
+const c = document.createElement('div');
+c.className = cls;
+c.style.cssText = 'min-width:0';   // grid 子项默认 min-width:auto，长表格会撑破单列
+nodes.forEach(x => c.appendChild(x));  // appendChild 自带"从原位置移除"，无需先删
+return c;
+};
+wrap.appendChild(mkCol(nodes3, 'rv-twocol-col rv-twocol-left'));
+wrap.appendChild(mkCol(nodes4, 'rv-twocol-col rv-twocol-right'));
+},
+
+// 【功能】第二节「观点对比与冲突」：①列宽重排（分歧状态收窄、观点与逻辑扩容）；
+//   ②把「各家观点与逻辑」拆成**每家机构一段**（2026-10-19 用户要求）。
+// 【定位】按**表头文本**找列，不写死列序号（与总表同一纪律）。
+// 【★ 为什么需要拆行】LLM 在 md 里用 `<br>` 分隔各家，但 **marked 会把 GFM 表格单元格
+//   里的 inline HTML 转义成字面文本**（实测 DOM 里是 `&lt;br>`）⇒ 页面上 `<br>` 只是
+//   几个可见字符、每家机构全挤在同一段里。故渲染后还原成真正的块级段落。
+// 【安全】只识别 `br` 这一种标记并替换为等价的换行，**不做整段反转义** ⇒ 不引入注入面。
+// 【幂等】打 `dataset.cfDone`，切日期/类型会重渲染，重复调用不叠加。
+_decorateConflictTable(root) {
+if (!root) return;
+Array.from(root.querySelectorAll('table')).forEach(tbl => {
+if (tbl.dataset && tbl.dataset.cfDone === '1') return;
+const ths = Array.from(tbl.querySelectorAll('thead th'));
+const iState = ths.findIndex(th => (th.textContent || '').trim() === '分歧状态');
+const iLogic = ths.findIndex(th => (th.textContent || '').trim() === '各家观点与逻辑');
+if (iState < 0 || iLogic < 0) return;        // 只认第二节这张表，不误伤其它表格
+if (tbl.dataset) tbl.dataset.cfDone = '1';
+if (tbl.classList) tbl.classList.add('rv-conflict-tbl');
+Array.from(tbl.querySelectorAll('tbody tr')).forEach(tr => {
+const td = tr.children[iLogic];
+if (td) this._splitSourceRows(td);
+});
+});
+},
+
+// 【功能】把一个「各家观点与逻辑」单元格拆成每家一段。
+// 【切分优先级】① 真/转义的 `<br>`（LLM 的正常写法）→ ② 「机构名 + 方向(置信度)」模式
+//   （LLM 偶尔用「；」连写多家时的兜底）→ ③ 都切不开就保持原样（只有一家，不该拆）。
+_splitSourceRows(td) {
+if (!td || td.dataset.cfSplit === '1') return;
+const html = td.innerHTML || '';
+// `&lt;br>` / `&lt;br&gt;` / `<br>` / `<br/>` 全部视为分隔符
+const BR = /(?:&lt;|<)br\s*\/?(?:&gt;|>)/gi;
+const plain = s => String(s).replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+
+// 【★ 机构名词表 2026-10-19】切分锚点必须用**明确的机构名**，不能靠「2~8 个中文字符」这种
+//   模糊通配：贪婪匹配会让「国泰君安 看空(70%)」在「国」「泰」「君安」三处都成立，
+//   于是把名称切成三段（用户反馈过"名称被拆成三行"）。词表按**长名在前**排列，
+//   保证「国泰君安」先于「国泰」命中。
+const SRC = '国泰君安|紫金天风|混沌天成|物产中大|中信期货|南华期货|兴业期货|东海期货'
++ '|国投安信|方正中期|中泰期货|瑞达期货|新湖期货|广发期货|申万期货|宏源期货'
++ '|华泰|永安|东证|中信|隆众|国君|国泰|紫金|混沌|新湖|广发|宏源|申万|国投|方正|中泰|瑞达|南华|兴业|东海';
+const DIR = '看多|看空|中性|偏多|偏空|震荡|谨慎';
+// 切分点：机构名 + 方向 + (数字%)；lookahead 保留机构名本身，切在它**前面**
+const SPLITTER = new RegExp('(?=(?:' + SRC + ')\\s*(?:' + DIR + ')\\s*[(（]\\s*\\d+\\s*%)', 'g');
+// 段首判据（允许序号/项目符号前缀：「① 华泰 看多」「1. 华泰 看多」）
+const HEAD = new RegExp('^[\\s\u2460-\u2473 0-9.、\\-·]*(?:' + SRC + ')\\s*(?:' + DIR + ')');
+
+// ① 先按 <br> 粗切
+let parts = html.split(BR).map(x => x.trim()).filter(Boolean);
+// ② ★ 再对**每一段内部**切 —— LLM 会漏写 <br>，把两家粘成一段
+//   （旧实现只在 heads<2 时兜底 ⇒ "前两家正常、第二三家粘连"这种永远修不到）
+parts = parts.flatMap(x => x.split(SPLITTER).map(s => s.trim()).filter(Boolean));
+
+// ②b 【前缀归并 2026-10-19】「① 华泰 看多」会在「华泰」前切一刀，把序号单独切出来
+//   ⇒ 只由序号/数字/标点/空白组成的段，并入**下一段**开头（不在正则里硬解，前缀形态太多）。
+const prefixOnly = /^[\s①-⑳ 0-9.、\-·()（）]*$/;
+const merged = [];
+let carry = '';
+for (const seg of parts) {
+if (prefixOnly.test(seg)) { carry += seg + ' '; continue; }
+merged.push((carry + seg).trim());
+carry = '';
+}
+if (carry.trim()) merged.push(carry.trim());
+parts = merged.filter(Boolean);
+
+// ③ 数**真正的家数**：段首是「机构名 + 方向」
+const heads = parts.filter(x => HEAD.test(plain(x))).length;
+if (heads < 2) {
+// 只有一家（或结构不符合"多家"）⇒ 不拆段、**不加分隔线**；
+// 但要把 marked 转义出来的字面 <br> 还原成真换行（否则页面上会看到 "<br>" 这几个字符）。
+if (parts.length >= 2) {
+td.dataset.cfSplit = '1';
+td.innerHTML = parts.join('<br>');
+}
+return;
+}
+td.dataset.cfSplit = '1';
+td.classList.add('cf-cell');
+td.innerHTML = parts.map(x => '<div class="cf-row">' + x + '</div>').join('');
+},
+
+// 【功能】把「当日/本周/本季观点总表」的方向列与置信度列转成可视化(2026-10-16 用户要求)。
+// 【★ 为什么用"渲染后处理"而不改后端 markdown】该表是**后端代码生成的 markdown** 并落盘(.md);
+//   改后端要**重跑 LLM 总结**才生效,而且会往原文 md 里塞 HTML(污染落盘件、影响后续导出/对比)。
+//   后处理对**已生成**的总结立即生效、不动数据、随时可回退。
+// 【定位方式】按**表头文本**找列,不写死列序号(列顺序变了也不会错位);
+//   且要求**同时**存在「方向」与「置信度」两列 ⇒ 只认观点总表,不误伤二~四节的其它表格。
+// 【幂等】整表打 `dataset.vizDone` 标记 —— 切换日期/类型会重渲染,重复调用不会叠加样式。
+_decorateViewTable(root) {
+if (!root) return;
+Array.from(root.querySelectorAll('table')).forEach(tbl => {
+if (tbl.dataset && tbl.dataset.vizDone === '1') return;
+const ths = Array.from(tbl.querySelectorAll('thead th'));
+const iDir = ths.findIndex(th => (th.textContent || '').trim() === '方向');
+const iConf = ths.findIndex(th => (th.textContent || '').trim() === '置信度');
+if (iDir < 0 || iConf < 0) return;
+// 【2026-10-19】打总表标记：列宽重排规则只认这个 class，避免波及列序不同的其它表格。
+// ⚠ 必须在 _clampLongCell 测量**之前**加 —— 列宽变了，"4 行是否放得下"的结论也会变。
+if (tbl.classList) tbl.classList.add('rv-views-tbl');
+if (tbl.dataset) tbl.dataset.vizDone = '1';
+// 【长文本列 2026-10-16】按**表头文本**定位（同"方向/置信度"的纪律：不写死列序号）
+const iLong = ths.map((th, k) => ({ k, t: (th.textContent || '').trim() }))
+.filter(x => x.t === '一句话核心观点' || x.t === '头寸建议').map(x => x.k);
+// 【发行方列 2026-10-19】用户要求：发行方也纵向排列，且与**自己的**方向/置信度逐行对应。
+// ★ 家数以**发行方**为准（它是"几家机构"的权威列）：先渲染发行方拿到 n，
+//   再让方向/置信度按 n 补齐 —— 否则数据少一项时整列错位、页面不报错。
+const iSrc = ths.findIndex(th => (th.textContent || '').trim() === '发行方');
+Array.from(tbl.querySelectorAll('tbody tr')).forEach(tr => {
+const tds = tr.children;
+const n = (iSrc >= 0 && tds[iSrc]) ? this._vizSourceCell(tds[iSrc]) : 0;
+if (tds[iDir]) this._vizDirCell(tds[iDir], n);
+if (tds[iConf]) this._vizConfCell(tds[iConf], n);
+iLong.forEach(k => { if (tds[k]) this._clampLongCell(tds[k]); });
+});
+});
+},
+
+// 【功能】长文本单元格 → 默认收 4 行 + 「展开全文」（仅**显示**层，不改内容）。
+// 【★ 判据 2026-10-19 改为"是否真被裁"（scrollHeight > clientHeight）】
+//   原判据是**字符数阈值（>120）**，与列宽无关：宽列（观点 800px，每行约 50 字）
+//   明明 4 行放得下也长出按钮，窄列（头寸 300px）放不下反而没有按钮。
+//   几何判据在**折叠容器**内确实测不出（clientHeight=0），此时**一律给按钮**：
+//   失败方向必须是"多一个按钮"，绝不能是"全文不可达"。
+// 【为什么必须给按钮】只做 clamp 而不给入口，用户会以为"还是被截断了"
+//   —— 本次改动的目的正是让完整内容**可达**。
+_clampLongCell(td) {
+if (!td || td.dataset.clamped === '1') return;   // 幂等：切日期会重渲染，但同一次内防重复包裹
+const txt = (td.textContent || '').trim();
+if (!txt || txt === '—') return;
+td.dataset.clamped = '1';
+td.classList.add('rv-long');
+const box = document.createElement('div');
+box.className = 'clamp3';
+while (td.firstChild) box.appendChild(td.firstChild);   // 保留原有 HTML（含 <br> 等）
+td.appendChild(box);
+// 【判据 2026-10-19：字符数 → 几何】原 `txt.length <= 120 return` 与列宽无关：
+//   宽列（观点）明明 4 行放得下也长出按钮，窄列（头寸）放不下反而没有按钮。
+//   正确判据是"**是否真被裁**"（scrollHeight > clientHeight）。
+//   ⚠ 但折叠容器内 clientHeight=0 ⇒ 测不出来 ⇒ 此时**一律给按钮**：
+//     失败方向必须是"多一个按钮"，绝不能是"全文不可达"（那才是用户看到的"又被截断了"）。
+const invisible = box.clientHeight === 0;
+const clipped = invisible ? true : (box.scrollHeight > box.clientHeight + 2);
+if (!clipped) {
+// 没被裁 ⇒ 还原 DOM（别让这格莫名其妙多一层 div/变成可点）
+while (box.firstChild) td.insertBefore(box.firstChild, box);
+box.remove();
+td.classList.remove('rv-long');
+td.dataset.clamped = '0';
+return;
+}
+const btn = document.createElement('button');
+btn.type = 'button';
+btn.className = 'clamp-toggle';
+btn.textContent = '展开全文 ▾';
+btn.addEventListener('click', (e) => {
+e.preventDefault();
+e.stopPropagation();                             // 别让点击冒泡到行/单元格的其它处理
+const on = td.classList.toggle('open');
+btn.textContent = on ? '收起 ▴' : '展开全文 ▾';
+});
+td.appendChild(btn);
+},
+
+// 【功能】方向单元格 → 分色 chip：看多=红 / 看空=绿 / 中性=琥珀(中国市场惯例)。
+// 【输入】形如「看空 / 看空」「中性 / 看多」「看多」，无研报时是「—」。
+// 【★ 为什么按 " / " 拆开】总表把**多家机构**合在一行,与「发行方」列用同一分隔符一一对应
+//   ⇒ 拆开逐个上色,才能一眼看出"华泰看多、国泰君安看空"这种分歧(合成一个色反而掩盖分歧)。
+_vizSourceCell(td) {
+// 【功能】发行方单元格 → 纵向逐机构一项（与方向/置信度第 k 项同高，天然对应）。
+// 【返回】家数 n（方向/置信度按它补齐；无研报返回 0）。
+const raw = (td.textContent || '').trim();
+if (!raw || raw === '—') return 0;
+const parts = raw.split(/\s*\/\s*/).filter(Boolean);
+if (!parts.length) return 0;
+td.classList.add('rv-vstack');
+td.innerHTML = '<span class="rv-stack">' + parts.map(p =>
+'<span class="src-item" title="' + this._escHtml(p) + '">' + this._escHtml(p) + '</span>'
+).join('') + '</span>';
+return parts.length;
+},
+
+_vizDirCell(td, n) {
+const raw = (td.textContent || '').trim();
+if (!raw || raw === '—') return;
+const parts = raw.split(/\s*\/\s*/).filter(Boolean);
+if (!parts.length) return;
+td.classList.add('rv-vstack');
+const chips = parts.map(p => {
+const cls = p.includes('多') ? 'up' : (p.includes('空') ? 'down' : 'flat');
+return '<span class="dir-chip ' + cls + '">' + this._escHtml(p) + '</span>';
+});
+// 【补齐 2026-10-19】发行方 3 家而方向只拆出 2 个（脏数据/分隔符异常）时补**不可见占位**。
+//   ⚠ 不能用 display:none：高度塌陷会让后续项整体上移 ⇒ 与发行方整列错位。
+const total = Math.max(n || 0, chips.length);
+while (chips.length < total) chips.push('<span class="dir-chip ghost">·</span>');
+td.innerHTML = '<span class="dir-chips">' + chips.join('') + '</span>';
+},
+
+// 【功能】置信度单元格 → 迷你进度条 + 百分比。长度=数值高低,颜色=强度档位(高红/中琥珀/低绿)。
+// 【输入】形如「72% / 63%」(后端已把 0~1 小数转成百分数字符串)，研报未给时为「—」。
+// 【★ 不拿 0 冒充缺失】「—」原样保留(灰色),**不画空进度条** ——
+//   否则"研报没给置信度"会被读成"给了个 0 分",那是编造。
+_vizConfCell(td, n) {
+const raw = (td.textContent || '').trim();
+if (!raw || raw === '—') return;
+const parts = raw.split(/\s*\/\s*/).filter(Boolean);
+if (!parts.length) return;
+td.classList.add('rv-vstack');
+const bars = parts.map(p => {
+const m = String(p).match(/(\d+(?:\.\d+)?)\s*%/);
+if (!m) return '<span style="color:var(--text-muted)">' + this._escHtml(p) + '</span>';
+const v = Math.max(0, Math.min(100, Math.round(parseFloat(m[1]))));
+const col = v >= 70 ? 'var(--red)' : (v >= 40 ? 'var(--amber)' : 'var(--green)');
+return '<span class="conf-bar" title="研报观点识别置信度 ' + v + '%（观点表述越明确越高，不是行情胜率）">'
++ '<span class="track"><span class="fill" style="width:' + v + '%;background:' + col + '"></span></span>'
++ '<span class="pct" style="color:' + col + '">' + v + '%</span></span>';
+});
+// 同方向列：按发行方家数补齐不可见占位，保证第 k 项与发行方第 k 家严格同行
+const total = Math.max(n || 0, bars.length);
+while (bars.length < total) bars.push('<span class="conf-bar ghost">·</span>');
+td.innerHTML = '<span class="conf-bars">' + bars.join('') + '</span>';
+},
 
  // 【功能】把容器内"板块 h3 + 后续表格"包成 expander 折叠菜单(默认展开)。
  // 【输入】container: 渲染完 md 的根元素 【渲染】h3 隐藏, 其后兄弟元素进 expander-body
@@ -8368,6 +8938,10 @@ const App = {
  this._populateVarietySelects(['res-upload-variety', 'res-filter-variety', 'ud-upload-variety']);
  this._fillCollectVarietyList(); // 【采集品种面板】进入数据仓库页时懒填充勾选列表
  await this.refreshResearchList();
+ // 【2026-10-16】采集通道巡检:通道断了要让用户**在页面上**看见(此前只写 alerts 表)。
+ // ⚠ 必须挂**本页**(#res-ingest-status 在研报库卡内); 挂到研报问答页等于永不执行 ——
+ //   容器那边不存在, getElementById 返回 null 直接 return, 静态断言还照样绿(实测踩到)。
+ this._loadIngestStatus();
  await this.loadUserDatasets(); // 【自传数据】进入数据仓库页时刷新列表
  this.refreshStuckCount(); // 【一键修复】刷新「观点生成失败」占位计数
  },
@@ -8459,9 +9033,18 @@ const App = {
  }
  }
  const _dateTxt = rtype === '季报' ? this._quarterLabel(d.date) : d.date;
- if (elCount) elCount.textContent = d.date ? `${rtype ? rtype + ' ' : ''}${d.rows.length} 份 · ${d.dates.length} 个${rtype === '季报' ? '季度' : '日期'}` : '';
+ // 【2026-10-21 口径变更】缺省 = 每家发行方各取最新一期（周报机构不再被日内日报挤掉）。
+ //   此时表里是**跨日期**混排，不能再写"研报日期 XXX"，改写成区间 + 说明。
+ const _perSrc = !rtype && !!d.latest_per_source;
+ const _nSrc = new Set(d.rows.map(x => x.source)).size;
+ const _span = d.span || {};
+ if (elCount) elCount.textContent = d.date
+ ? (_perSrc ? `${_nSrc} 家 · ${d.rows.length} 份` : `${rtype ? rtype + ' ' : ''}${d.rows.length} 份 · ${d.dates.length} 个${rtype === '季报' ? '季度' : '日期'}`)
+ : '';
  if (elNote) elNote.textContent = d.date
- ? `${d.name}(${d.variety}) · 研报${rtype === '季报' ? '季度' : '日期'} ${_dateTxt}${rtype ? ` · 仅${rtype}结论` : ''}: 各发行方对它的方向与观点要点。同一品种同${rtype === '季报' ? '季' : '日'}可能多份(如覆盖多个子品种), 点标题看完整两段式结论。 —为研报未披露。`
+ ? (_perSrc
+ ? `${d.name}(${d.variety}) · 各家最新一期（${_span.oldest || _dateTxt} ~ ${_dateTxt}）：每家取各自最新观点，只发周报的机构（如永安）不会被日内日报挤掉；行上日期为该期研报发布日，点标题看完整两段式结论。 —为研报未披露。`
+ : `${d.name}(${d.variety}) · 研报${rtype === '季报' ? '季度' : '日期'} ${_dateTxt}${rtype ? ` · 仅${rtype}结论` : ''}: 各发行方对它的方向与观点要点。同一品种同${rtype === '季报' ? '季' : '日'}可能多份(如覆盖多个子品种), 点标题看完整两段式结论。 —为研报未披露。`)
  : '';
  if (!el) return;
  if (!d.date) {
@@ -8469,12 +9052,15 @@ const App = {
  return;
  }
  if (!d.rows.length) {
- el.innerHTML = `<span style="color:var(--text-muted)">${esc(_dateTxt)} ${rtype === '季报' ? '本季' : '当日'}无研报, 请在${rtype === '季报' ? '季度' : '日期'}栏换一个。</span>`;
+ el.innerHTML = `<span style="color:var(--text-muted)">${esc(_dateTxt)} 无研报。</span>`;
  return;
  }
  const isNum = x => typeof x === 'number' && isFinite(x);
- const chipBg = x => x === '看多' ? 'var(--green-bg)' : x === '看空' ? 'var(--red-bg)' : 'var(--amber-bg)';
- const chipColor = x => x === '看多' ? 'var(--green)' : x === '看空' ? 'var(--red)' : 'var(--amber)';
+// 【配色统一 2026-10-16 用户定】中国市场惯例: 看多=红、看空=绿、中性=琥珀。
+// ⚠ 原来写反了(看多绿/看空红) ⇒ 与研报总结的「当日观点总表」不一致(同一份研报两处不同色),
+//   用户报障后统一到本约定;改这里同时影响"发行方"列前的小圆点(同一语义,应当同色)。
+const chipBg = x => x === '看多' ? 'var(--red-bg)' : x === '看空' ? 'var(--green-bg)' : 'var(--amber-bg)';
+const chipColor = x => x === '看多' ? 'var(--red)' : x === '看空' ? 'var(--green)' : 'var(--amber)';
  // 头寸列(2026-09-05 合并原 单边/区间+头寸+研报建议 三列, 后端已语义去重):研报自己的表述, 缺 → '—'; 建议(LLM) 列另见 th 说明
  const txtCell = (v, maxW) => v
  ? `<td style="max-width:${maxW}px;font-size:0.75rem;line-height:1.45;color:var(--text)" title="${esc(v)}">${esc(v)}</td>`
@@ -8482,8 +9068,10 @@ const App = {
  const confCell = c => {
  if (!isNum(c)) return '<span style="color:var(--text-muted)">—</span>';
  const pct = Math.max(0, Math.min(100, Math.round(c * 100)));
- const col = c >= 0.7 ? 'var(--green)' : c >= 0.4 ? 'var(--amber)' : 'var(--red)';
- return `<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:56px;height:5px;border-radius:3px;background:var(--bg-input);display:inline-block;overflow:hidden"><span style="display:block;height:100%;width:${pct}%;background:${col}"></span></span><span style="color:var(--text-secondary);font-size:0.75rem;font-variant-numeric:tabular-nums">${pct}%</span></span>`;
+// 【强度色 2026-10-16 用户定】高=红 / 中=琥珀 / 低=绿(与中国「红=强」的观感一致)。
+// ⚠ 长度表示数值高低,颜色只标强度档位 —— tooltip 里写明它**不是**行情胜率,免得与方向色混淆。
+const col = c >= 0.7 ? 'var(--red)' : c >= 0.4 ? 'var(--amber)' : 'var(--green)';
+ return `<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:56px;height:5px;border-radius:3px;background:var(--bg-input);display:inline-block;overflow:hidden"><span style="display:block;height:100%;width:${pct}%;background:${col}"></span></span><span style="color:${col};font-size:0.75rem;font-variant-numeric:tabular-nums" title="研报观点识别置信度 ${pct}%（观点表述越明确越高，不是行情胜率）">${pct}%</span></span>`;
  };
  el.innerHTML = `<table class="rv-tbl">
  <thead><tr>
@@ -8561,7 +9149,7 @@ const App = {
  const legend = '— 研报未披露。头寸列 = 研报的单边/区间 + 头寸/仓位 + 原文操作建议合并(语义去重);LLM 建议列是系统 LLM 基于研报观点生成的权重建议(非研报原文)。仅供研究参考, 非交易建议。';
  const stamp = new Date().toLocaleString('zh-CN', { hour12: false });
  const head = `<div style="border-bottom:2px solid ${C.brand};padding-bottom:8px;margin-bottom:2px">
- <div style="font-size:1.0625rem;font-weight:800;color:${C.text};line-height:1.4">逐品种观点总览 · ${esc(d.name || code)}(${esc(code)}) · 研报日期 ${esc(d.date)}</div>
+ <div style="font-size:1.0625rem;font-weight:800;color:${C.text};line-height:1.4">逐品种观点总览 · ${esc(d.name || code)}(${esc(code)}) · ${d.latest_per_source ? `各家最新一期（${esc((d.span || {}).oldest || '')} ~ ${esc(d.date)}）` : `研报日期 ${esc(d.date)}`}</div>
  <div style="font-size:0.75rem;color:${C.muted};margin-top:3px">${esc(legend)}</div>
  <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">${d.rows.length} 份 · AgentSense 研报观点 · 生成于 ${esc(stamp)}</div>
  </div>`;
@@ -8578,7 +9166,7 @@ const App = {
  : `<td style="padding:6px 8px;white-space:nowrap"><span style="display:inline-block;background:${confColor(rp.confidence)};color:#fff;font-size:0.75rem;font-weight:700;padding:1px 9px;border-radius:999px;font-variant-numeric:tabular-nums">${pct}%</span></td>`;
  return `<tr style="vertical-align:top">
  <td style="padding:6px 8px;white-space:nowrap;font-weight:700;color:${C.text};font-size:0.75rem;border-bottom:1px solid ${C.line}">${esc(rp.source)}</td>
- <td style="padding:6px 8px;color:${C.sub};font-size:0.75rem;border-bottom:1px solid ${C.line}"><span style="color:var(--brand);font-weight:600">${esc(rp.title)}</span>${covers}</td>
+ <td style="padding:6px 8px;color:${C.sub};font-size:0.75rem;border-bottom:1px solid ${C.line}"><span style="color:var(--brand);font-weight:600">${esc(rp.title)}</span>${covers}${(rp.publish_date || rp.uploaded_at) ? `<div style="color:${C.muted};font-size:0.7rem;margin-top:2px">${esc(String(rp.publish_date || '').slice(0, 10) || String(rp.uploaded_at || '').slice(0, 10))}</div>` : ''}</td>
  <td style="padding:6px 8px;white-space:nowrap;border-bottom:1px solid ${C.line}"><span style="font-weight:800;color:${dirCol(rp.direction)};font-size:0.75rem">${esc(rp.direction)}</span></td>
  ${confTd}
  ${txtTd(rp.trade)}${txtTd(rp.advice)}
@@ -8812,7 +9400,7 @@ const App = {
  + `<td style="padding:5px 8px;white-space:nowrap;color:${pctColor(ind.pct)}">${ind.pct == null ? '—' : ind.pct + '%'}</td>`
  + `<td style="padding:5px 8px;white-space:nowrap;color:var(--text-secondary)">${fmt(ind.lo)} ~ ${fmt(ind.hi)}</td>`
  + `<td style="padding:5px 8px">${ind.n ?? 0} <span style="color:var(--text-muted);font-size:0.75rem">${esc(ind.pct_scope || '')}</span></td>`
- + `<td style="padding:5px 8px"><button class="btn btn-outline btn-sm" onclick="App.showGtjaIndicator(${i})">查看</button></td>`
+ + `<td style="padding:5px 8px"><button class="btn btn-outline btn-sm" onclick="App.showGtjaIndicator(${i}, true)">查看</button></td>`
  + `</tr>`;
  }).join('');
  el.innerHTML = `<table style="border-collapse:collapse;font-size:0.8125rem;width:100%">`
@@ -8838,11 +9426,13 @@ const App = {
  setTimeout(() => this._resizeAllCharts(), 80);
  },
 
- // 【功能】把某个指标画成走势图 + 明细表(点击指标行的「查看」)
- // 【输入】i: 指标在 d.indicators 里的下标 【渲染】#gt-chart/#gt-table 【后端】无
+ // 【功能】把某个指标画成季节性图 + 明细表(点击指标行的「查看」)
+ // 【输入】i: 指标下标; expandDetail: true=同时下拉展开「明细数据」
+ // (2026-10-19: 明细默认折叠, 只有用户**主动点「查看」**才展开 —— 进页自动渲染不传此参)
+ // 【渲染】#gt-chart/#gt-table/#gt-detail-expander 【后端】无
  // 【2026-09-30 三卡合并】两块容器现与总览表同在 ③ 一张卡内, 点「查看」结果**就地**出现,
  // 不再需要 _gtEnsureVisible 去展开兄弟折叠块(那样反而会滚走当前视线)。
- showGtjaIndicator(i) {
+ showGtjaIndicator(i, expandDetail) {
  const d = this._gtState.overview;
  if (!d) return;
  const ind = (d.indicators || [])[i];
@@ -8851,61 +9441,298 @@ const App = {
  const rows = document.querySelectorAll('#gt-indicators tbody tr');
  rows.forEach((tr, k) => { tr.style.background = (k === i) ? 'var(--bg-hover,rgba(127,127,127,.08))' : ''; });
  this._gtState.activeInd = ind;
+ // 主动点「查看」才展开明细(自动渲染不传 ⇒ 保持收起)
+ if (expandDetail) this.toggleGtjaDetail(true);
  this._renderGtjaChart(ind);
  this._renderGtjaTable(ind);
  setTimeout(() => this._resizeAllCharts(), 90);
  },
 
- // 【功能】渲染单指标走势图(折线 + 面积, 均线参考)
- // 【输入】ind: 指标对象(含 series:[[date,value],...]) 【渲染】#gt-chart 【后端】无
+ // 【功能】展开/收起「明细数据」折叠栏(2026-10-19)
+ // 【输入】force: true=展开 / false=收起 / 省略=切换 【渲染】#gt-detail-expander
+ // 【返回】展开后的状态(容器不存在 → false, 不抛)
+ // 【为什么单独一个方法】表头点击与「查看」按钮两条入口要共用同一状态机;
+ // 各写一份 el.classList.toggle 迟早出现"点了表头状态与按钮不同步"。
+ toggleGtjaDetail(force) {
+ const el = document.getElementById('gt-detail-expander');
+ if (!el) return false;
+ const open = (force === undefined) ? !el.classList.contains('open') : !!force;
+ el.classList.toggle('open', open);
+ // 提示语跟着状态走(否则展开后还写着"点击展开", 用户会以为点了没反应)
+ const hint = document.getElementById('gt-detail-hint');
+ if (hint) hint.textContent = open ? '点击收起' : '点击展开';
+ return open;
+ },
+
+ // 【功能】渲染单指标「季节性图」(按年同比) —— 2026-10-19 用户要求把走势图改为季节性图表,
+ // 绘图口径照搬桌面「季节性图绘制包」(聚酯周报 PDF 那套): x=年内天数、每年一条线、
+ // 当年粗线、历史年细线半透明、最新点标注「值 (±变化)」、Y=0 粉色基准线、月份轴。
+ // 【为什么分两步画】ind.series 只有最近 250 点(默认 175 天) ⇒ 天生只有 1 个年份。
+ // ① 先用它立刻出图(点「查看」马上有反馈); ② 再拉 /api/gtja/seasonal 拿多年历史重画。
+ // 弱网/接口失败时至少留一张单年图, 不会白屏(这是本项目"空态优于假数据"的一贯口径)。
+ // 【输入】ind: 指标对象(含 id/series) 【渲染】#gt-chart 【后端】GET /api/gtja/seasonal
  _renderGtjaChart(ind) {
  const badge = document.getElementById('gt-chart-badge');
  const noteEl = document.getElementById('gt-chart-note');
  const c = this._initChart('gt-chart');
  if (!c) return;
+ // ★ 序号必须在**每次渲染的最开头**自增: 若放在取数前自增, 点到一个"无序列点"的指标时
+ // 会提前 return 而不自增 ⇒ 上一个指标的在途请求照样命中旧 seq, 把旧数据画到新空态上(实测推导)。
+ const seq = (this._gtState.chartSeq = (this._gtState.chartSeq || 0) + 1);
  const esc = s => this._escHtml(s == null ? '' : String(s));
- const textColor = CHART.axis;
- const gridColor = CHART.grid;
  if (badge) badge.textContent = `${ind.group} · ${ind.label}`;
  const series = ind.series || [];
  if (!series.length) {
  c.clear();
  c.setOption({ backgroundColor: 'transparent',
  title: { text: '该指标无序列点', left: 'center', top: 'middle',
+ textStyle: { color: CHART.axis, fontSize: 13, fontWeight: 'normal' } } }, true);
+ if (noteEl) noteEl.innerHTML = '<span style="color:var(--amber)">该指标没有可绘制的数值点'
+ + '(与"取数失败"不同: 上游正常应答, 但这条口径没有数值)</span>';
+ return;
+ }
+ // ① 本地单年图(立即反馈)
+ const local = this._seasonalFromSeries(series);
+ this._drawGtjaSeasonal(c, ind, local);
+ const nLocal = Object.keys(local.years || {}).length;
+ if (noteEl) {
+ noteEl.innerHTML = `${esc(ind.label)}${ind.unit ? `(${esc(ind.unit)})` : ''}`
+ + ` · 季节性图 · 当前窗口 ${series.length} 点 · ${nLocal} 个年份`
+ + ` · 分位 ${ind.pct == null ? '—' : ind.pct + '%'}(${esc(ind.pct_scope || '')})`
+ + ' · 正在补取多年历史…';
+ }
+ // ② 多年历史(异步升级; 序号防串: 期间切了指标就丢弃本次结果)
+ const variety = (this._gtState.overview || {}).variety || '';
+ if (!ind.id || !variety || typeof fetch !== 'function') return;
+ fetch(`/api/gtja/seasonal?variety=${encodeURIComponent(variety)}&id=${encodeURIComponent(ind.id)}`)
+ .then(r => r.json())
+ .then(d => {
+ if (seq !== this._gtState.chartSeq) return; // 已切到别的指标 ⇒ 本次结果作废
+ if (!d || d.ok !== true || !d.years || !Object.keys(d.years).length) {
+ if (noteEl) noteEl.innerHTML += `<br><span style="color:var(--amber)">多年历史未取到: `
+ + `${esc((d && d.error) || '无数据')} —— 上图仅当前窗口</span>`;
+ return;
+ }
+ this._drawGtjaSeasonal(c, ind, d);
+ this._gtSeasonalNote(ind, d, noteEl);
+ })
+ .catch(() => {
+ if (noteEl) noteEl.innerHTML += '<br><span style="color:var(--amber)">'
+ + '多年历史请求失败 —— 上图仅当前窗口</span>';
+ });
+ },
+
+ // 【功能】把 [[日期, 值], ...] 转成季节性结构(与后端 to_seasonal_years 同口径)
+ // 【输入】series: [['2026-10-16', 7000], ...] 【返回】{years:{年:[[doy,val]]}, latest:{doy,val,diff}}
+ // 【为什么前端也要一份】后端多年数据到位前先用本地窗口出图(gitja 基差默认只有 175 天)。
+ _seasonalFromSeries(series) {
+ const flat = [];
+ (series || []).forEach(p => {
+ const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String((p && p[0]) || ''));
+ // 【2026-10-21】Number(null) === 0 ⇒ 空值会被当成「0」这个真实读数画上去
+ //   （社会库存 / 仓单的缺口很常见）。必须先判空再转数。
+ const _raw = p && p[1];
+ const v = (_raw === null || _raw === undefined || _raw === '') ? NaN : Number(_raw);
+ if (m && isFinite(v)) {
+ flat.push({ y: +m[1], doy: this._doyOf(+m[1], +m[2], +m[3]), v: v });
+ }
+ });
+ flat.sort((a, b) => (a.y - b.y) || (a.doy - b.doy));
+ const by = {};
+ flat.forEach(p => { (by[p.y] = by[p.y] || {})[p.doy] = p.v; }); // 同日重复: 后值覆盖
+ const years = {};
+ Object.keys(by).sort().forEach(y => {
+ years[y] = Object.keys(by[y]).map(Number).sort((a, b) => a - b)
+ .map(d => [d, by[y][d]]);
+ });
+ let latest = null;
+ if (flat.length) {
+ const a = flat[flat.length - 1];
+ latest = { doy: a.doy, val: a.v,
+ diff: flat.length > 1 ? +(a.v - flat[flat.length - 2].v).toFixed(6) : null };
+ }
+ return { years: years, latest: latest };
+ },
+
+ // 【功能】日期 → 年内天数(0 基), 闰年对齐到非闰年轴(2/29 之后 -1)
+ // 【为什么】季节性图是"不同年份同一天并排看"; 不对齐的话闰年 3/1 会落到平年 2/29 的位置,
+ // 整条曲线从 3 月起错位一格(与后端 _doy 同一口径, 前端本地出图不能算成另一套)。
+ _doyOf(y, mo, da) {
+ const d0 = Math.round((Date.UTC(y, mo - 1, da) - Date.UTC(y, 0, 1)) / 86400000);
+ const leap = (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
+ return Math.max(0, Math.min(365, (leap && d0 > 59) ? d0 - 1 : d0));
+ },
+
+ // 【功能】年份 → 线色(照搬「季节性图绘制包」season_colors.py 的 6 色映射)
+ // 2021 黑 / 2022 橙 / 2023 紫 / 2024 蓝 / 2025 绿 / 2026 红(当年)。
+ // 【为什么色表写在函数内】它是纯常量, 不依赖 this/主题之外的状态 —— 内联后本方法
+ // 可被测试**单独抽取**执行(harness 按方法名抠源码, 不会带上对象里的兄弟字段)。
+ // 【暗色】2021 的纯黑在暗色底上不可见 ⇒ 走 CHART.seasonBlack(主题跟随, 可被重染)。
+ _seasonColor(y) {
+ // 暗色：照搬「季节性图绘制包」season_colors.py 的 6 色映射
+ const YCOL = { 2021: '#000000', 2022: '#FFC000', 2023: '#70449F',
+ 2024: '#00B0F0', 2025: '#00B050', 2026: '#FF0000' };
+ // 【2026-10-21】亮色主题下 #00B0F0 / #00B050 的白底对比度只有 2.48 / 2.87（<3），
+ //   实测截图里两条年份线淡到几乎看不见。保持色相不变、压深一档 ——
+ //   "蓝=2024 / 绿=2025" 的年份语义不变，只是白底可读。
+ const YCOL_LIGHT = { 2021: '#595959', 2022: '#B8860B', 2023: '#5B3B85',
+ 2024: '#007BA6', 2025: '#00703C', 2026: '#C00000' };
+ const EXTRA = ['#8C8C8C', '#C0504D', '#4F81BD', '#9BBB59', '#8064A2', '#4BACC6'];
+ const k = String(y);
+ // document 在 harness(Node 桩)里可能不存在 ⇒ 与 seasonBlack 一样用 try 兜底
+ let _light = false;
+ try { _light = (document.documentElement.getAttribute('data-theme') === 'light'); } catch (e) {}
+ const MAP = _light ? YCOL_LIGHT : YCOL;
+ if (Object.prototype.hasOwnProperty.call(MAP, k)) {
+ return (k === '2021' && !_light) ? CHART.seasonBlack : MAP[k];
+ }
+ return EXTRA[Math.abs(parseInt(k, 10) || 0) % EXTRA.length];
+ },
+
+ // 【功能】按季节性结构绘制 ECharts 图(纯渲染; 不取数)
+ // 【输入】c: 图表实例; ind: 指标; data: {years:{年:[[doy,val]]}, latest:{doy,val,diff}}
+ // 【渲染】#gt-chart 【后端】无
+ _drawGtjaSeasonal(c, ind, data) {
+ if (!c) return;
+ const textColor = CHART.axis;
+ const gridColor = CHART.grid;
+ const yearsObj = (data && data.years) || {};
+ const ys = Object.keys(yearsObj).filter(y => (yearsObj[y] || []).length).sort();
+ if (!ys.length) {
+ c.clear();
+ c.setOption({ backgroundColor: 'transparent',
+ title: { text: '该指标无序列点', left: 'center', top: 'middle',
  textStyle: { color: textColor, fontSize: 13, fontWeight: 'normal' } } }, true);
  return;
  }
- const dates = series.map(p => p[0]);
- const vals = series.map(p => p[1]);
- const up = vals[vals.length - 1] >= vals[0];
- const lineColor = up ? CHART.up : CHART.down; // 涨红跌绿(国内惯例)
+ const curY = ys[ys.length - 1];
+ // 月份轴: 与包里一致, 以非闰年为基准的月首天数, 标签 1月~12月
+ const M_START = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+ const xLabels = new Array(366).fill('');
+ M_START.forEach((d, i) => { xLabels[d] = (i + 1) + '月'; });
+ const mdLabel = idx => {
+ const i = Math.max(0, Math.min(365, idx | 0));
+ let mo = 11;
+ for (let k = 0; k < 12; k++) { if (i >= M_START[k]) mo = k; }
+ return (mo + 1) + '月' + (i - M_START[mo] + 1) + '日';
+ };
+ const fmt = v => {
+ const n = Number(v);
+ if (!isFinite(n)) return '—';
+ return Math.abs(n) >= 1000
+ ? n.toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+ : String(+n.toFixed(2));
+ };
+ const fmtAxis = v => {
+ const n = Number(v);
+ if (!isFinite(n)) return '';
+ const a = Math.abs(n);
+ if (a >= 1000) return n.toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+ if (a >= 1) return String(+n.toFixed(1));
+ return String(+n.toPrecision(2));
+ };
+ // ── Y 范围: 聚焦当年(与包内 "当年 span < 全量 45% 时聚焦" 同一思路) ──
+ const allVals = [], curVals = [];
+ ys.forEach(y => (yearsObj[y] || []).forEach(p => {
+ const v = Number(p[1]);
+ if (isFinite(v)) { allVals.push(v); if (y === curY) curVals.push(v); }
+ }));
+ let ymin = null, ymax = null;
+ if (allVals.length) {
+ const lo = Math.min.apply(null, allVals), hi = Math.max.apply(null, allVals);
+ const span = hi - lo;
+ if (curVals.length && span > 0) {
+ const clo = Math.min.apply(null, curVals), chi = Math.max.apply(null, curVals);
+ const cspan = chi - clo;
+ if (cspan > 0 && cspan < span * 0.45) {
+ const pad = Math.max(cspan * 0.18, Math.abs(chi - clo) * 0.02);
+ ymin = clo - pad; ymax = chi + pad;
+ }
+ }
+ if (ymin == null) {
+ const pad = span > 0 ? span * 0.06 : Math.max(Math.abs(hi) * 0.06, 0.4);
+ ymin = lo - pad; ymax = hi + pad;
+ }
+ // 给最新值标注框留顶部空间, 否则贴着画布上缘会被裁
+ const lv = (data && data.latest) ? Number(data.latest.val) : null;
+ if (lv != null && isFinite(lv)) ymax = Math.max(ymax, lv + (ymax - ymin) * 0.22);
+ }
+ const spansZero = allVals.length
+ && Math.min.apply(null, allVals) <= 0 && Math.max.apply(null, allVals) >= 0;
+ const series = [];
+ ys.forEach(y => {
+ const isCur = (y === curY);
+ const color = this._seasonColor(y);
+ const pts = (yearsObj[y] || [])
+ .filter(p => Array.isArray(p) && isFinite(Number(p[1])))
+ .map(p => [+p[0], Number(p[1])]).sort((a, b) => a[0] - b[0]);
+ if (!pts.length) return;
+ const s = { name: String(y), type: 'line', data: pts, showSymbol: false,
+ smooth: 0.32, smoothMonotone: 'x', symbolSize: 5,
+ lineStyle: { width: isCur ? 2.4 : 1.2, color: color, opacity: isCur ? 1 : 0.6 },
+ itemStyle: { color: color }, z: isCur ? 6 : 3 };
+ if (isCur && data && data.latest && data.latest.val != null) {
+ const lv = Number(data.latest.val), df = data.latest.diff;
+ const txt = fmt(lv) + (df == null ? '' : ` (${df >= 0 ? '+' : ''}${fmt(df)})`);
+ s.markPoint = { symbol: 'circle', symbolSize: 8, silent: true,
+ itemStyle: { color: '#ffffff', borderColor: '#E11D1D', borderWidth: 1.6 },
+ label: { show: true, position: 'top', distance: 6, formatter: () => txt,
+ color: '#E11D1D', fontSize: 10, fontWeight: 'bold',
+ backgroundColor: 'rgba(255,255,255,0.88)',
+ borderColor: '#E8B4B4', borderWidth: 1, borderRadius: 3, padding: [2, 4] },
+ data: [{ coord: [Number(data.latest.doy), lv] }] };
+ }
+ if (isCur && spansZero) {
+ s.markLine = { silent: true, symbol: 'none', z: 1,
+ lineStyle: { color: '#FFB3B3', width: 1 }, label: { show: false },
+ data: [{ yAxis: 0 }] };
+ }
+ series.push(s);
+ });
  c.setOption({
  backgroundColor: 'transparent',
- tooltip: {
- trigger: 'axis',
- valueFormatter: v => (v == null ? '—' : String(v)),
- },
- grid: { left: 62, right: 20, top: 18, bottom: 46 },
- xAxis: { type: 'category', data: dates, boundaryGap: false,
- axisLabel: { color: textColor, fontSize: 9 },
- axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false } },
- yAxis: { type: 'value', scale: true, axisLabel: { color: textColor, fontSize: 9 },
+ animationDuration: 260,
+ tooltip: { trigger: 'axis', confine: true,
+ axisPointer: { type: 'line', lineStyle: { color: gridColor, type: 'dashed' } },
+ formatter: ps => {
+ if (!ps || !ps.length) return '';
+ const idx = (ps[0].value && ps[0].value[0] != null) ? ps[0].value[0] : 0;
+ return mdLabel(idx) + ps.map(p => `<br>${p.marker}${p.seriesName}: ${fmt(p.value[1])}`).join('');
+ } },
+ legend: { bottom: 0, left: 'center', itemGap: 10, itemWidth: 12, itemHeight: 3,
+ icon: 'roundRect', textStyle: { color: textColor, fontSize: 9 },
+ data: ys.map(String) },
+ // 【2026-10-21】top 10→16 / right 14→40：Y 轴最高刻度与「最新值」标注都贴边被切。
+ grid: { left: 46, right: 40, top: 16, bottom: 44 },
+ xAxis: { type: 'category', data: xLabels, boundaryGap: false,
+ axisLine: { lineStyle: { color: gridColor } }, axisTick: { show: false },
+ axisLabel: { color: textColor, fontSize: 9, interval: 0,
+ showMinLabel: true, showMaxLabel: true },
+ splitLine: { show: false } },
+ yAxis: { type: 'value', scale: true,
+ min: ymin == null ? undefined : ymin, max: ymax == null ? undefined : ymax,
+ // 刻度只留 3~4 位有效数字: 自动格式会吐出 "1,899.32" 这种读不出量级的标签
+ axisLabel: { color: textColor, fontSize: 9, formatter: fmtAxis },
+ splitNumber: 3,
  splitLine: { lineStyle: { color: gridColor } } },
- dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 8,
- textStyle: { color: textColor, fontSize: 9 } }],
- series: [{
- name: ind.label, type: 'line', data: vals, showSymbol: false, smooth: false,
- lineStyle: { width: 1.6, color: lineColor },
- itemStyle: { color: lineColor },
- areaStyle: { color: lineColor, opacity: 0.10 },
- }],
+ series: series,
  }, true);
- if (noteEl) {
- const rng = series.length ? `${esc(series[0][0])} ~ ${esc(series[series.length - 1][0])}` : '';
- noteEl.innerHTML = `${esc(ind.label)}${ind.unit ? `(${esc(ind.unit)})` : ''} · ${series.length} 点 · ${rng}`
+ },
+
+ // 【功能】季节性图的脚注(年份跨度/点数/分位/取数告警)
+ // 【输入】ind 指标; d 后端 payload; noteEl 容器 【渲染】#gt-chart-note 【后端】无
+ _gtSeasonalNote(ind, d, noteEl) {
+ if (!noteEl) return;
+ const esc = s => this._escHtml(s == null ? '' : String(s));
+ const keys = Object.keys(d.years || {}).sort();
+ const first = keys[0] || '', last = keys[keys.length - 1] || '';
+ noteEl.innerHTML = `${esc(ind.label)}${ind.unit ? `(${esc(ind.unit)})` : ''}`
+ + ` · 季节性对比 ${keys.length} 个年份（${esc(first)}–${esc(last)}）`
+ + ` · ${d.point_count || 0} 点`
  + ` · 分位 ${ind.pct == null ? '—' : ind.pct + '%'}(${esc(ind.pct_scope || '')})`
- + (ind.note ? `<br>${esc(ind.note)}` : '');
- }
+ + (d.cached ? ' · 缓存' : '')
+ + (ind.note ? `<br>${esc(ind.note)}` : '')
+ + (d.warning ? `<br><span style="color:var(--amber)">⚠ ${esc(d.warning)}</span>` : '');
  },
 
  // 【功能】渲染单指标明细表(逐日数值; 倒序, 最新在上)
@@ -8982,7 +9809,10 @@ const App = {
  try {
  const q = new URLSearchParams();
  if (v) q.set('variety', v);
- if (src) q.set('ingest_source', src);
+ // 【2026-10-19】「公众号」不是入库方式（auto/manual），而是**通道**维度
+ //   ⇒ 走独立参数 channel，避免污染 ingest_source 的口径。
+ if (src === '__wechat') q.set('channel', 'wechat');
+ else if (src) q.set('ingest_source', src);
  if (rtype) q.set('report_type', rtype);
  const r = await fetch(`/api/research?${q.toString()}`);
  const d = await r.json();
@@ -9008,6 +9838,12 @@ const App = {
  ? '<span class="badge" style="background:rgba(168,85,247,.18);color:var(--brand);margin-right:6px">自动</span>'
  : '<span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);margin-right:6px">上传</span>';
  // 类型徽标: 只标周报(橙色), 日报/未知不标(2026-09-05 日报/周报分口径)
+ // 通道徽标：公众号（微信读书）入库的 filename 前缀是 wxmp_。
+ //   ⚠ 不能用 source 判断 —— 它在接口里被 _normalize_source 归一成机构名了，
+ //   「公众号-混沌天成研究」最终显示成「混沌天成研究」，通道信息已丢。
+ const chanBadge = String(rp.filename || '').startsWith('wxmp_')
+     ? '<span class="badge" style="background:rgba(99,102,241,.16);color:#6366f1;margin-right:6px">公众号</span>'
+     : '';
  const typeBadge = rp.report_type === '周报'
  ? '<span class="badge" style="background:rgba(245,158,11,.18);color:var(--amber);margin-right:6px">周报</span>'
  : '';
@@ -9041,7 +9877,7 @@ const App = {
  <span style="color:${dirColor};font-weight:700">${esc(rp.direction || '中性')}</span>${conf}
  </div>
  <div style="display:flex;gap:8px;align-items:center">
- ${typeBadge}${srcBadge}${statusBadge}
+ ${typeBadge}${chanBadge}${srcBadge}${statusBadge}
  <button class="btn btn-outline btn-sm" onclick="App.viewResearch(${rp.id})">查看</button>
  <button class="btn btn-outline btn-sm" onclick="App.viewResearchOriginal(${rp.id})" title="查看研报原文">原文</button>
  <button class="btn btn-red btn-sm" onclick="App.deleteResearch(${rp.id})">删除</button>
@@ -10207,7 +11043,7 @@ const App = {
  const hasRate = basis.some(p => p.near_basis_rate != null);
  const series = [];
  if (hasBasis) series.push({ name: '基差(现货−期货)', type: 'line', data: basis.map(p => p.near_basis != null ? p.near_basis : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: CHART.brand, width: 2 }, itemStyle: { color: CHART.brand } });
- if (hasRate) series.push({ name: '基差率 (%)', type: 'line', data: basis.map(p => p.near_basis_rate != null ? p.near_basis_rate : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: '#fbbf24', width: 2 }, itemStyle: { color: '#fbbf24' } });
+ if (hasRate) series.push({ name: '基差率 (%)', type: 'line', data: basis.map(p => p.near_basis_rate != null ? p.near_basis_rate : null), smooth: true, showSymbol: false, connectNulls: false, lineStyle: { color: '#d97706', width: 2 }, itemStyle: { color: '#d97706' } });
  // 2a) 研报基差叠加(紫色散点, 口径同为元/吨): 研报日期吸附到最近 ≤当日的交易轴位,
  // 空档 null; 每点携带研报真实日期/来源供 tooltip 核对。市场基差不可用时
  // 不叠加(数据不丢, _renderResearchSection 会把它并进独立卡)。
@@ -10221,7 +11057,7 @@ const App = {
  });
  series.push({
  name: '研报基差', type: 'scatter', yAxisIndex: 0, data: resData,
- symbolSize: 8, itemStyle: { color: 'var(--brand)' }, z: 5
+ symbolSize: 8, itemStyle: { color: CHART.brand }, z: 5
  });
  }
  chart2.setOption({
@@ -10249,7 +11085,7 @@ const App = {
  xAxis: { type: 'category', data: basis.map(p => p.date), axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: CHART.axis, fontSize: 10, rotate: basis.length > 60 ? 45 : 0 }, splitLine: { show: false } },
  yAxis: [
  { type: 'value', name: '基差', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: CHART.brand } }, axisLabel: { color: CHART.brand, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
- { type: 'value', name: '基差率 %', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: '#fbbf24' } }, axisLabel: { color: '#fbbf24', fontSize: 10 }, splitLine: { show: false } }
+ { type: 'value', name: '基差率 %', nameTextStyle: { color: textColor, fontSize: 10 }, axisLine: { lineStyle: { color: '#d97706' } }, axisLabel: { color: '#d97706', fontSize: 10 }, splitLine: { show: false } }
  ],
  series
  });
@@ -10593,9 +11429,31 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
    this._qovPendingSym = code;
   }
   this.loadQuant();
+  // 【2026-10-21】视图由 display:none 变可见后补一次 resize：隐藏期间 init 的图表
+  //   拿到的是 0 宽（ECharts 回落 100px），不 resize 会一直画在 100px 画布上。
+  setTimeout(() => this._resizeAllCharts(), 0);
   window.scrollTo({ top: 0, behavior: 'smooth' });
   // 【2026-10-14】立即写一次分数(不必等 loadQuant 的异步链走完)
   this._updateDetailScore(code);
+ },
+
+ // 【功能】2026-10-21 点击顶部模块名时，把「单品种明细」切回「全品种总览」。
+ // 【返回】true = 确实从明细退回了；false = 本来就在总览 / 不是这两个模块（调用方无需关心）。
+ // 【为什么只切 display 不调 loadXxx】switchTab 紧接着就会按视图状态走
+ //   loadQuantOverview / loadFundRanking（后者顺带重排定期刷新定时器）⇒
+ //   这里再拉一次会重复请求一轮后端（总览首算 ~105s，全池 ~40s）。
+ _navBackToOverview(t) {
+ const pair = { quant: ['q-detail-view', 'q-overview-view'],
+ fund: ['f-detail-view', 'f-overview-view'] }[t];
+ if (!pair) return false;
+ const dv = document.getElementById(pair[0]);
+ const ov = document.getElementById(pair[1]);
+ // 已在总览（或两视图元素缺失）⇒ 什么都不做，保持原行为
+ if (!dv || !ov || dv.style.display === 'none') return false;
+ dv.style.display = 'none';
+ ov.style.display = '';
+ if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo({ top: 0, behavior: 'smooth' });
+ return true;
  },
 
  // 【功能】详情页「← 返回总览」
@@ -10636,21 +11494,25 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  // ⑫ 数据计算面板(2026-09-30): 维度多选 → 曲线 + 相关矩阵。
  // 首次进入用**默认维度**(收盘价 + 仓单日变化, 即用户举例的价格-仓单变化场景),
  // 之后以用户在 #q-cmp-dims 里的勾选为准(见 _cmpSel 的"用户已改动"开关);
- // 不 await ⇒ 不阻塞其它块(它内部要拉价格/基差/仓单三源, 首拉慢)。
- this.loadQuantCompute();
+ // 【2026-10-21】数据计算面板已迁至基本面 A9，本页不再加载
+ //   （原来每次进量化页都会白拉价格/基差/仓单三源）
  },
 
  // ═══════════════════════════════════════════════════════════════════════
- // ⑫ 数据计算面板 (2026-09-30 新增)
+ // A9 数据计算面板 (2026-09-30 新增; 2026-10-21 迁至基本面 A 区)
  // 需求(用户原话): 列出已有数据维度 → 选择数据类型 → 给出所选几种数据的曲线,
  // 或计算所选指标之间的相关系数(例: 价格 与 仓单变化 的相关性) / 画图。
  // 【与 ⑨ 价格-库存关联分析 的分工】⑨ 是**固定一对**(价格×仓单)的深度统计卡;
- // ⑫ 是**任意多维度**的自助面板 —— 维度可选、口径可选(线性/秩)、n 逐对可见。
+ // A9 是**任意多维度**的自助面板 —— 维度可选、口径可选(线性/秩)、n 逐对可见。
  // 【铁律】统计一律由后端 /api/quant/compute 算(对齐口径只在后端一处), 前端只画。
  // ═══════════════════════════════════════════════════════════════════════
 
  // 【变量】维度配色(与主题无关的装饰色板, 不承载涨跌语义)
- _CMP_COLORS: ['#8fd2f5', '#fbbf24', '#22c55e', '#ef4444', 'var(--brand)', '#14b8a6', '#f472b6', '#60a5fa'],
+ // 【2026-10-21】第 5 位原为 'var(--brand)'：canvas 不认 CSS 变量 ⇒ 第 5 条线
+ //   回落成默认灰，与图例色块对不上。改成实色。
+ // 【2026-10-21】首色 #7cc4ff 亮度 0.73、第 7 色 #db2777 亮度 0.33 —— 一个白底太浅、
+ //   一个暗底太黑。换成同色相中间调。
+ _CMP_COLORS: ['#0284c7', '#d97706', '#22c55e', '#ef4444', '#a78bfa', '#14b8a6', '#ec4899', '#3b82f6'],
 
  // 【功能】取当前选中的维度 key 列表(读 DOM 勾选框, 单一事实来源)
  // 【输入】无 【渲染】无 【后端】无
@@ -10679,12 +11541,14 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  this.loadQuantCompute();
  },
 
- // 【功能】⑫ 加载计算面板: 拉维度清单 + 所选序列 + 相关矩阵, 一次性渲染四块
+ // 【功能】A9 加载计算面板: 拉维度清单 + 所选序列 + 相关矩阵, 一次性渲染四块
  // 【输入】force=1 强制重算(仅提示用, 后端有 15min TTL); reset=1 时把勾选恢复成默认维度
  // 【渲染】#q-cmp-dims / #chart-q-cmp / #q-cmp-corr / #q-cmp-series / 各 badge
  // 【后端】GET /api/quant/compute?variety=&days=&dims=&method=
  async loadQuantCompute(force, reset) {
- const sym = this._quantSym();
+ // 【2026-10-21】面板已迁到基本面 A9 ⇒ 品种要读 #f-variety（原来读技术面的 #q-variety，
+ //   会在基本面页里算出"技术面页残留品种"的相关系数）
+ const sym = this._computeSym();
  const box = document.getElementById('q-cmp-dims');
  const chartEl = document.getElementById('chart-q-cmp');
  const corrEl = document.getElementById('q-cmp-corr');
@@ -10867,13 +11731,16 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  } },
  legend: { data: sel.map((k, i) => `${(dimOf[k] || {}).name || k}${normMode ? '(归一化)' : ''}`),
  bottom: 4, textStyle: { color: textColor, fontSize: 11 }, type: 'scroll' },
- grid: { left: 66, right: 62, top: 16, bottom: 58 },
+ // 【2026-10-21】bottom 58→44：标签不再旋转，不需要留那么多斜排空间。
+ grid: { left: 66, right: 62, top: 16, bottom: 44 },
  xAxis: { type: 'category', data: axis,
  axisLine: { lineStyle: { color: gridColor } },
- // 日期只显示 月-日(完整 ISO 10 字符在 120+ 天时会互相压叠); hideOverlap 让
- // ECharts 自行抽稀标签, 比写死 interval 更能适应不同天数的窗口。
- axisLabel: { color: CHART.axis, fontSize: 10, rotate: axis.length > 60 ? 45 : 0,
- hideOverlap: true, formatter: v => String(v).slice(5) },
+ // 日期只显示 月-日；**显式按点数抽稀到约 8 个** —— 原来靠 hideOverlap + rotate 45，
+ //   在 778px 里塞 119 个点实测仍是一排叠字（截图确认）。8 个 × 40px 远小于可用宽度，
+ //   所以也不再需要旋转。
+ axisLabel: { color: CHART.axis, fontSize: 10, rotate: 0,
+ interval: Math.max(0, Math.ceil(axis.length / 8) - 1),
+ formatter: v => String(v).slice(5) },
  splitLine: { show: false } },
  yAxis: yAxes,
  series: sel.map((k, i) => mkLine(k, i)),
@@ -10972,7 +11839,9 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  // ── ⑨ 数据看板迁入部分(2026-09-29 去重式融入) ──
  // 【功能】加载「价格-库存关联分析」卡 + 「价格 vs 仓单库存」双轴图 + 研报基本面指标卡
  // 【输入】无(品种取本页 #q-variety; 回看天数固定 180, 与迁入前看板默认一致)
- // 【渲染】#f-analysis-body / #f-analysis-badge / #f-research
+ // 【渲染】#f-research（研报基本面指标卡）。
+ // 【2026-10-16】**「价格-库存关联分析」小节已按用户要求删除** ⇒ #f-analysis-body /
+ //   #f-analysis-badge 无落点; 两个取值点**保留且均有 `if (...)` 守卫**(零副作用、便于回退)。
  // 【2026-10-14】#f-pi-badge / #chart-f-pi 已随「价格 vs 仓单库存」删除(用户要求)。
  // 【后端】GET /api/dashboard/{variety}?days=180 (看板接口原样复用, 未做后端改动)
  // 【为什么独立方法】与迁入前的 loadDashboard 同源, 但落点 id 全换到 q- 前缀, 避免与
@@ -11101,7 +11970,7 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  series: [{
  type: 'bar', data: rows.map(rr => rr.r),
  // R>0.3 红(同向) / R<-0.3 绿(反向) / 中间黄(弱) —— 与全站"红=强信号"的读法一致
- itemStyle: { color: p => p.value > 0.3 ? CHART.up : p.value < -0.3 ? CHART.down : '#fbbf24' },
+ itemStyle: { color: p => p.value > 0.3 ? CHART.up : p.value < -0.3 ? CHART.down : '#d97706' },
  label: { show: true, position: 'right', formatter: p => Number(p.value).toFixed(3), color: CHART.axis, fontSize: 9 }
  }]
  });
@@ -11442,7 +12311,7 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  grid: { left: 42, right: 12, top: 24, bottom: 22 },
  xAxis: axis, yAxis: { ...yAxis, min: 0, max: 100 },
  series: [{ name: 'RSI14', type: 'line', data: s.rsi, showSymbol: false, smooth: true,
- lineStyle: { width: 1.3, color: '#fbbf24' }, itemStyle: { color: '#fbbf24' },
+ lineStyle: { width: 1.3, color: '#d97706' }, itemStyle: { color: '#d97706' },
  markLine: { silent: true, symbol: 'none',
  data: [{ yAxis: 70, lineStyle: { color: CHART.up, type: 'dashed', width: 1 } },
  { yAxis: 30, lineStyle: { color: CHART.down, type: 'dashed', width: 1 } }] } }]
@@ -11458,8 +12327,9 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  grid: { left: 42, right: 12, top: 24, bottom: 22 },
  xAxis: axis, yAxis,
  series: [
- { name: 'DIF', type: 'line', data: s.macd_dif, showSymbol: false, lineStyle: { width: 1.2, color: '#60a5fa' }, itemStyle: { color: '#60a5fa' } },
- { name: 'DEA', type: 'line', data: s.macd_dea, showSymbol: false, lineStyle: { width: 1.2, color: '#f472b6' }, itemStyle: { color: '#f472b6' } },
+ { name: 'DIF', type: 'line', data: s.macd_dif, showSymbol: false, lineStyle: { width: 1.2, color: '#3b82f6' }, itemStyle: { color: '#3b82f6' } },
+ // 【2026-10-21】DEA 原为 #db2777（亮度 0.33，暗色底上像黑线），换亮一档的玫红
+ { name: 'DEA', type: 'line', data: s.macd_dea, showSymbol: false, lineStyle: { width: 1.2, color: '#ec4899' }, itemStyle: { color: '#ec4899' } },
  { name: 'MACD柱', type: 'bar', data: s.macd_bar,
  itemStyle: { color: p => p.value >= 0 ? CHART.up : CHART.down } }
  ]
@@ -11531,8 +12401,9 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  c1.setOption({
  backgroundColor: 'transparent',
  tooltip: { trigger: 'axis' },
- legend: { data: ['基差', '基差率%'], bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
- grid: { left: 52, right: 52, top: 14, bottom: 38 },
+ legend: { data: [{ name: '基差', icon: 'none' }, '基差率%'],
+  bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
+ grid: { left: 52, right: 52, top: 14, bottom: 54 },
  xAxis: axisCommon,
  yAxis: [yCommon, { ...yCommon, splitLine: { show: false }, axisLabel: { color: textColor, fontSize: 9, formatter: v => v + '%' } }],
  series: [
@@ -11540,7 +12411,7 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  // 升水(正)红 / 贴水(负)绿 —— 与国内涨跌语义一致
  itemStyle: { color: p => (p.value === null || p.value >= 0) ? CHART.up : CHART.down, opacity: 0.75 } },
  { name: '基差率%', type: 'line', yAxisIndex: 1, data: rows.map(r => r.basis_rate === null ? null : +(r.basis_rate * 100).toFixed(2)),
- showSymbol: false, smooth: true, lineStyle: { width: 1.5, color: '#60a5fa' }, itemStyle: { color: '#60a5fa' } }
+ showSymbol: false, smooth: true, lineStyle: { width: 1.5, color: '#3b82f6' }, itemStyle: { color: '#3b82f6' } }
  ]
  }, true);
  }
@@ -11549,13 +12420,13 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  backgroundColor: 'transparent',
  tooltip: { trigger: 'axis' },
  legend: { data: ['现货价', '期货价'], bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
- grid: { left: 58, right: 18, top: 14, bottom: 38 },
+ grid: { left: 58, right: 18, top: 14, bottom: 54 },
  xAxis: axisCommon, yAxis: yCommon,
  series: [
  { name: '现货价', type: 'line', data: rows.map(r => r.spot_price), showSymbol: false, smooth: true,
- lineStyle: { width: 1.6, color: '#fbbf24' }, itemStyle: { color: '#fbbf24' } },
+ lineStyle: { width: 1.6, color: '#d97706' }, itemStyle: { color: '#d97706' } },
  { name: '期货价', type: 'line', data: rows.map(r => r.futures_price), showSymbol: false, smooth: true,
- lineStyle: { width: 1.6, color: 'var(--brand)' }, itemStyle: { color: 'var(--brand)' } }
+ lineStyle: { width: 1.6, color: CHART.brand }, itemStyle: { color: CHART.brand } }
  ]
  }, true);
  }
@@ -11589,9 +12460,11 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  return `${row.contract}<br/>价格 <b>${row.price}</b><br/>持仓 ${(row.oi || 0).toLocaleString()}`
  + `<br/>成交 ${(row.volume || 0).toLocaleString()}`;
  } },
- grid: { left: 58, right: 18, top: 14, bottom: 30 },
+ // 【2026-10-21】bottom 30→52 / rotate 30→24：合约名旋转后下半截被画布裁掉；
+ //   right 18→46：markLine 的「近月」标注贴在右缘会被切。
+ grid: { left: 58, right: 46, top: 14, bottom: 52 },
  xAxis: { type: 'category', data: rows.map(r => r.contract),
- axisLabel: { color: textColor, fontSize: 9, rotate: 30 },
+ axisLabel: { color: textColor, fontSize: 9, rotate: 24 },
  axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false } },
  yAxis: { type: 'value', scale: true, axisLabel: { color: textColor, fontSize: 9 },
  splitLine: { lineStyle: { color: gridColor } } },
@@ -11599,13 +12472,13 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  type: 'line', data: rows.map((r, i) => ({
  value: r.price,
  symbolSize: r.contract === mainSym ? 12 : 7,
- itemStyle: { color: r.contract === mainSym ? CHART.up : '#60a5fa' }
+ itemStyle: { color: r.contract === mainSym ? CHART.up : '#3b82f6' }
  })),
- lineStyle: { width: 2, color: '#60a5fa' }, smooth: false,
+ lineStyle: { width: 2, color: '#3b82f6' }, smooth: false,
  label: { show: true, position: 'top', color: textColor, fontSize: 9,
  formatter: p => rows[p.dataIndex] && rows[p.dataIndex].contract === mainSym ? '主力' : '' },
  markLine: { silent: true, symbol: 'none',
- data: [{ yAxis: (t.near || {}).price, lineStyle: { color: '#fbbf24', type: 'dashed', width: 1 } }],
+ data: [{ yAxis: (t.near || {}).price, lineStyle: { color: '#d97706', type: 'dashed', width: 1 } }],
  label: { formatter: '近月', color: textColor, fontSize: 9 } }
  }]
  }, true);
@@ -11626,7 +12499,8 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  const r = await fetch(`/api/quant/inventory?variety=${sym}&days=180`);
  if (!r.ok) throw new Error(`HTTP ${r.status}`);
  const d = await r.json();
- this._renderFundInventory(d.inventory || {});
+ // 【2026-10-16】把社会库存块一并交给渲染函数 —— 这就是「图上只有仓单」的根因所在。
+ this._renderFundInventory(d.inventory || {}, d.social || {});
  if (badge) {
  const s = d.inventory || {}, so = d.social || {};
  badge.textContent = s.ok
@@ -11642,50 +12516,259 @@ _FRK_SORT_LABEL: { net: '多空票净额' },
  }
  },
 
- // 【功能】渲染仓单库存图(库存折线 + 日变化柱, 双轴)
- // 【输入】s: {ok, rows:[{date,qty,change}], latest, chg, pct_rank, source, error}
- // 【渲染】#chart-f-inv
- // 【后端】无
- _renderFundInventory(s) {
+// 【功能】渲染「仓单库存 · 社会库存双口径」图（2026-10-16 由单口径扩为双口径）
+// 【输入】s  = 交易所注册仓单块；so = 国君社会(工厂)库存块（**两者都要传**，各自 rows 见下）
+// 【渲染】#chart-f-inv；【后端】无（数据已随 /api/quant/inventory 取回）
+// 【★ 本次修复的根因】此前 `loadFundInventory` 只调 `_renderFundInventory(d.inventory)`，
+//   而 `_inv_social_block` 当时**也不回传序列** ⇒ 标题写着"双口径"、图上却只有仓单。
+//   现在后端补了 `social.rows`，这里把两者一起画（形态与降级规则见方法体注释）。
+// 【功能】渲染「仓单库存 · 社会库存双口径」图（2026-10-16 由**单口径扩为双口径**）
+// 【输入】s  = 交易所注册仓单块 {ok, rows:[{date,qty,change}], latest, pct_rank, source, error}
+//          so = 国君社会(工厂)库存块 {ok, rows:[{date,qty,change}], latest, latest_date, label, pct_rank, error}
+// 【渲染】#chart-f-soc（社会库存季节性，≥2 个年份时）+ #chart-f-inv（仓单/双口径）。
+//   ⓪ 社会库存 ≥2 个年份 → 上方画**季节性图**（多年叠加），下方只画仓单日频走势；
+//   ① 双口径都有 → **上下两栏**（与「K 线 + 成交量」同一范式）：
+//        上栏 = 双口径**水平**对照（注册仓单 左轴 / 社会库存 右轴）
+//        下栏 = 双口径**变化**对照（仓单日变化柱 左轴 / 社会库存变化柱 右轴）
+//   ② 只有仓单（BZ/CJ 等国君库存完全没有）→ 保持**原有单栏布局**，观感与改动前一致
+//   ③ 只有社会库存（仓单常年为 0 或被集中注销时，它常是唯一能说明"库存到底低不低"的口径）
+//        → 单栏只画社会库存（与本项目"降级也要把能用的那一侧抛出去"同一纪律）
+// 【★ 两条不可违反的口径纪律】
+//   ① **量纲不可比** ⇒ 两口径**各用各的轴**。实测同品种可差数量级（EG 社会库存 13 vs 仓单 6226、
+//      TA 138.5 万 vs 1002）⇒ 本图只用于看**走势与背离**，不可据此比较大小；故轴名按口径着色、
+//      tooltip 里也写明这一点。
+//   ② **频率不同** ⇒ 社会库存周频(≈26 点/半年)、仓单日频(≈119 点)。社会库存线按
+//      **最后已知值阶梯对齐**（`step:'end'`）到仓单日期轴上 —— 这是"该读数一直有效到下一期"
+//      的如实表达，**绝不插值**（插值会造出根本不存在的读数）。
+_renderFundInventory(s, so) {
  const c = this._initChart('chart-f-inv');
  if (!c) return;
  const textColor = CHART.axis;
  const gridColor = CHART.grid;
- if (!s.ok || !(s.rows || []).length) {
- c.clear();
- c.setOption({ backgroundColor: 'transparent',
- title: { text: s.error || '无仓单数据', left: 'center', top: 'middle',
- textStyle: { color: textColor, fontSize: 12, fontWeight: 'normal' } } }, true);
- return;
+ const ckRows = ((s && s.ok) ? (s.rows || []) : []).filter(r => r && r.date);
+ const socRows = ((so && so.ok) ? (so.rows || []) : [])
+  .filter(r => r && r.date && r.qty !== null && r.qty !== undefined)
+  .sort((a, b) => (String(a.date) < String(b.date) ? -1 : 1));
+ if (!ckRows.length && !socRows.length) {
+  c.clear();
+  c.setOption({ backgroundColor: 'transparent',
+   title: { text: (s && s.error) || (so && so.error) || '无双口径数据', left: 'center', top: 'middle',
+    textStyle: { color: textColor, fontSize: 12, fontWeight: 'normal' } } }, true);
+  const _cs0 = this._initChart('chart-f-soc');
+  if (_cs0) { _cs0.clear(); _cs0.setOption({ backgroundColor: 'transparent',
+   title: { text: '无社会库存序列', left: 'center', top: 'middle',
+    textStyle: { color: textColor, fontSize: 12, fontWeight: 'normal' } } }, true); }
+  return;
  }
- const rows = s.rows;
- c.setOption({
- backgroundColor: 'transparent',
- tooltip: { trigger: 'axis' },
- legend: { data: ['注册仓单', '日变化'], bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
- grid: { left: 62, right: 52, top: 14, bottom: 38 },
- xAxis: { type: 'category', data: rows.map(r => r.date),
- axisLabel: { color: textColor, fontSize: 9 },
- axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false } },
- yAxis: [
- { type: 'value', scale: true, name: '仓单', nameTextStyle: { color: textColor, fontSize: 10 },
- axisLabel: { color: textColor, fontSize: 9, formatter: v => v >= 10000 ? (v / 10000).toFixed(1) + '万' : v },
- splitLine: { lineStyle: { color: gridColor } } },
- { type: 'value', name: '增减', nameTextStyle: { color: textColor, fontSize: 10 },
- axisLabel: { color: textColor, fontSize: 9 }, splitLine: { show: false } }
- ],
- series: [
- { name: '注册仓单', type: 'line', data: rows.map(r => r.qty), showSymbol: false, smooth: true,
- lineStyle: { width: 1.8, color: 'var(--brand)' }, itemStyle: { color: 'var(--brand)' },
- areaStyle: { color: 'rgba(168,85,247,0.12)' } },
- { name: '日变化', type: 'bar', yAxisIndex: 1, data: rows.map(r => r.change),
- // 仓单增加=红 / 减少=绿(与国内涨跌语义一致)
- itemStyle: { color: p => (p.value === null || p.value >= 0) ? CHART.up : CHART.down, opacity: 0.7 } }
- ]
- }, true);
- },
+ // ── ⓪ 社会库存季节性（2026-10-21 用户要求：够多年的图改成季节性）──────────────
+ //   实测社会库存 2023-10 起 ≈154 点（3 年），够画多年叠加；交易所仓单只有半年 ⇒ 不参与。
+ //   ⚠ 不足 2 个年份就不画：1 条线的"季节性图"与普通折线没有区别，反而多占 300px。
+ //   ⚠ 复刻数据仓库同一套口径（366 天月份轴 / 6 色年份映射 / 当年粗红线 / 最新点红框）。
+ const socSeason = this._seasonalFromSeries(socRows.map(r => [r.date, r.qty]));
+ const socYearN = Object.keys(socSeason.years || {}).length;
+ const invSeason = socYearN >= 2;
+ const socEl = document.getElementById('chart-f-soc');
+ if (invSeason) {
+  if (socEl) socEl.style.display = '';
+  const cs = this._initChart('chart-f-soc');
+  if (cs) this._drawGtjaSeasonal(cs, { label: (so && so.label) || '社会库存',
+   unit: (so && so.unit) || '' }, socSeason);
+ } else if (socEl) {
+  socEl.style.display = 'none';
+ }
+ // 小标题随形态变：有季节性时下面只画仓单；没有时下面退回双口径对照
+ const _ckTitle = document.getElementById('f-inv-ck-title');
+ if (_ckTitle) _ckTitle.textContent = invSeason
+  ? '交易所仓单 · 日频走势'
+  : (socRows.length
+   ? '仓单库存 · 社会库存双口径（社会库存不足 2 年，按走势对照）'
+   : '交易所仓单 · 日频走势');
+ // 社会库存已用季节性表达 ⇒ 下方的图不再画它（避免同一序列两种画法并存）
+ const socForDual = invSeason ? [] : socRows;
+ const CK_C = CHART.brand;      // 仓单 = 主序列色
+ // 社会库存 = **分类色**（candy 族）。它标的是"口径"不是"涨跌"，故不占用红绿语义位
+ //   （candy 族注释亦写明"仅装饰位, 禁用于涨跌语义位"）。注意别用 candy1 —— 它与 --brand 同值。
+ const SOC_C = CHART.candy2;
+ const axLabel = { fontSize: 9, formatter: v => Math.abs(v) >= 10000 ? (v / 10000).toFixed(1) + '万' : v };
+ const yVal = (name, color, gridIndex, right) => Object.assign({
+  type: 'value', scale: true, gridIndex, name, position: right ? 'right' : 'left',
+  nameTextStyle: { color: color, fontSize: 10 },
+  axisLabel: Object.assign({}, axLabel, { color: color }),
+  splitLine: right ? { show: false } : { lineStyle: { color: gridColor } },
+ });
+ const xCat = (data, gridIndex, showLabel) => ({
+  type: 'category', data: data, gridIndex: gridIndex,
+  axisLabel: showLabel ? { color: textColor, fontSize: 9 } : { show: false },
+  axisLine: { lineStyle: { color: gridColor } }, splitLine: { show: false },
+ });
 
- // 【功能】渲染库存周期四象限文字卡(周期阶段 + 库存/价格方向 + 分位)
+ // ── ② 只有仓单：保持原有单栏布局（仓单线 + 日变化柱）────────────────────
+ if (ckRows.length && !socForDual.length) {
+  c.setOption({
+   backgroundColor: 'transparent',
+   tooltip: { trigger: 'axis' },
+   legend: { data: ['注册仓单', { name: '日变化', icon: 'none' }],
+  bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
+   grid: { left: 62, right: 52, top: 14, bottom: 54 },
+   xAxis: xCat(ckRows.map(r => r.date), 0, true),
+   yAxis: [yVal('仓单', textColor, 0), yVal('增减', textColor, 0, true)],
+   series: [
+    { name: '注册仓单', type: 'line', data: ckRows.map(r => r.qty), showSymbol: false, smooth: true,
+     lineStyle: { width: 1.8, color: CK_C }, itemStyle: { color: CK_C },
+     areaStyle: { color: 'rgba(168,85,247,0.12)' } },
+    { name: '日变化', type: 'bar', yAxisIndex: 1, data: ckRows.map(r => r.change),
+     itemStyle: { color: p => (p.value === null || p.value >= 0) ? CHART.up : CHART.down, opacity: 0.7 } }
+   ]
+  }, true);
+  return;
+ }
+
+ // ── ③ 只有社会库存：单栏（仓单不可用时也要把它画出来）───────────────────
+ if (!ckRows.length) {
+  if (invSeason) {
+   c.clear();
+   c.setOption({ backgroundColor: 'transparent',
+    title: { text: '该品种无交易所仓单（社会库存见上方季节性图）', left: 'center', top: 'middle',
+     textStyle: { color: textColor, fontSize: 12, fontWeight: 'normal' } } }, true);
+   return;
+  }
+  const dates = socRows.map(r => r.date);
+  c.setOption({
+   backgroundColor: 'transparent',
+   tooltip: { trigger: 'axis' },
+   legend: { data: ['社会库存(阶梯)'], bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
+   grid: { left: 62, right: 56, top: 14, bottom: 38 },
+   xAxis: xCat(dates, 0, true),
+   yAxis: [yVal((so.label || '社会库存') + '（仓单不可用）', SOC_C, 0)],
+   series: [{ name: '社会库存(阶梯)', type: 'line', data: socRows.map(r => r.qty),
+    showSymbol: false, step: 'end', lineStyle: { width: 1.8, color: SOC_C }, itemStyle: { color: SOC_C } }]
+  }, true);
+  return;
+ }
+
+ // ── ① 双口径：上下两栏 ────────────────────────────────────────────────────
+ const dates = ckRows.map(r => r.date);
+ // 阶梯前推：对仓单轴上的每个日期，取"最后一个 ≤ 该日期的社会库存读数"；此前无读数则留空。
+ const _step = key => {
+  const out = new Array(dates.length).fill(null);
+  let k = 0, last = null;
+  for (let i = 0; i < dates.length; i++) {
+   while (k < socForDual.length && String(socForDual[k].date) <= String(dates[i])) { last = socForDual[k][key]; k++; }
+   out[i] = last;
+  }
+  return out;
+ };
+ // 社会库存**变化**柱：落在"该读数之后的首个仓单日"。
+ //   【为什么不做成阶梯】周度变化若前推成 7 根等高柱，看着像"天天变化这么多"，是误导；
+ //   落在首个交易日既保住时点、又不会被误读。
+ const socChg = new Array(dates.length).fill(null);
+ socForDual.forEach(r => {
+  if (r.change === null || r.change === undefined) return;
+  let i = 0;
+  while (i < dates.length && String(dates[i]) < String(r.date)) i++;
+  if (i < dates.length) socChg[i] = r.change;
+ });
+ const legend = ['注册仓单', '社会库存', '仓单日变化', '社会库存变化'];
+ c.setOption({
+  backgroundColor: 'transparent',
+  tooltip: { trigger: 'axis', axisPointer: { type: 'cross' },
+   formatter: ps => {
+    if (!ps || !ps.length) return '';
+    let h = '<b>' + (ps[0].axisValue || '') + '</b>';
+    ps.forEach(p => {
+     const v = p.value;
+     h += '<br/>' + p.marker + p.seriesName + '：'
+      + (v === null || v === undefined ? '—' : (+v).toLocaleString());
+    });
+    h += '<div style="opacity:.65;margin-top:2px">两口径量纲不同, 各用各的轴 —— 只看走势与背离</div>';
+    return h;
+   } },
+  legend: { data: legend, bottom: 0, textStyle: { color: textColor, fontSize: 10 } },
+  axisPointer: { link: [{ xAxisIndex: 'all' }] },
+  grid: [{ left: 64, right: 56, top: 16, height: '40%' },
+         { left: 64, right: 56, top: '62%', height: '22%' }],
+  xAxis: [xCat(dates, 0, false), xCat(dates, 1, true)],
+  yAxis: [
+   yVal('仓单', CK_C, 0, false),
+   yVal((so.label || '社会库存'), SOC_C, 0, true),
+   yVal('仓单增减', textColor, 1, false),
+   yVal('社会增减', SOC_C, 1, true)
+  ],
+  series: [
+   { name: '注册仓单', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: ckRows.map(r => r.qty),
+    showSymbol: false, smooth: true, lineStyle: { width: 1.8, color: CK_C }, itemStyle: { color: CK_C },
+    areaStyle: { color: 'rgba(168,85,247,0.12)' } },
+   { name: '社会库存', type: 'line', xAxisIndex: 0, yAxisIndex: 1, data: _step('qty'),
+    showSymbol: false, step: 'end', lineStyle: { width: 1.8, color: SOC_C }, itemStyle: { color: SOC_C } },
+   { name: '仓单日变化', type: 'bar', xAxisIndex: 1, yAxisIndex: 2, data: ckRows.map(r => r.change),
+    itemStyle: { color: p => (p.value === null || p.value >= 0) ? CHART.up : CHART.down, opacity: 0.7 } },
+   { name: '社会库存变化', type: 'bar', xAxisIndex: 1, yAxisIndex: 3, data: socChg,
+    itemStyle: { color: SOC_C, opacity: 0.75 } }
+  ]
+ }, true);
+},
+
+ // 【功能】A 区整区折叠（效果图里的「整区折叠」）
+// 【为什么用 display:none 安全】全站折叠引擎已关闭(_SEC_FLAT_TABS_ALL=true)，
+//   没有按 .card 扫描的小模块索引 ⇒ 不会留僵尸条目。
+// 【坑】展开后必须 resize：隐藏期间容器宽高为 0，ECharts 不会自己复位。
+fFoldA(force) {
+ const blocks = document.querySelectorAll('#f-detail-view .f-a-block');
+ if (!blocks.length) return;
+ const fold = (typeof force === 'boolean')
+  ? force : !blocks[0].classList.contains('f-a-hidden');
+ blocks.forEach(b => {
+  b.classList.toggle('f-a-hidden', fold);
+  b.style.display = fold ? 'none' : '';
+ });
+ const btn = document.getElementById('f-fold-a');
+ if (btn) btn.textContent = fold ? '展开数据区' : '收起数据区';
+ if (!fold) setTimeout(() => { if (this._resizeAllCharts) this._resizeAllCharts(); }, 30);
+},
+
+// 【功能】A/B 气泡切换（2026-10-22 由"跳转锚点"改成"显示/隐藏"）
+// 【交互】点 A → 只显示 A 区；点 B → 只显示 B 区；点当前已选中的 → 两区都收起。
+// 【为什么复用这个方法名】吸顶气泡 / 面包屑 / 分区条箭头三处入口早就在
+//   `.f-jump, #f-subnav button` 的同一个委托里调 fJumpZone，改实现即可，不动 DOM。
+// 【不改 DOM、不重新请求】只切 display，与研报页二级页签同一套做法。
+fJumpZone(z) {
+ const next = (this._fZone === z) ? '' : z;   // 再点一次 = 收起
+ this._fZone = next;
+ this._applyFZone();
+ window.scrollTo({ top: 0, behavior: 'smooth' });
+},
+
+// 【功能】按 _fZone 应用 A/B 两区的显隐 + 气泡高亮
+// 【状态】'a' 只看数据 / 'b' 只看结论 / '' 两区都收起
+_applyFZone() {
+ // ⚠ 空串在这里**有语义**（= 两区都收起），不能写 `_fZone || 'a'` ——
+ //   那样 '' 会被兜底成 'a'，点第二下变成"收起又弹回 A"。只有 undefined/null 才是初值。
+ const z = (this._fZone === undefined || this._fZone === null) ? 'a' : this._fZone;
+ const aBlocks = document.querySelectorAll('#f-detail-view .f-a-block');
+ const bBlocks = document.querySelectorAll('#f-detail-view .f-b-block');
+ // 切到 A 时先解除"整区折叠"：否则气泡选中了 A、里面却是被折叠的空壳。
+ if (z === 'a') {
+  this.fFoldA(false);
+ } else {
+  aBlocks.forEach(el => { el.style.display = 'none'; });
+ }
+ bBlocks.forEach(el => { el.style.display = (z === 'b') ? '' : 'none'; });
+ // 分区条跟随（它们自身不带 f-a-block/f-b-block）
+ const za = document.getElementById('f-zone-a');
+ const zb = document.getElementById('f-zone-b');
+ if (za) za.style.display = (z === 'a') ? '' : 'none';
+ if (zb) zb.style.display = (z === 'b') ? '' : 'none';
+ document.querySelectorAll('#f-subnav button').forEach(b => {
+  b.classList.toggle('on', b.dataset.zone === z);
+ });
+ // 两区都收起时给一句引导（否则整页只剩两枚气泡，像是页面坏了）
+ const hint = document.getElementById('f-zone-hint');
+ if (hint) hint.style.display = (z === '') ? '' : 'none';
+ // 由隐藏变可见后必须 resize：隐藏期间容器宽高为 0，ECharts 不会自己复位
+ setTimeout(() => { if (this._resizeAllCharts) this._resizeAllCharts(); }, 30);
+},
+
+// 【功能】渲染库存周期四象限文字卡(周期阶段 + 库存/价格方向 + 分位)
  // 【输入】cyc: {ok, inv_chg5_pct, inv_dir, inv_latest, price_dir, phase, note, inv_pct_rank, error}
  // 【渲染】返回 HTML 字符串(由 loadFundInventory 写入 #f-cycle-body)
  // 【后端】无
@@ -12466,6 +13549,12 @@ ${td(`${r.strategy || '—'}${r.skill_net === null || r.skill_net === undefined 
    this._fPendingSym = code;
   }
   this.loadFund();
+  // 【2026-10-22】进明细即按气泡状态铺一次显隐（默认只显示 A 区）。
+  //   放在 loadFund 之后：卡内数据先就位，再切显示，避免"先显示空白再填充"的闪动。
+  this._applyFZone();
+  // 【2026-10-21】同 qOpenDetail：仓单/利润等图在总览态（detail 隐藏）就已 init，
+  //   进明细时必须补 resize，否则画布停在 100px。
+  setTimeout(() => this._resizeAllCharts(), 0);
   window.scrollTo({ top: 0, behavior: 'smooth' });
  },
 
@@ -13269,14 +14358,14 @@ const sym = this._fundSym();
  const unit = Object.entries(unitCount).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
  return `<div style="margin-top:${i ? 16 : 4}px">`
  + `<div style="font-size:0.8125rem;font-weight:500;margin-bottom:8px">研报${labels[k] || k}${unit ? `(${unit})` : ''} <span class="badge badge-info">${pts.length} 点</span></div>`
- + `<div class="chart-container" id="chart-${P}-r-${k.replace(/_/g, '-')}" style="height:240px"></div>`
+ + `<div class="chart-container chart-half" id="chart-${P}-r-${k.replace(/_/g, '-')}" style="height:240px"></div>`
  + `</div>`;
  }).join('');
  const wasOpen = !!(this._rsOpen && this._rsOpen[P]); // 折叠状态跨渲染保持
  host.innerHTML = `
 <div class="card" style="margin-top:16px">
 <div id="${P}-research-head" title="${wasOpen ? '点击收起' : '点击展开'}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;user-select:none">
-<h3 style="margin:0">研报基本面指标 <span class="badge badge-info">${keys.length} 类 · ${totalPts} 点</span></h3>
+<h3 style="margin:0">A7 研报基本面指标 <span class="badge badge-info">${keys.length} 类 · ${totalPts} 点</span></h3>
 <span id="${P}-research-caret" style="font-size:0.8125rem;color:var(--text-muted);white-space:nowrap">${wasOpen ? '收起 ▴' : '展开 ▾'}</span>
 </div>
 <div style="font-size:0.75rem;color:var(--text-muted);margin-top:4px;line-height:1.7">
@@ -13308,7 +14397,7 @@ ${blocks}
  yAxis: { type: 'value', name: labels[k] || k, nameTextStyle: { color: textColor, fontSize: 10 }, axisLabel: { color: textColor, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } },
  series: [{
  name: `研报${labels[k] || k}`, type: 'line', smooth: false, showSymbol: true, symbolSize: 7,
- lineStyle: { color: 'var(--brand)', width: 2, type: 'dashed' }, itemStyle: { color: 'var(--brand)' },
+ lineStyle: { color: CHART.brand, width: 2, type: 'dashed' }, itemStyle: { color: CHART.brand },
  data: pts.map(p => ({ value: p.value, rDate: p.date, rUnit: p.unit, rSource: p.source, rTitle: p.title, rNote: p.note }))
  }]
  });
@@ -13765,7 +14854,7 @@ ${blocks}
  xAxis: { ...this._baseChartOptions('').xAxis, data: data.map(d => d.variety), axisLabel: {rotate:45,fontSize:9} },
  series: [{
  type: 'bar', data: data.map(d => (d.divergence * 100).toFixed(1)),
- itemStyle: { color: p => p.value < 40 ? CHART.up : p.value < 70 ? '#fbbf24' : CHART.down }
+ itemStyle: { color: p => p.value < 40 ? CHART.up : p.value < 70 ? '#d97706' : CHART.down }
  }]
  });
  } catch(e) {}
@@ -14235,7 +15324,7 @@ ${blocks}
  series:[{
  type:'bar',
  data:[
- {value:summary.sentiment_accuracy*100,itemStyle:{color:'#60a5fa'}},
+ {value:summary.sentiment_accuracy*100,itemStyle:{color:'#3b82f6'}},
  {value:(summary.agent_accuracy||0)*100,itemStyle:{color:CHART.down}}
  ],
  label:{show:true,position:'top',formatter:p=>p.value.toFixed(1)+'%',color:CHART.axis}
@@ -14268,6 +15357,18 @@ ${blocks}
  return (el?.value || '').toUpperCase();
  },
 
+ // 【状态】A/B 气泡当前选中：'a'（默认，用户选定）/ 'b' / ''（都收起）
+ _fZone: 'a',
+
+ // 【功能】A9 数据计算面板的品种源：优先基本面下拉，其次技术面下拉（兜底）
+ // 【为什么还要兜底】面板的容器 id 与 loadQuantCompute 都还是 q- 前缀，
+ //   直接调它（旧书签/测试）时 #f-variety 可能不存在，此时沿用旧行为取 #q-variety。
+ _computeSym() {
+ const f = document.getElementById('f-variety');
+ const q = document.getElementById('q-variety');
+ return String((f && f.value) || (q && q.value) || '').toUpperCase();
+ },
+
  // 【功能】基本面量化页入口: 初始化品种下拉(只拉一次) → 并发拉 4 个子模块
  // 【输入】无 【渲染】#f-* 各容器 【后端】GET /api/fund/meta + 4 个子模块接口
  // 【设计】4 个块各自独立 catch(单块降级是设计目标), 互不阻塞; 全池矩阵不自动拉
@@ -14285,7 +15386,9 @@ ${blocks}
  this.loadFundVirtualReal();
  // 【2026-10-13 由「量化分析」页迁入】库存族 + 研报基本面指标(按分析对象主体归类为基本面)
  // · loadFundInventory: 仓单库存序列 / 库存周期四象限 → ① 三指标系统「库存维度明细」
- // · loadFundAnalysis : 价格-库存关联 / 价格-仓单双轴 / 研报基本面指标(→ #f-research)
+ // · loadFundAnalysis : 研报基本面指标(→ #f-research)。
+ //   【2026-10-16】其"价格-库存关联"小节与 2026-10-14 的"价格-仓单双轴"均已删,
+ //   本函数现实际只服务 #f-research(取值点保留带守卫)。
  // 两者都走 /api/dashboard 与 /api/quant/inventory, 接口未动(仍在各自后端模块)。
  this.loadFundInventory();
  // 【2026-10-13 由「量化分析」页迁入】基差族: 基差走势/现货vs期货/期限结构
@@ -14295,6 +15398,9 @@ ${blocks}
  // 【2026-10-14 迁入】《期货多空逻辑》口径的两块: 量化信号研判 + 多空逻辑体系研判
  this.loadQuantSignals();
  this.loadFundVotes();
+ // 【2026-10-21】A9 数据计算面板(原技术面 ⑫): 品种取 #f-variety，
+ //   不 await ⇒ 不阻塞其它块（它要拉价格/基差/仓单三源，首拉慢）。
+ this.loadQuantCompute();
  },
 
  // 【功能】⑥ 多空逻辑体系研判: 只渲染《期货多空逻辑》口径的方向票 + 扩展读数
@@ -14770,7 +15876,7 @@ ${blocks}
  // 一/三象限=套利对冲 黄/蓝
  itemStyle: { color: x.value < 0 && x.drive > 0 ? CHART.up
  : x.value > 0 && x.drive < 0 ? CHART.down
- : x.value > 0 && x.drive > 0 ? '#fbbf24' : '#60a5fa' }
+ : x.value > 0 && x.drive > 0 ? '#d97706' : '#3b82f6' }
  })),
  label: { show: true, position: 'right', formatter: p => p.data.name || '', color: CHART.axis, fontSize: 9 },
  markLine: { silent: true, symbol: 'none', lineStyle: { color: CHART.axis, type: 'dashed', opacity: 0.5 },
@@ -14841,7 +15947,11 @@ ${blocks}
  }
  // 多口径分色: 每口径一色, 表格逐口径列档位(不合并)
  // ⚠ 装饰色板(多口径分色): 含涨跌同色相, 仅作区分, **不承载涨跌语义**, 不跟换肤走
- const colors = ['var(--amber)', '#60a5fa', '#22c55e', 'var(--brand)', '#ef4444', '#14b8a6'];
+ // 【2026-10-21】原第 1 项写 `var(--amber)`、第 4 项写 `var(--brand)` ——
+ //   ECharts 画在 canvas 上，**解析不了 CSS 变量** ⇒ 非法色值回落成浅灰
+ //   （表格里的圆点是 HTML 元素，能解析，于是出现「表格有色、曲线是灰的」）。
+ //   这里全部用具体色值；同 _repaintCharts 的「按色值精确替换」机制兼容。
+ const colors = ['#EA580C', '#3B82F6', '#22C55E', '#A855F7', '#F43F5E', '#14B8A6'];
  const gColor = (g) => g === '低' ? 'var(--green)' : g === '高' ? 'var(--red)'
  : g === '矛盾' ? 'var(--amber)' : 'var(--text-secondary)';
  if (body) {
@@ -14880,7 +15990,8 @@ ${blocks}
  backgroundColor: 'transparent',
  tooltip: { trigger: 'axis' },
  legend: { bottom: 0, textStyle: { color: CHART.axis, fontSize: 11 } },
- grid: { left: 65, right: 26, top: 16, bottom: 46 },
+ // 【2026-10-21】bottom 46→64：日期轴 rotate:45，原留白不足 ⇒ 日期下半截被裁。
+ grid: { left: 65, right: 26, top: 16, bottom: 64 },
  xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: gridColor } },
  axisLabel: { color: CHART.axis, fontSize: 10, rotate: dates.length > 60 ? 45 : 0 }, splitLine: { show: false } },
  yAxis: { type: 'value', name: '利润', nameTextStyle: { color: CHART.axis, fontSize: 10 },
@@ -15336,7 +16447,7 @@ ${blocks}
  let axisLabel = { color: c.label, fontSize: 11 };
  if (o.mix) {
  // ⚠ 装饰色板(混合模式多系列分色): 含涨跌同色相, **不承载涨跌语义**, 不跟换肤走
- const PALETTE = ['#22c55e', '#fbbf24', '#38bdf8', '#f472b6', '#40c8e0', '#fb923c'];
+ const PALETTE = ['#22c55e', '#d97706', '#0ea5e9', '#db2777', '#0d9488', '#fb923c'];
  const seq = [];
  R.forEach(p => { const u = p.unit || '?'; if (seq.indexOf(u) < 0) seq.push(u); });
  const rich = {};
@@ -15423,11 +16534,16 @@ ${blocks}
  // 只有全量口径下 0 个品种才算异常。
  const noData = !e.product_count;
  const noPool = !mine.length && e.product_count > 0;
- return `<div class="wt-excard"${noData ? ' style="border-color:var(--red)"' : ''}>
+ // 【2026-10-21】采集失败但有上次快照时 product_count 仍 > 0 ⇒ 旧判据看不出问题。
+ //   用户只会看到日期不动的旧数据，以为是最新的（本次报障就是这个形态）。
+ const stale = !!e.stale;
+ const _warn = noData || stale;
+ return `<div class="wt-excard"${_warn ? ' style="border-color:var(--red)"' : ''}>
  <div class="n">${e.name} <span style="color:var(--text-muted)">${e.code}</span></div>
  <div class="v">${this._wtFmt(main.qty)} <span class="u">${main.unit}</span></div>
  <div class="s">${mine.length} 个品种${e.brand_support ? ' · 含品牌' : ' · 无品牌维度'}</div>
  ${noData ? '<div class="s" style="color:var(--red)">⚠ 当日无数据（日报未发布或采集为空壳）</div>' : ''}
+ ${stale ? `<div class="s" style="color:var(--red)">⚠ 本次采集失败，沿用 ${e.date || '上次'} 的数据</div>` : ''}
  ${noPool ? '<div class="s" style="color:var(--text-muted)">该所在当前范围内无品种</div>' : ''}
  ${sub ? `<div class="s">另有 ${sub}</div>` : ''}
  </div>`;
@@ -15587,7 +16703,7 @@ ${blocks}
  legend: { bottom: 0, textStyle: { color: c.label }, type: 'scroll' },
  series: [{
  type: 'pie', radius: ['42%', '68%'], center: ['50%', '46%'],
- data: rs.map((r, i) => ({ name: r.name, value: r.qty || 0, itemStyle: { color: [CHART.candy1,CHART.candy2,CHART.candy3,CHART.candy4,'#60a5fa','#2dd4bf','#40c8e0','#5ac8fa'][i % 8] } })),
+ data: rs.map((r, i) => ({ name: r.name, value: r.qty || 0, itemStyle: { color: CHART.series[i % CHART.series.length] } })),
  label: { color: c.label, fontSize: 10, formatter: '{b}\n{d}%' }
  }]
  });
@@ -15621,7 +16737,7 @@ ${blocks}
  const rest = brands.slice(8);
  const data = top.map(b => ({ name: b.name, value: b.qty || 0 }));
  if (rest.length) data.push({ name: `其他 ${rest.length} 个`, value: rest.reduce((s, b) => s + (b.qty || 0), 0) });
- const palette = [CHART.brand, CHART.candy1, CHART.candy2, CHART.candy3, CHART.candy4, '#2dd4bf', '#60a5fa', '#40c8e0', '#94a3b8'];
+ const palette = CHART.series;
  chart.setOption({
  backgroundColor: 'transparent',
  title: {
@@ -15638,7 +16754,8 @@ ${blocks}
  series: [{
  type: 'pie', radius: ['48%', '70%'], center: ['50%', '48%'],
  data: data.map((x, i) => ({ ...x, itemStyle: { color: palette[i % palette.length] } })),
- label: { color: c.label, fontSize: 10, formatter: '{b}\n{d}%' },
+ // 【2026-10-21】标签原来统一灰色，读者看不出哪块对应哪个名字 ⇒ 跟随扇区色
+ label: { color: 'inherit', fontSize: 10, formatter: '{b}\n{d}%' },
  labelLine: { lineStyle: { color: c.axis } }
  }]
  });
@@ -15652,7 +16769,9 @@ ${blocks}
  document.getElementById('wt-c3-badge').textContent = types.map(t => t.name).join(' / ') || '—';
  const chart = this._initChart('wt-c3');
  if (!chart) return;
- const pal = { '仓库': CHART.candy1, '厂库': CHART.brand, '集团': CHART.candy4 };
+ // 【2026-10-21】原来 '仓库' 用 candy1、'厂库' 用 brand，而这两个变量同值 ⇒
+ //   饼图两类同色。改用统一色板的前三个位置，保证互不相同。
+ const pal = { '仓库': CHART.series[0], '厂库': CHART.series[1], '集团': CHART.series[4] };
  const total = types.reduce((s, t) => s + (t.qty || 0), 0);
  chart.setOption({
  backgroundColor: 'transparent',
@@ -15669,8 +16788,8 @@ ${blocks}
  legend: { bottom: 0, textStyle: { color: c.label } },
  series: [{
  type: 'pie', radius: ['48%', '70%'], center: ['50%', '46%'],
- data: types.map((t, i) => ({ name: t.name, value: t.qty || 0, itemStyle: { color: pal[t.name] || ['#2dd4bf', '#40c8e0'][i % 2] } })),
- label: { color: c.label, fontSize: 11, formatter: '{b} {d}%' },
+ data: types.map((t, i) => ({ name: t.name, value: t.qty || 0, itemStyle: { color: pal[t.name] || ['#2dd4bf', '#0d9488'][i % 2] } })),
+ label: { color: 'inherit', fontSize: 11, formatter: '{b} {d}%' },
  labelLine: { lineStyle: { color: c.axis } }
  }]
  });
@@ -15909,7 +17028,8 @@ ${blocks}
  }
  },
  legend: { top: 0, textStyle: { color: c.label, fontSize: 11 },
- data: ['仓单量', '每日增减'] },
+ // 「每日增减」逐点按涨跌取色，图例只能显示一个色块 ⇒ 干脆不画色块，避免误导
+ data: ['仓单量', { name: '每日增减', icon: 'none' }] },
  grid: [
  { left: 8, right: 16, top: 30, height: '52%', containLabel: true },
  { left: 8, right: 16, top: '72%', bottom: 6, containLabel: true }
@@ -15935,10 +17055,13 @@ ${blocks}
  showSymbol: dates.length <= 20, symbolSize: 6,
  lineStyle: { color: CHART.brand, width: 2.5 },
  itemStyle: { color: CHART.brand },
+ // 【2026-10-21】面积填充原来是硬编码橙色，而这条线是品牌蓝 ⇒ 线蓝、面积橙，
+ //   读者会以为填充属于另一条序列。改成与线同色（品牌蓝）的渐隐。
  areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
- { offset: 0, color: 'rgba(249,115,22,0.25)' }, { offset: 1, color: 'rgba(249,115,22,0)' }]) }
+ { offset: 0, color: CHART.brandA25 }, { offset: 1, color: CHART.brandA02 }]) }
  },
  {
+ name: '每日增减', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
  name: '每日增减', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
  data: align(p.change).map(v => ({
  value: v,
@@ -15955,8 +17078,8 @@ ${blocks}
  // (ECharts.init 会清空容器 innerHTML, 撞名会把下拉的 option 全清掉 —— 实测踩过)。
  const exChart = this._initChart('wt-h-extotal');
  if (exChart) {
- const exMeta = { CZCE: ['郑商所', '#f472b6'], DCE: ['大商所', '#38bdf8'],
- GFEX: ['广期所', '#40c8e0'], SHFE: ['上期所', '#fbbf24'] };
+ const exMeta = { CZCE: ['郑商所', '#db2777'], DCE: ['大商所', '#0284c7'],
+ GFEX: ['广期所', '#0d9488'], SHFE: ['上期所', '#d97706'] };
  const exs = Object.keys(d.ex_totals || {});
  exChart.setOption({
  backgroundColor: 'transparent',
@@ -16002,14 +17125,15 @@ ${blocks}
  }
  if (badge) badge.textContent = `${(wd.warehouses || []).length} 个仓库 · 显示 8`;
  if (!whChart) return;
- const PAL = [CHART.brand, CHART.candy1, CHART.candy2, CHART.candy3, CHART.candy4, '#60a5fa', '#2dd4bf', '#40c8e0'];
+ const PAL = CHART.series;
  whChart.setOption({
  backgroundColor: 'transparent',
  tooltip: { trigger: 'axis',
  formatter: ps => `<b>${ps[0] ? ps[0].axisValue : ''}</b><br/>` +
  ps.map(q => `${q.marker}${q.seriesName} ${q.value == null ? '—' : this._wtFmt(q.value)}`).join('<br/>') },
- legend: { bottom: 0, textStyle: { color: c.label, fontSize: 10 }, type: 'scroll' },
- grid: { left: 8, right: 16, top: 12, bottom: 46, containLabel: true },
+ // 【2026-10-21】图例原来贴着容器底边（bottom:0）⇒ 文字下半截被裁（截图实测）。
+ legend: { bottom: 2, textStyle: { color: c.label, fontSize: 10 }, type: 'scroll' },
+ grid: { left: 8, right: 16, top: 12, bottom: 52, containLabel: true },
  xAxis: { type: 'category', data: dates, boundaryGap: false,
  axisLabel: { color: c.label, fontSize: 10 }, axisLine: { lineStyle: { color: c.axis } }, axisTick: { show: false } },
  yAxis: { type: 'value', scale: true,
@@ -16359,7 +17483,7 @@ ${blocks}
  const strategies = Array.from(cbs).map(cb => cb.value); // 【变量】从多策略面板勾选得到的策略代码数组
  const names = {'fixed':'情绪固定','trailing':'情绪反转','adaptive_sent':'自适应','contrarian':'逆情绪','momentum_ad':'动量+自适应','donchian':'唐奇安突破','momentum':'动量(纯价格)','ma_cross':'双均线','ma_cross_sent':'双均线+情绪','macd':'MACD','macd_sent':'MACD+情绪','rsi':'RSI','rsi_sent':'RSI+情绪','bollinger':'布林带','bollinger_sent':'布林带+情绪','turtle':'海龟','turtle_sent':'海龟+情绪','atr':'ATR','atr_sent':'ATR+情绪'}; // 【变量】策略代码 → 中文显示名(多策略卡片标题与图例)
  // ⚠ 装饰色板(策略分色): 含涨跌同色相, **不承载涨跌语义**, 不跟换肤走
- const colors = {'fixed':'#ff5a1f','trailing':'#fbbf24','adaptive_sent':'#40c8e0','contrarian':'#ef4444','momentum_ad':'var(--amber)','donchian':'#f472b6','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'var(--amber)','bollinger':'#40c8e0','bollinger_sent':'#5ac8fa','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#ff9f0a','atr_sent':'#ff375f'}; // 【变量】策略代码 → 曲线颜色(与卡片左边框色一致)
+ const colors = {'fixed':'#ff5a1f','trailing':'#d97706','adaptive_sent':'#0d9488','contrarian':'#ef4444','momentum_ad':'#f59e0b','donchian':'#db2777','momentum':'#06b6d4','ma_cross':'#34d399','ma_cross_sent':'#10b981','macd':'#22d3ee','macd_sent':'#06b6d4','rsi':'#f97316','rsi_sent':'#f59e0b','bollinger':'#0d9488','bollinger_sent':'#22d3ee','turtle':'#14b8a6','turtle_sent':'#0d9488','atr':'#ff9f0a','atr_sent':'#ff375f'}; // 【变量】策略代码 → 曲线颜色(与卡片左边框色一致)
  document.getElementById('trading-summary').innerHTML = '<span class="node">Fetching...</span>';
 
  // Build per-strategy per-date PnL maps for common x-axis
@@ -16698,6 +17822,21 @@ async function submitPwChange() {
  } catch (e) { err.textContent = '无法连接服务'; err.style.display = 'block'; }
 }
 document.addEventListener('DOMContentLoaded', () => {
+ // 【2026-10-21】A/B 分区跳转（吸顶切换 + 面包屑锚点 + 分区条箭头）
+ document.addEventListener('click', (e) => {
+  const fb = e.target.closest && e.target.closest('#f-fold-a');
+  if (fb) {
+   e.preventDefault();
+   if (typeof App !== 'undefined' && App.fFoldA) App.fFoldA();
+   return;
+  }
+  const t = e.target.closest && e.target.closest('.f-jump, #f-subnav button');
+  if (!t || !t.dataset || !t.dataset.zone) return;
+  e.preventDefault();
+  // ⚠ App 是 const，**不在 window 上**（项目既有事实）⇒ 判 window.App 恒为 undefined，
+  //   handler 会静默什么都不做。必须用 typeof 判全局词法绑定。
+  if (typeof App !== 'undefined' && App.fJumpZone) App.fJumpZone(t.dataset.zone);
+ });
  const btn = document.getElementById('login-btn');
  if (btn) {
  btn.addEventListener('click', async () => {
@@ -16859,6 +17998,104 @@ document.addEventListener('DOMContentLoaded', () => {
  setTimeout(boot, 0);
  }
 })();
+// ══ 【2026-10-19】研报页二级页签: 只挂 switchTab, 不碰任何业务逻辑 ══
+// 单独成块会让 tests/js/overlay_variety_picker_harness.mjs 的"恰好 1 个内联脚本"断言变红,
+// 故合并进主脚本(与原有代码同一作用域, 仍是执行到此处时 App 已定义)。
+(function () {
+  var TAB = 'research';
+  var CONF = {
+    def: 'daily',
+    // 研报的问答卡装在 .page-tools 里, 只有「问答」页签才显示这个容器
+    toolsIn: 'qa',
+    items: [
+      { k: 'qa',     n: '问答',     m: ['研报问答'] },
+      { k: 'daily',  n: '每日总结', m: ['每日总结'] },
+      { k: 'single', n: '单品种',   m: ['单品种'] },
+      { k: 'views',  n: '观点总览', m: ['观点总览'] }
+    ]
+  };
+  var META = ['RESEARCH', '研报', '问答 / 每日总结 / 单品种 / 观点总览：四个入口，一条知识主线'];
+  var state = { k: CONF.def };
+
+  function topCards(tab) {
+    return [].slice.call(tab.children).filter(function (e) {
+      return e.classList && e.classList.contains('card');
+    });
+  }
+  function ensureHead(tab) {
+    var h = tab.querySelector(':scope > .rsh-head');
+    if (h) return h;
+    h = document.createElement('div');
+    h.className = 'rsh-head';
+    h.innerHTML = '<div class="rsh-tt"><span class="rsh-kicker">' + META[0] + '</span>'
+      + '<div class="rsh-title">' + META[1] + '</div></div><p>' + META[2] + '</p>';
+    tab.insertBefore(h, tab.firstElementChild);
+    return h;
+  }
+  function ensureBar(tab) {
+    var bar = tab.querySelector(':scope > .rsh-subnav');
+    if (bar) return bar;
+    bar = document.createElement('div');
+    bar.className = 'rsh-subnav';
+    CONF.items.forEach(function (it) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.k = it.k;
+      b.textContent = it.n;
+      b.onclick = function () { state.k = it.k; apply(tab); };
+      bar.appendChild(b);
+    });
+    var head = tab.querySelector(':scope > .rsh-head');
+    if (head && head.nextSibling) tab.insertBefore(bar, head.nextSibling);
+    else tab.insertBefore(bar, tab.firstChild);
+    return bar;
+  }
+  function apply(tab) {
+    var k = state.k;
+    topCards(tab).forEach(function (c) {
+      var h = c.querySelector('h3');
+      var t = h ? h.textContent : '';
+      var hit = CONF.items.filter(function (it) {
+        return it.m.some(function (m) { return t.indexOf(m) >= 0; });
+      })[0];
+      // 认不出归属的卡片一律保留(宁可多显示, 不要凭空藏掉内容)
+      c.style.display = (!hit || hit.k === k) ? '' : 'none';
+    });
+    var tools = tab.querySelector(':scope > .page-tools');
+    if (tools) tools.style.display = (k === CONF.toolsIn) ? '' : 'none';
+    var bar = tab.querySelector(':scope > .rsh-subnav');
+    if (bar) {
+      [].slice.call(bar.children).forEach(function (b) {
+        b.classList.toggle('on', b.dataset.k === k);
+      });
+    }
+  }
+  function mount(tabId) {
+    if (tabId !== TAB) return;
+    var tab = document.getElementById('tab-' + TAB);
+    if (!tab) return;
+    ensureHead(tab);
+    ensureBar(tab);
+    apply(tab);
+  }
+  function bind() {
+    if (typeof App === 'undefined' || !App.switchTab || App.__rshBound) return !!App;
+    var orig = App.switchTab;
+    App.switchTab = function (t) {
+      var r = orig.apply(this, arguments);
+      try { if (t === TAB) setTimeout(function () { mount(t); }, 60); } catch (e) {}
+      return r;
+    };
+    App.__rshBound = true;
+    var act = document.querySelector('nav button.active');
+    if (act && act.dataset.tab === TAB) mount(TAB);
+    return true;
+  }
+  if (!bind()) {
+    var n = 0;
+    var t = setInterval(function () { if (bind() || ++n > 40) clearInterval(t); }, 150);
+  }
+})();
 </script>
 
 <!-- 黑洞 loading 遮罩(2026-09-15):内部 .loader 及子结构为原组件 DOM,原样保留 -->
@@ -16882,6 +18119,7 @@ document.addEventListener('DOMContentLoaded', () => {
  </div>
  <div class="bh-hint" id="bh-hint">正在检索研报并生成回答…（最长约 1 分钟）</div>
 </div>
+
 </body>
 </html>
 

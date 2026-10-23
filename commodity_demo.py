@@ -289,6 +289,51 @@ def _parse_sentiment_cap(sentiment: str) -> float | None:
         return None
 
 
+def create_research_review_node():
+    """研究内容检查节点：在综合研判**之前**把检查结果变成硬约束（2026-10-23）。
+
+    【为什么插在这里】图的顺序是 四分析师 → 辩论 → 裁决 → synthesis。
+      到 synthesis 之前，四份报告 + 辩论纪要都已就绪，而结论**还没生成** ——
+      这是唯一能"影响判断"而不是"事后指责"的位置。
+    【为什么不用 LLM】检查是纯规则（R1~R7），零 token、零延迟、可进 CI；
+      用 LLM 自查会把"检查"变成又一次生成，反而更不可靠。
+    【失败即放行】任何异常都返回空约束 —— 检查器绝不能成为分析链路的新故障点。
+    """
+
+    def node(state):
+        symbol = state.get("company_of_interest", "") or ""
+        parts = [
+            state.get("technical_report", ""),
+            state.get("fundamental_report", ""),
+            state.get("macro_report", ""),
+            state.get("sentiment_report", ""),
+            state.get("discussion_summary", ""),
+        ]
+        text = "\n\n".join(p for p in parts if p)
+
+        result: dict = {}
+        block = ""
+        try:
+            from tradingagents.research_review import gate_block, review  # 【调用函数】规则检查
+
+            cards: list = []
+            try:
+                # 分析启动时 `_gtja_warm` 已预热，这里命中的是同一个 10min 缓存
+                from tradingagents.dataflows.analysis_bundle import build_cards
+
+                cards = build_cards(symbol)
+            except Exception:  # noqa: BLE001 - 卡片缺失只让 R1/R2/R6 退化
+                cards = []
+            result = review(text, symbol=symbol, cards=cards)
+            block = gate_block(result)
+        except Exception:  # noqa: BLE001 - 检查失败绝不阻塞分析
+            return {"research_review": {}, "quality_gate": ""}
+
+        return {"research_review": result, "quality_gate": block}
+
+    return node
+
+
 def create_synthesis_node(llm):
     """Synthesize four analyst reports + discussion summary into final recommendation."""
     # 【功能】创建"综合研判"图节点:把四份分析师报告 + 圆桌/辩论纪要综合成最终推荐。
@@ -309,6 +354,11 @@ def create_synthesis_node(llm):
         sentiment = state.get("sentiment_report", "")
         discussion = state.get("discussion_summary", "")
         symbol = state["company_of_interest"]
+        # 【2026-10-23】质量门约束：研究内容检查未通过时，这里带着问题清单进来。
+        #   放在「**Your Task**」之前 —— 模型此刻还在决定"怎么判"，不是已经写完。
+        #   通过检查时为空串，提示词与旧版逐字相同（不影响既有行为）。
+        gate = state.get("quality_gate", "") or ""
+        gate_section = (gate + "\n\n---\n\n") if gate else ""
 
         # 情绪维度权重硬上限(2026-08-25 强制门控):从分析师报告首行横幅解析 weight_cap,
         # 作为提示词里不可突破的数字上限;解析失败回退旧"稀疏数据封顶1/10"规则。
@@ -346,7 +396,7 @@ def create_synthesis_node(llm):
 
 ---
 
-**Your Task**:
+{gate_section}**Your Task**:
 
 1. **Compare and contrast** the four perspectives. Pay special attention to the discussion summary which already identified consensus and divergence points.
 
@@ -654,6 +704,8 @@ def build_commodity_graph(
     # 显示综合研判自身仅占 ~15%、情景分析(v4-pro)占 ~18%,两节点各约 74s/92s;
     # 此前"综合研判占 40%"判断有误。故情景分析 2026-09-01 同步由 deep 改 quick 提速。
     synthesis_node = create_synthesis_node(quick_llm)  # 【调用函数】创建综合研判节点(quick_llm 提速)
+    # 研究内容检查节点(纯规则,零 token):插在 synthesis 之前,把问题变成硬约束(2026-10-23)
+    research_review_node = create_research_review_node()  # 【调用函数】创建研究内容检查节点
     scenario_node = create_scenario_node(quick_llm)  # 【调用函数】创建三情景分析节点(quick_llm 提速,原 deep)
     # 用户反馈(自我进化)节点:在分析结束后与用户讨论,并把心得写入进化记忆
     feedback_node = create_user_feedback_node(  # 【调用函数】创建用户反馈(自我进化)节点
@@ -677,6 +729,7 @@ def build_commodity_graph(
         graph.add_node("bull_rebuttal", bull_rebuttal_node)  # 多方再反驳(最后发言)
         graph.add_node("debate_moderator", moderator_node)  # 主持人裁决
     if include_synthesis:
+        graph.add_node("research_review", research_review_node)  # 研究内容检查(纯规则)
         graph.add_node("synthesis", synthesis_node)  # 综合研判
     if include_scenario:
         graph.add_node("scenario_analysis", scenario_node)  # 三情景分析
@@ -697,8 +750,8 @@ def build_commodity_graph(
 
     if include_synthesis:
         # 扇入到下游"首节点":辩论启用则进 bull_opening(全部报告就绪后开辩),
-        # 否则直达 synthesis —— 跳辩论时综合研判直接基于各分析师报告产出。
-        downstream = "bull_opening" if include_debate else "synthesis"
+        # 否则直达 research_review —— 跳辩论时同样要先过质量门，规则一致。
+        downstream = "bull_opening" if include_debate else "research_review"
         for a in analyst_nodes:
             graph.add_edge(a, downstream)
 
@@ -708,7 +761,9 @@ def build_commodity_graph(
             graph.add_edge("bull_opening", "bear_refute")
             graph.add_edge("bear_refute", "bull_rebuttal")
             graph.add_edge("bull_rebuttal", "debate_moderator")
-            graph.add_edge("debate_moderator", "synthesis")
+            # 主持人裁决 → 研究内容检查(2026-10-23):检查完才允许综合研判
+            graph.add_edge("debate_moderator", "research_review")
+        graph.add_edge("research_review", "synthesis")
         # 综合研判之后的收尾:情景启用则多一段,否则直接 END。
         if include_scenario:
             graph.add_edge("synthesis", "scenario_analysis")

@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>技术面 × 基本面分歧：四格回测与 SKILL 适用性核查</title>
+<style>
+  :root{
+    --ink:#1d1d1f; --ink2:#424245; --ink3:#6e6e73; --ink4:#86868b;
+    --line:#e5e5ea; --tile:#f5f5f7; --blue:#0071e3; --blue-d:#0058b0; --blue-l:#eaf3fe;
+    --green:#00875a; --amber:#b25000; --red:#d70015;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#f5f5f7;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.68}
+  .wrap{max-width:1180px;margin:0 auto;padding:44px 32px 96px}
+  h1{font-size:36px;line-height:1.18;letter-spacing:-.022em;margin:0 0 12px}
+  h2{font-size:26px;letter-spacing:-.015em;margin:0 0 8px}
+  h3{font-size:18px;margin:30px 0 10px}
+  h4{font-size:15px;margin:20px 0 8px}
+  p{margin:0 0 12px;color:var(--ink2)}
+  .lead{font-size:17px;color:var(--ink3)}
+  .kicker{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);font-weight:600;margin-bottom:8px}
+  section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:26px 28px;margin-top:18px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .card{background:var(--tile);border-radius:10px;padding:18px 20px}
+  .card h4{margin-top:0}
+  .card p:last-child{margin-bottom:0}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:#fff;
+        border:1px solid var(--line);font-size:12px;color:var(--ink2)}
+  .pill.ok{background:#e9f7f0;border-color:#c9e9da;color:var(--green)}
+  .pill.warn{background:#fdf1e6;border-color:#f6ddc4;color:var(--amber)}
+  .pill.no{background:#fdecee;border-color:#f7d1d6;color:var(--red)}
+  .pill.blue{background:var(--blue-l);border-color:#cfe3fb;color:var(--blue-d)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--tile);padding:1px 5px;border-radius:4px}
+  table.t{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  table.t th,table.t td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.t th{font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink4);background:#fafafa}
+  table.t tr:last-child td{border-bottom:0}
+  table.t td.c{text-align:center}
+  ul,ol{margin:6px 0 12px;padding-left:20px;color:var(--ink2)}
+  li{margin:4px 0}
+  .note{border-left:3px solid var(--blue);background:var(--blue-l);padding:14px 18px;border-radius:0 8px 8px 0;font-size:13.5px;color:#0b3f78;margin:16px 0}
+  .warn{border-left:3px solid var(--amber);background:#fdf6ee;padding:14px 18px;border-radius:0 8px 8px 0;font-size:13.5px;color:#6e3d0e;margin:16px 0}
+  .note p,.warn p{color:inherit;margin:0}
+  pre{background:#1d1d1f;color:#e8e8ed;padding:16px 18px;border-radius:10px;overflow:auto;
+      font-family:var(--mono);font-size:12.5px;line-height:1.65;margin:10px 0}
+  .pos{color:#d70015;font-weight:600}
+  .neg{color:#00875a;font-weight:600}
+  .dim{color:var(--ink4)}
+  .big{font-size:22px;letter-spacing:-.02em;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="kicker">AgentSense · 研究记录 · 2026-10-19</div>
+<h1>技术面 × 基本面分歧：<br>四格回测与 SKILL 适用性核查</h1>
+<p class="lead">用项目自己的数据（2020–2026，21 个品种）检验「两者不一致时该听谁」，并逐张核对现有 SKILL 是否已经回答过这个问题。</p>
+
+<section>
+  <div class="kicker">结论</div>
+  <h2>三句话</h2>
+  <div class="grid g3" style="margin-top:12px">
+    <div class="card">
+      <h4>① 数据不支持任何一条硬规则</h4>
+      <p style="font-size:13.5px">18 个组合里最大的 <code>t≈2.1</code>，按多重检验预期本来就该出现 1 个。Bonferroni 门槛要 <code>t≈3.0</code>，<b>无一通过</b>。</p>
+    </div>
+    <div class="card">
+      <h4>② 唯一方向上可信的：长动量输给基本面</h4>
+      <p style="font-size:13.5px">60 日动量与库存分歧时，跟随基本面 5 日 <code>+27.8bp</code>（t=2.08），<b>15/18 个品种同向</b>，且滞后越保守越强。</p>
+    </div>
+    <div class="card">
+      <h4>③ SKILL 给了原则，没给数值</h4>
+      <p style="font-size:13.5px">「基本面定方向、技术定择时」是断言不是结论；真正的答案在「矛盾不做单边」那条纪律里，而不是在「谁赢」上。</p>
+    </div>
+  </div>
+
+  <div class="warn">
+    <p><b>所以 P1 不该写「基本面优先」这条规则。</b>正确的做法是把分歧<strong>如实输出成条件句</strong>（区间 + 触发 + 失效 + 时间止损），而不是把一次 50/50 的判断包装成方向。这一点与现有 SKILL 的「指标矛盾 → 转跨期/不做单边」是一致的。</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">01 · 口径</div>
+  <h2>用了什么数据，怎么防前视</h2>
+  <table class="t">
+    <thead><tr><th style="width:150px">数据</th><th style="width:120px">来源</th><th style="width:190px">实际覆盖</th><th>频率 / 点数</th></tr></thead>
+    <tbody>
+      <tr><td><b>价格</b></td><td>akshare 主连日线</td><td>2020-01-02 ~ 2026-10-16</td><td>日频，1,643 点</td></tr>
+      <tr><td><b>社会库存</b></td><td>国君全量数据集</td><td>2018-01-05 ~ 2026-10-09</td><td><b>周频</b>（周五），430 点</td></tr>
+      <tr><td><b>注册仓单</b></td><td>国君 warehouse 端点</td><td>2022-01 ~ 2026-10-16</td><td>日频，1,453 点</td></tr>
+      <tr><td><b>基差 / 现货</b></td><td>国君 basis 端点</td><td><b>2023-11-29 起</b></td><td>日频，696 点（短板）</td></tr>
+    </tbody>
+  </table>
+  <p><b>信号定义</b>：技术 = 20 日 / 60 日动量符号；基本面 = 库存 4 周变化（去库为正）、仓单 5 日变化（减少为正）、基差率 250 观测分位（贴水为正）。前瞻收益 5 / 10 / 20 个交易日。</p>
+
+  <h3>三道防前视的闸门</h3>
+  <ol>
+    <li><b>发布滞后</b>：每条基本面序列都要等「观测日 + P 天」才允许使用，P 取 0 / 7 / 14 做敏感性。<b>主结论只看 P=7</b>。</li>
+    <li><b>按观测个数算变化</b>：周频序列的「4 期」是 4 周，不是 4 天。第一版先 ffilled 到日频再取 4 期，实测 90% 的日期变化恒为 0，信号被抹平——四格几乎全空。</li>
+    <li><b>非重叠抽样</b>：h 日前瞻收益在相邻日期高度重叠，不抽样会让日期序列强自相关。实测这一步让同向格 t 值从 3.0~6.5 回落到 0.25~1.76。</li>
+  </ol>
+</section>
+
+<section>
+  <div class="kicker">02 · 结果</div>
+  <h2>四格：分歧时谁占优</h2>
+  <p class="lead">下表是「分歧样本里按基本面方向持有」的收益（bp）。<b>正 = 基本面赢，负 = 技术赢</b>。括号内为<strong>日期聚簇 + 非重叠</strong>的 t 值；最后一列是方向一致的品种占比。</p>
+
+  <table class="t">
+    <thead><tr>
+      <th style="width:190px">组合（lag=7）</th><th>5 日</th><th>10 日</th><th>20 日</th><th style="width:150px">品种一致率（5/10/20d）</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>20 日动量 × 库存</td>
+          <td>+20.6 <span class="dim">(1.42)</span></td><td>+16.4 <span class="dim">(0.69)</span></td><td>+44.4 <span class="dim">(0.96)</span></td>
+          <td>44% / 39% / 53%</td></tr>
+      <tr><td>20 日动量 × 仓单</td>
+          <td>+5.0 <span class="dim">(0.35)</span></td><td>−14.1 <span class="dim">(−0.46)</span></td><td>+36.9 <span class="dim">(0.61)</span></td>
+          <td>50% / 42% / 56%</td></tr>
+      <tr><td>20 日动量 × 基差</td>
+          <td>+15.1 <span class="dim">(0.77)</span></td><td>−2.9 <span class="dim">(−0.08)</span></td><td>−15.5 <span class="dim">(−0.22)</span></td>
+          <td>47% / 40% / 57%</td></tr>
+      <tr style="background:#fff8f6"><td><b>60 日动量 × 库存</b></td>
+          <td class="pos">+27.8 (2.08)</td><td class="pos">+51.1 (2.09)</td><td class="pos">+85.6 (1.64)</td>
+          <td><b>83% / 67% / 71%</b></td></tr>
+      <tr><td>60 日动量 × 仓单</td>
+          <td>+9.5 <span class="dim">(0.61)</span></td><td>+22.0 <span class="dim">(0.71)</span></td><td>+101.5 <span class="dim">(1.59)</span></td>
+          <td>50% / 60% / <b>78%</b></td></tr>
+      <tr><td>60 日动量 × 基差</td>
+          <td>+19.5 <span class="dim">(1.02)</span></td><td>+45.1 <span class="dim">(1.28)</span></td><td>+78.8 <span class="dim">(1.12)</span></td>
+          <td>53% / 53% / 50%</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <p><b>怎么读这张表：</b>看两件事而不是只看 t。<b>① 符号</b>：6 个组合里 5 个是正的（基本面赢），只有 20×基差 在 10/20 日是负的。<b>② 一致率</b>：20 日动量那三行的品种一致率在 39%~56%（硬币），60 日动量那三行是 50%~83%。<b>方向可信、强度不足</b>——这就是全部证据的分量。</p>
+  </div>
+
+  <h3>同向（共振）格：短期动量确实有「确认」价值</h3>
+  <table class="t">
+    <thead><tr><th style="width:190px">同向时按技术方向持有</th><th>10 日</th><th>20 日</th><th>解读</th></tr></thead>
+    <tbody>
+      <tr><td>20 日动量 × 库存</td><td>+36.7 <span class="dim">(1.26)</span></td><td>+57.7 <span class="dim">(1.02)</span></td><td>正向，未达显著</td></tr>
+      <tr><td>20 日动量 × 基差</td><td>+63.2 <span class="dim">(1.76)</span></td><td>+114.5 <span class="dim">(1.75)</span></td><td>最接近显著，但仅 2024 年后</td></tr>
+      <tr><td>60 日动量 × 库存</td><td>+9.9 <span class="dim">(0.32)</span></td><td>+6.0 <span class="dim">(0.11)</span></td><td rowspan="3"><b>长动量同向 ≈ 无溢价</b>：它本身已经吃掉了基本面信息，再加一遍没有增量</td></tr>
+      <tr><td>60 日动量 × 仓单</td><td>−31.9 <span class="dim">(−1.14)</span></td><td>−30.9 <span class="dim">(−0.59)</span></td></tr>
+      <tr><td>60 日动量 × 基差</td><td>−6.1 <span class="dim">(−0.18)</span></td><td>−13.6 <span class="dim">(−0.22)</span></td></tr>
+    </tbody>
+  </table>
+  <p>这个分裂很有意义：<b>短周期动量（20 日）是「确认」，长周期动量（60 日）不是。</b>前者与基本面同向时才有溢价，后者同向时毫无作用——因为它已经包含了基本面已经发生的那部分。</p>
+</section>
+
+<section>
+  <div class="kicker">03 · 稳健性</div>
+  <h2>五个必须过的关，过了四个、卡了一个</h2>
+
+  <table class="t">
+    <thead><tr><th style="width:160px">检验</th><th>做法</th><th style="width:210px">结果</th></tr></thead>
+    <tbody>
+      <tr><td><b>① 日期聚簇</b></td>
+          <td>同一天 21 个品种收益高度相关，把 (品种×日) 当独立样本会把 t 抬高 2~4 倍。改为先在日期内取均值，再对日期序列检验。</td>
+          <td><span class="pill ok">已修正</span> 池化 t=2.17 → 日期聚簇 t=2.09</td></tr>
+      <tr><td><b>② 非重叠</b></td>
+          <td>每 h 天取一个样本，避免 h 日前瞻收益在相邻日期重叠。</td>
+          <td><span class="pill ok">已修正</span> 同向格 t 从 6.53 回落到 1.75</td></tr>
+      <tr><td><b>③ 滞后敏感性</b></td>
+          <td>P=0 / 7 / 14 三档，看方向是否稳定。若是前视偏差，滞后越大应该越弱。</td>
+          <td><span class="pill ok">通过</span> 60×库存×20d：+0.06%(t=0.17) → +0.69%(1.97) → +1.01%(2.86)，<b>单调增强</b></td></tr>
+      <tr><td><b>④ 品种集中度</b></td>
+          <td>看是不是两三个品种贡献了全部收益。</td>
+          <td><span class="pill ok">通过</span> 60×库存 5d：<b>15/18 品种同向</b>（83%）</td></tr>
+      <tr><td><b>⑤ 时间切分</b></td>
+          <td>同一份数据上扫出来的最优权重不能直接用；改为前后两段分别看固定规则。</td>
+          <td><span class="pill no">不通过</span> 见下</td></tr>
+    </tbody>
+  </table>
+
+  <h3>第 ⑤ 关：把所有「好看」的组合都打回原形</h3>
+  <p>规则：<b>只在同向时持仓，分歧时空仓</b>（等权 0.5/0.5 时分歧恰好对冲为 0），10 日换手，按 244/10 折算年化。</p>
+  <table class="t">
+    <thead><tr><th style="width:190px">组合</th><th>2020-01 ~ 2023-12</th><th>2023-12 ~ 2026-10</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>20 日动量 × 库存</td><td>−0.4%</td><td class="pos">+15.3%</td><td>只在后段成立</td></tr>
+      <tr><td>20 日动量 × 基差</td><td class="dim">（无数据）</td><td class="pos">+16.1%</td><td>无法验证</td></tr>
+      <tr><td>60 日动量 × 仓单</td><td>+2.0%</td><td class="neg">−15.3%</td><td><b>符号翻转</b></td></tr>
+      <tr><td>60 日动量 × 库存</td><td>−0.7%</td><td>+0.1%</td><td>≈ 0</td></tr>
+      <tr><td>20 日动量 × 仓单</td><td>+3.7%</td><td>+0.1%</td><td>≈ 0</td></tr>
+      <tr><td>60 日动量 × 基差</td><td class="dim">（无数据）</td><td>+3.9%</td><td>无意义</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warn">
+    <p><b>这条最伤人：没有任何一个组合在两个子样本里都稳定为正。</b>更强的那个（20×库存 +15.3%）恰好落在基差数据才开始的那一段，而 60×仓单直接符号翻转。<b>谁在样本内看起来最好，谁就最可能是拟合出来的。</b></p>
+  </div>
+
+  <h3>多重检验：为什么最大 t=2.09 不能算显著</h3>
+  <p>一共测了 2（技术）× 3（基本面）× 3（持有期）= <b>18 个组合</b>。在全部无效的零假设下，按 α=0.05 也预期会出现约 <b>1 个</b> |t|&gt;2 的结果——我们找到的正好是 1 个效应（60×库存的 5d 和 10d 是同一件事）。Bonferroni 门槛 t≈3.0，<b>无一通过</b>。</p>
+
+  <div class="note">
+    <p><b>还有一层：</b>纯 60 日动量在这份样本里年化 <b>−4.1% ~ −5.2%</b>（纯 20 日动量 +3.1% ~ +8.8%；纯基本面 −4.3% ~ +6.7%，随口径波动大）。所以「基本面赢过长动量」有一部分其实是「长动量在这里本来就是坏信号（均值回复主导）」，不等于「基本面比技术强」。这条必须写清楚，否则会被误读成一个很强的结论。</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">04 · SKILL 核查</div>
+  <h2>现有 SKILL 能不能解决这个问题</h2>
+  <p class="lead">答案是分裂的：<b>纪律层能，数值层不能。</b>下面逐张核对。</p>
+
+  <table class="t">
+    <thead><tr><th style="width:230px">能力卡</th><th style="width:300px">原文口径</th><th>对这个问题的回答</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>qihuo-duokong-logic</code><br><b>cap-trading-discipline</b></td>
+        <td>「分工：基本面选品种/方向（找大概率），技术面择时（等明显进场信号），资金管理与自我管理防小概率。」</td>
+        <td><span class="pill ok">方向对</span> 这正是「基本面定方向、技术定入场」的原话。<b>但它是断言，书里没有给权重、也没有统计检验</b>——等于给了结论没给证据。</td>
+      </tr>
+      <tr>
+        <td><code>qihuo-duokong-logic</code><br><b>cap-inventory-basis-profit</b></td>
+        <td>三指标共振→单边；<b>指标矛盾→跨期正套/反套</b>（「单边易频繁止损」）。作者自述 37% 胜率 + 3:1 赔率。</td>
+        <td><span class="pill ok">可迁移</span> 它处理的是<strong>基本面内部</strong>矛盾（库存 vs 利润 vs 基差），不是技术 vs 基本面。但「矛盾不做单边」这条纪律可以直接搬。</td>
+      </tr>
+      <tr>
+        <td><code>carver</code><br><b>cap-weights-multipliers</b></td>
+        <td>规则 forecast → 缩放封顶 → <b>加权合并</b> → ×FDM → 品种权重 → ×IDM。</td>
+        <td><span class="pill ok">方法对</span> 明确反对「选一个赢家」，主张加权合成。但权重必须由数据拟合，不能拍脑袋。</td>
+      </tr>
+      <tr>
+        <td><code>carver</code><br><b>cap-fitting-structure</b></td>
+        <td>同品种内不同规则的平均相关 <b>0.29</b>，同规则跨品种仅 0.05 ⇒ 先品种内组合、再跨品种。</td>
+        <td><span class="pill ok">直接命中</span> 系统里 4 张基本面票彼此相关远高于 0.29，必须先去重再加权，否则同一份证据被计 4 次。</td>
+      </tr>
+      <tr>
+        <td><code>carver</code><br><b>cap-random-data-calibration</b></td>
+        <td>「<b>真实数据只用一次</b>：设计工作流时真实数据应只在最后用于设权重，不要把随机数据阈值直接套真实数据（会假显著）。」</td>
+        <td><span class="pill warn">我这次也犯了</span> 第一版在同一份数据上扫最优 w（得到 +8%~+17%），那是样本内自证。已改为时间切分，结论随之塌掉。</td>
+      </tr>
+      <tr>
+        <td><code>qihuo-duokong-logic</code><br><b>自我披露</b></td>
+        <td>「『低库存+深贴水+低利润→做多』等规则组合的胜率/盈亏比<b>无实证统计</b>支撑……建议作为假设清单用 Carver 方法验证。」</td>
+        <td><span class="pill blue">闭环</span> 书自己就把这件事交给了 Carver 去验证。这次的结论是：<b>验证没通过</b>。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>代码现状（实测）：9 张票，只有 3 张真的进了净票</h3>
+  <p>实跑 <code>/api/quant/verdict?variety=TA</code>，把 <code>stages.direction.votes</code> 按 <code>dirmap</code> 复算：</p>
+
+  <table class="t">
+    <thead><tr><th style="width:180px">票</th><th style="width:170px">实际 bias</th><th style="width:90px">计入</th><th>原因</th></tr></thead>
+    <tbody>
+      <tr><td>鹿希武</td><td><code>暂不操作</code></td><td class="c">0</td><td>方向未唯一，合理地不计</td></tr>
+      <tr><td>墨菲（ADXR）</td><td><code>趋势系统可用</code></td><td class="c">0</td><td><b>哑票</b>：不在 dirmap</td></tr>
+      <tr><td>多空逻辑（四象）</td><td><code>单边做多</code></td><td class="c pos">+1</td><td>✅</td></tr>
+      <tr><td>多空逻辑（期限结构）</td><td><code>偏多</code></td><td class="c">0</td><td><b>哑票</b>：dirmap 只认「做多」，不认「偏多」</td></tr>
+      <tr><td>多空逻辑（库存周期）</td><td><code>做空</code></td><td class="c neg">−1</td><td>✅ 但它是<b>价格票</b>（见下）</td></tr>
+      <tr><td>多空逻辑（利润）</td><td><code>做多</code></td><td class="c pos">+1</td><td>✅</td></tr>
+      <tr><td>墨菲（背离）</td><td><code>反转预警</code></td><td class="c">0</td><td><b>哑票</b></td></tr>
+      <tr><td>墨菲（突破）</td><td><code>提示(突破口径对照)</code></td><td class="c">0</td><td><b>哑票</b></td></tr>
+      <tr><td>威科夫</td><td><code>暂不操作</code></td><td class="c">0</td><td>中性，合理地不计</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warn">
+    <p><b>9 张票，4 张是哑票，净票只有 +1。</b>根因是用中文字符串当枚举、又不校验：<code>偏多</code>≠<code>做多</code>、<code>趋势系统可用</code>≠<code>做多</code>，于是静默计 0。这正是本项目最忌讳的那类失败——不报错、不告警、结论悄悄变了。</p>
+  </div>
+
+  <h3>而且「库存周期」根本不是一票基本面</h3>
+  <p>它的四阶段表是：<code>(降,涨)→多 / (升,涨)→多 / (升,跌)→空 / (降,跌)→空</code>。<b>方向上「价格涨就偏多、跌就偏空」，库存方向只改变标签（被动/主动），不改变 bias 符号。</b>所以这一票等价于「价格 5 日涨跌」——是一张被命名为基本面的技术票。</p>
+  <p>TA 这一例就很典型：四象 +1、利润 +1，本该净 +2；被这张「价格跌」的伪基本面票 −1，抵成 +1。</p>
+
+  <div class="note">
+    <p><b>更正：</b>本节早前写的是「基本面被重复计票约 4 次、系统本来就偏向基本面」——<b>实测是反的</b>。净票实际由「四象 + 库存周期 + 利润」构成，其中库存周期是价格；再加上 4 张哑票，系统的净方向<b>既不代表基本面、也不代表技术，而是三种来源的偶然混合</b>。</p>
+  </div>
+
+</section>
+
+<section style="border-color:#c9e9da;background:#f4fbf7">
+  <div class="kicker" style="color:#00875a">05 · 已实施（L0）</div>
+  <h2>计票器已修：新增 vote_semantics 作为单一权威</h2>
+  <p>按"先只做 L0"落地，<b>不改聚合方式、不加权重、不动方法论</b>，只做一件事：把方向票的分类从"4 份手抄表"收成一个模块，并让所有认不出的取值<b>外显</b>。</p>
+
+  <table class="t">
+    <thead><tr><th style="width:280px">改动</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>vote_semantics.py</code>（新增）</td><td>方向票语义的唯一来源。<code>classify()</code> 返回 <code>(±1, 分类)</code>，分类含 long / short / neutral / non_direction / weak_direction / unknown —— <b>"有效中性"与"识别失败"从此可区分</b></td></tr>
+      <tr><td><code>quant_verdict.py</code></td><td>净票改走 <code>vs.net_of()</code>；响应新增 <code>stages.direction.vote_audit</code>（谁计入、谁没认出）</td></tr>
+      <tr><td><code>fund_module.py</code> ×2</td><td>截面表 <code>skill_net</code> 与四票 <code>net</code> 同源（此前也各抄了一份表）</td></tr>
+      <tr><td><code>quant_methodology.py</code></td><td>威科夫"确认层"找多空票时同源</td></tr>
+      <tr><td><code>tests/test_fund_xsection.py</code></td><td>不再抄表算期望值（原来自指，恒绿）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>漂移：全池 21 个品种，无人幸免</h3>
+  <table class="t">
+    <thead><tr><th>指标</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>总票 / 实际计入</td><td><b>164 / 84 ⇒ 哑票率 49%</b>（单个 TA 例子是 4/9，全池更严重）</td></tr>
+      <tr><td>净票数值变化</td><td><b>21 / 21 全部变化</b></td></tr>
+      <tr><td>方向翻转</td><td><b>8 / 21（38%）</b>：BZ −1→0、EB 0→+1、FU 0→+1、LC −1→0、NR 0→−1、PG −1→0、PS 0→−1、PX 0→+1</td></tr>
+      <tr><td>每个品种计入票数</td><td>2~6 张（中位 4），而账面票数恒为 6~9</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warn">
+    <p><b>这不是"变准了"，是"终于按文档契约算了"。</b>前端 <code>_FRK_TEXT_RANK</code> 从一开始就把「偏多」当 +1，后端却当 0 —— 前后端口径本来就是分裂的。修完两者才一致。<b>8 个方向翻转说明此前有一批结论建立在哑票上，这些结论需要重新看。</b></p>
+  </div>
+
+  <h3>审计顺带抓出的两类"隐形票"</h3>
+  <p>上线前跑 21 品种时，审计报出 <b>10 次未登记</b>，全部是动态拼接的取值：<code>套利/对冲(适合正套)</code> 与 <code>套利/对冲(适合反套, 结合仓单有效期)</code>。<b>它们此前同样一直静默计 0</b>，而读代码是发现不了的 —— 这正好验证了"把未知外显"这条设计的价值。</p>
+  <p class="small muted">注：这两个取值语义上是"别做单边"，方向计 0 是对的；但它们是<b>在对冲方向上的强信号</b>，L1 应改为"单边抑制"而不是简单记 0。</p>
+
+  <h3>护栏与自检</h3>
+  <ul>
+    <li><code>tests/test_vote_semantics.py</code> <b>17 例</b>：偏多/偏空回归钉、未登记外显、生产代码禁止再写方向映射字面量、测试禁止抄表、前后端同口径、生产方取值全覆盖</li>
+    <li>变异自检 <b>7/7 全击杀</b>（<code>probe/_l0_mutate.py</code>），md5 全部复原</li>
+    <li>全量回归 <b>47F / 6E / 1S</b>（3,022 用例），与长期基线逐项一致，<b>新增红 0</b></li>
+  </ul>
+  <div class="note">
+    <p><b>自检本身也抓到两个漏洞：</b>① 护栏最初只禁 <code>dirmap</code> 这个名字，变异时把表改名成 <code>_dm</code> 就绕过了 ⇒ 改成禁"方向词→数字"的字面量；② 变异脚本改测试名后 <code>-k</code> 选不中用例，pytest 仍返回非 0，会被误记为"击杀" ⇒ 加了 <code>no tests ran</code> 显式排除。<b>两条都是"守名字不守事实"。</b></p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">06 · 对比回测</div>
+  <h2>改前 vs 改后：谁更准，差多少</h2>
+  <p class="lead">两套净票只有一处不同：期限结构那一票算不算。所以差异只能来自它。</p>
+
+  <h3>6.1 口径与三处必须声明的近似</h3>
+  <table class="t">
+    <thead><tr><th style="width:170px">环节</th><th>做法</th></tr></thead>
+    <tbody>
+      <tr><td><b>忠实复刻</b></td><td>库存周期直接调生产同一个纯函数 <code>inventory_cycle_phase</code>；利润阈值 0.3/0.7；四象"单边"只在三指标全共振时计票 —— 与生产同口径</td></tr>
+      <tr><td><b>期限结构（代理）</b></td><td>生产用 akshare 全合约<strong>实时</strong>报价，没有历史。这里用 <code>sign(基差)</code> 代理（back ⟺ 期货贴水 ⟺ 基差&gt;0，同号）。<b>这是结构性等价，不是精确复制。</b></td></tr>
+      <tr><td><b>利润分位</b></td><td>生产用<strong>全样本</strong> min/max（含未来数据）⇒ 回测改为<strong>扩展窗口</strong>，否则偷看未来</td></tr>
+      <tr><td><b>库存档位</b></td><td>生产用双口径（社会库存+仓单，背离记"矛盾"）⇒ 这里只用社会库存扩展分位</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">样本：21 品种、26,311 条（品种×日）、2020-01 ~ 2026-10，发布滞后 7 天，前瞻 5/10/20 日。</p>
+
+  <h3>6.2 总账：正确率几乎不动，盈利略好</h3>
+  <table class="t">
+    <thead><tr>
+      <th style="width:90px">持有期</th><th>改前命中</th><th>改后命中</th><th>Δ命中</th>
+      <th>改前每笔</th><th>改后每笔</th><th>Δ每笔</th><th>年化差</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>5 日</td><td>49.3%</td><td>49.2%</td><td>−0.1pp</td><td>+2.7bp</td><td>+3.0bp</td><td>+0.3bp</td><td>+0.15pp</td></tr>
+      <tr style="background:#f4fbf7"><td><b>10 日</b></td><td>49.0%</td><td>49.3%</td><td><b>+0.3pp</b></td><td>+4.9bp</td><td><b>+6.7bp</b></td><td><b>+1.8bp</b></td><td><b>+0.44pp</b></td></tr>
+      <tr><td>20 日</td><td>49.5%</td><td>49.6%</td><td>+0.1pp</td><td>+15.2bp</td><td>+16.4bp</td><td>+1.2bp</td><td>+0.15pp</td></tr>
+    </tbody>
+  </table>
+  <p>命中率的 95% 置信区间在三个口径下<b>全部覆盖 50%</b>，且变化方向不一致（5 日变差、10/20 日变好）。<b>结论：正确率没有可测量的变化。</b></p>
+  <p>盈利方向一致为正，但<b>年化差只有 0.15~0.44 个百分点（毛，未计手续费/滑点/换月）</b> —— 小于任何一次真实交易成本。</p>
+
+  <h3>6.3 机制：改善不是"多做对的"，而是"少做更差的"</h3>
+  <table class="t">
+    <thead><tr>
+      <th rowspan="2" style="width:90px">持有期</th>
+      <th colspan="3" style="text-align:center">新增仓位（改前空仓 → 改后开仓）</th>
+      <th colspan="3" style="text-align:center">取消仓位（改前开仓 → 改后空仓）</th>
+    </tr>
+    <tr><th>条数</th><th>命中</th><th>均值</th><th>条数</th><th>命中</th><th>均值</th></tr></thead>
+    <tbody>
+      <tr><td>5 日</td><td>2,720</td><td>49.4%</td><td class="neg">−4.1bp</td><td>2,095</td><td>49.7%</td><td class="neg">−8.8bp</td></tr>
+      <tr><td>10 日</td><td>2,720</td><td>50.1%</td><td class="neg">−9.1bp</td><td>2,095</td><td>47.5%</td><td class="neg">−28.0bp</td></tr>
+      <tr><td>20 日</td><td>2,720</td><td>48.6%</td><td class="neg">−25.3bp</td><td>2,095</td><td>47.3%</td><td class="neg">−47.6bp</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><b>两批仓位平均都在亏。</b>新增的那批命中约 50%、均值 −4~−25bp；取消的那批亏得更多（−9~−48bp）。<b>所以"改后略好"完全来自取消了更差的交易，而不是新增了赚钱的交易 —— 期限结构这一票本身不产生 alpha。</b></p>
+  </div>
+
+  <h3>6.4 三个结构性事实</h3>
+  <ol>
+    <li><b>反向 = 0 次。</b>加一张 ±1 的票，只能把净票从 ±1 推到 0 或 ±2，<b>永远不可能把做多翻成做空</b>。所以实测里 8 个"方向翻转"全部是 0 ↔ ±1，没有一个 + ↔ −。</li>
+    <li><b>65% 的样本两套完全相同</b>；变化只有 0→有向 2,720 条（10.3%）与 有向→0 2,095 条（8.0%）。</li>
+    <li><b>期限结构与基差是同一根轴。</b>back 结构 ⟺ 期货贴水，方向同号；加它等于给基差投第二票 —— 这正是 L1 要解决的"同轴重复计票"。</li>
+  </ol>
+
+  <div class="note">
+    <p><b>所以 L0 的正当性不在"更准"或"更赚"</b>（两者都没有可测改善），而在于：① 文档声明的票被吞掉 44% 是契约违背；② 修完之后每一票的计入与否可审计，才有可能发现下一张哑票。<b>用收益来论证 L0 会得出"没必要修"的错误结论。</b></p>
+  </div>
+
+  <p class="small muted"><b>口径局限</b>：因为用了代理与简化复刻，上表的<b>绝对值不代表生产表现</b>（整体年化仅 1.2~2.0% 毛收益，本身也说明这套净票信号很弱）；但"改前 vs 改后"是同一套复刻下的对照，<b>差异项可信</b>。</p>
+</section>
+
+<section>
+  <div class="kicker">07 · 加权总信号</div>
+  <h2>能不能按"强度 × 置信度"加权？能，但顺序不能反</h2>
+  <p class="lead">顺序是：<b>先把强度变成字段 → 再按轴归并 → 最后才谈权重</b>。跳步会把重复计票包装成一个更精确的小数。</p>
+
+  <h3>7.1 原料盘点：数值都算出来了，只是没暴露</h3>
+  <table class="t">
+    <thead><tr><th style="width:150px">票</th><th style="width:330px">现有强度数值</th><th>当前形态</th></tr></thead>
+    <tbody>
+      <tr><td>四象</td><td>估值 −1.58 / 驱动 0.52</td><td rowspan="5"><b>全部只写在 <code>detail</code> 的中文句子里</b>，没有 <code>strength</code> 字段</td></tr>
+      <tr><td>期限结构</td><td>价差 −862.0（−12.688%）</td></tr>
+      <tr><td>库存周期</td><td>库存 +1855% / 价格 −2.97% / 分位 30.7%</td></tr>
+      <tr><td>利润</td><td>分位 24%</td></tr>
+      <tr><td>墨菲突破/背离</td><td>+0.61% vs ±3% 阈值 / RSI 74.6→63.2</td></tr>
+      <tr><td>墨菲 ADXR</td><td>ADXR 36.1 / +DI 27.0 / −DI 15.1</td><td>✅ 已是字段</td></tr>
+      <tr><td>威科夫</td><td>吸筹 0 / 派发 2</td><td>✅ 已是字段</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><b>所以第一步不是写权重公式，是给每张票补 <code>strength / confidence / axis</code> 三个字段。</b>否则生产代码只能靠正则去解析自己刚拼出来的中文——那是把可维护性直接归零。</p>
+  </div>
+
+  <h3>7.2 四个量必须分开</h3>
+  <table class="t">
+    <thead><tr><th style="width:90px">量</th><th style="width:110px">取值</th><th>含义 / 来源</th></tr></thead>
+    <tbody>
+      <tr><td><b>方向 s</b></td><td>−1 / 0 / +1</td><td>票指哪边</td></tr>
+      <tr><td><b>强度 m</b></td><td>[0, 1]</td><td>离中性有多远。利润 24% 分位 vs 49% 分位不该同权</td></tr>
+      <tr><td><b>可信度 c</b></td><td>[0, 1]</td><td>这张票自己的数据靠不靠得住：数据缺口、小基数失真、样本不足</td></tr>
+      <tr><td><b>轴权重 w</b></td><td>先验 → 拟合</td><td><b>由历史表现定，不能从票自身推</b>。初期一律等权</td></tr>
+    </tbody>
+  </table>
+
+  <h3>7.3 核心公式：轴内先归一，票数就不等于权重</h3>
+  <pre>score_axis = Σ(m·c·s) / Σ(m·c)        <span class="c"># 轴内归一：票再多也不会压过别的轴</span>
+total      = Σ(w_axis · score_axis) / Σ(w_axis)   <span class="c"># 轴间加权</span></pre>
+  <p><b>为什么这一步是灵魂：</b>TA 这一例里 <code>price</code> 轴有 <b>7 张票</b>，而 basis 2 张、inventory 1 张、profit 1 张。直接求和 = 价格面拿走 7/11 的权重，纯粹因为它票多。轴内归一后，<b>4 个轴各占 25%</b>，价格面那 7 张票内部多空互相抵消（得分只有 −0.07）。</p>
+
+  <h3>7.4 原型实测（<code>probe/_weighted_signal.py</code>）</h3>
+  <table class="t">
+    <thead><tr><th style="width:70px">品种</th><th>当前净票</th><th>加权总分</th><th>价格轴票数</th><th>价格轴得分</th><th>读法</th></tr></thead>
+    <tbody>
+      <tr style="background:#f4fbf7"><td><b>TA</b></td><td>+1</td><td><b>+0.732</b></td><td>7</td><td>−0.071</td><td>7 张价格票互相抵消，基本面 3 轴一致 → 明确偏多；净票只有 +1</td></tr>
+      <tr><td>CF</td><td>−2</td><td>−0.500</td><td>4</td><td>−1.000</td><td>四轴三空一多</td></tr>
+      <tr><td>EB</td><td>+1</td><td>+0.611</td><td>7</td><td>+0.444</td><td>一致性较高</td></tr>
+      <tr><td>FU</td><td>+2</td><td>+0.420</td><td>5</td><td>+0.260</td><td>净票最"多"，加权反而最温和</td></tr>
+      <tr><td>PX</td><td>+1</td><td><b>+0.191</b></td><td>6</td><td>+0.763</td><td>价格面偏多被库存轴抵掉 → 置信度很低</td></tr>
+    </tbody>
+  </table>
+  <p>同一个"净票 +1"，在 TA 是 +0.73、在 PX 只有 +0.19 —— <b>这正是净票丢掉的"置信度"，加权能把它找回来。</b></p>
+
+  <h3>7.5 项目里已有先例，只是没推广</h3>
+  <p><code>stages.extended.calendar_spread.collapsed_note</code> 里已经写着：<b>「库存/仓单在平台同源（交易所注册仓单）→ ①仓单与③库存只投一票（按分位），避免同一序列两票制造假共振」</b>。去重纪律早就存在，只是停在了那一处。</p>
+
+  <h3>7.6 L1a 已实施（2026-10-19 17:30）</h3>
+  <p>9 张票已各补 <code>axis / strength / confidence / strength_basis</code>，<b>结论零变化</b>。</p>
+  <table class="t">
+    <thead><tr><th style="width:120px">维度</th><th>口径</th></tr></thead>
+    <tbody>
+      <tr><td><b>axis</b></td><td><code>price</code>（鹿希武/ADXR/背离/突破/威科夫/<b>库存周期</b>）、<code>basis</code>（期限结构）、<code>profit</code>（利润）、<code>composite</code>（四象，横跨两轴，L1b 才拆）</td></tr>
+      <tr><td><b>strength</b></td><td>对<strong>它自己的 bias</strong> 有多确信。非方向票（ADXR/背离/突破）一律 <b>0</b>——给强度是自欺；二值票（鹿希武）1.0，不硬造连续尺度</td></tr>
+      <tr><td><b>confidence</b></td><td>数据可不可靠。库存变化 &gt;100% → <b>0.4</b>（小基数失真）；威科夫无事件 → <b>0.3</b>（没证据 ≠ 中性）</td></tr>
+    </tbody>
+  </table>
+
+  <p><b>等价性不是"看起来没变"</b>：同一 payload（涨/跌/平三种 trend）分别喂给改前、改后两份代码，<code>verdict</code> / <code>net</code> / 每张票的 <code>(book,bias)</code> 序列 / <code>verdict_text</code> <b>逐项相同</b>。</p>
+
+  <p>线上 TA 实测：库存周期 <code>confidence 0.40</code>（库存 +1855%）、四象 <code>strength 0.17</code>（驱动 0.52/3）、期限结构 <code>1.00</code>（价差 −12.7%）、利润 <code>0.53</code>（分位 24%）。</p>
+
+  <div class="warn">
+    <p><b>验证时发现公式本身有缺陷：</b><code>Σ(m·c·s)/Σ(m·c)</code> 会把<strong>幅度抹平</strong>——只有一张票的轴，无论强度 0.17 还是 1.0，都会算出 ±1.00。改成 <b>方向 × 证据量</b>：<code>dir = Σ(m·c·s)/Σ(m·c)</code>、<code>conv = min(1, Σ(m·c))</code>、<code>score = dir × conv</code>。<br>
+    修正后 TA 的加权总分从 <b>+0.73 降到 +0.24</b>（价格轴 −0.75 压过 composite 的 0.17）——<b>后者才是诚实值，前者是公式把弱票放大成了满票。</b></p>
+  </div>
+
+  <p class="small muted">护栏 <code>tests/test_vote_strength.py</code> 12 例（含"票数 == axis 数"的结构性检查，防新增票漏字段）；变异自检 <b>6/6 全击杀</b>；全量回归 <b>47F/6E/1S（3,034 用例）</b>，新增红 0。</p>
+
+  <h3>7.7 L1b 已实施：按轴聚合已上线（与净票并列）</h3>
+  <p>新增 <code>vote_aggregate.py</code>，输出挂在 <code>stages.direction.weighted</code>。<b>net / verdict 一行未改。</b></p>
+  <ul>
+    <li><b>四象拆轴</b>：由投票方在源头给出 <code>axis_parts</code>（估值→basis、驱动→inventory），聚合层只消费不解释</li>
+    <li><b>轴内</b>：<code>dir = Σ(s·m·c)/Σ(m·c)</code>，<code>conv = min(1, Σ(m·c))</code>，<code>score = dir × conv</code></li>
+    <li><b>轴间</b>：等权先验，<b>分母只算有证据的轴</b>（缺失轴不稀释方向）</li>
+    <li><b>未归属票外显</b>：<code>unattributed</code> 必须为空——否则就是"整张票静默消失"，与 10-19 哑票同类</li>
+    <li><b>硬闸门同源</b>：双线同破等否决条件在聚合前算一次、两套共用；<code>direction</code> 已过闸门，<code>raw_direction</code> 保留裸方向</li>
+  </ul>
+
+  <h3>7.8 全池对照：14 一致 / 7 不一致</h3>
+  <table class="t">
+    <thead><tr><th style="width:70px">品种</th><th style="width:90px">净票</th><th style="width:100px">加权</th><th>各轴（方向×证据量）</th></tr></thead>
+    <tbody>
+      <tr style="background:#fff8f6"><td><b>NR</b></td><td>−1 做空</td><td class="pos"><b>+0.222 做多</b></td><td>基 +0.53×0.34 · 库 +1.00×0.81 · 技 −0.33×1.00 → <b>完全相反</b>：基本面两轴偏多、技术弱空</td></tr>
+      <tr style="background:#fff8f6"><td><b>SC</b></td><td>−1 做空</td><td><b>0.000 观望</b></td><td>基 +1.00×1.00 · 技 −1.00×1.00 → 等量对冲，净票却被技术票带偏</td></tr>
+      <tr style="background:#fff8f6"><td><b>LC</b></td><td>0 暂不操作</td><td>+0.333 做多</td><td>基 +1.00 · 库 +1.00 · 技 −1.00 → 净票打平掩盖了"两轴对一轴"</td></tr>
+      <tr style="background:#fff8f6"><td><b>TA</b></td><td>+1（闸门→暂不操作）</td><td>+0.175 做多</td><td>基 +1.00 · 库 +0.17 · 技 −1.00 · 利 +0.53</td></tr>
+      <tr><td>LH / M</td><td>−2 / −1 做空</td><td>−0.107 / −0.067 观望</td><td>证据不足，加权比净票**更保守**</td></tr>
+      <tr><td>P</td><td>−5 做空</td><td>−1.000 做空</td><td>四轴全空，两套一致且都是满格</td></tr>
+      <tr><td>其余 13 个</td><td colspan="3">方向一致（<span class="dim">BR +2/+0.49 · BU −1/−0.26 · CJ −2/−0.67 · EB +1/+0.35 · EG +1/+0.29 · FU +2/+0.72 · LU +2/+0.64 · PX +1/+0.34 · RU −2/−0.35 · BZ 0/−0.14 · CF −2/+0.09 · PG 0/+0.10 · PS 0/+0.15</span>）</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <p><b>边界已补（17:30）：硬闸门已搬进 weighted。</b>此前 TA 的净票被"双线同破"拦成「暂不操作」，而 weighted 仍说「做多」——两套信号在闸门触发时打架。<br>
+    现在闸门在 <code>aggregate()</code> <b>之前</b>算一次、两边共用：<code>direction</code> 是<b>已过闸门</b>的方向（默认字段必须是安全的那个），<code>raw_direction</code> 保留裸证据方向，<code>score</code> 不因闸门改变——<b>闸门是否决权，不是方向</b>。<br>
+    线上 TA：<code>verdict=暂不操作</code> / <code>weighted.direction=暂不操作</code> / <code>raw=做多</code> / <code>gated=True</code>。</p>
+  </div>
+
+  <p class="small muted">护栏 <code>tests/test_vote_aggregate.py</code> <b>18 例</b>（含"把几何强制成双线同破、weighted 必须同时被拦"的端到端用例）；变异自检 <b>6/6 + 4/4 全击杀</b>；全量回归与基线一致、新增红 0。对照脚本 <code>probe/_l1b_compare.py</code>，结果 <code>_l1b_compare.json</code>。</p>
+
+  <div class="note">
+    <p><b>必须说清的边界：加权改善的是"表征与可审计性"，不是"胜率"。</b>前两轮回测里这套信号本身只有 49% 命中、年化 1~2%（毛）。加权不会凭空造出 alpha；它只是让"我有多确信"这件事从 0/1 变成一个可解释的数。<b>权重必须先用先验等权跑，再用历史 IC 拟合，不能在同一样本上既选权重又报绩效。</b></p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">08 · 建议</div>
+  <h2>P1 该怎么做</h2>
+
+  <table class="t">
+    <thead><tr><th style="width:40px">#</th><th style="width:250px">做法</th><th>理由</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><b>不写「基本面优先」的硬规则</b></td>
+          <td>数据不支持（18 个组合无一通过 Bonferroni），时间切分也不稳定。写进去等于把一次掷硬币包装成方法。</td></tr>
+      <tr><td>2</td><td><b>分歧 → 输出条件句，不给单边</b><br><span class="dim">区间 + 触发条件 + 失效条件 + 时间止损</span></td>
+          <td>这是唯一有实证支持的做法：分歧格没有可依赖的优势（20 日 t&lt;1），所以「不做单边」本身就是最优解。也正好接上 SKILL 的「矛盾不做单边」。</td></tr>
+      <tr><td>3</td><td><b>技术信号只当「确认」，且限短周期</b></td>
+          <td>20 日动量同向有溢价、分歧无优势 ⇒ 它是确认器不是方向源；60 日动量同向无溢价、分歧时还是负收益信号 ⇒ 不进方向票。</td></tr>
+      <tr><td>4</td><td><b>4 张基本面票先去重再计票</b><br><span class="dim">合并成 1~2 票，或按 0.5 降权</span></td>
+          <td>同源重复计票是当前系统偏向基本面的真实原因。这比「调权重」更根本。</td></tr>
+      <tr><td>5</td><td><b>加 <code>horizon</code> 字段</b></td>
+          <td><code>TraderProposal</code> 现在有入场价、止损、仓位，唯独没有持有期。没有它，「技术定入场」无法落地，也无法知道周频库存该不该说话。</td></tr>
+      <tr><td>6</td><td><b>权重做成常量表并标注「先验、未验证」</b></td>
+          <td>Carver 的做法是拟合；在样本不够时（基差只有 2.9 年），诚实的做法是显式标注为先验，而不是假装它是结论。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>如果真想做交易，还缺什么</h3>
+  <ul>
+    <li><b>样本深度</b>：基差只有 2023-11 之后（2.9 年），20 日持有期的独立样本约 100 个，测不出 1% 量级的优势。</li>
+    <li><b>成本</b>：本次没有计入手续费、滑点、换月成本。10 日换手 + 21 品种，成本足以吃掉大部分个位数年化。</li>
+    <li><b>截面相关</b>：21 个品种在能化/黑色/农产品内部高度相关，组合层面的有效独立品种数远小于 21。</li>
+    <li><b>前视偏误的另一面</b>：库存是<b>修正后</b>序列的概率很高（国君全量数据集不区分初值与修正）。这次用滞后 7/14 天缓解了一部分，但没有根本解决。</li>
+  </ul>
+</section>
+
+<section>
+  <div class="kicker">09 · 复现</div>
+  <h2>脚本与产物</h2>
+  <table class="t">
+    <thead><tr><th style="width:300px">文件</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>probe/_bt_tech_fund.py</code></td><td>取数 + 组装面板 + 四格统计 + 权重扫描（含 3 档滞后敏感性）。原始数据落 <code>probe/_bt_cache/</code></td></tr>
+      <tr><td><code>probe/_bt_sig.py</code></td><td><b>日期聚簇</b>显著性 + 移动块 bootstrap + 分品种一致率</td></tr>
+      <tr><td><code>probe/_bt_extra.py</code></td><td>同向（共振）格检验 + 固定权重的时间切分</td></tr>
+      <tr><td><code>probe/_bt_result.json</code> / <code>_bt_sig.json</code></td><td>全量结果，未做二次加工</td></tr>
+    </tbody>
+  </table>
+  <p class="dim">三个脚本均可独立运行；数据有本地缓存，重跑不重复打接口。全部为 <b>只读</b>，不写数据库、不触发任何分析任务。</p>
+</section>
+
+</div>
+</body>
+</html>

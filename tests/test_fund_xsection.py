@@ -473,8 +473,12 @@ def test_frontend_pending_sym_adopted():
 @pytest.mark.unit
 def test_frontend_sec_index_version_bumped():
     h = _h()
-    assert "_SEC_IDX_VER: '29'," in h, "_SEC_IDX_VER 未随卡片增删 +1"
-    assert "_SEC_IDX_VER: '28'," not in h
+    # 【2026-10-16】删「价格-库存关联分析」小模块 ⇒ 29 升 30；
+    #   同日新增「采集通道状态巡检条」(#res-ingest-status) ⇒ 30 升 31。
+    # 【2026-10-21】基本面页重构为 A/B 两层（拆 5 张卡 + 新增 1 张）⇒ 再 +1
+    # 【2026-10-21】数据计算面板从技术面迁入基本面 A9（两页卡片归属都变了）⇒ 再 +1
+    assert "_SEC_IDX_VER: '33'," in h, "_SEC_IDX_VER 未随卡片增删 +1"
+    assert "_SEC_IDX_VER: '32'," not in h
 
 
 # ===========================================================================
@@ -588,8 +592,11 @@ def test_month_row_keeps_contract_independent_votes():
     assert row.get("skill_n") in (0, 1, 2, 3), row.get("skill_n")
     assert isinstance(row.get("skill_net"), int)
     keys = ("term", "cyc", "prof")
-    dirmap = {"做多": 1, "单边做多": 1, "做空": -1, "单边做空": -1}
-    expect = sum(dirmap.get(str(row.get("skill_" + k)), 0) for k in keys)
+    # 【2026-10-19】★ 不许再抄一份映射：此前这条测试复制了生产代码的 dirmap，
+    #   生产代码漏「偏多/偏空」时测试跟着一起错 ⇒ 恒绿，属于自指陷阱。
+    #   现改为引用 vote_semantics 同一份表（独立于本测试的期望值构造）。
+    from vote_semantics import sign as _sign
+    expect = sum(_sign(row.get("skill_" + k)) for k in keys)
     assert row.get("skill_net") == expect, "净票未按本行有效票重算"
     assert row.get("skill_n") == sum(1 for k in keys if row.get("skill_" + k))
 

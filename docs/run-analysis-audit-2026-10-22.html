@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运行分析 · 注入块体检报告（2026-10-22）</title>
+<style>
+  :root{
+    --ink:#1d1d1f; --ink2:#424245; --ink3:#6e6e73; --ink4:#86868b;
+    --line:#e5e5ea; --tile:#f5f5f7; --blue:#0071e3; --blue-d:#0058b0; --blue-l:#eaf3fe;
+    --green:#00875a; --amber:#b25000; --red:#d70015;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#f5f5f7;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.68}
+  .wrap{max-width:1120px;margin:0 auto;padding:44px 32px 96px}
+  h1{font-size:34px;line-height:1.18;letter-spacing:-.022em;margin:0 0 12px}
+  h2{font-size:24px;letter-spacing:-.015em;margin:0 0 6px}
+  h3{font-size:17px;margin:26px 0 10px}
+  p{margin:0 0 12px;color:var(--ink2)}
+  .lead{font-size:16.5px;color:var(--ink3)}
+  .kicker{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);font-weight:600;margin-bottom:8px}
+  section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin-top:18px}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .card{background:var(--tile);border-radius:10px;padding:16px 18px}
+  .card h3{margin-top:0;font-size:15px}
+  .card p:last-child{margin-bottom:0}
+  .big{font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
+  .big.red{color:var(--red)} .big.amber{color:var(--amber)} .big.green{color:var(--green)}
+  .cap{font-size:12.5px;color:var(--ink4);margin-top:4px}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:#fff;
+        border:1px solid var(--line);font-size:12px;color:var(--ink2);white-space:nowrap}
+  .pill.ok{background:#e9f7f0;border-color:#c9e9da;color:var(--green)}
+  .pill.warn{background:#fdf1e6;border-color:#f6ddc4;color:var(--amber)}
+  .pill.no{background:#fdecee;border-color:#f7d1d6;color:var(--red)}
+  .pill.blue{background:var(--blue-l);border-color:#cfe3fb;color:var(--blue-d)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--tile);padding:1px 5px;border-radius:4px}
+  table.t{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  table.t th,table.t td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.t th{font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink4);background:#fafafa}
+  table.t tr:last-child td{border-bottom:0}
+  table.t td.c{text-align:center}
+  table.t td.r{text-align:right;font-variant-numeric:tabular-nums}
+  ul,ol{margin:6px 0 12px;padding-left:20px;color:var(--ink2)}
+  li{margin:4px 0}
+  .note{border-left:3px solid var(--blue);background:var(--blue-l);padding:13px 16px;border-radius:0 8px 8px 0;font-size:13.5px;color:#0b3f78;margin:14px 0}
+  .warn{border-left:3px solid var(--amber);background:#fdf6ee;padding:13px 16px;border-radius:0 8px 8px 0;font-size:13.5px;color:#6e3d0e;margin:14px 0}
+  .bad{border-left:3px solid var(--red);background:#fdecee;padding:13px 16px;border-radius:0 8px 8px 0;font-size:13.5px;color:#7a1018;margin:14px 0}
+  .note p,.warn p,.bad p{color:inherit;margin:0}
+  pre{background:#1d1d1f;color:#e8e8ed;padding:14px 16px;border-radius:10px;overflow:auto;
+      font-family:var(--mono);font-size:12.5px;line-height:1.6;margin:10px 0}
+  /* 时间线 */
+  .tl{position:relative;margin:18px 0 6px;padding-left:0}
+  .tl-row{display:grid;grid-template-columns:78px 1fr;gap:12px;align-items:start;margin-bottom:10px}
+  .tl-t{font-family:var(--mono);font-size:12px;color:var(--ink4);text-align:right;padding-top:2px}
+  .tl-b{position:relative;padding-left:18px;border-left:2px solid var(--line);padding-bottom:2px}
+  .tl-b:before{content:"";position:absolute;left:-6px;top:6px;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid var(--ink4)}
+  .tl-row.hot .tl-b:before{border-color:var(--red);background:var(--red)}
+  .tl-row.ok .tl-b:before{border-color:var(--green);background:var(--green)}
+  .tl-row.hot .tl-b{border-left-color:#f3b5bb}
+  .tl-x{font-size:13.5px;color:var(--ink2)}
+  /* 条形 */
+  .bar{height:22px;border-radius:5px;background:var(--tile);position:relative;overflow:hidden;margin:3px 0}
+  .bar i{display:block;height:100%;border-radius:5px}
+  .bar i.b1{background:linear-gradient(90deg,#0a84ff,#5ac8fa)}
+  .bar i.b2{background:linear-gradient(90deg,#ff9f0a,#ffd60a)}
+  .bar i.b3{background:linear-gradient(90deg,#ff453a,#ff6961)}
+  .bar span{position:absolute;right:8px;top:0;font-size:11.5px;line-height:22px;color:var(--ink2);font-variant-numeric:tabular-nums}
+  .mono{font-family:var(--mono);font-size:12.5px}
+  .foot{color:var(--ink4);font-size:12.5px;margin-top:26px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="kicker">AgentSense · Run Analysis Audit</div>
+  <h1>运行分析 · 注入块体检报告</h1>
+  <p class="lead">P0/P1 的块确实写进了提示词，但<strong>技术分析师在首次分析里 100% 拿不到价格轴视图</strong>；而且拿不到时是静默的 —— 模型和自己人都不会知道这块缺席。</p>
+  <p class="cap">2026-10-22 · 真机实测（TA 精对苯二甲酸）· 体检 → 修复 → 复验，全部当日完成</p>
+
+  <div class="grid g3" style="margin-top:20px">
+    <div class="card">
+      <div class="big red">8.0s</div>
+      <div class="cap">技术视图的等待上限<br><code>analyst_views.WAIT_SECONDS</code></div>
+    </div>
+    <div class="card">
+      <div class="big amber">16.17s</div>
+      <div class="cap">同一份快照的真实冷启动耗时<br>（新进程实测，差 2 倍）</div>
+    </div>
+    <div class="card">
+      <div class="big red">0 字</div>
+      <div class="cap">技术分析师实际拿到的价格轴视图<br>（等满 8s 后返回空串）</div>
+    </div>
+  </div>
+
+  <section>
+    <h2>一、结论摘要</h2>
+    <p>四个块（技术视图 878 字 / 基本面三轴 535 字 / 国君四源 356 字 / 两方对照 572 字）<strong>内容质量没问题</strong>，篇幅也都在 800 字预算内。问题全部出在「什么时候取」和「取不到怎么办」上。</p>
+    <table class="t">
+      <thead><tr><th style="width:64px">级别</th><th>问题</th><th style="width:150px">性质</th><th style="width:96px">状态</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="pill no">P0-A</span></td>
+          <td><strong>技术分析师必然拿不到价格轴视图</strong><br>等待上限 8.0s &lt; 冷启动 16.17s；技术节点是图里第一个节点，约 1.6s 就到达</td>
+          <td>确定性丢失，不是概率</td>
+          <td><span class="pill ok">已修</span></td>
+        </tr>
+        <tr>
+          <td><span class="pill no">P0-B</span></td>
+          <td><strong>丢失是静默的</strong><br>超时直接 <code>return ""</code>，无日志、无降级提示；分析师看到的是「没有这一节」，而不是「这一节取数失败」</td>
+          <td>违反项目三态纪律<br>（有 / 确定无 / 取数失败不可混）</td>
+          <td><span class="pill ok">已修</span></td>
+        </tr>
+        <tr>
+          <td><span class="pill warn">P1-C</span></td>
+          <td><strong>老方法论块超预算 2.3~2.6 倍，且压住新块</strong><br>技术 1802 字 / 基本面 2109 字（预算 800）；因最后 prepend 而占据第 2 行，新块被推到 22%~35% 位置</td>
+          <td>设计意图与实现相反<br>（计划写「全部放最前」）</td>
+          <td><span class="pill ok">已修</span></td>
+        </tr>
+        <tr>
+          <td><span class="pill blue">P2-D</span></td>
+          <td><strong>国君四源同样超时（6.0s vs 6~18s）</strong><br>但基本面节点排在技术分析师之后（60~120s 才到），预热已完成，通常能救回来</td>
+          <td>靠顺序侥幸，不是设计保证</td>
+          <td><span class="pill blue">可接受</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>二、时间线证据：为什么技术视图一定丢</h2>
+    <p>真实链路里预热是<strong>只起线程、不等待</strong>的（<code>web_app.py</code> 里明确注释「绝不拖慢分析启动」）。于是第一个节点的到达时刻和预热完成时刻之间差了 16 秒。</p>
+
+    <div class="tl">
+      <div class="tl-row"><div class="tl-t">0.00s</div><div class="tl-b"><div class="tl-x">点「运行分析」，进入 <code>run_analysis</code></div></div></div>
+      <div class="tl-row"><div class="tl-t">1.54s</div><div class="tl-b"><div class="tl-x"><code>build_commodity_graph</code> 构建完成（实测 1.54s）</div></div></div>
+      <div class="tl-row hot"><div class="tl-t">1.6s</div><div class="tl-b"><div class="tl-x"><strong>技术分析师节点开始构建 prompt</strong> → 调 <code>technical_view()</code>，开始等 8s</div></div></div>
+      <div class="tl-row hot"><div class="tl-t">9.6s</div><div class="tl-b"><div class="tl-x"><strong>等满 8s，返回空串</strong> —— 此时预热线程的 <code>_compute</code> 才跑了 8s，还差一半</div></div></div>
+      <div class="tl-row"><div class="tl-t">17.7s</div><div class="tl-b"><div class="tl-x">预热线程完成，把 878 字的价格轴视图写进缓存</div></div></div>
+      <div class="tl-row ok"><div class="tl-t">60~120s</div><div class="tl-b"><div class="tl-x">基本面分析师节点到达 → <strong>命中缓存</strong>，拿到 535 字三轴视图 + 356 字国君四源</div></div></div>
+    </div>
+
+    <div class="bad">
+      <p><strong>这就是「顺序性偏差」</strong>：越靠前的节点越拿不到数据。技术分析师恰好是第一个，所以它拿不到；基本面分析师在它后面两分钟，所以它能拿到。同一个共享缓存，两个节点两种命运。</p>
+    </div>
+
+    <h3>冷启动 16.17s 花在哪</h3>
+    <table class="t">
+      <thead><tr><th>分段</th><th style="width:110px" class="r">耗时</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>日线 250 根</td><td class="r"><strong>8.74s</strong></td><td>天勤建连 SSL 失败 → 回退 AKShare；单这一项就用光了 8s 预算</td></tr>
+        <tr><td>基差</td><td class="r">0.38s</td><td>国君端点，正常</td></tr>
+        <tr><td>仓单</td><td class="r">0.33s</td><td>正常</td></tr>
+        <tr><td>加工利润</td><td class="r">0.16s</td><td>正常</td></tr>
+        <tr><td>五书研判 + 三指标策略 + 虚实盘比</td><td class="r">≈6.6s</td><td>纯计算，依赖上面全部数据就绪后才能开始</td></tr>
+        <tr><td><strong>合计</strong></td><td class="r"><strong>16.17s</strong></td><td><code>WAIT_SECONDS = 8.0</code> 只够跑完一半</td></tr>
+      </tbody>
+    </table>
+    <div class="warn">
+      <p>文档里写的「冷启动实测 9.6s，故 WAIT_SECONDS 定为 8s」<strong>已经过期</strong>。当时 9.6s 的分段是「日线 6.2s + 其余 3.4s」，现在日线一项就要 8.74s（天勤熔断前会持续重试）。<strong>这个常量没有任何护栏盯着它</strong> —— 数据源一变慢，注入块就静默失效，而测试仍然全绿。</p>
+    </div>
+    <p class="cap">补充：16.17s 是新进程、天勤尚未熔断时的实测。长驻服务里天勤熔断生效后，日线走 AKShare 直取，<code>_compute</code> 大约回落到 10s —— <strong>仍然大于 8s</strong>，所以结论不变，只是差距从 2 倍缩到 1.25 倍。</p>
+  </section>
+
+  <section>
+    <h2>三、四个注入块的实际测量</h2>
+    <p>块级直测（直接调函数量长度）+ 提示捕获（真实节点构建，取最终 system prompt 定位）。两套数据互相印证。</p>
+    <table class="t">
+      <thead>
+        <tr><th>块</th><th style="width:88px">归属</th><th class="r" style="width:70px">字数</th><th class="r" style="width:56px">行</th>
+        <th class="r" style="width:80px">冷启动</th><th style="width:150px">提示内位置</th><th style="width:74px">800 预算</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>技术 · 方法论读数</td><td>技术分析师</td><td class="r">1802</td><td class="r">43</td><td class="r">7.55s</td><td>第 2 行（5.0%）</td><td><span class="pill warn">2.3×</span></td></tr>
+        <tr><td><strong>技术 · 价格轴视图</strong></td><td>技术分析师</td><td class="r">878</td><td class="r">16</td><td class="r">8.00s → <strong>0</strong></td><td>第 46 行（34.5%）</td><td><span class="pill ok">ok</span></td></tr>
+        <tr><td>基本面 · 方法论读数</td><td>基本面</td><td class="r">2109</td><td class="r">52</td><td class="r">1.38s</td><td>第 2 行（3.5%）</td><td><span class="pill warn">2.6×</span></td></tr>
+        <tr><td>基本面 · 品种数据库</td><td>基本面</td><td class="r">0</td><td class="r">0</td><td class="r">0.00s</td><td>未注入（TA 无库）</td><td>—</td></tr>
+        <tr><td><strong>基本面 · 三轴视图</strong></td><td>基本面</td><td class="r">535</td><td class="r">11</td><td class="r">命中缓存</td><td>第 55 行（21.9%）</td><td><span class="pill ok">ok</span></td></tr>
+        <tr><td><strong>基本面 · 国君四源</strong></td><td>基本面</td><td class="r">356</td><td class="r">8</td><td class="r">0.47s</td><td>第 67 行（26.5%）</td><td><span class="pill ok">ok</span></td></tr>
+        <tr><td><strong>研究经理 · 两方对照</strong></td><td>研究经理</td><td class="r">572</td><td class="r">11</td><td class="r">命中缓存</td><td>第 7 行（21.9%）</td><td><span class="pill ok">ok</span></td></tr>
+      </tbody>
+    </table>
+
+    <h3>提示词的实际结构</h3>
+    <p>技术分析师（共 6119 字）：</p>
+    <div class="bar"><i class="b2" style="width:29.4%"></i><span>方法论 1802</span></div>
+    <div class="bar"><i class="b1" style="width:14.3%"></i><span>价格轴视图 878</span></div>
+    <div class="bar"><i class="b2" style="width:56.3%;opacity:.35"></i><span>技术分析框架说明书（原有）</span></div>
+
+    <p style="margin-top:16px">基本面分析师（共 11519 字）：</p>
+    <div class="bar"><i class="b2" style="width:18.3%"></i><span>方法论 2109</span></div>
+    <div class="bar"><i class="b1" style="width:4.6%"></i><span>三轴 535</span></div>
+    <div class="bar"><i class="b1" style="width:3.1%"></i><span>四源 356</span></div>
+    <div class="bar"><i class="b2" style="width:74%;opacity:.35"></i><span>基本面分析框架说明书（原有）</span></div>
+
+    <div class="note">
+      <p><strong>看比例就明白问题：</strong>两个「确定性注入块」加起来只占提示词的 7.7%，而它们本来是要当「必须优先阅读」的锚点。块本身写得不差（每条读数都带口径、日期、分位），只是被 2100 字的方法论和八千字框架说明埋住了。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>四、另外三件顺手查到的事</h2>
+
+    <h3>1. 方法论块为什么排在最前？</h3>
+    <p>因为它是<strong>最后一个 <code>prepend</code> 的</strong>。代码里所有注入都是 <code>system_message = 块 + "\n\n" + system_message</code>，谁在后面执行谁就排最前。执行顺序是「方法论 → 品种库 → 三轴 → 四源」，于是最终顺序整个倒过来：方法论第一、四源第四。</p>
+    <p>新块（P0/P1）的注释写着「确定性前置到系统提示最前面」，但它们只比<strong>框架说明书</strong>靠前，并不比 2026-09-29 加的方法论块靠前。计划文档里「全部放在 system prompt 最前」这句话，<strong>从来没有真正实现过</strong>。</p>
+
+    <h3>2. 超时不写日志</h3>
+    <p><code>_snapshot()</code> 和 <code>gtja_context()</code> 的等待分支都是「<code>ev.wait(8)</code> → 查缓存 → 有就返回，没有就 <code>return ""</code>」，<strong>一行日志都没有</strong>。线上如果注入块长期缺席，日志里查不到任何痕迹 —— 这也是为什么它藏了三天没人发现。</p>
+
+    <h3>3. 单飞缓存没有异常写回</h3>
+    <p><code>analysis_bundle.gtja_context</code> 的工作线程里，<code>_CACHE[sym] = (time.time(), text)</code> 在 <code>try</code> 里但没有 <code>except</code>：<code>build_block</code> 一旦抛异常，事件会 <code>set</code>、缓存却没写，之后每次调用都会重新起线程重试。属于低频路径，但会让「失败」变成「每次都重试」而不是「记住失败」。</p>
+  </section>
+
+  <section>
+    <h2>五、修复方案与代价</h2>
+    <table class="t">
+      <thead><tr><th style="width:56px">方案</th><th>做法</th><th style="width:190px">收益</th><th style="width:170px">代价</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="pill blue">A</span></td>
+          <td><strong>把两个超时提到冷启动之上</strong><br><code>analyst_views.WAIT_SECONDS</code> 8 → 20<br><code>analysis_bundle.WAIT_SECONDS</code> 6 → 20</td>
+          <td>消除确定性丢失；<br>2 行改动，风险最低</td>
+          <td>冷缓存下首次分析多等 8~12s<br>（10 分钟内命中缓存则无感）</td>
+        </tr>
+        <tr>
+          <td><span class="pill blue">B</span></td>
+          <td><strong>预热提前到建图之前</strong><br>把两个 warm 线程移到 <code>build_commodity_graph</code> 前面启动，与 1.54s 建图并行</td>
+          <td>再多省 1.5s；<br>顺序更符合直觉</td>
+          <td>仍是「不等待」，只能缓解不能根治</td>
+        </tr>
+        <tr>
+          <td><span class="pill blue">C</span></td>
+          <td><strong>两阶段计算</strong><br>把 <code>_compute</code> 拆成 price 轴（日线+技术快照）与产业轴（基差/仓单/库存/利润），技术视图只等前者</td>
+          <td>根治竞态：技术视图只需 ~9s 里的一部分；<br>将来加节点也不会退化</td>
+          <td>改动大；<code>build_verdict</code> 是整体算的，<br>拆开要重排依赖</td>
+        </tr>
+        <tr>
+          <td><span class="pill no">D</span></td>
+          <td><strong>取不到必须说出来</strong><br>超时 → 块内写一行「⚠ 价格轴结论本次取数超时，未纳入（不是『无信号』）」+ warning 日志</td>
+          <td>符合三态纪律；<br>分析师不会把缺席当结论</td>
+          <td>几乎为零（1 处拼接）</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <p><strong>建议组合：A + D（今天可做），C 留作后续。</strong> A 解决「拿不到」，D 解决「拿不到却不说」。B 是锦上添花，单独做没有意义。C 是根治，但要动 <code>build_verdict</code> 的依赖顺序，建议等 P2 下钻工具一起评估。</p>
+    </div>
+
+    <h3>还建议加一条护栏</h3>
+    <p>现在没有任何测试能发现「超时阈值 &lt; 冷启动耗时」。加一条：<code>WAIT_SECONDS</code> 必须 ≥ 15，且超时分支必须产生一条日志／降级行。这样将来有人把 20 改回 8，测试会红；数据源变慢时也有降级提示可查。</p>
+  </section>
+
+  <section>
+    <h2>六、修复与验证（14:25 落地）</h2>
+    <p>体检的三个问题当日全部修完。核心只有一句话：<strong>让第一个节点等得到，让拿不到的情况说出来，让结论排在读数前面。</strong></p>
+
+    <table class="t">
+      <thead><tr><th style="width:200px">改动</th><th style="width:250px">文件</th><th>为什么</th></tr></thead>
+      <tbody>
+        <tr><td>等待上限 8.0 → <strong>20.0</strong></td><td><code>analyst_views.py</code></td><td>覆盖实测冷启动 16.17s，技术视图不再必然超时</td></tr>
+        <tr><td>等待上限 6.0 → <strong>20.0</strong></td><td><code>analysis_bundle.py</code></td><td>国君四源不再靠「基本面节点来得晚」侥幸命中</td></tr>
+        <tr><td>超时 → 显式降级块 + warning</td><td><code>analyst_views.py</code><br><code>analysis_bundle.py</code></td><td>三态纪律：写「本次未纳入（≠ 无信号）」，不再静默返回空串</td></tr>
+        <tr><td>新增 <code>_pending()</code> 区分「还在算」与「算完没数据」</td><td><code>analyst_views.py</code></td><td>超时 ≠ 无覆盖，两者不能都表现成 <code>""</code></td></tr>
+        <tr><td>构建异常也写缓存</td><td><code>analysis_bundle.py</code></td><td>异常时缓存不写会「每次调用都重试上游」</td></tr>
+        <tr><td>预热移到建图<strong>之前</strong></td><td><code>web_app.py</code></td><td>与 1.54s 建图并行，多抢 1.5s 预热窗口</td></tr>
+        <tr><td>新块改为<strong>最后</strong> prepend</td><td><code>commodity_analysts.py</code></td><td>prepend 是倒序 ⇒ 最后执行的排最前，结论块回到第 2 行</td></tr>
+        <tr><td>新增 10 条护栏</td><td><code>tests/test_injection_timeout_and_order.py</code></td><td>断言 WAIT ≥ 15s、超时必须出声、结论必须排在方法论之前</td></tr>
+      </tbody>
+    </table>
+
+    <h3>冷启动实测：0 字 → 878 字</h3>
+    <table class="t">
+      <thead><tr><th>新进程冷启动（起预热线程后立即取块）</th><th class="r">修复前</th><th class="r">修复后</th></tr></thead>
+      <tbody>
+        <tr><td><code>WAIT_SECONDS</code></td><td class="r">8.0s</td><td class="r">20.0s</td></tr>
+        <tr><td>技术分析师拿到 <code>technical_view</code> 的时刻</td><td class="r">8.00s（超时返回）</td><td class="r">16.09s（等到算完）</td></tr>
+        <tr><td>技术分析师实际拿到的字数</td><td class="r" style="color:#d70015"><strong>0</strong></td><td class="r" style="color:#00875a"><strong>878</strong></td></tr>
+        <tr><td>基本面 <code>gtja_context</code> / <code>fundamental_view</code></td><td class="r">356 / 535（顺序侥幸）</td><td class="r">356 / 535（16.09s 稳定命中）</td></tr>
+      </tbody>
+    </table>
+    <p class="cap">代价：冷缓存下首个节点多等约 8s（16.09s − 8.00s）。10 分钟内重复分析命中缓存，无感。</p>
+
+    <h3>块顺序：结论回到第 2 行</h3>
+    <table class="t">
+      <thead><tr><th>节点 · 块</th><th class="r">修复前位置</th><th class="r">修复后位置</th></tr></thead>
+      <tbody>
+        <tr><td>技术 · <strong>价格轴视图</strong></td><td class="r">第 46 行（34.5%）</td><td class="r" style="color:#00875a"><strong>第 2 行（5.0%）</strong></td></tr>
+        <tr><td>技术 · 方法论读数</td><td class="r">第 2 行（5.0%）</td><td class="r">第 19 行（19.3%）</td></tr>
+        <tr><td>基本面 · <strong>三轴视图</strong></td><td class="r">第 55 行（21.9%）</td><td class="r" style="color:#00875a"><strong>第 2 行（3.5%）</strong></td></tr>
+        <tr><td>基本面 · <strong>国君四源</strong></td><td class="r">第 67 行（26.5%）</td><td class="r" style="color:#00875a"><strong>第 14 行（8.2%）</strong></td></tr>
+        <tr><td>基本面 · 方法论读数</td><td class="r">第 2 行（3.5%）</td><td class="r">第 23 行（11.3%）</td></tr>
+      </tbody>
+    </table>
+
+    <h3>引用率复测（同一 LLM、同一品种、各跑一次）</h3>
+    <table class="t">
+      <thead><tr><th>指标</th><th class="r">修复前</th><th class="r">修复后</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>技术报告长度 / 硬锚点</td><td class="r">2547 字 · 2/4</td><td class="r">3036 字 · 2/4</td><td>命中数没变</td></tr>
+        <tr><td>基本面三轴硬锚点</td><td class="r">1/4（虚实盘比）</td><td class="r">1/4（虚实盘比）</td><td>—</td></tr>
+        <tr><td>国君四源硬锚点</td><td class="r">1/3</td><td class="r">1/3</td><td>—</td></tr>
+        <tr><td>引用<strong>正确性</strong></td><td class="r">「以验证快照 6436.47 为价格轴引用值」（误用）</td><td class="r" style="color:#00875a">「本块仅价格轴，基差/加工费/库存请以基本面分析为准」（引用了块的纪律句）</td><td>质的改善</td></tr>
+      </tbody>
+    </table>
+    <div class="warn">
+      <p><strong>要说清楚的局限：</strong>命中数没有提升。这是单品种、单次、每个节点各跑一遍的样本，LLM 输出本身有随机性；更关键的是「三指标策略」这类<strong>结论</strong>会被模型改写成自己的话，措辞匹配天然测不到。<br>
+      这一轮的可靠结论是<strong>结构层面</strong>的（超时、顺序、可观测性），不是「引用率提升了多少」。要量化后者，得用语义判分（对照块内策略标签与报告结论是否一致），那是下一步的事。</p>
+    </div>
+
+    <h3>护栏怎么防回退</h3>
+    <ul>
+      <li><code>test_wait_seconds_covers_cold_start</code> —— <code>WAIT_SECONDS ≥ 15</code>。谁想把 20 改回 8，测试直接红。</li>
+      <li><code>test_technical_view_timeout_is_explicit</code> —— 超时必须出「未纳入」块，且要写清「不是无信号」。</li>
+      <li><code>test_no_data_is_still_silent</code> —— 反过来守住：确定无数据时仍不注入，不能把两者混成一个降级块。</li>
+      <li><code>test_warm_starts_before_graph_build</code> —— 预热调用必须出现在 <code>build_commodity_graph</code> 之前。</li>
+      <li><code>test_technical_prompt_puts_view_before_methodology</code> —— 价格轴视图必须排在方法论之前。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>七、日线磁盘缓存（15:05 落地）——顺带发现缓存层根本没接上</h2>
+    <p>继续查「首次分析干等 16s」时，发现根因不是天勤慢，而是<strong>两层缓存都没生效</strong>。</p>
+
+    <h3>第一层：只有 5 分钟内存缓存，跨进程就没了</h3>
+    <p><code>quant_module._daily_bars_cached</code> 的 TTL 是 <code>_TTL_OVERVIEW</code>（5 分钟）。服务一重启、或隔天再分析，内存必空 ⇒ 必付日线取数：天勤短连接 <strong>5.4s</strong>，失败回退 AKShare <strong>8.7s</strong>。</p>
+
+    <h3>第二层（更关键）：运行分析压根没走这个缓存</h3>
+    <div class="bad">
+      <p><code>analyst_views._build_payload</code> 里写的是 <code>q._load_daily_bars(sym, 250)</code> —— <strong>直接实拉，绕过了 <code>_daily_bars_cached</code></strong>。<br>
+      cProfile 实证：一次 <code>_compute</code> 里 <code>_load_daily_bars</code> 被调用 <strong>2 次、累计 6.819s</strong>，而缓存层一次都没被调用。<br>
+      也就是说：这个 5 分钟缓存从上线起就只服务「量化页的技术快照」，<strong>运行分析一次都没享受过</strong>。</p>
+    </div>
+
+    <h3>改法（两处，互不耦合）</h3>
+    <table class="t">
+      <thead><tr><th style="width:200px">改动</th><th>规则</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>① 新增磁盘层<br><code>_disk_read</code> / <code>_disk_write</code></td>
+          <td><strong>只在非交易时段读写</strong>（日盘 09:00–15:10、夜盘 21:00–23:30 一律不读不写）。<br>
+              理由：日线最后一根在盘中持续更新，那时落盘拿到的是<strong>未完成 bar</strong>，收盘价不是最终值，喂给 MA/RSI 就是错的。<br>
+              TTL 18h（15:10 落盘 → 次日 08:55 仍命中）；数据日期超 10 天、文件损坏、结构不符一律当作没有。</td>
+        </tr>
+        <tr>
+          <td>② <code>_build_payload</code> 改走<br><code>_daily_bars_cached</code></td>
+          <td>接上缓存层。同时确认下游只读不写（<code>pd.DataFrame(bars)</code> 是拷贝），避免共享 list 被原地修改。</td>
+        </tr>
+        <tr>
+          <td>③ 全仓统一收口<br>（再发现 6 处绕过）</td>
+          <td>顺着调用图往上追，发现同一份日线被拉了<strong>不止一次</strong>：<br>
+              <code>methodology_context.py</code> ×3（技术/基本面方法论块、跨品种套利）、
+              <code>fund_module.py</code> ×2（四象输入、按合约月重算）、
+              <code>signal_analyzer.py</code> ×1（回测价格序列）。<br>
+              <strong>其中最要命的是技术方法论块</strong> —— 它排在价格轴视图<em>前面</em>执行，
+              各自实拉一次 ⇒ 同一个节点里日线被拉两遍。</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>实测（TA，新进程）</h3>
+    <table class="t">
+      <thead><tr><th>场景</th><th class="r">修复前</th><th class="r">修复后</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>日线单次取数</td><td class="r">6.33s</td><td class="r">6.33s → <strong>0.000s</strong></td><td>磁盘命中后内容完全一致（162 根逐字段相等）</td></tr>
+        <tr><td><code>_compute</code> 无磁盘缓存</td><td class="r">16.17s</td><td class="r"><strong>8.10s</strong></td><td>天勤这次成功（5.4s）；失败回退时约 11s</td></tr>
+        <tr><td><code>_compute</code> 磁盘命中</td><td class="r">16.17s</td><td class="r" style="color:#00875a"><strong>1.42s</strong></td><td>盘前/盘后/重启后的首次分析都走这条路</td></tr>
+        <tr><td><strong>技术分析师节点两块合计</strong><br><span class="cap">方法论块 + 价格轴视图</span></td><td class="r">15.41s<br><span class="cap">7.28 + 8.13</span></td><td class="r" style="color:#00875a"><strong>2.82s</strong><br><span class="cap">0.14 + 2.68</span></td><td>节点级真实等待：这就是用户在进度条上看到的那段空转</td></tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <p><strong>收益边界要说清楚：</strong>盘中（09:00–15:10）依然实拉 5.4s —— 因为那时日线确实在变，缓存不安全。<br>
+      所以这个改动解决的是<strong>「盘前/盘后/服务重启后的第一次分析」</strong>，不是「盘中每次都秒出」。盘中要快，得靠天勤长连接复用（本次没做）。</p>
+    </div>
+
+    <h3>护栏</h3>
+    <p><code>tests/test_daily_bars_disk_cache.py</code> 11 条：交易时段既不读也不写、TTL 过期拒绝、数据陈旧拒绝、文件损坏当没有、品种不匹配拒绝、不足 30 根拒绝、开关可关、磁盘命中时不再打上游、实取后必须落盘。</p>
+    <p class="cap">已知局限（都写在代码注释里）：不识别法定节假日（只会多取一次，不会用错数据）；若昨夜至今晨发生主力换月，后复权序列会整体平移，缓存有偏差（每月一次、只影响盘前那一次分析，盘中重新取数不受影响）。</p>
+  </section>
+
+  <section>
+    <h2>八、复现方式</h2>
+    <pre>cd D:/AgentSense/AgentSense
+
+<span class="c"># 完整体检（块级直测 + 真实提示捕获 + 首调竞态复现）</span>
+./venv/Scripts/python.exe probe/_run_prompt_audit.py TA --race
+
+<span class="c"># 只看某品种的块长度与顺序</span>
+./venv/Scripts/python.exe probe/_run_prompt_audit.py RB
+
+<span class="c"># 原始数据（含各块全文，便于逐字核对）</span>
+probe/_prompt_audit.json
+
+<span class="c"># 引用率（真跑 LLM，两个分析师各一遍，约 1.5 分钟）</span>
+./venv/Scripts/python.exe probe/_citation_probe.py TA
+
+<span class="c"># 本次新增的护栏</span>
+./venv/Scripts/python.exe -m pytest tests/test_injection_timeout_and_order.py tests/test_daily_bars_disk_cache.py -q
+
+<span class="c"># 日线磁盘缓存（盘后才有意义；QS_DISK_CACHE=0 可一键关闭）</span>
+<span class="c"># 缓存目录：~/.tradingagents/cache/daily_bars/{CODE}_{days}.json</span>
+./venv/Scripts/python.exe -c "import quant_module as Q; print(Q._disk_path('TA',250))"</pre>
+    <p class="cap">探针不 stub 任何业务函数：<code>gtja_context</code> / <code>technical_view</code> / <code>fundamental_view</code> / <code>reconcile_view</code> 全部真跑真取数，只拦截 LLM 出口拿到最终 system prompt。</p>
+  </section>
+
+  <div class="foot">AgentSense · 运行分析注入块体检 · 2026-10-22 · 只读，未改动业务代码</div>
+</div>
+</body>
+</html>

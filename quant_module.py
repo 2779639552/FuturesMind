@@ -42,10 +42,14 @@
 from __future__ import annotations
 
 import io  # 【调用包】CSV 文本解析(价格接口返回 CSV)
+import json  # 【调用包】日线磁盘缓存(JSON)
 import logging  # 【调用包】降级告警
+import os  # 【调用包】缓存目录/开关环境变量
 import threading  # 【调用包】TTL 缓存加锁
 import time  # 【调用包】TTL 缓存时间戳
+import uuid  # 【调用包】磁盘缓存临时文件名唯一化(多进程写同一品种)
 from datetime import datetime, timedelta  # 【调用包】日期窗推算
+from pathlib import Path  # 【调用包】磁盘缓存路径
 from typing import Any  # 【调用包】类型标注
 
 from flask import Blueprint, jsonify, request
@@ -83,6 +87,18 @@ def _cache_set(key: str, val: Any) -> None:
     """写 TTL 缓存(线程安全)。"""
     with _CACHE_LOCK:
         _CACHE[key] = (time.time(), val)
+
+
+# ── 单飞（single-flight）：同一 key 的并发请求只让一个去真取数 ──────────────
+# 【为什么需要】2026-10-23 做分析并行后实测：`_daily_bars_cached` 只加了"保护字典"的锁，
+#   **不合并并发请求**。3 路同时分析同一品种 ⇒ 3 次天勤握手（每次 5.4s）+ 3 次国君请求。
+#   国君有熔断，批量取数会把交互式请求拖死；天勤侧并发也会放大 SSL 抖动。
+# 【做法】第一个到达的线程当 leader 去取数，其余在 Event 上等；leader 写完缓存后 set()，
+#   等待者直接读缓存。leader 失败（抛异常）时也会 set()，等待者退化为各自取数 ——
+#   宁可重复一次，也不能因为"别人失败"而让本请求拿到空数据。
+_INFLIGHT: dict[str, threading.Event] = {}  # 【变量】key → 取数中信号
+_INFLIGHT_LOCK = threading.Lock()  # 【锁】保护 _INFLIGHT 本身
+_INFLIGHT_WAIT = 30.0  # 【常量】等待 leader 的上限；超时则自己取（绝不死等）
 
 
 def _pool() -> list[str]:
@@ -271,13 +287,134 @@ def api_quant_kline():
 # ===========================================================================
 # ② 技术指标面板
 # ===========================================================================
+# ── 日线磁盘缓存(2026-10-22) ───────────────────────────────────────────
+# 【解决什么】`_daily_bars_cached` 只有 5 分钟**进程内**缓存，服务一重启就全空。
+#   而日线取数冷启动 5.4s（天勤短连接：认证+握手+订阅）、失败回退 AKShare 8.7s，
+#   直接把 `analyst_views._compute` 顶到 16.17s —— 技术分析师是图里第一个节点，
+#   于是「首次分析拿不到价格轴视图」（已在 2026-10-22 上半场修掉超时，但 16s 等待仍在）。
+# 【只缓存"定稿"数据】日线最后一根在盘中持续更新，那时落盘拿到的是未完成 bar
+#   （收盘价不是最终值）。所以：**只允许在非交易时段写盘/读盘**，交易时段完全走内存。
+#   宁可在盘中多付 5.4s，也不把半根 K 线当收盘价喂给 MA/RSI。
+# 【窗口】15:10 收盘落盘 → 次日 08:55 前仍可命中（18h）。盘前分析由 16s 降到 <1s。
+# 【已知局限】1) 不识别法定节假日 —— 只会多取一次，不会用错数据；
+#             2) 若昨夜至今晨发生主力换月，后复权序列会整体平移，缓存有偏差 ——
+#                概率低（每月一次），且只影响盘前那一次分析。盘中重新取数不受影响。
+_DISK_DIR = Path(os.path.expanduser("~")) / ".tradingagents" / "cache" / "daily_bars"
+_DISK_TTL_HOURS = 18       # 15:10 落盘 → 次日 08:55 仍命中
+_DISK_MAX_AGE_DAYS = 10    # 最后一根 bar 距今超过此天数 ⇒ 视为陈旧（长假后）
+_DISK_KEEP_DAYS = 7        # 顺带清理超过 7 天的缓存文件
+_DISK_OFF = os.getenv("QS_DISK_CACHE") == "0"  # 排查/测试可一键关掉
+
+
+def _in_trading_window(now: datetime | None = None) -> bool:
+    """日线会变的时段：工作日日盘 09:00–15:10、夜盘 21:00–23:30。
+
+    【判据为什么是"会变"而不是"开市"】缓存安全性只取决于「最后一根 bar 是否已定稿」，
+      收盘后 10 分钟给盘后结算留余量；夜盘同样会改写当日 bar，一并排除。
+    """
+    now = now or datetime.now()
+    if now.weekday() >= 5:  # 周六/周日
+        return False
+    hm = now.hour * 60 + now.minute
+    return (9 * 60 <= hm <= 15 * 60 + 10) or (21 * 60 <= hm <= 23 * 60 + 30)
+
+
+def _disk_path(code: str, days: int) -> Path:
+    return _DISK_DIR / f"{code}_{int(days)}.json"
+
+
+def _disk_read(code: str, days: int) -> list[dict] | None:
+    """读日线磁盘缓存；任何不对劲都返回 None（宁可重取，绝不用可疑数据）。"""
+    if _DISK_OFF or _in_trading_window():
+        return None
+    p = _disk_path(code, days)
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("code") != code or int(raw.get("days") or 0) != int(days):
+        return None
+    bars = raw.get("bars")
+    # 门槛 5 根：既拦住"数据源部分失败只返回 1~2 根"被当成有效缓存，
+    # 又不至于把"只取最新价"的调用方（跨品种套利取 30 天 ≈ 20 根）挡在门外。
+    # 技术指标要 ≥30 根，那是消费端自己的校验（`_technical_snapshot` 已判）。
+    if not isinstance(bars, list) or len(bars) < 5:
+        return None
+    try:
+        saved_at = float(raw.get("saved_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if time.time() - saved_at > _DISK_TTL_HOURS * 3600:
+        return None
+    # 最后一根 bar 的日期不能太旧 —— TTL 挡的是"文件写入时间"，这一条挡的是"数据本身旧"
+    last = str(raw.get("last_bar_date") or "")[:10]
+    try:
+        if (datetime.now().date() - datetime.strptime(last, "%Y-%m-%d").date()).days > _DISK_MAX_AGE_DAYS:
+            return None
+    except ValueError:
+        return None
+    return bars
+
+
+def _disk_write(code: str, days: int, bars: list[dict]) -> None:
+    """把定稿日线写入磁盘（原子写 + 顺手清理旧文件）。失败静默 —— 缓存不该影响主链路。"""
+    if _DISK_OFF or _in_trading_window() or not bars:
+        return
+    payload = {
+        "code": code,
+        "days": int(days),
+        "saved_at": time.time(),
+        "last_bar_date": str(bars[-1].get("date") or "")[:10],
+        "bars": bars,
+    }
+    try:
+        text = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return  # 含不可序列化类型（如 numpy 标量）⇒ 放弃本次写盘，不冒险做有损转换
+    tmp = None
+    try:
+        _DISK_DIR.mkdir(parents=True, exist_ok=True)
+        p = _disk_path(code, days)
+        # 【为什么 tmp 名带 pid+随机】本项目是多进程的（web + scheduler + 采集器都会
+        #   import 本模块）。固定 `.tmp` 名在两个进程同时落盘同一品种时会互相覆盖：
+        #   A 写完 → B 覆盖 → A replace（B 的 tmp 已不在）→ B 的写入丢失；
+        #   Windows 下还会因文件被占用抛 WinError 32。带 pid+uuid 各写各的，互不干扰。
+        tmp = p.with_name(f"{p.stem}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, p)  # 原子替换：避免半截文件被读到
+    except OSError as exc:
+        logger.debug("日线磁盘缓存写入失败(%s): %s", code, exc)
+        if tmp is not None:  # 写失败别留垃圾
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return
+    cutoff = time.time() - _DISK_KEEP_DAYS * 86400
+    try:
+        for f in _DISK_DIR.glob("*.json"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        # 崩溃/被杀时可能留下 .tmp（正常路径会自己删），超过 1 小时的一并清掉
+        stale_tmp = time.time() - 3600
+        for f in _DISK_DIR.glob("*.tmp"):
+            if f.stat().st_mtime < stale_tmp:
+                f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _daily_bars_cached(code: str, days: int) -> list[dict]:
-    """带 TTL 缓存的日线读取。
+    """带 TTL 缓存的日线读取（进程内 5 min → 磁盘定稿缓存 → 实取）。
 
     【为什么要它】总览对同一品种要算「日线周期方向」与「技术快照」两件事，两者都
     需要日线；`_technical_snapshot` 内部会自己调 `_load_daily_bars` ⇒ 不缓存就是
     一个品种拉两遍日线（实测冷启动单次 5.4s，21 品种白白多花一倍时间）。
     日线一天只变一次，缓存 5 分钟零风险；`_cross_section_one` 也一并受益。
+    【2026-10-22 加磁盘层】5 分钟只覆盖"进程活着"的场景；服务重启/次日盘前必空，
+      于是第一次分析恒付 5.4~8.7s。磁盘层只在**非交易时段**生效（见上方注释）。
     【为什么可以不担心污染】下游只读不写（`pd.DataFrame(bars)` 是拷贝）；但**缓存
     返回的是同一个 list 对象**，所以任何调用点都**不得原地修改**返回的 bars。
     """
@@ -285,9 +422,34 @@ def _daily_bars_cached(code: str, days: int) -> list[dict]:
     hit = _cache_get(key, _TTL_OVERVIEW)
     if hit is not None:
         return hit
-    bars = _load_daily_bars(code, days)
-    _cache_set(key, bars)
-    return bars
+
+    # 【单飞】同 key 只有一个线程去取数，其余等它。见 _INFLIGHT 上方注释。
+    with _INFLIGHT_LOCK:
+        ev = _INFLIGHT.get(key)
+        is_leader = ev is None
+        if is_leader:
+            ev = threading.Event()
+            _INFLIGHT[key] = ev
+
+    if not is_leader:
+        ev.wait(_INFLIGHT_WAIT)
+        hit = _cache_get(key, _TTL_OVERVIEW)
+        if hit is not None:
+            return hit
+        # leader 失败或超时：自己取一次。**不能**因为别人没取到就返回空。
+
+    try:
+        bars = _disk_read(code, days)
+        if bars is None:
+            bars = _load_daily_bars(code, days)
+            _disk_write(code, days, bars)
+        _cache_set(key, bars)
+        return bars
+    finally:
+        if is_leader:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.pop(key, None)
+            ev.set()
 
 
 def _technical_snapshot(code: str, days: int = 250) -> dict:
@@ -472,6 +634,32 @@ def _fetch_basis(code: str, days: int, batch: bool = False) -> dict:
     return res
 
 
+def _basis_row(rec: dict) -> dict:
+    """国君基差记录 → 内部行（**量纲与分母的唯一转换点**）。
+
+    【2026-10-23 量纲 + 分母双重说明】`dom_basis_rate` 与自算有两处不同：
+      ① 量纲：它是**小数**（TA 实测 0.0914），不是百分数；
+      ② 分母：它是 **基差 ÷ 期货价**（590/6458 = 9.14%），
+         而 `analysis_bundle` 显示用的是 **基差 ÷ 现货价**（590/7048 = 8.37%）。
+      ⇒ 同一个"基差率"在三处出现：两处不同分母、一处不同量纲。
+      本函数保持接口原值（兼容 `fund_module` 的小数约定），额外给
+      `basis_rate_pct`（百分数，**期货分母**）；要现货分母请用
+      `basis / spot_price * 100`，或直接用 `analysis_bundle` 的卡片。
+    【为什么单独成函数】原逻辑内联在取数循环里，依赖网络才能测 —— 抽出来后
+      `tests/test_basis_rate_unit.py` 可用假记录直接验量纲，不必联网。
+    """
+    _rate = _f(rec.get("dom_basis_rate"))
+    return {
+        "date": str(rec.get("date") or ""),
+        "spot_price": _f(rec.get("spot_price")),
+        "futures_price": _f(rec.get("dominant_contract_price")),
+        "basis": _f(rec.get("dom_basis")),
+        "basis_rate": _rate,
+        "basis_rate_pct": (round(_rate * 100, 4) if _rate is not None else None),
+        "contract": str(rec.get("dominant_contract") or ""),
+    }
+
+
 def _fetch_basis_gtja(code: str, days: int, batch: bool = False) -> dict:
     """源 1: 国君 GTJA 基差(原实现, 未改口径)。"""
     from tradingagents.dataflows import gtja_api
@@ -490,10 +678,10 @@ def _fetch_basis_gtja(code: str, days: int, batch: bool = False) -> dict:
         if isinstance(d, int):
             s = str(d)
             d = f"{s[:4]}-{s[4:6]}-{s[6:]}" if len(s) == 8 else s
-        rows.append({"date": str(d), "spot_price": _f(rec.get("spot_price")),
-                     "futures_price": _f(rec.get("dominant_contract_price")),
-                     "basis": _f(rec.get("dom_basis")), "basis_rate": _f(rec.get("dom_basis_rate")),
-                     "contract": str(rec.get("dominant_contract") or "")})
+        # 量纲/分母的转换统一在 `_basis_row`（可单测），这里只管日期规整。
+        row = _basis_row(rec)
+        row["date"] = str(d)
+        rows.append(row)
     return {"ok": True, "rows": rows, "count": len(rows), "source": "gtja"}
 
 
@@ -1161,7 +1349,10 @@ def api_quant_inventory():
                    "pct_rank": (round(sum(1 for v in qty if v <= latest) / len(qty) * 100, 1)
                                 if qty and latest is not None else None),
                    "max": max(qty) if qty else None, "min": min(qty) if qty else None}
-        cycle = _inventory_cycle(code, rows, _load_daily_bars(code, 80))
+        # 【2026-10-22 收口】统一走 `_daily_bars_cached`（内存 5min + 磁盘定稿缓存）。
+        #   原先这里直接 `_load_daily_bars` ⇒ 库存周期卡每次冷启动都要实拉 5.4~8.7s。
+        #   `_inventory_cycle` 只读 `price_bars[-1]/[-21]`，不改容器，共享 list 安全。
+        cycle = _inventory_cycle(code, rows, _daily_bars_cached(code, 80))
     else:
         summary["error"] = inv.get("error")
     # ── 2026-10-16 双口径(社会库存 + 交易所仓单) ──
@@ -1195,7 +1386,9 @@ def _quant_signals(code: str) -> dict:
             profit:{ok, label, cur, low, high, pct, count, labels, scored}}。
             ⚠️ signals 内 weight==0 的条目为校验维度, 不参与 score 累计。
     """
-    bars = _load_daily_bars(code, 250)
+    # 【2026-10-22 收口】走缓存层（原为 `_load_daily_bars`，冷启动必付 5.4~8.7s）。
+    #   下游只做 `pd.DataFrame(bars)` / 读取，不改容器 ⇒ 共享 list 安全。
+    bars = _daily_bars_cached(code, 250)
     inv = _fetch_inventory(code, 180)
     basis = _fetch_basis(code, 60)
     term = _fetch_term_structure(code)
@@ -1691,7 +1884,8 @@ def api_quant_verdict():
 
     args = request.args
     meta = _meta(code)
-    bars = _load_daily_bars(code, 250)
+    # 【2026-10-22 收口】走缓存层；下游只读，不改容器 ⇒ 共享 list 安全。
+    bars = _daily_bars_cached(code, 250)
 
     # 基差率 + 库存序列(供二维四象; 任一缺失 → 该卡降级, 不阻断整条链)
     basis_rates: list[float] = []
@@ -1921,7 +2115,8 @@ def _cmp_series(code: str, days: int) -> dict[str, dict[str, float]]:
 
     # ── 价格族(一次取数派生 price / volume / oi) ──
     try:
-        for b in _load_daily_bars(code, days):
+        # 【2026-10-22 收口】走缓存层；纯遍历取值，不改容器。
+        for b in _daily_bars_cached(code, days):
             d = str(b.get("date") or "")[:10]
             if not d:
                 continue

@@ -472,7 +472,9 @@ def test_frontend_chart_three_shapes():
     h = TPL.read_bytes().decode("utf-8")
     i = h.index("_renderFundInventory(s, so) {")
     body = h[i:i + 9000]
-    assert "if (ckRows.length && !socRows.length)" in body, "缺「只有仓单」分支（BZ/CJ 会变成半空的图）"
+    # 【2026-10-21】社会库存有 ≥2 个年份时走季节性图，下方只画仓单 ⇒ 判据变量改为
+    #   `socForDual`（= 参与"同框对照"的社会库存；已有季节性时为空）。语义没变。
+    assert "if (ckRows.length && !socForDual.length)" in body, "缺「只有仓单」分支（BZ/CJ 会变成半空的图）"
     assert "if (!ckRows.length)" in body, "缺「只有社会库存」分支（仓单常年为 0 时它常是唯一口径）"
     assert body.count("grid: [{") >= 1, "缺双栏 grid 定义"
 
@@ -516,7 +518,7 @@ def test_frontend_social_line_is_stepped_not_interpolated():
         "★ 双口径那条社会库存线不是阶梯（会被插值成日频假读数）"
     assert "绝不插值" in body, "缺「不插值」的口径说明（后人容易「顺手」改成 smooth）"
     # 对齐语义：取"最后一个 ≤ 该日期的读数"
-    assert "while (k < socRows.length && String(socRows[k].date) <= String(dates[i]))" in body, \
+    assert "while (k < socForDual.length && String(socForDual[k].date) <= String(dates[i]))" in body, \
         "阶梯前推的判据不对（可能把未来读数提前画上）"
 
 

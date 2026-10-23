@@ -177,8 +177,14 @@ def test_switchtab_stops_overview_when_leaving_quant():
     的直接成因。判据要落在**switchTab 真的调了它**, 而不是"函数本身写得对"。
     """
     s = _tpl()
-    i = s.index("switchTab(t) {")
-    seg = s[i:i + 900]
+    # 【2026-10-21】switchTab 已加 opts 参数（点击模块名回总览）⇒ 用正则匹配签名，
+    # 别再硬编码 "switchTab(t) {"（那会把"签名演进"误判成"逻辑丢失"）。
+    m = re.search(r"\n\s*switchTab\(t(?:\s*,\s*opts)?\)\s*\{", s)
+    assert m, "找不到 switchTab 定义"
+    i = m.start()
+    # 切到"更新 .active 类"之前那段（长度会随注释增删变化，用边界切而不是写死字数）
+    j = s.index("document.querySelectorAll('.tab')", i)
+    seg = s[i:j]
     assert "if (t !== 'quant') this._stopQuantOverview();" in seg, (
         "switchTab 离开量化页时没有停总览（后台空转 + 撞 TTL 边界重算）"
     )

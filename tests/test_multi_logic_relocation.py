@@ -222,8 +222,13 @@ def test_strategy_card_score_is_fund_scope():
 def test_sec_index_version_bumped():
     """D：tab 内卡片有增删 ⇒ `_SEC_IDX_VER` 必须 +1。
 
-    【2026-10-16】新增「全品种基本面截面表」并把基本面页拆成两视图 ⇒ 27 升 28。
+    【2026-10-16】新增「全品种基本面截面表」并把基本面页拆成两视图 ⇒ 27 升 28；
+    同日删「价格-库存关联分析」小模块 ⇒ 29 升 30。
     """
     h = _h()
-    assert "_SEC_IDX_VER: '29'," in h, "_SEC_IDX_VER 未随本次卡片增删 +1"
-    assert "_SEC_IDX_VER: '28'," not in h, "旧版本号残留"
+    # 【2026-10-16】删「价格-库存关联分析」小模块 ⇒ 29 升 30；
+    #   同日新增「采集通道状态巡检条」⇒ 30 升 31。
+    # 【2026-10-21】基本面页重构为 A/B 两层 ⇒ 再 +1
+    # 【2026-10-21】A9 数据计算面板迁入 ⇒ 再 +1
+    assert "_SEC_IDX_VER: '33'," in h, "_SEC_IDX_VER 未随本次卡片增删 +1"
+    assert "_SEC_IDX_VER: '32'," not in h, "旧版本号残留"

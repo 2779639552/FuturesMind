@@ -222,12 +222,24 @@ def test_collect_items_source_column_count_matches_direction_count():
     assert [i["source"] for i in items] == ["东证", "华泰"]
     assert sum(i["merged_count"] for i in items) == 4  # 篇数不失真
     table = web_app._build_daily_views_table("2026-09-02", items, "")
-    row = next(l for l in table.splitlines() if l.startswith("| SC "))
-    cells = [c.strip() for c in row.strip("|").split("|")]
-    # 品种|名称|发行方|方向|置信度|一句话核心观点|头寸建议|研报数|是否有新研报
-    assert len(cells[2].split(" / ")) == len(cells[3].split(" / ")) == len(cells[4].split(" / ")) == 2
-    assert cells[7] == "4"  # 研报数 = 真实篇数(合并后仍是 4 篇)
-    assert cells[8] == "✓"
+    # 【2026-10-21】改成"每家机构单独一行"后，三列不再用 " / " 挤在一格里，
+    #   而是同一行的发行方/方向/置信度天然属于同一家 ⇒ 逐行校验。
+    lines = table.splitlines()
+    i = next(k for k, l in enumerate(lines) if l.startswith("| SC "))
+    block = [lines[i]]
+    for l in lines[i + 1:]:
+        if l.startswith("| ") and l.split("|")[1].strip():
+            break
+        if l.startswith("|"):
+            block.append(l)
+    assert len(block) == 2, "两家机构应各占一行: %r" % block
+    for ln in block:
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        # 品种|名称|发行方|方向|置信度|一句话核心观点|头寸建议|最新研报日期
+        assert cells[2] and cells[3] and cells[4], "行内三列必须同属一家且非空: %s" % ln
+    first = [c.strip() for c in block[0].strip("|").split("|")]
+    # 【2026-10-23】原「研报数」列已删除，末列改为「最新研报日期」
+    assert first[7] == "2026-09-02", "末列应为最新研报日期: %r" % first
 
 
 def test_collect_items_weekly_mode_merges_cross_day_same_source():

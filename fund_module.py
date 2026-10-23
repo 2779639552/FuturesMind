@@ -68,6 +68,7 @@ import time  # 【调用包】TTL 缓存时间戳
 from typing import Any  # 【调用包】类型标注
 
 from flask import Blueprint, jsonify, request
+import vote_semantics as _vs  # 【调用模块】方向票语义唯一权威来源
 
 logger = logging.getLogger(__name__)
 
@@ -991,9 +992,10 @@ def _fund_month_row(code: str, month: str) -> dict:
             row["skill_cyc"] = ev["votes"].get("cyc")
             row["skill_prof"] = ev["votes"].get("prof")
             # 净票/票数只统计**本行真正有效的票**（二维四象已置空 ⇒ 少一票）
-            dirmap = {"做多": 1, "单边做多": 1, "做空": -1, "单边做空": -1}
             keys = ("term", "cyc", "prof")
-            row["skill_net"] = sum(dirmap.get(str(row.get("skill_" + k)), 0) for k in keys)
+            # 【2026-10-19】方向映射统一走 vote_semantics：原 dirmap 漏了「偏多/偏空」，
+            #   而前端 _FRK_TEXT_RANK 一直把「偏多」当 +1 ⇒ 前后端口径不一致。
+            row["skill_net"] = sum(_vs.sign(row.get("skill_" + k)) for k in keys)
             row["skill_n"] = sum(1 for k in keys if row.get("skill_" + k))
     except Exception as e:  # noqa: BLE001
         logger.warning("fund 月度-四票失败(%s): %s", code, e)
@@ -1175,7 +1177,9 @@ def _fund_vote_inputs(code: str, bars: list | None = None) -> tuple[dict, dict]:
     err: dict[str, str] = {}
     if bars is None:
         try:
-            bars = q._load_daily_bars(code, 200)
+            # 【2026-10-22 收口】走缓存层（内存 5min + 磁盘定稿缓存），与量化页同源同口径。
+            #   下游只读 `bars[-1]/[-2]` 与遍历，不改容器 ⇒ 共享 list 安全。
+            bars = q._daily_bars_cached(code, 200)
         except Exception as e:  # noqa: BLE001
             err["bars"] = f"{type(e).__name__}: {e}"[:60]
             bars = []
@@ -1269,8 +1273,8 @@ def _fund_skill_votes(code: str, bars: list, basis_rates: list, inv_series: list
         for key, prefix in _FUND_GAP_PREFIX.items():
             if str(g).startswith(prefix) and key not in ev["gaps"]:
                 ev["gaps"][key] = str(g)[len(prefix):].strip()
-    dirmap = {"做多": 1, "单边做多": 1, "做空": -1, "单边做空": -1}
-    ev["net"] = sum(dirmap.get(str(ev["votes"].get(k)), 0) for k, _ in _FUND_VOTE_BOOKS)
+    # 【2026-10-19】统一走 vote_semantics（期限结构的「偏多/偏空」此前恒计 0）
+    ev["net"] = sum(_vs.sign(ev["votes"].get(k)) for k, _ in _FUND_VOTE_BOOKS)
     ev["ok"] = True
     ev["n_voted"] = sum(1 for k, _ in _FUND_VOTE_BOOKS if k in ev["votes"])
     return ev
@@ -1370,7 +1374,7 @@ def _fund_xsection_one(code: str) -> dict:
     # ── ⑤ 4 票 SKILL 判断(需要日线 + 基差率 + 库存序列 + 期限 + 利润) ──
     bars: list = []
     try:
-        bars = q._load_daily_bars(code, 200)
+        bars = q._daily_bars_cached(code, 200)  # 【收口 2026-10-22】走缓存层
     except Exception as e:  # noqa: BLE001
         err["bars"] = f"{type(e).__name__}: {e}"[:60]
     try:

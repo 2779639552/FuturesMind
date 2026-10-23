@@ -34,7 +34,10 @@
      · https://mp.weixin.qq.com/s/<token>  → 原文直链（回包内自带）
 
 3. **必须带 cookie**，且**不能用官方 API Key 顶替**（实测伪装成 wr_skey 头也返回
-   `{"errCode":-2010,"errMsg":"用户不存在"}`）。cookie 会过期 ⇒ 见 --check。
+   `{"errCode":-2010,"errMsg":"用户不存在"}`）。
+   ★ `wr_skey` 只是 **90 分钟**的会话密钥（`Max-Age=5400`）；`wr_vid`/`wr_rt` 是 360 天长期凭据。
+     **每次采集前必须调 `POST /web/login/renewal` 续期**，否则 12 小时一轮的调度必然
+     撞 `-2012 登录超时`（2026-10-19 定案：这不是"登录过期"，重扫码也只能管 90 分钟）。
 
 4. 与 wechat_album_collector **共用同一个 inbox**（见下方 F_INBOX）⇒ 下游
    `wechat_ingest.py` 与 scheduler 的 wechat_ingest 任务**零改动**即可消费。
@@ -51,12 +54,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import io
 import json
 import os
 import random
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -97,30 +102,293 @@ def say(s: str = "") -> None:
     _log.append(s)
 
 
-# ============================================================ cookie
-def _cookie_header() -> str:
+# ============================================================ cookie / 会话
+# 【2026-10-19 实测定案】`wr_skey` 是**服务端会话密钥，Max-Age=5400（90 分钟）**；
+#   `wr_vid` / `wr_rt` 是长期凭据（360 天，且每次续期都被再延到 360 天）。
+#   旧实现只带静态 cookie、从不续期 ⇒ 12 小时一轮的调度**必然**在下一轮撞
+#   `-2012 登录超时`。这不是"登录过期"——重扫码也只能管 90 分钟。
+#   修法：采集前调 `POST /web/login/renewal`，并把服务端下发的新 cookie 写回。
+_RENEWAL_PATH = "/web/login/renewal"
+_SESSION = None
+
+
+def _read_json_tolerant(p: Path, tries: int = 3, delay: float = 0.2):
+    """读 JSON：先重试拿**最新版**，仍失败再回滚 `.bak`；都救不回来才报错。
+
+    【为什么顺序是"先重试后回滚"】重试能覆盖"写入瞬间读到 0 字节"的毫秒级窗口——
+      这时 `.bak` 是**上一版**，直接回滚会丢掉刚写进去的最新数据。
+      只有重试也读不到，才认定为真损坏，交给 `atomic_io.load_json` 自愈。
+    """
+    last: Exception | None = None
+    for _ in range(max(1, tries)):
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            last = exc
+            time.sleep(delay)
+
+    # ── 真损坏：从 .bak 回滚（并修好主文件）──
+    healed: list[str] = []
+    try:
+        from tradingagents.atomic_io import load_json as _atomic_load
+
+        return _atomic_load(
+            p, on_heal=lambda _path, why: healed.append(why),
+        )
+    except Exception:  # noqa: BLE001 - 落到下面统一报错
+        pass
+
+    raise SystemExit(
+        f"✘ 读取失败：{p}\n"
+        f"   {type(last).__name__}: {str(last)[:120]}\n"
+        "   文件可能是空文件/半截 JSON（并发写或历史损坏），且 .bak 回滚也失败。"
+        "确认后删除该文件并重跑扫码：node probe/_weread_login.mjs")
+
+
+def _load_cookie_list() -> list[dict]:
     if not F_COOKIES.exists():
         raise SystemExit(
             f"✘ 未找到 cookie：{F_COOKIES}\n"
             "  先跑一次扫码登录：node probe/_weread_login.mjs")
-    j = json.loads(F_COOKIES.read_text(encoding="utf-8"))
+    j = _read_json_tolerant(F_COOKIES)
     cks = j.get("cookies") or []
-    names = {c["name"] for c in cks}
-    if "wr_skey" not in names:
+    names = {c.get("name") for c in cks}
+    # ★ 续期只认长期凭据（实测：把 wr_skey 整个删掉仍能续期成功）
+    #   ⇒ 不再把 wr_skey 当必要条件，否则"密钥过期"会被误报成"未登录、去扫码"。
+    if not {"wr_vid", "wr_rt"} <= names:
         raise SystemExit(
-            "✘ cookie 里没有 wr_skey（登录态已失效）\n"
+            "✘ cookie 缺少长期凭据（需要 wr_vid + wr_rt）\n"
             f"  文件：{F_COOKIES}\n"
             "  重跑：node probe/_weread_login.mjs")
-    return "; ".join(f"{c['name']}={c['value']}" for c in cks)
+    return cks
+
+
+def _session() -> requests.Session:
+    """惰性创建并**全程复用** Session。
+
+    ★ 必须复用：续期拿到的 `wr_skey` 存在 Session 的 cookie jar 里，
+      每次新建 Session 会让新密钥带不到后续请求（自动续期静默失效）。
+    """
+    global _SESSION
+    if _SESSION is None:
+        s = requests.Session()
+        for c in _load_cookie_list():
+            s.cookies.set(c.get("name"), str(c.get("value")),
+                          domain=c.get("domain") or ".weread.qq.com",
+                          path=c.get("path") or "/")
+        _SESSION = s
+    return _SESSION
 
 
 def _headers() -> dict:
+    # ★ Cookie 由 Session 统一携带（续期会改写它）。这里**不要再拼 Cookie 头**，
+    #   否则旧密钥会覆盖新密钥，自动续期看起来"成功"但下一次请求照样 -2012。
     return {"User-Agent": UA, "Accept": "application/json, text/plain, */*",
-            "Referer": BASE + "/", "Cookie": _cookie_header()}
+            "Referer": BASE + "/"}
+
+
+def _persist_session_cookies() -> None:
+    """把 Session 里的新 cookie 写回 cookies.json（供下次运行/其他工具复用）。"""
+    j = _load_json(F_COOKIES, {}) or {}
+    old = {c.get("name"): c for c in (j.get("cookies") or []) if c.get("name")}
+    out, seen = [], set()
+    for c in _session().cookies:
+        if c.domain and "weread" not in c.domain:
+            continue
+        item = dict(old.get(c.name) or {})
+        item.update({"name": c.name, "value": c.value,
+                     "domain": c.domain or item.get("domain") or ".weread.qq.com",
+                     "path": c.path or "/"})
+        if c.expires:
+            item["expires"] = int(c.expires)
+        out.append(item)
+        seen.add(c.name)
+    for n, c in old.items():          # 保住 Session 未覆盖的条目（如 wr_fp）
+        if n not in seen:
+            out.append(c)
+    j["cookies"] = out
+    now = _dt.datetime.now().isoformat(timespec="seconds")
+    j.setdefault("savedAt", now)
+    j["renewedAt"] = now
+    _save_json(F_COOKIES, j)
+    _mark_disk_synced()
+
+
+# ── 会话密钥轮换：服务端可能在任何响应里换掉 wr_skey ──────────────────────────
+#   requests.Session 会把 Set-Cookie 收进内存 jar，但**磁盘副本不会自动更新**
+#   ⇒ 下次进程启动又拿旧值（这正是"重登后 1.5 小时又失效"的直接成因）。
+#   这里每发一次请求就比对一次指纹，变了立刻写回。
+_DISK_FP = None
+
+
+def _jar_value(name: str) -> str:
+    for c in _session().cookies:
+        if c.name == name and (not c.domain or "weread" in c.domain):
+            return str(c.value)
+    return ""
+
+
+def _jar_fingerprint() -> str:
+    parts = sorted("%s=%s@%s" % (c.name, c.value, c.domain or "") for c in _session().cookies)
+    return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _disk_fingerprint() -> str:
+    try:
+        j = json.loads(F_COOKIES.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return ""
+    parts = sorted("%s=%s@%s" % (c.get("name"), c.get("value"), c.get("domain") or "")
+                   for c in (j.get("cookies") or []))
+    return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _mark_disk_synced() -> None:
+    global _DISK_FP
+    _DISK_FP = _jar_fingerprint()
+
+
+def _sync_cookies_if_changed() -> bool:
+    """检测服务端是否轮换了会话 cookie；有变化就写回文件。
+
+    返回 True 表示发生了轮换并已落盘。
+    """
+    global _DISK_FP
+    if _DISK_FP is None:
+        _DISK_FP = _disk_fingerprint()
+    if _jar_fingerprint() == _DISK_FP:
+        return False
+    old_skey = (_disk_json_skey() or "")[:6]
+    _persist_session_cookies()          # 内部会 _mark_disk_synced()
+    new_skey = _jar_value("wr_skey")
+    if new_skey and new_skey[:6] != old_skey:
+        say("   ↻ 检测到 wr_skey 被服务端轮换，已写回 cookies.json（旧 %s… → 新 %s…）"
+            % (old_skey or "-", new_skey[:6]))
+    else:
+        say("   ↻ 检测到 cookie 变化，已写回 cookies.json")
+    return True
+
+
+def _disk_json_skey() -> str:
+    try:
+        j = json.loads(F_COOKIES.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return ""
+    for c in (j.get("cookies") or []):
+        if c.get("name") == "wr_skey":
+            return str(c.get("value") or "")
+    return ""
+
+
+def renew_session(*, quiet: bool = False) -> bool:
+    """续期会话密钥。成功返回 True，并把新 cookie 写回文件。
+
+    【为什么不扫码也能恢复】`wr_rt` 是刷新令牌，只要它还在，
+      `/web/login/renewal` 就能换出新的 `wr_skey`。
+      实测：连续调用幂等；缺 `wr_skey`、缺 `Origin` 头都能成功。
+    """
+    try:
+        r = _session().post(BASE + _RENEWAL_PATH, headers=_headers(), timeout=30)
+        d = r.json()
+    except Exception as e:  # noqa: BLE001
+        if not quiet:
+            say("   ⚠ 续期请求异常：%s" % str(e)[:120])
+        return False
+    try:
+        ok = int(d.get("succ") or 0) == 1
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        if not quiet:
+            say("   ⚠ 续期未成功：%s（连续失败 ⇒ 长期凭据也失效，需重新扫码）" % str(d)[:120])
+        return False
+    _persist_session_cookies()
+    return True
+
+
+# ── 错误码分层（2026-10-21 止血）─────────────────────────────────────────
+#   ★ 这三条码**不是一回事**，混在一起就会误判：
+#       -2010 / -2012 = 会话不可用（过期/未登录）→ 本地续期**有可能**救回来；
+#       -2041         = 会话有效、但**这一条接口**拒绝 → 续期救不了，重试更救不了。
+#   实测证据（2026-10-21，同一套 cookie）：
+#       /web/shelf/sync  → 200，416 本真实书（匿名是 -2010/0 本）⇒ 确为登录态
+#       /web/mp/cover    → 200，正常返回最新一篇
+#       /web/mp/articles → 恒 -2041（换 2 个号、3 组参数、5 种请求头都一样）
+#       /web/mp/articles（匿名）→ -2010
+#   ⇒ 上一版把 -2041 也当"长期凭据失效"，让用户去扫码，那是**误报**。
+_SESSION_CODES = frozenset({-2010, -2012})
+_ENDPOINT_REFUSED = frozenset({-2041})
+_AUTH_CODES = _SESSION_CODES | _ENDPOINT_REFUSED   # 兼容既有调用点
+
+
+class AuthError(RuntimeError):
+    """会话真的不可用（续期后仍被拒）—— 这类才值得让用户重新扫码。"""
+
+
+class EndpointRefused(RuntimeError):
+    """接口在有登录态的前提下拒绝服务。
+
+    【为什么不许继承 SystemExit】SystemExit 会**穿透** collect_account 的
+      `except Exception`，把整轮采集打断（实测：第一个号失败后其余 5 个号连试都没试）。
+      这里用普通异常，让上层能"单号降级、继续下一个号"。
+    """
+
+
+# ── 自动续期预算 ──
+#   第一版没有任何预算：`_get` 每次撞鉴权码就再续期一次，而 `fetch_articles` 自己还重试 4 次
+#   ⇒ 一轮能续十几次。对账号只会更糟（越续越像机器人）。
+_MAX_AUTO_RENEWS = 1
+_AUTO_RENEWS = 0
+_RENEW_LOCK = threading.Lock()
+
+
+def _auto_renew() -> bool:
+    """领取一次自动续期额度；用完就不再续（每进程最多 `_MAX_AUTO_RENEWS` 次）。"""
+    global _AUTO_RENEWS
+    with _RENEW_LOCK:
+        if _AUTO_RENEWS >= _MAX_AUTO_RENEWS:
+            return False
+        _AUTO_RENEWS += 1
+        return True
+
+
+def _auth_code(r: requests.Response):
+    """只在**小回包**上解析 errCode（正文接口回 3.5MB HTML，解析会白炸一次）。"""
+    if len(r.content) > 4096:
+        return None
+    try:
+        d = r.json()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(d, dict):
+        return None
+    code = d.get("errCode")
+    if code is None:
+        code = d.get("errcode")
+    try:
+        return int(code)
+    except (TypeError, ValueError):
+        return None
 
 
 def _get(path: str, params: dict, timeout: int = 40) -> requests.Response:
-    return requests.get(BASE + path, params=params, headers=_headers(), timeout=timeout)
+    """统一请求入口：**只有会话过期**才自动续期并重试一次。
+
+    -2041 刻意不在这里处理：它不是会话问题，续期与重试都无效，
+      只会把账号往风控里推。交给 `fetch_articles` 抛 `EndpointRefused`，由上层降级。
+    """
+    r = _session().get(BASE + path, params=params, headers=_headers(), timeout=timeout)
+    code = _auth_code(r)
+    if code in _SESSION_CODES and _auto_renew() and renew_session(quiet=True):
+        # ★ `_auto_renew()` 只是额度闸，**不是**续期动作本身。
+        #   第一版把它写在原来 `renew_session(...)` 的位置上，等于"扣了额度却不续期"
+        #   —— 真撞 -2012 时会被判成 AuthError（测试 test_2012_renews_at_most_once 抓到）。
+        say("   ↻ 会话已过期（errCode=%s），续期后重试一次" % code)
+        r = _session().get(BASE + path, params=params, headers=_headers(), timeout=timeout)
+    # ★ 每次请求后都检查：服务端可能在这个响应里顺手轮换了 wr_skey
+    _sync_cookies_if_changed()
+    return r
+
 
 
 # ============================================================ 注册表/水位线
@@ -132,9 +400,23 @@ def _load_json(p: Path, default):
 
 
 def _save_json(p: Path, obj) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    io.open(p, "w", encoding="utf-8", newline="").write(
-        json.dumps(obj, ensure_ascii=False, indent=2))
+    """原子写 JSON（临时文件 + fsync + os.replace）**并保留上一版 `.bak`**。
+
+    【为什么必须原子（2026-10-23 根因）】旧实现 `io.open(p, "w")` 会**先把文件截断为
+      0 字节**再写内容。在这个窗口内任何并发读都会拿到空文件/半截 JSON，`json.loads`
+      抛 `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`；而该异常在采集器
+      里没有被捕获 ⇒ 整轮以**退出码 1** 结束，`mp_collect_result.json` 不写，
+      调度器只能读到上一轮的旧 `new`。
+
+    实测证据：10-22 18:30 与 10-23 08:30 **连续两轮**都是退出码 1（失败后 60s 自动重试
+    也失败）；而人工复跑 86 秒、26 篇、退出码 0 —— 说明数据源与凭据都正常，
+    坏的就是这个"写一半被读到"的窗口。
+
+    实现统一走 `tradingagents.atomic_io.save_json`（与项目其他落盘同一份逻辑）。
+    """
+    from tradingagents.atomic_io import save_json as _atomic_save
+
+    _atomic_save(p, obj, indent=2, backup=True)
 
 
 def load_registry() -> dict:
@@ -216,10 +498,14 @@ def expand_articles(payload: dict, bid: str) -> list[dict]:
 
 
 def fetch_articles(bid: str, offset: int, retries: int = 4) -> list[dict]:
-    """取一页「群发」并展开成扁平文章列表（带重试）。
+    """取一页「群发」并展开成扁平文章列表（**主通道**）。
 
-    ⚠️ 该接口偶发**静默空回包**（HTTP 200 但 reviews 为空）⇒ 必须退避重试，
-       否则会静默漏掉整页（社区实测此坑）。
+    【2026-10-19 更正】10-16 曾判定本接口"已被平台废弃（恒返 -2041）"——**那是误判**。
+      真因是同一个 `wr_skey` 90 分钟过期问题：续期后本接口正常返回
+      （实测 offset=0 → 101 篇、offset=20 → 109 篇、两页零重叠）。
+      ⇒ 恢复为取清单的主通道；`/web/mp/cover` 降级为兜底。
+
+    保留原说明：该接口偶发**静默空回包**（HTTP 200 但 reviews 为空）⇒ 退避重试。
     """
     last_err = ""
     for attempt in range(retries):
@@ -231,16 +517,153 @@ def fetch_articles(bid: str, offset: int, retries: int = 4) -> list[dict]:
             time.sleep(0.6 + attempt * 0.5)
             continue
 
-        if d.get("errCode") or d.get("errcode"):
-            # -2010 用户不存在 = cookie 失效（重试无意义）
-            raise SystemExit(f"✘ 文章接口报错：{d}（cookie 可能已失效，重跑登录脚本）")
+        code = d.get("errCode") or d.get("errcode")
+        if code:
+            # ★ 分码处理（2026-10-21）：-2041 说明会话是好的，只是这条接口不给。
+            if str(code) in {str(x) for x in _ENDPOINT_REFUSED}:
+                raise EndpointRefused(
+                    "列表接口拒绝 errCode=%s（会话有效，不是登录过期）" % code)
+            if str(code) in {str(x) for x in _SESSION_CODES}:
+                raise AuthError(
+                    "列表接口 errCode=%s %s（续期后仍被拒）\n"
+                    "   ⇒ 会话确实不可用，请重跑：node probe/_weread_login.mjs（扫码一次）"
+                    % (code, d.get("errMsg") or ""))
+            last_err = "errCode=%s" % code
+            time.sleep(0.8 + attempt * 0.7)
+            continue
 
         flat = expand_articles(d, bid)
         if flat:
             return flat
-        last_err = f"空回包(第 {attempt + 1} 次)"
+        last_err = "空回包(第 %d 次)" % (attempt + 1)
         time.sleep(0.8 + attempt * 0.7)
-    say(f"      ⚠ offset={offset} 重试 {retries} 次仍为空：{last_err}")
+    say("      ⚠ offset=%d 重试 %d 次仍为空：%s" % (offset, retries, last_err))
+    return []
+
+
+# ============================================================ 最新一篇（cover · 兜底）
+
+# 【2026-10-19 降级为兜底】列表接口 `/web/mp/articles` 已恢复可用（此前 -2041 是密钥过期）。
+#   `cover` 只在列表为空时兜底：它只给最新一篇，且不含 time/summary。
+_COVER_ERR_HINT = ("-2010", "-2012", "-2041")
+
+_HTML_SP = None
+
+
+def _norm_title(s: str) -> str:
+    """标题归一化：去空白与常见标点、转小写 ⇒ 用于**跨格式**兜底去重。"""
+    import re as _re
+    return _re.sub(r"[\s\-—–_|｜:：·、,，.。()（）\[\]【】“”\"'']+", "", str(s or "")).lower()
+
+
+_TITLE_CACHE: set | None = None
+
+
+def known_titles() -> set:
+    """inbox 里已出现过的 (号名, 归一化标题)。
+
+    【为什么需要它】`mp_seen.json` 里的 keys 是**旧格式** originalId
+    （旧链路写的，形如 `WR15NwFYq2Rp…`），而新版是 `6sbTBEdZjNgzAAhHNw~-2A`
+    这类不透明 id ⇒ 同一篇文章不会命中 seen_keys ⇒ 会在过渡期重复入库。
+    故补一层标题去重，把这段窗口挡住。
+    """
+    global _TITLE_CACHE
+    if _TITLE_CACHE is not None:
+        return _TITLE_CACHE
+    s: set = set()
+    try:
+        if F_INBOX.exists():
+            with io.open(F_INBOX, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    s.add((str(e.get("account") or ""), _norm_title(e.get("title") or "")))
+    except Exception:  # noqa: BLE001
+        pass
+    _TITLE_CACHE = s
+    return s
+
+
+def _guess_date(title: str, text: str = "") -> str:
+    """从标题/正文首部猜发布日期 → 'YYYY-MM-DD'；猜不到返回 ''。
+
+    cover **不返回发布时间**，所以只能猜。证据形态（本项目实测）：
+      · 标题尾带 8 位数   恒力期货日报[20261016]
+      · 标题带连字符日期  …利润修复[2026-10-12]
+      · 正文开头中文日期  [2026年10月16日] / 2026年10月11日
+    """
+    import re as _re
+    for src in (str(title or ""), str(text or "")[:400]):
+        m = _re.search(r"(20\d{2})[-/年](\d{1,2})[-/月](\d{1,2})", src)
+        if m:
+            y, mo, d = (int(x) for x in m.groups())
+        else:
+            m2 = _re.search(r"(?<![0-9])(20\d{2})(\d{2})(\d{2})(?![0-9])", src)
+            if not m2:
+                continue
+            y, mo, d = (int(x) for x in m2.groups())
+        try:
+            if 2000 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31:
+                return "%04d-%02d-%02d" % (y, mo, d)
+        except Exception:  # noqa: BLE001
+            pass
+    return ""
+
+
+def fetch_latest(bid: str, retries: int = 4) -> list[dict]:
+    """取该号**最新一篇**（/web/mp/cover）。返回扁平列表（0 或 1 项）。
+
+    字段与 `expand_articles` **同构** ⇒ 下游（build_entry / collect_account）零改动。
+    ⚠ cover 不返回 time/summary/read_num ⇒ 置 0/空（下游不许据此做增量判定）。
+    """
+    last_err = ""
+    for attempt in range(retries):
+        try:
+            r = _get("/web/mp/cover", {"bookId": bid}, timeout=40)
+            d = r.json()
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)[:100]
+            time.sleep(0.6 + attempt * 0.5)
+            continue
+
+        code = d.get("errCode") or d.get("errcode")
+        if code:
+            if str(code) in _COVER_ERR_HINT:
+                # 兜底通道也失败：抛普通异常，让上层记成"本号本次无产出"，
+                # 不要因为一个号把整轮（6 个号）打断。
+                raise AuthError(
+                    "cover 报错 errCode=%s %s" % (code, d.get("errMsg") or ""))
+            last_err = "errCode=%s" % code
+            time.sleep(0.8 + attempt * 0.7)
+            continue
+
+        rid = str(d.get("reviewId") or "")
+        if not rid:
+            last_err = "回包里没有 reviewId"
+            time.sleep(0.8 + attempt * 0.7)
+            continue
+
+        # ★ 去重键推导：reviewId = "{bookId}_{originalId}"
+        oid = rid.split(bid + "_", 1)[1] if (bid + "_") in rid else rid
+        return [{
+            "original_id": oid,
+            "review_id": rid,
+            "title": str(d.get("title") or ""),
+            "summary": "",
+            "time": 0,
+            "read_num": 0,
+            "like_num": 0,
+            "pic_url": str(d.get("pic") or ""),
+            "mp_name": str(d.get("name") or ""),
+            "_via": "cover",
+        }]
+
+    say(f"      ⚠ cover 重试 {retries} 次仍失败：{last_err}")
     return []
 
 
@@ -378,6 +801,11 @@ def build_entry(acct_name: str, art: dict, content: dict, bid: str) -> dict:
     """
     ts = int(art.get("time") or 0)
     date = (_dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "")
+    if not date:
+        # cover 不返回发布时间 ⇒ 从标题/正文猜；猜不到用**采集日**兜底。
+        # ⚠ 兜底值**不写进 create_time**（见下），否则会把水位线推高、污染增量判定。
+        date = (_guess_date(art.get("title") or "", content.get("text") or "")
+                or _dt.datetime.now().strftime("%Y-%m-%d"))
     key = f"wxmp_{art['original_id']}"
     return {
         "key": key,
@@ -412,31 +840,104 @@ def collect_account(acct: dict, state: dict, *, mode: str, limit: int,
     say(f"\n── {name}  ({bid})")
     say(f"   水位线: 已知 {len(seen_keys)} 篇, last_time={last_time or '(无)'}")
 
-    # 逐页拉，直到够数 / 碰到水位线 / 页空
+    # 【2026-10-19 恢复多篇枚举】`/web/mp/articles` 实测可用（此前 -2041 是密钥过期所致）
+    #   ⇒ 主通道翻页取清单；`/web/mp/cover` 仅在"列表完全无数据"时兜底。
+    #   停止条件：daily 命中一整页旧文（已到水位线）；backfill 取满 limit 篇。
     picked: list[dict] = []
-    offset = 0
-    pages = 0
-    while pages < max_pages:
-        arts = fetch_articles(bid, offset)
+    known_t = known_titles()
+    picked_ids: set[str] = set()
+    total_listed = pages = 0
+    first_run = not seen_keys
+    # ★ daily 必须有界：articles 能列出**全部历史**，不设限就会把上千篇旧文当新文
+    #   （2026-10-19 实测：无界时一次要抓 1051 篇）。两道闸：
+    #     ① 时间闸 —— 列表按时间降序，早于水位线（last_time）的直接跳过；
+    #        整页最旧那条 <= 水位线 ⇒ 后面只会更旧，停止翻页。
+    #     ② 数量闸 —— daily 最多 max(limit, 60) 篇；backfill 取满 limit。
+    cutoff = 0 if first_run else last_time
+    cap = limit if mode == "backfill" else (limit if first_run else max(limit, 60))
+
+    degraded = ""            # "" / articles_refused / auth_failed
+    try:
+      for page in range(max(1, max_pages)):
+        arts = fetch_articles(bid, offset=page * PAGE_SIZE)
         if not arts:
             break
         pages += 1
-        fresh = [a for a in arts if a["original_id"] not in seen_keys]
-        if mode == "daily":
-            fresh = [a for a in fresh if int(a.get("time") or 0) > last_time] or fresh[:0]
-        picked.extend(fresh)
-        say(f"   offset={offset:4d} 展开 {len(arts):3d} 篇 其中新 {len(fresh):3d} 篇")
-
-        if mode != "daily" and len(picked) >= limit:
-            picked = picked[:limit]
+        total_listed += len(arts)
+        fresh = skipped_old = 0
+        for a in arts:
+            oid = a["original_id"]
+            ts = int(a.get("time") or 0)
+            # 时间闸：`ts=0` 时不做判断（宁可按 id 去重，也不误杀）
+            if cutoff and ts and ts <= cutoff:
+                skipped_old += 1
+                continue
+            if oid in seen_keys or oid in picked_ids:
+                continue
+            # ★ 跨格式兜底：旧链路写进 seen 的是旧格式 id ⇒ 再按标题挡一道
+            if (name, _norm_title(a["title"])) in known_t:
+                continue
+            picked.append(a)
+            picked_ids.add(oid)
+            fresh += 1
+            if len(picked) >= cap:
+                break
+        oldest = int(arts[-1].get("time") or 0)
+        say("   第%d页 offset=%-4d %3d 篇（新 %3d / 早于水位线 %3d）"
+            % (page + 1, page * PAGE_SIZE, len(arts), fresh, skipped_old))
+        if len(picked) >= cap or len(arts) < PAGE_SIZE:
             break
-        if mode == "daily" and not fresh and pages >= 2:
-            # 连着两页没有新文 ⇒ 到底了（增量场景下的"入口即拦截"）
+        # 整页最旧那条已在水位线之前 ⇒ 后续页只会更旧
+        if cutoff and oldest and oldest <= cutoff:
+            say("   ← 已翻到水位线，停止翻页")
             break
-        offset += PAGE_SIZE
-        time.sleep(random.uniform(0.5, 1.1))
+        if mode == "daily" and fresh == 0:
+            break
+    except EndpointRefused as exc:
+        degraded = "articles_refused"
+        say("   ⚠ %s" % exc)
+        say("   ⇒ 本号降级：改用 /web/mp/cover 只取最新 1 篇（覆盖率下降，但不是 0）")
+    except AuthError as exc:
+        degraded = "auth_failed"
+        say("   ✘ %s" % exc)
+    except Exception as exc:  # noqa: BLE001 - 单号异常不许打断整轮
+        degraded = "error"
+        say("   ✘ 采集异常：%s: %s" % (type(exc).__name__, str(exc)[:120]))
 
-    say(f"   ⇒ 本轮取到 {len(picked)} 篇新文")
+    # ⚠ 不要在这里落 `_degraded`：兜底失败会把 degraded 再拼一段（+cover_failed），
+    #   提前落盘会丢掉后半段（测试 test_collect_account_survives_cover_auth_error 抓到）。
+
+    if total_listed == 0:
+        say("   ⚠ 列表通道无数据 ⇒ 回退 /web/mp/cover 取最新一篇")
+        # ★ 兜底同样要包 try：第一版只包了翻页循环，结果 cover 一报错
+        #   （AuthError / EndpointRefused）照样穿透 collect_account，整轮还是被打断。
+        try:
+            for a in fetch_latest(bid):
+                if a["original_id"] in seen_keys or a["original_id"] in picked_ids:
+                    say("   最新一篇已采过（key 命中）: %s" % a["title"][:46])
+                    continue
+                if (name, _norm_title(a["title"])) in known_t:
+                    say("   最新一篇已采过（标题命中·跨格式兜底）: %s" % a["title"][:46])
+                    continue
+                picked.append(a)
+                picked_ids.add(a["original_id"])
+        except (AuthError, EndpointRefused) as exc:
+            # ★ 用可组合标记：列表被拒 + 兜底也挂 ≠ 只有一种问题。
+            #   写成 `degraded or "auth_failed"` 会把前面那个原因盖掉，
+            #   排障时就看不到"其实是列表先被拒、兜底又失败"。
+            degraded = (degraded + "+cover_failed") if degraded else "cover_failed"
+            say("   ✘ 兜底通道也失败：%s" % exc)
+        except Exception as exc:  # noqa: BLE001 - 单号异常不许打断整轮
+            degraded = (degraded + "+error") if degraded else "error"
+            say("   ✘ 兜底通道异常：%s: %s" % (type(exc).__name__, str(exc)[:100]))
+
+    acct["_degraded"] = degraded
+
+    say("   ⇒ 本轮取到 %d 篇新文（翻 %d 页 / 列出 %d 篇）"
+        % (len(picked), pages, total_listed))
+    if degraded:
+        say("   ⚠ 降级模式（%s）：**只覆盖最新 1 篇**，同一天更早发布的文章本轮取不到"
+            % degraded)
 
     if not with_content:
         for a in picked:
@@ -462,7 +963,8 @@ def main() -> int:
     ap.add_argument("--discover", action="store_true", help="从书架发现公众号并写入注册表")
     ap.add_argument("--list", action="store_true", help="显示注册表与 cookie 状态")
     ap.add_argument("--daily", action="store_true", help="增量追踪（默认）")
-    ap.add_argument("--backfill", type=int, metavar="N", help="每号回填最近 N 篇")
+    ap.add_argument("--backfill", type=int, metavar="N",
+                    help="每号回填最近 N 篇（按 originalId 幂等去重）")
     ap.add_argument("--account", help="只跑某个号（按号名匹配）")
     ap.add_argument("--no-content", action="store_true", help="只列清单，不抓正文")
     ap.add_argument("--max-pages", type=int, default=10, help="每号最多翻页数(默认10=约200个群发)")
@@ -471,6 +973,10 @@ def main() -> int:
 
     mode = "backfill" if args.backfill else "daily"
     limit = args.backfill or 20
+    if args.backfill:
+        say("回填模式：每号最多取 %d 篇（列表通道 /web/mp/articles 已恢复翻页）"
+            % args.backfill)
+        say("")
 
     say("=" * 78)
     say("公众号采集 · 微信读书通道")
@@ -493,6 +999,10 @@ def main() -> int:
             j = json.loads(F_COOKIES.read_text(encoding="utf-8"))
             say(f"  保存于 {j.get('savedAt')}  names={[c['name'] for c in j.get('cookies') or []]}")
         say(f"inbox : {F_INBOX}")
+        say("")
+        say("取清单通道: /web/mp/articles（翻页·主）  /web/mp/cover（兜底）")
+        say("会话密钥  : wr_skey 仅 90 分钟 ⇒ 每轮采集前自动调 /web/login/renewal 续期")
+        say("去重键    : wxmp_{originalId}  +  (号名, 标题) 跨格式兜底")
         return 0
 
     # ── --discover ────────────────────────────────────────────────
@@ -523,6 +1033,17 @@ def main() -> int:
             say(f"\n✘ 注册表里没有号：{args.account}")
             return 2
 
+    # ── 会话续期（★ 必须在任何采集请求之前）────────────────────────
+    say("")
+    say("检查会话：")
+    if not renew_session():
+        time.sleep(2)
+        if not renew_session():
+            say("   ✘ 两次续期都失败 ⇒ 长期凭据（wr_vid/wr_rt）也失效了")
+            say("     请扫码：node probe/_weread_login.mjs")
+            return 3
+    say("   ✔ wr_skey 已刷新（有效期 90 分钟，足够跑完本轮）")
+
     state = load_state()
     all_new: list[dict] = []
     for acct in accts:
@@ -539,12 +1060,25 @@ def main() -> int:
     # ── 组装 + 落盘 ───────────────────────────────────────────────
     entries: list[dict] = []
     for acct, a in all_new:
-        entries.append(build_entry(acct["name"], a, a.get("_content") or {}, acct["book_id"]))
+        try:
+            entries.append(build_entry(acct["name"], a, a.get("_content") or {}, acct["book_id"]))
+        except Exception as e:  # noqa: BLE001
+            # 【2026-10-23】单条坏数据不许拖垮整轮：旧实现裸调 build_entry，
+            #   一条字段缺失（降级到 cover 后结构与 articles 不同）就会让整轮
+            #   以未捕获异常退出，结果文件不写、已采到的 26 篇全丢。
+            say(f"   ✗ 组装失败 [{acct.get('name')}] {str(a.get('title'))[:30]}："
+                f"{type(e).__name__}: {str(e)[:80]}")
+
+    degraded_accts = [a.get("name") for a in accts if a.get("_degraded")]
 
     okc = sum(1 for e in entries if e["text_ok"])
     say("")
     say("=" * 78)
     say(f"【汇总】新增 {len(entries)} 篇（正文成功 {okc} / 失败 {len(entries) - okc}）")
+    if degraded_accts:
+        say("   ⚠ 降级 %d/%d 个号（列表接口被拒）：%s"
+            % (len(degraded_accts), len(accts), "、".join(degraded_accts)))
+        say("     降级号本轮只取到最新 1 篇 —— 缺的是覆盖范围，不是正文失败。")
     for e in sorted(entries, key=lambda x: -int(x.get("create_time") or 0)):
         say(f"   {e['date']}  [{e['account']}]  {e['title'][:44]:46s} {e['chars'] or '-':>5}字")
 
@@ -580,16 +1114,63 @@ def main() -> int:
         "ts": _dt.datetime.now().isoformat(timespec="seconds"),
         "mode": mode, "accounts": len(accts),
         "new": len(entries), "content_ok": okc, "content_fail": len(entries) - okc,
+        # ★ 机器可读的降级标记：调度器/告警据此区分"没新文"与"只看到最新一篇"
+        "degraded": {"accounts": degraded_accts,
+                     "reasons": sorted({a.get("_degraded") for a in accts if a.get("_degraded")})},
         "dry_run": bool(args.dry_run),
         "items": [{"account": e["account"], "title": e["title"], "date": e["date"],
                    "chars": e["chars"], "url": e["url"]} for e in entries],
     }
+    # ★ dry-run 不能覆写**真实**结果文件：调度器 `_wechat_weread_count()` 按 mtime 读
+    #   `mp_collect_result.json` 的 `new` 当作本轮产出。实测（2026-10-21）一次
+    #   `--dry-run` 就把上一轮"新增 59 篇"的记录冲成 0，告警与入库判断都会跟着错。
     WEREAD_DIR.mkdir(parents=True, exist_ok=True)
-    _save_json(F_RESULT, result)
-    io.open(F_TXT, "w", encoding="utf-8", newline="").write("\n".join(_log))
-    say(f"✔ 结果文件 → {F_RESULT}")
+    res_json = F_RESULT if not args.dry_run else F_RESULT.with_name("mp_collect_result.dryrun.json")
+    res_txt = F_TXT if not args.dry_run else F_TXT.with_name("mp_collect_result.dryrun.txt")
+    _save_json(res_json, result)
+    io.open(res_txt, "w", encoding="utf-8", newline="").write("\n".join(_log))
+    say(f"✔ 结果文件 → {res_json}")
     return 0
 
 
+def _write_crash_result(exc: BaseException) -> None:
+    """进程级崩溃兜底：必须留下**可诊断**的结果文件。
+
+    【为什么需要（2026-10-23 实测）】08:30 那轮以「退出码 1」失败（未捕获异常），
+      而 `mp_collect_result.json` 仍停在前一天的旧文件 ⇒ 调度器按 mtime 读到的
+      是旧 `new`，告警只能写"退出码 1"，**异常类型与堆栈全丢**，排查只能人工复跑。
+      本次复跑 86 秒、26 篇、退出码 0 —— 说明采集器本身没坏，坏的正是"崩溃不留痕"。
+
+    本函数保证：任何未捕获异常都写一份 `crashed: true` 的结果（new=0），
+    并把完整堆栈落到 `mp_collect_result.crash.txt`。下次再挂可直接看到原因。
+    """
+    import traceback
+
+    try:
+        tb = traceback.format_exc()
+        payload = {
+            "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+            "mode": "daily", "accounts": 0, "new": 0,
+            "content_ok": 0, "content_fail": 0,
+            # reasons 用 crashed 与"接口被拒(articles_refused)"区分开
+            "degraded": {"accounts": [], "reasons": ["crashed"]},
+            "crashed": True,
+            "error": f"{type(exc).__name__}: {exc}"[:300],
+            "dry_run": False, "items": [],
+        }
+        WEREAD_DIR.mkdir(parents=True, exist_ok=True)
+        _save_json(F_RESULT, payload)
+        io.open(F_RESULT.with_name("mp_collect_result.crash.txt"), "w",
+                encoding="utf-8", newline="").write(tb)
+    except Exception:  # noqa: BLE001 - 兜底自身绝不能再抛
+        pass
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001
+        _write_crash_result(exc)
+        raise

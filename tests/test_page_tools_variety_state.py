@@ -1422,7 +1422,32 @@ def test_trim3_content_decisions():
     )
     assert 'id="chart-f-pi"' not in live, "#chart-f-pi 容器未删"
     assert 'id="f-pi-badge"' not in live, "#f-pi-badge 徽标未删"
-    assert 'id="f-analysis-badge"' in live, "「价格-库存关联分析」被误删（只该删双轴图）"
+    # 【2026-10-16 反转】原断言是"只该删双轴图、这个小节要留"。当天用户又明确要求
+    #   **连「价格-库存关联分析」一起去掉** ⇒ 判据反转，并补上"删 DOM 后不许连带伤害"的守卫。
+    assert 'id="f-analysis-badge"' not in live, (
+        "「价格-库存关联分析」小模块仍在（用户 2026-10-16 要求去掉该小模块）"
+    )
+    assert 'id="f-analysis-body"' not in live, "#f-analysis-body 容器未删"
+    # ★ 删这个 DOM 后**最容易踩的连带伤害**：loadFundAnalysis 在同一个 try 里既写这个
+    #   body、又渲染 #f-research（研报基本面指标卡）。取值点若没有 null 守卫，
+    #   `body.innerHTML` 会抛 TypeError ⇒ 被同一个 catch 吞掉 ⇒ **#f-research 静默变空**。
+    #   ⇒ 判据必须落到"取值点带守卫"，而不是只看"DOM 已删"。
+    # ★ 判据必须**逐个赋值点**核，不能只查"存在一处带守卫的" ——
+    #   `if (body) body.innerHTML` 在这函数里有**两处**，只删掉其中一处的守卫，
+    #   "`in src`" 式断言照样绿（本项目 2026-10-16 两次踩到同型"被同形代码骗过"）。
+    _fb = _method_body(src, "loadFundAnalysis")
+    assert _fb.count("body.innerHTML") == 3, (
+        "loadFundAnalysis 内对 #f-analysis-body 的赋值点数量变了（期望 3: 加载中/结果/加载失败）"
+    )
+    assert _fb.count("if (body) body.innerHTML") == 2, (
+        "对 #f-analysis-body 的**裸赋值**未被守卫：期望 2 处直接守卫（加载中 / 加载失败）"
+        " —— 少一处，删 DOM 后那条路径就会抛 TypeError，被同一个 catch 吞掉 ⇒ #f-research 静默变空"
+    )
+    assert "if (body) {" in _fb, "结果渲染那段没有块级 `if (body) {` 守卫"
+    assert "if (badge) badge.textContent" in _fb, "#f-analysis-badge 的取值点缺 null 守卫"
+    assert "this._renderResearchSection(d, 'f')" in src, (
+        "删小模块不该动 #f-research 的渲染（两者在同一个函数里）"
+    )
 
     # ③ 研报基本面指标：一个折叠块（默认收起）
     assert " toggleResearchSection(pfx) {" in src, "toggleResearchSection 未定义"
@@ -1468,3 +1493,78 @@ def test_trim3_content_decisions():
     # tests/test_multi_logic_relocation.py::test_sec_index_version_bumped 钉住，
     # 避免每增删一次卡都要改两处。
     assert "_SEC_IDX_VER: '25'," not in src, "_SEC_IDX_VER 未随卡片增删 +1"
+
+
+def test_fund_tab_div_balance():
+    """★ 删/加基本面页的卡片后, #tab-fund 的 div 配对必须平衡。
+
+    【背景】2026-10-16 删「价格-库存关联分析」小模块：它是「标题 div + 正文 div」两对，
+    而其后紧邻的那个 ` </div>` 是**外层「库存维度明细」区块的闭合** —— 一旦顺手多删它，
+    ① 三指标策略系统卡会提前闭合，后面的「板块相关性四栏」「③ 利润」等会被挤出容器
+    （本项目 2026-10-08 在国君页踩过同型事故：用户看到「模块平铺到了所有大模块下面」）。
+    静态文本断言看不见这种结构错位，只有 div 深度配平能抓。
+    """
+    import re as _re
+    src = _src()
+    i = src.find('<div id="tab-fund" class="tab">')
+    j = src.find('</main>', i)
+    assert i != -1 and j > i, "找不到 #tab-fund 区间"
+    seg = _re.sub(r"<!--.*?-->", "", src[i:j], flags=_re.S)
+    depth = 0
+    k = 0
+    while k < len(seg):
+        no = seg.find("<div", k)
+        nc = seg.find("</div>", k)
+        if no == -1 and nc == -1:
+            break
+        if no != -1 and (nc == -1 or no < nc):
+            depth += 1
+            k = no + 4
+        else:
+            depth -= 1
+            k = nc + 6
+            if depth < 0:
+                break
+    assert depth == 0, (
+        "#tab-fund 内 div 配对不平衡(深度 %d) —— 删/加卡片时漏了或多删了闭合 </div>, "
+        "卡片会被挤出 tab 容器" % depth
+    )
+
+
+def test_fund_tab_div_balance_mutation():
+    """【变异】给 #tab-fund 多塞一个悬空 </div>, 配平护栏必须红。"""
+    import re as _re
+    src = _src()
+    i = src.find('<div id="tab-fund" class="tab">')
+    j = src.find('</main>', i)
+    assert i != -1 and j > i, "找不到 #tab-fund 区间"
+    # ★ 插入点必须落在**非注释区**：第一版取区间中点，而中点恰好落在一段 HTML 注释里，
+    #   插入的 `</div>` 被 `<!--.*?-->` 一起剥掉 ⇒ 深度纹丝不动 ⇒ 变异"看不见"、
+    #   自检**假绿**（实测踩到：报"多塞一个悬空 </div> 后判据仍为 True"）。
+    #   改为"紧跟 tab 起始 div 之后插入" —— 该位置必不在注释内（实测该串全文仅 1 处、行 3344）。
+    cut = i + len('<div id="tab-fund" class="tab">')
+    mutated = src[:cut] + "</div>" + src[cut:]
+
+    def _balanced(t: str) -> bool:
+        s = _re.sub(r"<!--.*?-->", "", t[t.find('<div id="tab-fund" class="tab">'):t.find("</main>", t.find('<div id="tab-fund" class="tab">'))], flags=_re.S)
+        d = 0
+        k = 0
+        while k < len(s):
+            no = s.find("<div", k)
+            nc = s.find("</div>", k)
+            if no == -1 and nc == -1:
+                break
+            if no != -1 and (nc == -1 or no < nc):
+                d += 1
+                k = no + 4
+            else:
+                d -= 1
+                k = nc + 6
+                if d < 0:
+                    break
+        return d == 0
+
+    assert mutated != src, "变异未生效"
+    assert not _balanced(mutated), (
+        "多塞一个悬空 </div> 后配平判据仍为 True —— 护栏没起作用"
+    )

@@ -1104,6 +1104,7 @@ class AgentSenseDB:
         limit: int | None = 50,
         ingest_source: str | None = None,
         report_type: str | None = None,
+        filename_prefix: str | None = None,
     ) -> list[dict]:
         """按品种/来源/类型(可选)查询研报列表,按上传时间倒序。
 
@@ -1137,6 +1138,11 @@ class AgentSenseDB:
         if report_type:
             where.append("report_type = ?")
             params.append(report_type)
+        if filename_prefix:
+            # 【2026-10-19】按**通道**过滤：公众号入库的 filename 形如 `wxmp_<originalId>.md`。
+            # 必须放在 SQL 层（先过滤再 LIMIT），否则最近 50 条里命中率低时会被整片挤掉。
+            where.append("filename LIKE ?")
+            params.append(filename_prefix + "%")
         sql = "SELECT * FROM research_reports"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -1202,6 +1208,28 @@ class AgentSenseDB:
                     "ORDER BY id LIMIT 1",
                     (f"{key}_.md", f"{key}\\_%"),
                 ).fetchone()
+        return dict(row) if row else None
+
+    def find_research_report_by_text(self, text: str, exclude_id: int = 0) -> dict | None:
+        """按「正文完全相同」查已入库的研报（同一份 PDF 换个文件名重复导入时判重）。
+
+        【为什么】2026-10-21 用户报障：中信《资金情绪爆发…》在观点总览里出现两条 ——
+                同一份 PDF 一次用原始中文名、一次被重命名成 20260927_2.pdf 各入库一遍；
+                文件名与来源写法都不同，唯一相同的是正文 ⇒ 只能按正文判重。
+        【参数】text: 刚提取出的正文（与 extracted_text 同源，注意入库时会截到 20000 字）；
+                exclude_id: 排除自身（重跑同一条时不至于判自己重复）。
+        【返回】dict | None: 命中的已有记录。
+        """
+        if not (text or "").strip():
+            return None
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM research_reports "
+                "WHERE id != ? AND status IN ('done','summarized','processing','skipped') "
+                "AND length(extracted_text) = ? AND extracted_text = ? "
+                "ORDER BY id LIMIT 1",
+                (int(exclude_id), len(text), text),
+            ).fetchone()
         return dict(row) if row else None
 
     def list_research_reports_since(self, since: str) -> list[dict]:

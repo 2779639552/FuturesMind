@@ -1643,8 +1643,13 @@ def test_views_route_groups_by_publish_date(isolated_dirs):
     client = web_app.app.test_client()
     body = client.get("/api/research/views?variety=RB").get_json()
     assert body["dates"] == ["2026-09-03", "2026-09-02"]
-    assert body["date"] == "2026-09-03"                       # 缺省取最新发布日
-    assert [r["id"] for r in body["rows"]] == [1]
+    assert body["date"] == "2026-09-03"                       # 缺省锚定最新发布日
+    # 【2026-10-21 契约变更】缺省口径 = **每家发行方各取自己最新一期**：
+    #   两家来源、两个日期 ⇒ 两行都返回。此前只返回"最新一天"的国君，
+    #   华泰被整家挤掉 —— 真实报障是"永安只发周报，一到工作日就整家消失"。
+    assert body["latest_per_source"] is True
+    assert [r["id"] for r in body["rows"]] == [1, 2]
+    assert body["span"] == {"asof": "2026-09-03", "oldest": "2026-09-02"}
     # 切到 9.2 → 命中旧记录(无 publish_date 回退 uploaded_at)
     body2 = client.get("/api/research/views?variety=RB&date=2026-09-02").get_json()
     assert [r["id"] for r in body2["rows"]] == [2]
@@ -1675,7 +1680,8 @@ def test_views_route_filters_by_report_type(isolated_dirs):
     # 2026-09-05 是周六,其所属周的周日起点为 2026-08-30。
     assert weekly["dates"] == ["2026-08-30"]
     assert [r["id"] for r in weekly["rows"]] == [2]
-    # 不带类型 → 全量口径(旧行为不变):日期并集含两种类型,缺省仍取最新日期桶
+    # 不带类型 → 全量口径：日期并集含两种类型；缺省取"各家最新一期"。
+    #   这三条都是同一来源(国君) ⇒ 结果仍是最新那一期(09-05 周报)，与改前一致。
     both = client.get("/api/research/views?variety=RB").get_json()
     assert both["dates"] == ["2026-09-05", "2026-09-04"]  # 日期倒序(最新在前)
     assert both["date"] == "2026-09-05"
@@ -1713,3 +1719,109 @@ def test_research_list_route_filters_by_report_type(tmp_path, monkeypatch):
     assert len(allr) == 3  # 不传参数:行为不变
     # 行数据本身带 report_type(前端列表徽标消费)
     assert {r["report_type"] for r in allr} == {"日报", "周报", ""}
+
+
+def test_views_route_keeps_weekly_only_source(isolated_dirs):
+    """★ 2026-10-21 报障回归：只发周报的机构，不能被日内日报挤掉。
+
+    用户原话「研报页怎么找不到永安期货的观点了，不是有周报吗」。
+    永安每周日发周报，华泰/东证每个工作日发日报；缺省若只取"全品种最新一天"，
+    永安就整家从表里消失 —— 而且页面不报错，用户只能靠记忆发现。
+    """
+    _write_research(isolated_dirs, "BR", [
+        {"id": 1, "title": "橡胶日报", "source": "华泰", "uploaded_at": "2026-10-21 09:00:00",
+         "publish_date": "2026-10-21", "report_type": "日报", "direction": "中性", "confidence": 0.5,
+         "conclusion": "## 观点与依据\n震荡。", "data_points": {}},
+        {"id": 2, "title": "合成橡胶周报", "source": "永安期货", "uploaded_at": "2026-10-18 10:00:00",
+         "publish_date": "2026-10-18", "report_type": "周报", "direction": "看空", "confidence": 0.64,
+         "conclusion": "## 观点与依据\n看空。", "data_points": {}},
+        {"id": 3, "title": "合成橡胶周报(上一期)", "source": "永安期货", "uploaded_at": "2026-10-11 10:00:00",
+         "publish_date": "2026-10-11", "report_type": "周报", "direction": "看空", "confidence": 0.6,
+         "conclusion": "## 观点与依据\n看空。", "data_points": {}},
+    ])
+    body = web_app.app.test_client().get("/api/research/views?variety=BR").get_json()
+    srcs = [r["source"] for r in body["rows"]]
+    assert "永安期货" in srcs, "只发周报的机构被日报挤掉了（本次报障的核心）"
+    assert srcs.count("永安期货") == 1, "同一家只保留最新一期（10-18），不要把它自己的旧周报也列出来"
+    assert [r["id"] for r in body["rows"]] == [1, 2]   # 新的在前
+    assert body["date"] == "2026-10-21"
+    assert body["span"] == {"asof": "2026-10-21", "oldest": "2026-10-18"}
+
+
+def test_views_route_keeps_same_day_multi_reports(isolated_dirs):
+    """同一家同一期可能有多份（覆盖不同子品种），"每家取最新"只能按**日期**收敛，不能按家去重。"""
+    _write_research(isolated_dirs, "BR", [
+        {"id": 1, "title": "周报·合成橡胶", "source": "永安期货", "uploaded_at": "2026-10-18 10:00:00",
+         "publish_date": "2026-10-18", "report_type": "周报", "direction": "看空", "confidence": 0.6,
+         "conclusion": "## 观点与依据\n看空。", "data_points": {}},
+        {"id": 2, "title": "周报·天然橡胶", "source": "永安期货", "uploaded_at": "2026-10-18 10:05:00",
+         "publish_date": "2026-10-18", "report_type": "周报", "direction": "看空", "confidence": 0.55,
+         "conclusion": "## 观点与依据\n看空。", "data_points": {}},
+    ])
+    body = web_app.app.test_client().get("/api/research/views?variety=BR").get_json()
+    assert sorted(r["id"] for r in body["rows"]) == [1, 2], "同一天同源的多份研报都要保留"
+
+
+def test_views_route_explicit_date_keeps_old_semantics(isolated_dirs):
+    """显式传 date 仍是"精确到那一天"（旧接口语义不能因为缺省口径变化而漂移）。"""
+    _write_research(isolated_dirs, "BR", [
+        {"id": 1, "title": "日报", "source": "华泰", "uploaded_at": "2026-10-21 09:00:00",
+         "publish_date": "2026-10-21", "direction": "中性", "conclusion": "", "data_points": {}},
+        {"id": 2, "title": "周报", "source": "永安期货", "uploaded_at": "2026-10-18 10:00:00",
+         "publish_date": "2026-10-18", "direction": "看空", "conclusion": "", "data_points": {}},
+    ])
+    body = web_app.app.test_client().get("/api/research/views?variety=BR&date=2026-10-18").get_json()
+    assert [r["id"] for r in body["rows"]] == [2]
+
+
+def test_views_route_keeps_weekly_only_source(isolated_dirs):
+    """★ 2026-10-21 报障回归：只发周报的机构，不能被日内日报挤掉。
+
+    用户原话「研报页怎么找不到永安期货的观点了，不是有周报吗」。
+    永安每周日发周报，华泰/东证每个工作日发日报；缺省若只取"全品种最新一天"，
+    永安就整家从表里消失 —— 而且页面不报错，用户只能靠记忆发现。
+    """
+    _write_research(isolated_dirs, "BR", [
+        {"id": 1, "title": "橡胶日报", "source": "华泰", "uploaded_at": "2026-10-21 09:00:00",
+         "publish_date": "2026-10-21", "report_type": "日报", "direction": "中性", "confidence": 0.5,
+         "conclusion": "## 观点与依据\n震荡。", "data_points": {}},
+        {"id": 2, "title": "合成橡胶周报", "source": "永安期货", "uploaded_at": "2026-10-18 10:00:00",
+         "publish_date": "2026-10-18", "report_type": "周报", "direction": "看空", "confidence": 0.64,
+         "conclusion": "## 观点与依据\n看空。", "data_points": {}},
+        {"id": 3, "title": "合成橡胶周报(上一期)", "source": "永安期货", "uploaded_at": "2026-10-11 10:00:00",
+         "publish_date": "2026-10-11", "report_type": "周报", "direction": "看空", "confidence": 0.6,
+         "conclusion": "## 观点与依据\n看空。", "data_points": {}},
+    ])
+    body = web_app.app.test_client().get("/api/research/views?variety=BR").get_json()
+    srcs = [r["source"] for r in body["rows"]]
+    assert "永安期货" in srcs, "只发周报的机构被日报挤掉了（本次报障的核心）"
+    assert srcs.count("永安期货") == 1, "同一家只保留最新一期（10-18），不要把它自己的旧周报也列出来"
+    assert [r["id"] for r in body["rows"]] == [1, 2]   # 新的在前
+    assert body["date"] == "2026-10-21"
+    assert body["span"] == {"asof": "2026-10-21", "oldest": "2026-10-18"}
+
+
+def test_views_route_keeps_same_day_multi_reports(isolated_dirs):
+    """同一家同一期可能有多份（覆盖不同子品种），"每家取最新"只能按**日期**收敛，不能按家去重。"""
+    _write_research(isolated_dirs, "BR", [
+        {"id": 1, "title": "周报·合成橡胶", "source": "永安期货", "uploaded_at": "2026-10-18 10:00:00",
+         "publish_date": "2026-10-18", "report_type": "周报", "direction": "看空", "confidence": 0.6,
+         "conclusion": "## 观点与依据\n看空。", "data_points": {}},
+        {"id": 2, "title": "周报·天然橡胶", "source": "永安期货", "uploaded_at": "2026-10-18 10:05:00",
+         "publish_date": "2026-10-18", "report_type": "周报", "direction": "看空", "confidence": 0.55,
+         "conclusion": "## 观点与依据\n看空。", "data_points": {}},
+    ])
+    body = web_app.app.test_client().get("/api/research/views?variety=BR").get_json()
+    assert sorted(r["id"] for r in body["rows"]) == [1, 2], "同一天同源的多份研报都要保留"
+
+
+def test_views_route_explicit_date_keeps_old_semantics(isolated_dirs):
+    """显式传 date 仍是"精确到那一天"（旧接口语义不能因为缺省口径变化而漂移）。"""
+    _write_research(isolated_dirs, "BR", [
+        {"id": 1, "title": "日报", "source": "华泰", "uploaded_at": "2026-10-21 09:00:00",
+         "publish_date": "2026-10-21", "direction": "中性", "conclusion": "", "data_points": {}},
+        {"id": 2, "title": "周报", "source": "永安期货", "uploaded_at": "2026-10-18 10:00:00",
+         "publish_date": "2026-10-18", "direction": "看空", "conclusion": "", "data_points": {}},
+    ])
+    body = web_app.app.test_client().get("/api/research/views?variety=BR&date=2026-10-18").get_json()
+    assert [r["id"] for r in body["rows"]] == [2]

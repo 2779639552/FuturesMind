@@ -75,8 +75,17 @@ const want = [
   /^[ \t]+_renderGtjaIndicators\(d\) \{$/,
   /^[ \t]+_renderGtjaChart\(ind\) \{$/,
   /^[ \t]+_renderGtjaTable\(ind\) \{$/,
-  /^[ \t]+showGtjaIndicator\(i\) \{$/,
+  /^[ \t]+showGtjaIndicator\(i, expandDetail\) \{$/,
+  // 【2026-10-19】明细数据折叠栏开关(默认收起, 点「查看」才下拉)
+  /^[ \t]+toggleGtjaDetail\(force\) \{$/,
   /^[ \t]+_gtEnsureVisible\(el\) \{$/,
+  // 【2026-10-19】走势图 → 季节性图(按年同比) 新增的五个辅助方法;
+  // _renderGtjaChart 会调它们, 少提取一个就是 "undefined is not a function"。
+  /^[ \t]+_seasonalFromSeries\(series\) \{$/,
+  /^[ \t]+_doyOf\(y, mo, da\) \{$/,
+  /^[ \t]+_seasonColor\(y\) \{$/,
+  /^[ \t]+_drawGtjaSeasonal\(c, ind, data\) \{$/,
+  /^[ \t]+_gtSeasonalNote\(ind, d, noteEl\) \{$/,
 ];
 const parts = want.map(re => bodyLines(re).join('\n').trim().replace(/,\s*$/, ''));
 const src = '({' + parts.join(',\n') + '})';
@@ -101,7 +110,7 @@ class FakeEl {
 const nodes = {};
 const mk = id => (nodes[id] = nodes[id] || new FakeEl(id));
 ['gt-note', 'gt-sources', 'gt-indicators', 'gt-ind-badge', 'gt-chart', 'gt-chart-badge',
- 'gt-chart-note', 'gt-table', 'gt-tbl-badge',
+ 'gt-chart-note', 'gt-table', 'gt-tbl-badge', 'gt-detail-expander', 'gt-detail-hint',
  'gt-variety', 'gt-start', 'gt-end'].forEach(mk);
 
 globalThis.document = {
@@ -109,7 +118,7 @@ globalThis.document = {
   querySelectorAll: () => [],
   documentElement: { getAttribute: () => 'dark' },
 };
-globalThis.CHART = { axis: '#aaa', grid: '#333' };
+globalThis.CHART = { axis: '#aaa', grid: '#333', seasonBlack: '#000000' };
 
 // 记录图表最后一次 setOption 的 option(stub 掉 ECharts)
 let lastChartOption = null;
@@ -223,28 +232,91 @@ check('②-11 ★无指标时提示区分「确定无数据」与「接口失败
 check('②-12 徽标归零', nodes['gt-ind-badge'].textContent === '0 项');
 
 // ══════════════════════════════════════════════════════════════════
-// ③ 走势图与明细表
+// ③ 季节性图(2026-10-19: 走势图改为按年同比的季节性图)
 // ══════════════════════════════════════════════════════════════════
+// 口径来自桌面「季节性图绘制包」: x=年内天数、每年一条线、当年粗红线、
+// 历史年细线 alpha 0.6、月份轴 1月~12月、最新点标注「值 (±变化)」。
 App._renderGtjaChart(payloadInd.indicators[0]);
-check('③-1 图表被喂入 series', lastChartOption && lastChartOption.series
-  && lastChartOption.series[0].data.length === 2);
-check('③-2 x 轴为日期', lastChartOption.xAxis.data[0] === '2026-09-29');
-check('③-3 上涨用红色(国内惯例)', lastChartOption.series[0].lineStyle.color === '#ef4444');
+check('③-1 单年数据只画一条线', lastChartOption && lastChartOption.series
+  && lastChartOption.series.length === 1);
+check('③-2 ★x 轴为 366 天类目 + 12 个月份标签', (() => {
+  const d = lastChartOption.xAxis.data;
+  return d.length === 366 && d[0] === '1月' && d[31] === '2月'
+    && d[59] === '3月' && d[334] === '12月';
+})());
+check('③-3 当年(2026)为红色粗线', (() => {
+  const s = lastChartOption.series[0];
+  return s.lineStyle.color === '#FF0000' && s.lineStyle.width === 2.4
+    && s.lineStyle.opacity === 1;
+})());
 check('③-4 图表徽标带指标名', nodes['gt-chart-badge'].textContent.includes('基差'));
 check('③-5 图表脚注含分位与口径', nodes['gt-chart-note'].innerHTML.includes('99.2%'));
-
-App._renderGtjaChart(payloadInd.indicators[1]);
-check('③-6 下跌用绿色', lastChartOption.series[0].lineStyle.color === '#22c55e');
+check('③-6 脚注说明当前年份数', nodes['gt-chart-note'].innerHTML.includes('1 个年份'));
 
 App._renderGtjaChart(payloadInd.indicators[2]);
 check('③-7 ★无序列点时给空态而不是崩', lastChartOption
   && JSON.stringify(lastChartOption).includes('无序列点'));
 
+// 多年: 每年一条线 + 历史年半透明细线 + 年份配色 + 最新点标注
+const indSeason = {
+  id: 'basis.value', group: '基差', label: '基差(现货−期货)', unit: '元/吨', note: '',
+  pct: 50, pct_scope: '区间(x)',
+  series: [
+    ['2024-02-29', 95], ['2024-03-01', 100], ['2024-03-02', 110],
+    ['2025-03-01', 90], ['2025-03-02', 95],
+    ['2026-03-01', 120], ['2026-03-02', 130],
+  ],
+};
+App._renderGtjaChart(indSeason);
+const sopt = lastChartOption;
+check('③-8 每年一条线(3 年 → 3 条)', sopt.series.length === 3
+  && sopt.series.map(s => s.name).join(',') === '2024,2025,2026');
+check('③-9 ★历史年细线 + alpha 0.6', sopt.series[0].lineStyle.width === 1.2
+  && sopt.series[0].lineStyle.opacity === 0.6
+  && sopt.series[1].lineStyle.opacity === 0.6);
+check('③-10 ★年份配色与绘制包一致(2024 蓝 / 2025 绿 / 2026 红)',
+  sopt.series[0].lineStyle.color === '#00B0F0'
+  && sopt.series[1].lineStyle.color === '#00B050'
+  && sopt.series[2].lineStyle.color === '#FF0000');
+check('③-11 ★最新点标注「值 (±变化)」', (() => {
+  const mp = sopt.series[2].markPoint;
+  return mp && mp.data && mp.data.length === 1
+    && mp.data[0].coord[0] === 60 && mp.data[0].coord[1] === 130
+    && mp.label.formatter() === '130 (+10)';
+})());
+check('③-12 图例列出全部年份', (sopt.legend.data || []).join(',') === '2024,2025,2026');
+check('③-13 ★闰年对齐: 2024-03-01 与平年 3/1 同为第 59 天',
+  App._doyOf(2024, 3, 1) === 59 && App._doyOf(2026, 3, 1) === 59);
+check('③-14 平年 12/31 为第 364 天(不越界)', App._doyOf(2025, 12, 31) === 364);
+check('③-15 数据含 0 时画 Y=0 基准线', (() => {
+  App._renderGtjaChart({ id: 'x', group: 'g', label: 'g', unit: '', note: '',
+    pct: null, pct_scope: '', series: [['2026-01-02', -5], ['2026-01-03', 5]] });
+  return !!(lastChartOption.series[0].markLine
+    && lastChartOption.series[0].markLine.data[0].yAxis === 0);
+})());
+
 App._renderGtjaTable(payloadInd.indicators[0]);
 const tblHtml = nodes['gt-table'].innerHTML;
-check('③-8 明细表倒序(最新在上)', tblHtml.indexOf('2026-09-30') < tblHtml.indexOf('2026-09-29'));
-check('③-9 明细表行数正确', (tblHtml.match(/<tr style="border-top/g) || []).length === 2);
-check('③-10 明细徽标计数', nodes['gt-tbl-badge'].textContent === '2 行');
+check('③-16 明细表倒序(最新在上)', tblHtml.indexOf('2026-09-30') < tblHtml.indexOf('2026-09-29'));
+check('③-17 明细表行数正确', (tblHtml.match(/<tr style="border-top/g) || []).length === 2);
+check('③-18 明细徽标计数', nodes['gt-tbl-badge'].textContent === '2 行');
+
+// ── 明细数据折叠(2026-10-19): 默认收起, 只有主动点「查看」才下拉 ──
+// 用桩 overview 驱动 showGtjaIndicator; 临时摘掉 fetch 以免真的发请求
+// (Node 有全局 fetch, 相对 URL 会抛 "Failed to parse URL", 虽然被 .catch 兜住但会脏输出)
+const savedFetch = globalThis.fetch;
+globalThis.fetch = undefined;
+App._gtState = { overview: { variety: 'BU', indicators: payloadInd.indicators } };
+App.showGtjaIndicator(0);
+check('③-19 ★进页自动渲染时明细保持收起', !nodes['gt-detail-expander'].classList.contains('open'));
+App.showGtjaIndicator(0, true);
+check('③-20 ★主动点「查看」才下拉展开明细', nodes['gt-detail-expander'].classList.contains('open'));
+check('③-20b 展开后提示语变「点击收起」', nodes['gt-detail-hint'].textContent === '点击收起');
+check('③-21 再点表头可收回', App.toggleGtjaDetail() === false
+  && !nodes['gt-detail-expander'].classList.contains('open')
+  && nodes['gt-detail-hint'].textContent === '点击展开');
+globalThis.fetch = savedFetch;
+App._gtState = {};
 
 // ══════════════════════════════════════════════════════════════════
 // ④ ★ 跨卡展开补丁: 折叠态下点「查看」必须能看见结果

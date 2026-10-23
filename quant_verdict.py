@@ -30,6 +30,34 @@ import logging  # 【调用包】降级告警
 from typing import Any, Sequence  # 【调用包】类型标注
 
 import quant_methodology as qm  # 【调用模块】方法论纯函数库
+import vote_semantics as vs  # 【调用模块】方向票语义唯一权威来源（dirmap 已废弃）
+import vote_aggregate as vag  # 【调用模块】按数据轴聚合 → 加权总信号(L1b)
+
+
+def _m01(x: Any) -> float:
+    """把强度夹到 [0,1]；非数值 / None → 0。
+
+    【为什么必须夹】强度要参与下游加权，任何一个异常值都会把总分带飞——
+      最现实的例子是库存变化 +1855%（小基数失真），不夹就会让那一票的强度爆表。
+    """
+    try:
+        return max(0.0, min(1.0, float(x)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _signed(x: Any, denom: float = 3.0) -> float:
+    """带符号的强度：s·m ∈ [-1,1]。供四象按轴拆分时使用。
+
+    【参数 denom】原始分所在的量纲上限（四象的估值/驱动都映射到 −3~+3）。
+    """
+    try:
+        v = float(x or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if v == 0:
+        return 0.0
+    return (1.0 if v > 0 else -1.0) * _m01(abs(v) / denom)
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +167,11 @@ def build_verdict(payload: dict) -> dict:
             bias = "暂不操作"
             detail += " —— **双线同时被破 ⇒ 下降趋势已结束**"
         dir_votes.append({"book": "鹿希武", "bias": bias, "detail": detail,
-                          "basis": "几何画线(趋势线+拐点线+分界点A)"})
+                          "basis": "几何画线(趋势线+拐点线+分界点A)",
+                          "axis": "price",
+                          "strength": 1.0 if bias in ("做多", "做空") else 0.0,
+                          "confidence": 1.0,
+                          "strength_basis": "二值方向票: 几何只判趋势成立与否, 无连续强度尺度"})
     else:
         gaps.append(f"鹿希武几何: {geo.get('reason')}")
 
@@ -149,6 +181,10 @@ def build_verdict(payload: dict) -> dict:
             "book": "墨菲", "bias": "趋势系统可用" if adxr["tradable"] else "趋势系统不可用(无趋势)",
             "detail": f"ADXR={adxr['adxr']}({adxr['level']}), +DI={adxr['plus_di']} / -DI={adxr['minus_di']}",
             "basis": "ADXR 趋势性评级(不做方向, 只判该不该用趋势系统)",
+            "axis": "price",
+            "strength": 0.0,
+            "confidence": 1.0,
+            "strength_basis": f"不进方向(只判趋势系统可用性); ADXR={adxr['adxr']} 可作 L2 的轴内权重参考",
         })
     else:
         gaps.append(f"墨菲 ADXR: {adxr.get('reason')}")
@@ -157,7 +193,23 @@ def build_verdict(payload: dict) -> dict:
         cards.append(vd.get("card", ""))
         dir_votes.append({"book": "多空逻辑", "bias": vd["advice"],
                           "detail": f"{vd['quadrant']}（估值 {vd['value']} / 驱动 {vd['drive']}）",
-                          "basis": "基差率(估值)+ 库存分位(驱动) 二维四象"})
+                          "basis": "基差率(估值)+ 库存分位(驱动) 二维四象",
+                          # ★ 它横跨两根轴(基差估值 + 库存驱动), 故单列 composite;
+                          #   L2 要拆成两票才能按轴加权, 现在不拆(拆了会改 net)。
+                          "axis": "composite",
+                          # 强度取**较弱的那条轴**/3: 四象只按两轴符号出"单边",
+                          #   实际强度应由短板决定(一条轴满格、另一条刚过零, 不该算强)。
+                          "strength": _m01(min(abs(vd.get("value") or 0),
+                                                abs(vd.get("drive") or 0)) / 3.0),
+                          "confidence": 1.0,
+                          "strength_basis": "min(|估值|,|驱动|)/3 (两轴同向才算单边, 取短板)",
+                          # ★ L1b：拆轴分量（带符号强度）。由投票方在源头拆，
+                          #   聚合层只消费不解释——否则 aggregate 就得反推四象的内部口径。
+                          #   估值轴取负号：估值越低(越负)=越偏多。
+                          "axis_parts": {
+                              "basis": _signed(-(vd.get("value") or 0)),
+                              "inventory": _signed(vd.get("drive") or 0),
+                          }})
     else:
         gaps.append(f"多空逻辑二维四象: {vd.get('reason')}")
 
@@ -176,6 +228,10 @@ def build_verdict(payload: dict) -> dict:
             "detail": f"{tsr['shape']}: {tsr['near']} → {tsr['far']}"
                       f"（价差 {tsr['spread']}, {tsr['spread_pct']}%）",
             "basis": "跨月价差形态(品种态定位, 非择时信号)",
+            "axis": "basis",
+            "strength": _m01(abs(tsr.get("spread_pct") or 0) / 3.0),
+            "confidence": 1.0,
+            "strength_basis": "|跨月价差%|/3 (3% 价差视为满强度)",
         })
     else:
         gaps.append(f"多空逻辑期限结构: {tsr.get('reason')}")
@@ -196,6 +252,13 @@ def build_verdict(payload: dict) -> dict:
                       f"价格{icp['price_dir']}{icp['price_chg_pct']}%）"
                       + (f", 库存分位 {rank}%" if rank is not None else ""),
             "basis": "库存方向 × 价格方向 四阶段(品种态, 速度/方向优先于绝对值)",
+            # ★ 归 price 轴：四阶段表里(降,涨)→多、(升,涨)→多、(升,跌)→空、(降,跌)→空，
+            #   方向上等价于"价格涨→多 / 价格跌→空"，库存方向只改标签。
+            "axis": "price",
+            "strength": _m01(abs(icp.get("price_chg_pct") or 0) / 5.0),
+            # 库存变化 >100% 多半是小基数失真(仓单 1,000→19,590 实测), 方向仍可参考但可信度降。
+            "confidence": 0.4 if abs(float(icp.get("inv_chg_pct") or 0)) > 100 else 1.0,
+            "strength_basis": "|价格5日变化%|/5; 库存变化>100% 记为小基数失真 → confidence 0.4",
         })
     elif icp.get("ok"):
         # 已算出但四阶段未命中(库存与价格变化均 <0.5%) → **显式披露**, 不静默略过,
@@ -234,7 +297,11 @@ def build_verdict(payload: dict) -> dict:
             cards.append("qihuo-duokong-logic.cap-inventory-basis-profit")
             dir_votes.append({"book": "多空逻辑(利润)", "bias": p_bias,
                               "detail": f"{prof_label} 现值 {cur:.0f} / 区间 [{lo:.0f}, {hi:.0f}]{trend}; {p_txt}",
-                              "basis": "'库存+基差+利润' 交易系统的第三维(慢变量, 作校验用)"})
+                              "basis": "'库存+基差+利润' 交易系统的第三维(慢变量, 作校验用)",
+                              "axis": "profit",
+                              "strength": _m01(abs(pct - 0.5) / 0.5),
+                              "confidence": 1.0,
+                              "strength_basis": "|利润分位-0.5|/0.5 (越贴 0 或 1 越强; 0.3/0.7 只是触发阈值)"})
     elif payload.get("variety"):
         gaps.append("利润维度: 该品种无加工/进口利润数据(平台未覆盖, 胜率判断降级)")
 
@@ -242,7 +309,11 @@ def build_verdict(payload: dict) -> dict:
         cards.append(div.get("card", ""))
         dir_votes.append({"book": "墨菲", "bias": "反转预警" if "有效" in str(div.get("strength")) else "提示",
                           "detail": f"{div['divergence']}（{div['strength']}）{div['desc']}",
-                          "basis": "RSI 背离(须在极限区)"})
+                          "basis": "RSI 背离(须在极限区)",
+                          "axis": "price",
+                          "strength": 0.0,
+                          "confidence": 1.0,
+                          "strength_basis": "预警类, 不给方向; L2 用作 price 轴的可信度折扣"})
 
     # 墨菲突破过滤(3% 穿越 + 2 天): **用鹿希武趋势线作关键位** —— 这正是两书口径
     # 对同一问题的正面交锋点(cap-trend-filters vs cap-breakout-validity), 必须并列。
@@ -259,7 +330,11 @@ def build_verdict(payload: dict) -> dict:
             cards.append(murphy_break.get("card", ""))
             dir_votes.append({"book": "墨菲", "bias": "提示(突破口径对照)",
                               "detail": f"以鹿希武趋势线 {level} 为关键位: {murphy_break['desc']}",
-                              "basis": "3% 穿越 + 2 天原则(与鹿希武双线口径冲突, 并列不混用)"})
+                              "basis": "3% 穿越 + 2 天原则(与鹿希武双线口径冲突, 并列不混用)",
+                              "axis": "price",
+                              "strength": 0.0,
+                              "confidence": 1.0,
+                              "strength_basis": "口径对照, 不给方向"})
 
     # ── 威科夫事件(第六体系, 2026-10-13 新增) —— 【用途一: 独立并列投票】 ──
     # 【为什么用"做多/做空"而非威科夫自己的"偏多/偏空"】本项目的净票累加只看
@@ -282,13 +357,29 @@ def build_verdict(payload: dict) -> dict:
                          if _ev2 else "")
                       + f"；吸筹侧 {_wc.get('accumulation', 0)} / 派发侧 {_wc.get('distribution', 0)} 个事件",
             "basis": "量价行为事件识别(SC/BC/AR/ST/Spring/UT/SOS/SOW)—— 只标事件不判阶段",
+            "axis": "price",
+            "strength": _m01(abs((_wc.get("accumulation") or 0)
+                                  - (_wc.get("distribution") or 0)) / 2.0),
+            # 没有事件 ≠ 中性: 是"没证据", 可信度必须低于有事件时。
+            "confidence": 1.0 if _ev2 else 0.3,
+            "strength_basis": "|吸筹-派发|/2; 无事件时 confidence 0.3(没证据≠中性)",
         })
     else:
         gaps.append(f"威科夫事件: {wyck.get('reason')}")
 
-    # 结论: 只取**方向性票**(排除"暂不操作/不可用/预警/提示")
-    dirmap = {"做多": 1, "单边做多": 1, "做空": -1, "单边做空": -1}
-    net = sum(dirmap.get(v["bias"], 0) for v in dir_votes)  # 【变量】方向净票
+    # 结论: 只取**方向性票** —— 映射统一在 vote_semantics, 禁止在此另写一份。
+    # 【2026-10-19 修复】原 dirmap 缺「偏多/偏空」⇒ 期限结构票永远静默计 0：
+    #   实测 TA 9 张票只有 3 张进净票(4 张哑票)。审计随净票一起返回, 便于发现
+    #   "新加了一张票却忘了登记" —— 这正是隐掉 44% 票数而不报错的根因。
+    net, vote_audit = vs.net_of(dir_votes)  # 【变量】方向净票 + 计入审计
+    # 【L1b】加权总信号：与 net **并列**输出, 不参与 verdict 判定。
+    #   等一段时间的实盘对照后, 再决定要不要让 verdict 改看它。
+    # 硬闸门: 双线同破时不做逆势方向。
+    # 【为什么提到 aggregate 之前】weighted 必须与 verdict 吃**同一套**闸门——
+    #   否则闸门触发时两套信号会给出相反结论(实测 TA: 净票被拦成暂不操作, 加权却还说做多)。
+    #   闸门是否决权, 所以只压 direction, 不改 score。
+    _hard_gates = ["double_break"] if (geo.get("ok") and geo.get("double_break")) else []
+    weighted = vag.aggregate(dir_votes, gates=_hard_gates)  # 【变量】按轴加权的总信号
     if net > 0:
         final_dir, dir_desc = "做多", f"多书方向票净 {net:+d}"
     elif net < 0:
@@ -296,8 +387,7 @@ def build_verdict(payload: dict) -> dict:
     else:
         final_dir, dir_desc = "暂不操作", "方向票打平/全为中性"
 
-    # 硬闸门: 双线同破时不做逆势方向
-    if geo.get("ok") and geo.get("double_break"):
+    if _hard_gates:   # 与 weighted 共用同一份闸门结果, 不重复判定
         final_dir = "暂不操作"
         dir_desc += "；且双线同破(原趋势已结束) → 强制「暂不操作」"
 
@@ -306,6 +396,8 @@ def build_verdict(payload: dict) -> dict:
         "verdict": final_dir,
         "desc": dir_desc,
         "votes": dir_votes,
+        "vote_audit": vote_audit,  # 【变量】哪些票计入了/哪些没被认出
+        "weighted": weighted,  # 【变量】加权总信号(与 net 并列, 不替代)
         "geometry": {k: geo.get(k) for k in ("direction", "trendline", "pivotline",
                                              "double_break", "point_a", "notes")} if geo.get("ok") else geo,
         "adxr": adxr,

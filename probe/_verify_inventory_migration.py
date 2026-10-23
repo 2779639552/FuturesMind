@@ -17,12 +17,12 @@ BASE = "http://127.0.0.1:5000"
 FUND_IDS = {
     "chart-f-inv": ("仓单库存图", "chart"),
     "f-cycle-body": ("库存周期四象限", "text"),
-    "chart-f-pi": ("价格vs仓单双轴", "chart"),
-    "f-analysis-body": ("价格-库存关联分析", "text"),
     "f-inv-badge": ("仓单徽章", "text"),
-    "f-pi-badge": ("双轴徽章", "text"),
-    "f-analysis-badge": ("关联徽章", "text"),
 }
+# 【2026-10-16 同步】下面四个容器已按用户要求**先后删除**, 不再属于"应存在"清单:
+#   · chart-f-pi / f-pi-badge  —— 2026-10-14 删「价格 vs 仓单库存」双轴图
+#   · f-analysis-body / f-analysis-badge —— 2026-10-16 删「价格-库存关联分析」小节
+# 保留在注释里是为了说明"它们确实不在了", 而不是漏列。
 # 量化页不应再存在的容器
 QUANT_GONE = ["chart-q-inv", "chart-q-pi", "q-analysis-body", "q-cycle-body",
               "q-sector-panel", "q-research"]

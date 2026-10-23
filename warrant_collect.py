@@ -34,11 +34,34 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from warrant import czce, dce, gfex, shfe                   # noqa: E402
 from warrant import site as site_builder                    # noqa: E402
 from warrant import unify                                   # noqa: E402
-from warrant.common import OUT_DIR, ensure_dir, log         # noqa: E402
+from warrant.common import LASTGOOD_DIR, OUT_DIR, ensure_dir, log         # noqa: E402
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 COLLECTORS = {"CZCE": czce, "DCE": dce, "GFEX": gfex, "SHFE": shfe}
+
+
+def save_lastgood(name: str, res: dict) -> None:
+    """采集成功后落一份「该所最近一次好数据」快照（供下次失败兜底）。"""
+    ensure_dir(LASTGOOD_DIR)
+    path = os.path.join(LASTGOOD_DIR, "%s.json" % name)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(res, f, ensure_ascii=False)
+    os.replace(tmp, path)      # 原子替换，避免写一半被读到
+
+
+def load_lastgood(name: str):
+    """读取上次成功快照；没有则返回 None。"""
+    path = os.path.join(LASTGOOD_DIR, "%s.json" % name)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:                       # noqa: BLE001
+        log.warning("%s 快照损坏，忽略: %s", name, e)
+        return None
 ORDER = ["CZCE", "DCE", "GFEX", "SHFE"]
 
 
@@ -72,12 +95,20 @@ def load_cached(date_str: str) -> dict:
 
 
 def write_output(result: dict, date_str: str):
+    """落盘某交易所的明细/汇总/品种/品牌四份 JSON。
+
+    【2026-10-23 改原子写】原实现 `open(...,"w") as f: json.dump(...)` 会先把文件
+      截断为 0 字节再写。仓单采集每天 00:00 跑，而这四份文件同时被**页面接口与分析**
+      读取 ⇒ 只要撞上截断窗口，读方就拿到空文件、`json.loads` 抛
+      `JSONDecodeError`。与公众号读书通道那次事故（两轮退出码 1）同源。
+    """
+    from tradingagents.atomic_io import save_json
+
     ensure_dir(OUT_DIR)
     base = os.path.join(OUT_DIR, "%s_%s" % (date_str, result["exchange"]))
     for key in ("detail", "summary", "product", "sub"):
         if result.get(key):
-            with open("%s_%s.json" % (base, key), "w", encoding="utf-8") as f:
-                json.dump(result[key], f, ensure_ascii=False, indent=1)
+            save_json("%s_%s.json" % (base, key), result[key], indent=1)
 
 
 def build_unified(results: dict, date_hint: str | None = None) -> dict:
@@ -156,6 +187,8 @@ def main():
             if name == "DCE":
                 kw["headless"] = args.dce_headless
             res = COLLECTORS[name].collect(**kw)
+            res["_fetch"] = {"ok": True, "stale": False,
+                             "at": dt.datetime.now().isoformat(timespec="seconds")}
             results[name] = res
             write_output(res, res["date"].replace("-", ""))
             _prows = len(res.get("product", []))
@@ -169,10 +202,39 @@ def main():
                 log.error("%s 采集到 0 个品种 —— 判定为异常(空壳数据/日报未发布)", name)
                 summary[name]["ok"] = False
                 summary[name]["error"] = "0 个品种(空壳数据或日报未发布)"
+                # 【2026-10-21】0 品种也要走快照兜底，否则该所照样从页面消失。
+                res["_fetch"] = {"ok": False, "stale": True,
+                                 "error": summary[name]["error"],
+                                 "at": dt.datetime.now().isoformat(timespec="seconds")}
+                _lg = load_lastgood(name)
+                if _lg:
+                    results[name] = _lg
+                    log.warning("%s 采集异常，沿用上次成功快照（数据日 %s）", name, _lg.get("date"))
         except Exception as e:                            # noqa: BLE001
             log.error("%s 采集失败: %s", name, e)
             log.debug(traceback.format_exc())
             summary[name] = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
+            # 【2026-10-21 核心修复】采集失败时**不许**让该所从结果里消失。
+            #   旧实现只把本次结果交给 site.build ⇒ 一次瞬时失败就让该所整块
+            #   从 overview.json 消失（2026-10-21 16:40 郑商所+广期所同时翻车，
+            #   页面四所变两所且零提示）。这里退回上次成功快照并标记 stale。
+            _lg = load_lastgood(name)
+            if _lg:
+                _lg = dict(_lg)
+                _lg["_fetch"] = {"ok": False, "stale": True,
+                                 "error": summary[name]["error"],
+                                 "at": dt.datetime.now().isoformat(timespec="seconds")}
+                results[name] = _lg
+                summary[name]["fallback_date"] = _lg.get("date")
+                log.warning("%s 采集失败，沿用上次成功快照（数据日 %s）",
+                            name, _lg.get("date"))
+            else:
+                log.error("%s 采集失败且无历史快照 —— 该所本次将缺数据", name)
+
+    # 成功（ok 且品种数 > 0）的交易所落快照，供下次失败兜底
+    for _n, _s in summary.items():
+        if _s.get("ok") and _n in results:
+            save_lastgood(_n, results[_n])
 
     if results:
         if not args.no_unify:

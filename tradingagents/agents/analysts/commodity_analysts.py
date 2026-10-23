@@ -65,6 +65,13 @@ from tradingagents.dataflows.methodology_context import (  # 【调用包】五�
     macro_methodology_context,
     technical_methodology_context,
 )
+from tradingagents.dataflows.analysis_bundle import (  # 【调用包】国君四源确定性注入块(2026-10-19)
+    gtja_context,
+)
+from tradingagents.dataflows.analyst_views import (  # 【调用包】按数据轴分发的量化视图(2026-10-19)
+    fundamental_view,
+    technical_view,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +331,20 @@ End your report with:
             system_message = methodology_ctx + "\n\n" + system_message
         # --- End Methodology Injection ---
 
+        # --- Quant Axis View (2026-10-19) ---
+        # 【按轴分发】只把**价格轴**的量化结论给技术分析师：技术快照 + 价格轴方向票 +
+        # 价格轴加权分。基差/库存/利润三轴归基本面分析师 —— 本块明确声明"不含什么",
+        # 避免模型拿库存解释 K 线（本项目长期纪律）。
+        # 取数失败/超时/无覆盖 → 降级块或 ""，不静默消失。
+        # 【顺序修正 2026-10-22】所有注入都是 `块 + system_message` ⇒ **最后 prepend 的排最前**。
+        #   本块原在方法论之前 prepend，结果被 1802 字的方法论压到提示词 34.5% 处；
+        #   实测引用率「加权分 / 价格轴票」零命中，模型只抄走了显眼的「闸门」一句。
+        #   移到方法论之后 prepend ⇒ 最终排在方法论之前，符合"结论先读、读数后置"。
+        tech_view = technical_view(symbol)
+        if tech_view:
+            system_message = tech_view + "\n\n" + system_message
+        # --- End Quant Axis View ---
+
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [
                 (
@@ -528,11 +549,15 @@ End with:
 
 """ + get_language_instruction()
 
-        # --- Self-Evolution Injection ---
-        evolution_ctx = state.get("past_context", "")  # 【变量】进化记忆上下文;非空时前置到系统提示,让分析师参考历史教训与用户偏好
-        if evolution_ctx:
-            system_message = evolution_ctx + "\n\n" + system_message
-        # --- End Injection ---
+        # --- Methodology Injection (2026-09-29) ---
+        # 【方法论读数注入】基本面节点: 多空逻辑估值驱动二维四象 + 库存/基差序列概况
+        # + Carver 成本-速度上限。异常静默降级(不注入)。
+        # 【顺序 2026-10-22】重排后**最先 prepend** ⇒ 最终排在最后（垫底），
+        #   把提示词首位让给量化结论块（原来 2109 字方法论占第 2 行，把结论压到 22% 处）。
+        methodology_ctx = fundamental_methodology_context(symbol)
+        if methodology_ctx:
+            system_message = methodology_ctx + "\n\n" + system_message
+        # --- End Methodology Injection ---
 
         # --- Local Variety Database Injection (2026-09-18) ---
         # 【品种数据库注入】用户导入的产业数据库(库存/开工/产量/排产/裂差/基差)关键读数
@@ -543,15 +568,32 @@ End with:
             system_message = variety_ctx + "\n\n" + system_message
         # --- End Variety Database Injection ---
 
-        # --- Methodology Injection (2026-09-29) ---
-        # 【方法论读数注入】基本面节点: 多空逻辑估值驱动二维四象 + 库存/基差序列概况
-        # + Carver 成本-速度上限。放在品种数据库块之后追加 → 拼接后位于其上(品种库
-        # 一手产业数据权重更高, 方法论块的"权重规则"句声明与本块冲突时以本块为准
-        # 仅针对同口径计算指标)。异常静默降级(不注入)。
-        methodology_ctx = fundamental_methodology_context(symbol)
-        if methodology_ctx:
-            system_message = methodology_ctx + "\n\n" + system_message
-        # --- End Methodology Injection ---
+        # --- Self-Evolution Injection ---
+        evolution_ctx = state.get("past_context", "")  # 【变量】进化记忆上下文;非空时前置到系统提示,让分析师参考历史教训与用户偏好
+        if evolution_ctx:
+            system_message = evolution_ctx + "\n\n" + system_message
+        # --- End Injection ---
+
+        # --- GTJA Four-Source Injection (2026-10-19) ---
+        # 【国君四源注入】基差/交易所仓单/期货+社会库存/加工利润的关键读数。
+        # 确定性前置(不依赖 LLM 是否调工具), 与 @tool get_futures_basis 等"下钻"通道互补。
+        # 权重声明写在块内；只注入基本面节点(技术/宏观拿库存解释 K 线是本项目明确要避免的)。
+        # 数据源异常/超时 → 降级块写明"本次缺席"（不再静默返回空串）。
+        gtja_ctx = gtja_context(symbol)
+        if gtja_ctx:
+            system_message = gtja_ctx + "\n\n" + system_message
+        # --- End GTJA Four-Source Injection ---
+
+        # --- Quant Axis View (2026-10-19) ---
+        # 【按轴分发】只把**基差/库存/利润三轴**的量化结论给基本面分析师：
+        # 三指标策略（库存×利润×基差 → 四类策略）+ 三轴方向票 + 各轴得分 + 虚实盘比。
+        # 价格趋势归技术分析师 —— 本块声明"不含价格轴"，避免基本面替技术面定入场时点。
+        # 【顺序修正 2026-10-22】最后 prepend ⇒ 最终排最前。实测引用率里「三指标策略」零命中，
+        #   正是因为它原先被 2109 字方法论压在 21.9% 处 —— 块存在，但结论没被当回事。
+        fund_view = fundamental_view(symbol)
+        if fund_view:
+            system_message = fund_view + "\n\n" + system_message
+        # --- End Quant Axis View ---
 
         prompt = ChatPromptTemplate.from_messages(  # 【调用函数】构造提示模板(系统提示 + 消息历史占位符)
             [

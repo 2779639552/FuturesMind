@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>微信读书通道 · 自愈模块改造方案（2026-10-21）</title>
+<style>
+  :root{
+    --ink:#1d1d1f; --ink2:#424245; --ink3:#6e6e73; --ink4:#86868b;
+    --line:#e5e5ea; --tile:#f5f5f7; --blue:#0071e3; --blue-d:#0058b0; --blue-l:#eaf3fe;
+    --green:#00875a; --amber:#b25000; --red:#d70015;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#f5f5f7;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.68}
+  .wrap{max-width:1120px;margin:0 auto;padding:44px 32px 96px}
+  h1{font-size:34px;line-height:1.2;letter-spacing:-.022em;margin:0 0 12px}
+  h2{font-size:24px;letter-spacing:-.015em;margin:0 0 8px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{margin:0 0 12px;color:var(--ink2)}
+  .lead{font-size:16.5px;color:var(--ink3)}
+  .kicker{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);font-weight:600;margin-bottom:8px}
+  section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:26px 28px;margin-top:18px}
+  .grid{display:grid;gap:16px}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .card{background:var(--tile);border-radius:10px;padding:16px 18px}
+  .card h4{margin:0 0 6px;font-size:14px}
+  .card p:last-child{margin-bottom:0}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:#fff;
+        border:1px solid var(--line);font-size:12px;color:var(--ink2)}
+  .pill.ok{background:#e9f7f0;border-color:#c9e9da;color:var(--green)}
+  .pill.warn{background:#fdf1e6;border-color:#f6ddc4;color:var(--amber)}
+  .pill.no{background:#fdecee;border-color:#f7d1d6;color:var(--red)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--tile);padding:1px 5px;border-radius:4px}
+  table.t{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  table.t th,table.t td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.t th{font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink4);background:#fafafa}
+  table.t tr:last-child td{border-bottom:0}
+  ul,ol{margin:6px 0 12px;padding-left:20px;color:var(--ink2)}
+  li{margin:4px 0}
+  .note{border-left:3px solid var(--blue);background:var(--blue-l);padding:14px 18px;border-radius:0 8px 8px 0;font-size:13.5px;color:#0b3f78;margin:16px 0}
+  .warn{border-left:3px solid var(--amber);background:#fdf6ee;padding:14px 18px;border-radius:0 8px 8px 0;font-size:13.5px;color:#6e3d0e;margin:16px 0}
+  .note p,.warn p{color:inherit;margin:0}
+  pre{background:#1d1d1f;color:#e8e8ed;padding:16px 18px;border-radius:10px;overflow:auto;
+      font-family:var(--mono);font-size:12.5px;line-height:1.65;margin:10px 0}
+  .muted{color:var(--ink4);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="kicker">AgentSense · WeRead Channel</div>
+<h1>自愈模块改造方案</h1>
+<p class="lead">这次断线的教训不是"续期没生效"，而是：<b>自愈只有一根杠杆，而且没有验证</b>。它把 -2012 换成了 -2041，还让故障从"每轮失败"变成"每轮都在叫你去扫码"。</p>
+
+<section>
+  <div class="kicker">01 · 现状</div>
+  <h2>现在的"自愈"做了什么、漏了什么</h2>
+  <table class="t">
+    <thead><tr><th style="width:190px">能力</th><th style="width:300px">当前实现</th><th>问题</th></tr></thead>
+    <tbody>
+      <tr><td><b>修复动作</b></td><td>只调 <code>POST /web/login/renewal</code> 换 <code>wr_skey</code></td>
+          <td><b>单杠杆</b>：所有鉴权码都走这一条，包括根本不是会话问题的 <code>-2041</code></td></tr>
+      <tr><td><b>修复判据</b></td><td><code>succ == 1</code> 就认为修好了</td>
+          <td><b>没有验证</b>：实测续期确实 succ=1，但文章接口仍被拒 ⇒ "修好了"是假象</td></tr>
+      <tr><td><b>失败处理</b></td><td><code>raise SystemExit("请扫码")</code></td>
+          <td><b>没有降级阶梯</b>：一条接口挂掉 = 整轮 6 个号全灭</td></tr>
+      <tr><td><b>频率控制</b></td><td>无</td><td><b>会放大故障</b>：每撞一次就再续一次，一轮能续十几次</td></tr>
+      <tr><td><b>可观测性</b></td><td>只有一行中文输出</td><td>事后分不清"修了没用"和"根本没修"</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><b>一句话概括：</b>它修的是"会话过期"，但没定义"什么算修好"。于是当平台换了拒绝方式（-2041），它继续按老剧本演，把一个可降级的故障升级成了整轮失败。</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">02 · 原则</div>
+  <h2>自愈的三条纪律</h2>
+  <div class="grid g3">
+    <div class="card"><h4>① 可验证</h4><p>修复后必须跑一次<b>独立哨兵请求</b>，通过才算修好。返回码只说明"请求发出去了"，不说明"权限回来了"。</p></div>
+    <div class="card"><h4>② 不放大</h4><p>自愈本身要有<b>预算、退避、熔断</b>。一个会无限重试的自愈，是第二个故障源。</p></div>
+    <div class="card"><h4>③ 留痕</h4><p>每次尝试写一条结构化记录（码、动作、哨兵结果、耗时），否则永远在猜"上次到底修没修"。</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">03 · 架构</div>
+  <h2>五层状态机：观测 → 归因 → 修复 → 验证 → 降级</h2>
+<pre>L0 观测   记录 (path, errCode, 耗时, 响应大小)
+   ↓
+L1 归因   会话问题? ── 跑哨兵 /web/shelf/sync（books&gt;0 且 synckey 存在）
+   │         ├─ 哨兵失败 → 「会话死」   → 只能人工扫码
+   │         └─ 哨兵通过 → 「会话活」
+   ↓
+L2 修复   仅「会话死」才续期；「会话活 + 目标接口拒绝」<b>不做任何修复</b>
+   ↓
+L3 验证   续期后再跑一次哨兵；通过 → 记为已修复；失败 → 升级为「会话死」
+   ↓
+L4 降级   主通道不可用 → cover → 合集通道 → 待采队列（记缺口，恢复后回填）
+   ↓
+   升级   同一原因连续 N 轮 → 熔断 T 小时 + 分级告警</pre>
+
+  <h3>决策表（这张表是整个模块的核心）</h3>
+  <table class="t">
+    <thead><tr><th style="width:150px">错误码 / 现象</th><th style="width:170px">哨兵结果</th><th style="width:170px">动作</th><th>验证与退避</th></tr></thead>
+    <tbody>
+      <tr><td><code>-2010 / -2012</code></td><td>失败（0 本）</td><td>续期 <b>1 次</b></td><td>续期后重跑哨兵；仍失败 ⇒ 判「会话死」</td></tr>
+      <tr><td><code>-2010 / -2012</code></td><td>通过（&gt;0 本）</td><td>续期 1 次后重试原请求</td><td>仍失败 ⇒ 按接口问题处理</td></tr>
+      <tr><td><code>-2041</code></td><td><b>通过</b></td><td><b>不续期、不重试</b>，直接降级</td><td>降级通道探活；30 分钟冷却</td></tr>
+      <tr><td>超时 / 5xx</td><td>—</td><td>指数退避重试 2 次（30s / 90s）</td><td>不触碰会话</td></tr>
+      <tr><td>连续 3 轮同因</td><td>—</td><td>熔断 6h + 告警</td><td>熔断期内不再尝试，避免打穿账号</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <p><b>为什么哨兵选 <code>/web/shelf/sync</code>：</b>① 匿名访问返回 <code>-2010 / 0 本</code>，登录态返回 <b>416 本 + synckey</b>，判据极清晰；② 一次请求、开销小；③ 不碰内容接口，不消耗公众号额度。<b>它就是这次能证明"会话是好的"的那个实验，应当固化成代码，而不是留在排查笔记里。</b></p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">04 · 降级阶梯</div>
+  <h2>一条通道挂了，不该等于整轮失败</h2>
+  <table class="t">
+    <thead><tr><th style="width:120px">层级</th><th style="width:250px">通道</th><th>能力与代价</th></tr></thead>
+    <tbody>
+      <tr><td><b>T0</b></td><td><code>/web/mp/articles</code></td><td>全量列表（一页 20 个群发、可翻页）—— 首选</td></tr>
+      <tr><td><b>T1</b></td><td><code>/web/mp/cover</code></td><td>只返回<b>最新 1 篇</b>（实测 offset 无效）—— 保底，但必须标注"覆盖率下降"</td></tr>
+      <tr><td><b>T2</b></td><td>合集通道 <code>album_collector</code></td><td>只覆盖"已登记合集"的号；对机构号通常不适用</td></tr>
+      <tr><td><b>T3</b></td><td><b>待采队列</b>（新增）</td><td>把 <code>{账号, 起始时间, 原因}</code> 记下来；主通道恢复后按 <code>originalId</code> 幂等回填</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><b>T3 是这次缺的关键一环。</b>T1 只能取 1 篇，而混沌天成一天发 5 篇早评 —— 降级跑成功后，缺口会<b>静默消失</b>：水位线照样更新，第二天再也补不回来。所以降级时必须<b>记缺口</b>，而不是"能取一篇就算过"。</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">05 · 可观测性</div>
+  <h2>把"修没修好"变成一份可读的状态文件</h2>
+<pre>~/.tradingagents/weread/health.json
+{
+  "checked_at": "2026-10-21T09:20:00",
+  "session":     {"ok": true,  "probe_books": 416, "renewed_at": "09:13", "renew_count": 1},
+  "endpoints":   {"articles": {"ok": false, "code": -2041, "since": "2026-10-19"},
+                  "cover":    {"ok": true},
+                  "album":    {"ok": true}},
+  "degraded":    {"accounts": ["混沌天成研究", "紫金天风期货研究所"],
+                  "reason": "articles_refused", "coverage": "latest_only"},
+  "backlog":     [{"account": "混沌天成研究", "since": "2026-10-21T00:00:00", "reason": "articles_refused"}],
+  "next_action": "无需扫码；等待 articles 恢复后按 backlog 回填"
+}</pre>
+  <p>有了它，告警就能说人话：<b>"会话正常，是文章接口被拒，已降级并记账"</b>，而不是永远一句"请扫码"。</p>
+
+  <h3>告警分级</h3>
+  <table class="t">
+    <thead><tr><th style="width:120px">级别</th><th style="width:220px">触发</th><th>文案要点</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill ok">info</span></td><td>单号降级、仍有产出</td><td>"本轮 2 个号降级为最新 1 篇，缺口已记账"</td></tr>
+      <tr><td><span class="pill warn">warning</span></td><td>全部号降级 / 连续 2 轮</td><td>"文章接口持续被拒（会话正常），非登录问题，勿扫码"</td></tr>
+      <tr><td><span class="pill no">critical</span></td><td>哨兵失败（会话真死）</td><td>"会话已失效，需扫码：node probe/_weread_login.mjs"</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <div class="kicker">06 · 路线</div>
+  <h2>四步走，每步都可独立验收</h2>
+  <table class="t">
+    <thead><tr><th style="width:70px">阶段</th><th style="width:330px">内容</th><th>验收（全部可测）</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>P0</b><br><span class="pill ok">已完成</span></td>
+        <td>错误码分层（<code>-2041</code> 独立）+ 单号降级 + 续期预算 + dry-run 隔离</td>
+        <td>11 例护栏 + 变异 7/7；真机 dry-run：不退出、报降级、exit 0</td>
+      </tr>
+      <tr>
+        <td><b>P1</b></td>
+        <td>哨兵探针 + 决策表 + <code>health.json</code></td>
+        <td>注入 -2012/-2041 两种码，断言"是否续期""是否降级""health 字段正确"</td>
+      </tr>
+      <tr>
+        <td><b>P2</b></td>
+        <td>待采队列 + 恢复后自动回填（按 originalId 幂等）</td>
+        <td>降级期间漏 5 篇 → 主通道恢复后 5 篇全部补回，且不重复</td>
+      </tr>
+      <tr>
+        <td><b>P3</b></td>
+        <td>熔断与告警分级（连续 3 轮同因 → 冷却 6h）</td>
+        <td>模拟 3 轮失败，断言第 4 轮不再发请求、告警级别为 warning</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <div class="kicker">07 · 边界</div>
+  <h2>这套改造解决什么、不解决什么</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h4>能解决</h4>
+      <p>故障不再被误判成"登录过期"；一条接口挂掉不会拖垮整轮；续期不会越修越糟；缺口可追溯、可回填；告警说人话。</p>
+    </div>
+    <div class="card">
+      <h4>不能解决</h4>
+      <p>平台为什么拒 <code>-2041</code>。那是服务端策略，本地无法绕过。<b>如果它长期不恢复，只能换通道（浏览器/其它来源），而不是继续加自愈。</b></p>
+    </div>
+  </div>
+  <p class="muted">这次的时间线值得记住：10-19 上续期后 <code>-2012</code> 消失、<code>-2041</code> 出现，中间只有 10-20 18:33 成功过一次 —— <b>自愈把一个稳定故障换成了不稳定故障，而监控没跟着变</b>。所以 P1 的重点不是"更强的修复"，而是"更准的归因"。</p>
+</section>
+
+</div>
+</body>
+</html>

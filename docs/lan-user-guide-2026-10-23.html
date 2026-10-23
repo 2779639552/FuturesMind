@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大宗智研 · 内网使用指南（2026-10-23）</title>
+<style>
+  :root{
+    --ink:#1d1d1f; --ink2:#3a3a3c; --ink3:#6e6e73; --ink4:#8e8e93;
+    --line:#e5e5ea; --tile:#f5f5f7; --bg:#fbfbfd;
+    --blue:#0071e3; --blue-d:#0058b0; --blue-l:#eaf3fe;
+    --green:#00875a; --green-l:#e9f7f0;
+    --amber:#b25000; --amber-l:#fdf1e6;
+    --red:#d70015; --red-l:#fdecee;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,"Cascadia Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15.5px;line-height:1.72}
+  .wrap{max-width:860px;margin:0 auto;padding:48px 30px 110px}
+  h1{font-size:31px;line-height:1.22;letter-spacing:-.022em;margin:0 0 8px}
+  .lead{font-size:16.5px;color:var(--ink3);margin:0 0 4px}
+  .meta{font-size:12.5px;color:var(--ink4)}
+  h2{font-size:21px;letter-spacing:-.012em;margin:42px 0 6px}
+  h2 .n{display:inline-flex;width:26px;height:26px;align-items:center;justify-content:center;
+        border-radius:7px;background:var(--ink);color:#fff;font-size:13.5px;margin-right:9px;
+        vertical-align:2px;font-weight:600}
+  h3{font-size:15.5px;margin:22px 0 6px}
+  p{margin:0 0 12px;color:var(--ink2)}
+  ul,ol{margin:0 0 12px;padding-left:22px;color:var(--ink2)}
+  li{margin:5px 0}
+  code{font-family:var(--mono);font-size:.86em;background:var(--tile);padding:1.5px 5px;border-radius:4px}
+  .url{display:block;font-family:var(--mono);font-size:19px;background:#1d1d1f;color:#f5f5f7;
+       padding:16px 20px;border-radius:11px;margin:10px 0 14px;letter-spacing:.01em;user-select:all}
+  table{width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:14px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--tile);font-size:12.5px;color:var(--ink3);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  .box{border-radius:11px;padding:15px 17px;margin:16px 0;border:1px solid var(--line);background:#fff}
+  .box h4{margin:0 0 7px;font-size:14.5px}
+  .box p:last-child,.box ul:last-child,.box ol:last-child{margin-bottom:0}
+  .tip{border-left:3px solid var(--blue);background:var(--blue-l)}
+  .warn{border-left:3px solid var(--amber);background:var(--amber-l)}
+  .bad{border-left:3px solid var(--red);background:var(--red-l)}
+  .ok{border-left:3px solid var(--green);background:var(--green-l)}
+  .pill{display:inline-block;padding:1.5px 9px;border-radius:999px;font-size:12.5px;border:1px solid var(--line);
+        background:#fff;color:var(--ink2);white-space:nowrap}
+  .pill.g{background:var(--green-l);border-color:#c9e9da;color:var(--green)}
+  .pill.a{background:var(--amber-l);border-color:#f6ddc4;color:var(--amber)}
+  .pill.r{background:var(--red-l);border-color:#f7d1d6;color:var(--red)}
+  .pill.b{background:var(--blue-l);border-color:#cfe3fb;color:var(--blue-d)}
+  .step{display:flex;gap:12px;margin:10px 0}
+  .step .n{flex:0 0 auto;width:23px;height:23px;border-radius:50%;background:var(--blue);color:#fff;
+           display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:600;margin-top:2px}
+  .step .t{min-width:0}
+  .step .t b{display:block;font-size:14.5px;margin-bottom:1px}
+  hr{border:none;border-top:1px solid var(--line);margin:40px 0}
+  .foot{margin-top:40px;font-size:12.5px;color:var(--ink4)}
+  @media print{
+    body{font-size:11.5pt}
+    .wrap{padding:0;max-width:none}
+    .url{background:#f5f5f7;color:#1d1d1f;border:1px solid #ddd}
+    h2{page-break-after:avoid}
+    .box{page-break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>大宗智研 · 内网使用指南</h1>
+<p class="lead">在你自己的电脑上用浏览器打开，<strong>不需要安装任何软件</strong>，也不需要账号密码。</p>
+<p class="meta">2026-10-23 版 · 适用对象：同一办公内网的同事</p>
+
+<div class="box tip">
+<h4>地址（在浏览器地址栏输入）</h4>
+<code class="url">http://10.220.6.48:5000</code>
+<p style="margin:0;font-size:14px;color:var(--ink3)">用 Edge / Chrome 都行。地址里的数字是<strong>服务所在的电脑</strong>的内网地址，不是你的。</p>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<h2><span class="n">1</span>打开它（30 秒）</h2>
+
+<div class="step"><span class="n">1</span><span class="t"><b>连上办公内网</b>有线和 WiFi 都行，不用连 VPN。</span></div>
+<div class="step"><span class="n">2</span><span class="t"><b>浏览器输入上面的地址</b>首次打开要下载约 2 MB（页面 + 图表库），内网通常 1~3 秒；如果明显更慢，多半是浏览器走了代理。</span></div>
+<div class="step"><span class="n">3</span><span class="t"><b>看到顶部 7 个标签页就成功了</b>运行分析 / 研报 / 技术面量化 / 基本面量化 / 情绪数据 / 外文研报 / 数据仓库。</span></div>
+
+<div class="box warn">
+<h4>打不开先别急，八成是这两件事</h4>
+<ul>
+  <li><strong>服务所在的电脑关掉了那个黑窗口</strong> —— 那个窗口一关，整个系统就停了，找维护人重启。</li>
+  <li><strong>地址变了</strong> —— 那台电脑换网络或重启后，末尾数字可能变。以维护人最新给的为准。</li>
+</ul>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<h2><span class="n">2</span>第一次进来，先看这三处</h2>
+
+<table>
+  <thead><tr><th>去哪</th><th>看什么</th><th>为什么</th></tr></thead>
+  <tbody>
+    <tr><td>运行分析</td><td>页面下方的评级横幅 + 综合研判卡</td><td>这是你自己最近一次分析的结论</td></tr>
+    <tr><td>研报 → 每日总结</td><td>当天的机构观点汇总</td><td>最快了解"别人怎么看"</td></tr>
+    <tr><td>基本面量化</td><td>A1 库存、A3 基差</td><td>两个最常用、也最容易看懂的读数</td></tr>
+  </tbody>
+</table>
+
+<!-- ------------------------------------------------------------------ -->
+<h2><span class="n">3</span>这七个页面分别能干什么</h2>
+
+<table>
+  <thead><tr><th>页面</th><th>一句话</th><th>典型用途</th></tr></thead>
+  <tbody>
+    <tr><td>运行分析</td><td>让 AI 团队对某个品种出一份完整研判</td><td>要一个方向性结论时</td></tr>
+    <tr><td>研报</td><td>机构研报的问答、每日总结、单品种汇总</td><td>查"某家机构对某品种怎么看"</td></tr>
+    <tr><td>技术面量化</td><td>均线、指标、策略回测</td><td>看位置、看历史胜率</td></tr>
+    <tr><td>基本面量化</td><td>库存 / 基差 / 利润 / 虚实盘比 / 仓单</td><td>看产业端的真实数据</td></tr>
+    <tr><td>情绪数据</td><td>微博、雪球、知乎、股吧、小红书、抖音的舆情</td><td>看散户和机构情绪是不是背离</td></tr>
+    <tr><td>外文研报</td><td>上传英文 PDF，生成中文编译版</td><td>外盘报告看不懂时</td></tr>
+    <tr><td>数据仓库</td><td>卖方数据查询、上传研报、传自己的数据</td><td>想把内部资料也纳入进来</td></tr>
+  </tbody>
+</table>
+
+<p>页面之间共享「当前品种」：在一页选了品种，切到另一页通常也跟着切。</p>
+
+<!-- ------------------------------------------------------------------ -->
+<h2><span class="n">4</span>自己跑一次分析</h2>
+
+<p>进入「运行分析」→ 选品种 → 点「开始分析」。选之前先看一眼深度：</p>
+
+<table>
+  <thead><tr><th>深度</th><th>会跑什么</th><th>耗时</th><th>有没有评级</th></tr></thead>
+  <tbody>
+    <tr><td><span class="pill b">完整</span></td><td>四位分析师 + 多空三轮辩论 + 裁决 + 综合研判 + 三情景</td><td>约 5~6 分钟</td><td>有</td></tr>
+    <tr><td><span class="pill a">轻量</span></td><td>跳过辩论与情景，保留综合研判</td><td>约省 73%</td><td>有</td></tr>
+    <tr><td><span class="pill">极简</span></td><td>只出四份基础报告</td><td>最快</td><td><strong>没有</strong></td></tr>
+  </tbody>
+</table>
+
+<h3>结果怎么看</h3>
+<p>页面底部会有一条横幅，三个数字：</p>
+<table>
+  <thead><tr><th>字段</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td><code>RATING</code></td><td>强烈看多 / 偏多 / 中性 / 偏空 / 强烈看空</td></tr>
+    <tr><td><code>CONFIDENCE</code></td><td>高 / 中 / 低 —— 模型自己的把握程度</td></tr>
+    <tr><td><code>SCORE</code></td><td>0~10 分，0–4 偏空、5 中性、6–10 偏多</td></tr>
+  </tbody>
+</table>
+
+<h3>「综合研判」卡标题旁的彩色小标</h3>
+<p>那是自动质检的结果，点一下能展开明细：</p>
+<table>
+  <thead><tr><th>看到什么</th><th>意思</th><th>要不要管</th></tr></thead>
+  <tbody>
+    <tr><td><span class="pill g">质检通过</span></td><td>报告该交代的都交代了</td><td>不用</td></tr>
+    <tr><td><span class="pill a">质检通过 · 事前拦截 N 项</span></td><td>写报告前发现了 N 个问题，要求模型补上，最终过关</td><td>建议点开看看补了什么</td></tr>
+    <tr><td><span class="pill r">质检未通过 · XX分</span></td><td>最终报告仍有硬伤（如基差率没写分母、没给失效条件）</td><td><strong>报告末尾会附问题清单，看完再引用结论</strong></td></tr>
+  </tbody>
+</table>
+<p style="font-size:14px;color:var(--ink3)">这个质检只查"有没有说清楚"，<strong>不判断观点对不对</strong>。绿标不等于结论正确。</p>
+
+<!-- ------------------------------------------------------------------ -->
+<h2><span class="n">5</span>多人同时用，三条规矩</h2>
+
+<div class="box ok">
+<h4>规矩一：最多 3 个人可以同时跑分析</h4>
+<p>每个人跑的是<strong>自己那一次</strong>：进度条、报告、评级都互不影响，你看不到别人的，别人也接管不了你的。</p>
+<p>但如果已经有 3 个在跑，第 4 个人会被<strong>直接拒绝</strong>，并告诉你在跑的是哪几个品种、各跑了多久。看到这个提示不是出错，等其中一个结束再点就行。</p>
+<p><strong>为什么只给 3 个：</strong>所有分析共用同一个大模型账号的并发额度。开太多，不是"跑得更快"，而是每一路都变慢，还容易触发限流重试（最坏一次调用要等 15 分钟）。3 个是"够用且不出事"的数。</p>
+<p>如果某个分析卡住不动，系统会在约 20 分钟后自动把它判定为失败、<strong>把名额让出来</strong>，不需要人工干预。</p>
+</div>
+
+<div class="box tip">
+<h4>同一个品种不用重复点</h4>
+<p>如果你点的分析（<strong>同品种、同交易日、同档位</strong>）已经有人在跑，系统<strong>不会重跑一遍</strong>，而是直接把你切到那次运行的进度页，并提示"已切到那次运行"。</p>
+<p>想跑一份不一样的，改一项就行：换品种、换日期，或者换档位（完整 / 轻量 / 极简）。</p>
+<p>反过来说，<strong>同一个人反复点不会加速</strong> —— 它只是在等同一件事。</p>
+</div>
+
+<div class="box warn">
+<h4>规矩二：结果只保留最近 5 次，要留档自己存</h4>
+<p>系统会记住最近 5 次分析，再早的会被清掉。要留的证据（评级、结论、关键数字），请自己复制到文档里。</p>
+<p>另外：<strong>刷新页面会看到你最近一次的结果</strong>，不会跳到别人的。</p>
+</div>
+
+<div class="box">
+<h4>规矩三：上传的东西全组可见</h4>
+<p>在「数据仓库」上传的研报、自己整理的 CSV，其他人都能看到，也能被用在分析里。</p>
+<p>别传不该传的内部材料；单个文件上限 <strong>20 MB</strong>。</p>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<h2><span class="n">6</span>打不开？按这个顺序排查</h2>
+
+<ol>
+  <li><b>确认服务还在跑</b><br>找维护人看一眼那台电脑上的黑色命令行窗口，关掉就等于停机。</li>
+  <li><b>确认网络通</b><br>打开命令行执行 <code>ping 10.220.6.48</code>。不通 → 你可能不在同一网段，或者连错了 WiFi。</li>
+  <li><b>确认地址是最新的</b><br>那台电脑换网络后内网地址会变，向维护人要当前地址。</li>
+  <li><b>关掉代理再试</b><br><strong>这条最常见。</strong>如果你的浏览器走公司代理，内网地址可能被代理拦下，显示"无法访问"或一直转圈。把 <code>10.220.6.48</code> 加进代理例外，或临时关掉代理。</li>
+  <li><b>还不是 → 可能是防火墙</b><br>需要维护人在服务器上放行 5000 端口（一次性操作）。</li>
+</ol>
+
+<div class="box tip">
+<h4>浏览器提示"不安全"或"证书错误"</h4>
+<p>正常 —— 内网用的是 <code>http</code> 不是 <code>https</code>，没有证书。继续访问即可，不影响使用。</p>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<h2><span class="n">7</span>几个容易误会的地方</h2>
+
+<h3>两个数字对不上，哪个对？</h3>
+<p>先别怀疑数据源。同一指标在不同位置出现差异，通常有三种原因，都不算错：</p>
+<table>
+  <thead><tr><th>看起来矛盾</th><th>实际原因</th><th>怎么判</th></tr></thead>
+  <tbody>
+    <tr><td>基差率 7.89% 和 8.56%</td><td>一个除以现货价，一个除以期货价</td><td>看有没有注明"分母"</td></tr>
+    <tr><td>0.0914 和 9.14</td><td>一个是小数，一个是百分数</td><td>差 100 倍就是量纲问题</td></tr>
+    <tr><td>均线差几十点</td><td>统计的日期窗口不同</td><td>看"截至哪天"</td></tr>
+  </tbody>
+</table>
+
+<h3>盘中第一次分析特别慢</h3>
+<p>正常。交易时段（日盘 9:00–15:10、夜盘 21:00–23:30）行情还在变，系统不会缓存日线，每次都要重新取，多花约 5 秒。收盘后跑就快。</p>
+
+<h3>回看历史日期，数字却像最新的</h3>
+<p>这是目前已知的限制：技术面和基本面两块的量化数据<strong>永远取最新</strong>，不随你选的日期回退。分析历史日期时，报告里引用的价格可能不是那天的，<strong>别用它复盘</strong>。</p>
+
+<h3>看到"未取到"和看到"0"是两件事</h3>
+<p>"0"表示确实为零（比如本周库存没变）；"未取到"表示接口没拿到数据（可能是权限、超时、维护）。后者不能当成"没有影响"来读。</p>
+
+<!-- ------------------------------------------------------------------ -->
+<h2><span class="n">8</span>请不要做的事</h2>
+
+<ul>
+  <li><strong>不要关服务器上那个黑色命令行窗口</strong>（那是服务本体）。</li>
+  <li><strong>不要在服务器上删文件或改 <code>.env</code></strong> —— 那是全组共用的。</li>
+  <li><strong>不要同时开两个分析</strong>（见第 5 节）。</li>
+  <li><strong>不要上传超过 20 MB 的单个文件</strong>。</li>
+  <li><strong>不要把内网地址转发给外部的人</strong> —— 这个地址只在内网有效，但也别外传。</li>
+</ul>
+
+<hr>
+
+<div class="box ok">
+<h4>一句话总结</h4>
+<p>浏览器打开 <code>10.220.6.48:5000</code>，不用登录；看结论去「运行分析」，看数据去「基本面量化」，查观点去「研报」。<strong>最多 3 个人可以同时跑，互不干扰。</strong></p>
+</div>
+
+<p class="foot">本页只讲"怎么用"。系统维护、故障处理、已知限制的完整清单，见同目录的 <code>user-manual-2026-10-23.html</code>。地址、并发上限或功能有变动时，请同步更新本页第 1、5、6 节。</p>
+
+</div>
+</body>
+</html>

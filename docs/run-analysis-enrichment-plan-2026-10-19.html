@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运行分析 · 数据与结论增强方案（只规划，不改动）</title>
+<style>
+  :root{
+    --ink:#1d1d1f; --ink2:#424245; --ink3:#6e6e73; --ink4:#86868b;
+    --line:#e5e5ea; --tile:#f5f5f7; --blue:#0071e3; --blue-d:#0058b0; --blue-l:#eaf3fe;
+    --green:#00875a; --amber:#b25000; --red:#d70015;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#f5f5f7;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.68}
+  .wrap{max-width:1180px;margin:0 auto;padding:44px 32px 96px}
+  h1{font-size:36px;line-height:1.18;letter-spacing:-.022em;margin:0 0 12px}
+  h2{font-size:26px;letter-spacing:-.015em;margin:0 0 8px}
+  h3{font-size:18px;margin:30px 0 10px}
+  h4{font-size:15px;margin:20px 0 8px}
+  p{margin:0 0 12px;color:var(--ink2)}
+  .lead{font-size:17px;color:var(--ink3)}
+  .kicker{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);font-weight:600;margin-bottom:8px}
+  section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:26px 28px;margin-top:18px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .card{background:var(--tile);border-radius:10px;padding:18px 20px}
+  .card h4{margin-top:0}
+  .card p:last-child{margin-bottom:0}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:#fff;
+        border:1px solid var(--line);font-size:12px;color:var(--ink2)}
+  .pill.ok{background:#e9f7f0;border-color:#c9e9da;color:var(--green)}
+  .pill.warn{background:#fdf1e6;border-color:#f6ddc4;color:var(--amber)}
+  .pill.no{background:#fdecee;border-color:#f7d1d6;color:var(--red)}
+  .pill.blue{background:var(--blue-l);border-color:#cfe3fb;color:var(--blue-d)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--tile);padding:1px 5px;border-radius:4px}
+  table.t{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  table.t th,table.t td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.t th{font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink4);background:#fafafa}
+  table.t tr:last-child td{border-bottom:0}
+  table.t td.c{text-align:center}
+  ul,ol{margin:6px 0 12px;padding-left:20px;color:var(--ink2)}
+  li{margin:4px 0}
+  .note{border-left:3px solid var(--blue);background:var(--blue-l);padding:14px 18px;border-radius:0 8px 8px 0;font-size:13.5px;color:#0b3f78;margin:16px 0}
+  .warn{border-left:3px solid var(--amber);background:#fdf6ee;padding:14px 18px;border-radius:0 8px 8px 0;font-size:13.5px;color:#6e3d0e;margin:16px 0}
+  .note p,.warn p{color:inherit;margin:0}
+  pre{background:#1d1d1f;color:#e8e8ed;padding:16px 18px;border-radius:10px;overflow:auto;
+      font-family:var(--mono);font-size:12.5px;line-height:1.65;margin:10px 0}
+  pre .c{color:#8b8b90}
+  pre .k{color:#7cc4ff}
+  pre .v{color:#ffd479}
+  .arch{display:grid;gap:10px;margin-top:10px}
+  .layer{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fff}
+  .layer .t{font-size:12px;color:var(--ink4);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
+  .layer .body{display:flex;gap:8px;flex-wrap:wrap}
+  .node{background:var(--tile);border-radius:8px;padding:8px 12px;font-size:12.5px;color:var(--ink2);border:1px solid #ececf0}
+  .node.hot{background:var(--blue-l);border-color:#cfe3fb;color:var(--blue-d);font-weight:500}
+  .arrow{text-align:center;color:var(--ink4);font-size:12px;line-height:1}
+  .phase{display:grid;grid-template-columns:110px minmax(0,1fr);gap:18px;padding:18px 0;border-bottom:1px solid var(--line)}
+  .phase:last-child{border-bottom:0}
+  .phase .tag b{display:block;font-size:20px;letter-spacing:-.01em}
+  .phase .tag span{font-size:11px;color:var(--ink4)}
+  .small{font-size:13px}
+  .muted{color:var(--ink3)}
+  footer{margin-top:28px;color:var(--ink4);font-size:12.5px;text-align:center}
+  @media(max-width:900px){.g2,.g3{grid-template-columns:1fr}.phase{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="kicker">AgentSense · Run Analysis Enrichment</div>
+<h1>运行分析：把「国君四源 + 技术面/基本面结论」接进来</h1>
+<p class="lead">这是一份<strong>只规划、不改动项目</strong>的方案。目标不是再加几个工具，而是把分析链路的输入从「原始序列」升级为「已算好的结论」，并让技能卡真正落到节点上。</p>
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+  <span class="pill blue">2026-10-19 · v1 待确认</span>
+  <span class="pill">仅规划 · 零代码改动</span>
+  <span class="pill">4 个阶段</span>
+  <span class="pill ok">现有基线：31/65 张能力卡</span>
+</div>
+
+<section style="border-color:#c9e9da;background:#f4fbf7">
+  <div class="kicker" style="color:#00875a">进展 · P0 已完成（2026-10-19 16:10）</div>
+  <h2>国君四源已经接进基本面分析师</h2>
+  <p>按"先做 P0"启动：新增 <code>tradingagents/dataflows/analysis_bundle.py</code>，把四源压成 ≤1100 字的注入块，
+     确定性拼进<strong>基本面分析师</strong>的 system prompt（技术/宏观不注入）。</p>
+  <div class="grid g3" style="margin:14px 0 6px">
+    <div class="card"><h4>口径修正</h4><p class="small">基差率改为自算 <code>basis/spot</code>（接口字段是小数，直接用会差 100 倍）；小基数不给百分比（仓单 1,000→19,590 会显示成 +1859%）。</p></div>
+    <div class="card"><h4>不阻塞分析</h4><p class="small">10 分钟缓存 + 单飞 + 6 秒超时降级；分析启动时先用后台线程预热（冷启动实测 16.9s）。</p></div>
+    <div class="card"><h4>验证</h4><p class="small">14 例护栏（含真实提示捕获：基本面有块、技术面没有）；变异 4/4 击杀；全量回归与基线一致。</p></div>
+  </div>
+  <p class="small muted">样例（TA，真实读数）：基差 7,000 / 6,470 / +530（7.57%）、仓单 19,590（5日 +18,588，基数小）、社会库存 1,385,241（分位 23%）、加工利润 15（分位 24%）。</p>
+</section>
+
+<!-- ══════ 1 现状 ══════ -->
+<section style="border-color:#c9e9da;background:#f4fbf7">
+  <div class="kicker" style="color:#00875a">进展 · P1 已实施（2026-10-19 17:45）</div>
+  <h2>不做融合，改成「按数据轴分发」</h2>
+  <p>原方案 P1 打算给技术/基本面各注入一个结论块、再让交易员做证据摘要。落地时改成了更彻底的一条：
+     <b>不产生任何总分</b>，把量化结论按<b>数据轴</b>直接拆给对应分析师，聚合留到最后一步（研究经理）。</p>
+
+  <table class="t">
+    <thead><tr><th style="width:170px">接收方</th><th style="width:230px">拿到什么</th><th>明确不拿什么</th></tr></thead>
+    <tbody>
+      <tr><td><b>技术分析师</b></td>
+          <td><b>价格轴</b>：技术快照（均线/RSI/MACD/BOLL/ATR/持仓）+ 价格轴票（鹿希武、墨菲 ADXR·背离·突破、威科夫、周期阶段）+ 价格轴加权分 + 双线同破闸门状态</td>
+          <td>基差 / 库存 / 利润 —— 块内明写「勿据本块推翻产业逻辑，也勿据库存解释 K 线」</td></tr>
+      <tr><td><b>基本面分析师</b></td>
+          <td><b>基差 / 库存 / 利润三轴</b>：三指标策略（库存×利润×基差 → 四类策略）+ 三轴票 + 各轴得分 + 虚实盘比 +「套利/对冲」这类结构性结论</td>
+          <td>价格轴 —— 块内明写「勿据此推断入场时点；若产业看多而盘面走弱，写『产业未获盘面确认』」</td></tr>
+      <tr><td><b>宏观/情绪</b></td><td>都不给（它不参与这个分工）</td><td>—</td></tr>
+      <tr><td><b>研究经理</b></td>
+          <td><b>两方结构化对照</b>：各轴得分 + 每轴均值 + 一致性判定 + 闸门状态 + <b>裁决纪律</b></td>
+          <td>两边原文、任何总分 —— 它看到的是「技术 −1.00 偏空 / 基本面 +0.37 偏多 / 方向相反」</td></tr>
+    </tbody>
+  </table>
+
+  <h3>为什么按「轴」而不是按「书」分</h3>
+  <p>每张票本来就带 <code>axis</code>，而轴对应的是<b>数据来源</b>：鹿希武、墨菲、威科夫读的都是 K 线，属同一根轴；
+     四象的估值腿读基差、驱动腿读库存，所以它在源头被拆成 <code>axis_parts</code>。
+     按书分会出现「墨菲 ADXR 该给谁」这种无解问题；按轴分不会。</p>
+
+  <h3>裁决层只给流程，不给硬规则</h3>
+  <p>研究经理拿到的是一段固定纪律，而不是一个提前算好的总分：</p>
+  <ul>
+    <li><b>同向</b> → 可给单边，置信度上调一档，但必须写失效条件</li>
+    <li><b>反向</b> → <b>不得直接选边</b>，输出「区间 + 触发条件 + 失效条件 + 时间止损」（18 组「谁赢」组合无一通过 Bonferroni，写死「某方优先」等于把掷硬币包装成方法）</li>
+    <li><b>任一维缺失</b> → 写「该维度无数据」，<b>不得用「中性」顶替</b></li>
+    <li><b>频率纪律</b> → 库存是周频，不能支撑 ≤3 个交易日；技术面只在 ≤20 日窗口作确认器</li>
+  </ul>
+
+  <div class="warn">
+    <p><b>落地时撞出来的三类问题（都已修）：</b><br>
+    ① <b>技术视图里泄漏了「库存」两个字</b>——「库存周期」这张票的票名与说明都带库存，而它的方向其实由价格决定。
+       只改说明不够，票名也做了中性化（<code>多空逻辑(周期阶段)</code>），否则技术分析师照样会被引到产业数据上。<br>
+    ② <b>把「套利/对冲(适合反套)」误报成数据缺口</b>——它不是方向票，两个分量已分别计入基差轴与库存轴。
+       判据要按<b>方向票</b>过滤，否则每遇到结构性结论就误报一次。<br>
+    ③ <b><code>warm()</code> 走 8s 超时就等于没预热</b>——实测返回时缓存还是空的，首次分析照样拿不到块。预热线程必须阻塞到算完。</p>
+  </div>
+
+  <p class="small muted">实现：<code>tradingagents/dataflows/analyst_views.py</code>（新增，三个视图 + 缓存/单飞/超时降级）。
+     接线：<code>commodity_analysts.py</code> 两个分析师节点 + <code>research_manager.py</code>；<code>web_app.py</code> 预热改为两条线。
+     护栏 <code>tests/test_analyst_views.py</code> <b>24 例</b>，变异自检 <b>8/8 全击杀</b>。</p>
+</section>
+
+<section>
+  <div class="kicker">01 · 现状</div>
+  <h2>先看现在已经接了什么</h2>
+  <p>分析链路是：4 个分析师（技术 / 基本面 / 宏观 / 情绪）→ 多空研究员辩论 → 研究经理 → 交易员 → 3 位风险辩论 → 组合经理。每个分析师都有工具白名单，并且已经有一套<strong>确定性注入</strong>（把关键读数直接拼进 system prompt，不依赖 LLM 是否调工具）。</p>
+
+  <table class="t">
+    <thead><tr><th style="width:150px">数据</th><th style="width:90px">是否进分析</th><th style="width:280px">现在走哪条通道</th><th>缺口</th></tr></thead>
+    <tbody>
+      <tr><td><b>行情 / K线 / 技术指标</b></td><td class="c"><span class="pill ok">已用</span></td>
+          <td>工具 <code>get_futures_price</code> / <code>get_futures_indicators</code> / <code>get_verified_quote</code></td>
+          <td>只到"指标值"，没有"这套指标合起来是什么结论"</td></tr>
+      <tr><td><b>基差</b></td><td class="c"><span class="pill ok">部分</span></td>
+          <td>工具 <code>get_futures_basis</code>（akshare → 100ppi 兜底）</td>
+          <td>没用国君基差（18/21 覆盖、含 SMM 口径与基差率）</td></tr>
+      <tr><td><b>仓单 / 库存</b></td><td class="c"><span class="pill ok">部分</span></td>
+          <td>工具 <code>get_futures_inventory</code>（混合口径）</td>
+          <td><b>没有区分「期货库存 / 社会库存」双口径</b>，也没用交易所注册仓单（21/21）</td></tr>
+      <tr><td><b>加工/进口利润</b></td><td class="c"><span class="pill no">未用</span></td>
+          <td>—</td>
+          <td>国君利润全量数据集（含历史分位）只在数据仓库页展示</td></tr>
+      <tr><td><b>技术面量化结论</b></td><td class="c"><span class="pill warn">半用</span></td>
+          <td>方法论注入块用 <code>quant_methodology</code> 的纯函数现算</td>
+          <td>没用 <code>quant_module</code> 已经算好的 score/verdict、多周期共振、全池排名</td></tr>
+      <tr><td><b>基本面量化结论</b></td><td class="c"><span class="pill warn">半用</span></td>
+          <td>方法论块算了四象与期限结构</td>
+          <td>没用 <code>fund_module</code> 的「三指标→四类策略」与「虚实盘比/逼仓」</td></tr>
+      <tr><td><b>研报 / 情绪 / 品种库</b></td><td class="c"><span class="pill ok">已用</span></td>
+          <td>确定性注入 + 工具下钻</td>
+          <td>—</td></tr>
+    </tbody>
+  </table>
+
+  <h3>1.1 四个缺口</h3>
+  <div class="grid g2">
+    <div class="card"><h4>① 国君四源只在页面上</h4><p class="small">数据仓库页已经把「基差 / 仓单 / 期货库存 / 社会库存 / 加工利润」算成了带分位的指标，但分析链路一次都没读过它。</p></div>
+    <div class="card"><h4>② 分析师拿到的是"原料"</h4><p class="small">工具返回 CSV，LLM 要自己从序列里推结论。同一份数据，页面上有明确结论（偏多/偏空、象限、策略类型），分析师却要重算一遍，且可能算错。</p></div>
+    <div class="card"><h4>③ 没有横截面</h4><p class="small">单品种分析看不到它在 21 个品种里的相对位置——"这个品种的库存分位是 78%，但全池中位数是 55%"这种话现在说不出来。</p></div>
+    <div class="card"><h4>④ 技能卡只喂了 31/65</h4><p class="small">用 <code>_runtime_card_probe.py</code> 实跑 RB：31 张卡真正出现在产物里。五书里组合层（Carver handcrafting）、执行层（Harris 滑点参数化）没有落点。</p></div>
+  </div>
+</section>
+
+<!-- ══════ 2 目标架构 ══════ -->
+<section>
+  <div class="kicker">02 · 架构</div>
+  <h2>数据层 → 结论层 → 双通道注入</h2>
+  <p>沿用项目已验证的模式（<code>analyst-context-injection</code>）：<strong>关键读数确定性注入 system prompt，下钻才交给工具</strong>。新增的只是"数据"和"结论"两层。</p>
+
+  <div class="arch">
+    <div class="layer">
+      <div class="t">L0 数据层 · 一次预取</div>
+      <div class="body">
+        <span class="node hot">gtja_overview（6h 缓存）</span>
+        <span class="node hot">quant_snapshot（5min）</span>
+        <span class="node hot">fund_verdict（10min）</span>
+        <span class="node">cross_section（全池 21）</span>
+        <span class="node">sentiment / research（已有）</span>
+      </div>
+    </div>
+    <div class="arrow">↓ 统一装进 <code>analysis_bundle(symbol, date)</code>，与分析师并行预取；3s 超时降级为"只用已有缓存"</div>
+    <div class="layer">
+      <div class="t">L1 结论层 · 压成结构化结论</div>
+      <div class="body">
+        <span class="node">技术：trend / resonance / key levels / ATR</span>
+        <span class="node">基本面：三指标策略 / 象限 / 虚实盘比</span>
+        <span class="node">库存：双口径背离标记</span>
+        <span class="node">横截面：排名 + 分位</span>
+      </div>
+    </div>
+    <div class="arrow">↓ 每块 ≤ 800 字，只放"会改变结论"的读数</div>
+    <div class="layer">
+      <div class="t">L2 注入层 · 双通道</div>
+      <div class="body">
+        <span class="node hot">技术分析师（技术结论块）</span>
+        <span class="node hot">基本面分析师（GTJA + 基本面结论块）</span>
+        <span class="node">宏观（板块共振）</span>
+        <span class="node hot">交易员（证据摘要 + 冲突规则）</span>
+      </div>
+      <div class="body" style="margin-top:8px">
+        <span class="node">@tool get_gtja_snapshot</span>
+        <span class="node">@tool get_quant_view</span>
+        <span class="node">@tool get_fund_view</span>
+        <span class="node">@tool get_cross_section</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <p><b>为什么不直接把 CSV 塞给 LLM：</b>国君四源一个品种最多 16 个指标 + 175 天序列，原始数据几十 KB，既占 token 又需要模型自己做统计。而 <code>quant_module</code> / <code>fund_module</code> 已经把这些算成了 score / 象限 / 策略类型 —— 结论层只是<strong>把已有计算结果的"摘要"搬进提示</strong>，不新增一套计算。</p>
+  </div>
+<h3 id="priority">2.1 为什么优先级是「一手库 &gt; GTJA &gt; 公开接口」</h3>
+  <p>这不是"谁更准"的排名，而是三条判据合起来的结果：<b>离原始口径多近</b>、<b>能不能追溯与复现</b>、<b>与站内其它页面是否同源</b>。</p>
+
+  <table class="t">
+    <thead><tr><th style="width:130px">判据</th><th style="width:250px">一手品种库</th><th style="width:250px">国君 GTJA</th><th>公开接口（akshare / 100ppi）</th></tr></thead>
+    <tbody>
+      <tr><td><b>口径硬度</b></td>
+          <td>用户导入的产业数据（厂内/社会库存、开工、产量、排产、裂差）。<b>加工环节最少</b>，很多指标公开源根本没有。</td>
+          <td>交易所注册仓单是<b>准官方</b>；基差优先取 SMM 现货指数；库存/利润是国君自建数据集。</td>
+          <td>聚合商二次加工，现货定义、地区、频率各家不一；兜底源（100ppi）与主源口径可能不同。</td></tr>
+      <tr><td><b>可追溯</b></td>
+          <td>块内带"最新值 + 日期 + 环比 + 近4期 + 分位"，可回指到具体模块。</td>
+          <td>接口原始字段（onWarrant / basisValue / dataType），单位不归一但<b>一条序列一个定义</b>。</td>
+          <td>命名别名、限流、字段变动都会让"同一个指标"悄悄换口径（FU/P/PG/PX 就踩过别名 KeyError）。</td></tr>
+      <tr><td><b>站内一致性</b></td>
+          <td>只在分析链路用，页面上没有对照。</td>
+          <td><b>数据仓库页、量化页基差/仓单都用它</b> —— 分析引用它，用户翻页核对时数字对得上。</td>
+          <td>与页面对不上时，用户会认为"分析在乱写"（哪怕只是口径差异）。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warn">
+    <p><b>所以它是"有条件优先级"，不是无条件覆盖。</b>只有当三个条件同时满足时才按这个顺序取值：<br>
+    ① <b>同一指标</b>（都叫"社会库存"，不是"厂内库存" vs "社会库存"）；② <b>同一时段</b>（同一天/同一周）；③ <b>同口径</b>（同为日频、同为吨、同为现货指数）。<br>
+    指标不同就不存在优先级问题 —— 一手库的"炼厂排产"和 GTJA 的"仓单"根本不是一回事。</p>
+  </div>
+
+  <h4>四个降级条件（任何一条成立就往下让）</h4>
+  <table class="t">
+    <thead><tr><th style="width:170px">条件</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td><b>高优先源是未来/计划值</b></td><td>一手库的平衡表/排产表常把未来月份预填成计划值。<b>只取 ≤ 今天的实际值</b>；被排除的点数在句尾注明（"另有 3 个未来日期点，未计入"）。</td></tr>
+      <tr><td><b>该品种未导入</b></td><td>一手库按品种导入，未导入就返回 <code>NO_DATA</code> 并落到 GTJA，<b>不得编造</b>，也不得把"没导入"当成"库存为 0"。</td></tr>
+      <tr><td><b>高优先源失败</b></td><td>GTJA 的 <code>available=false</code> 是"取数失败"，不是"没数据"；此时降级到公开接口，并在块内写明"取自公开接口，GTJA 本次失败"。</td></tr>
+      <tr><td><b>高优先源过期</b></td><td>一手库最新日期若落后 GTJA 超过一个发布周期（周频 &gt;10 天 / 日频 &gt;3 天），以 GTJA 为准并标注"一手库停在 X 月 X 日"。</td></tr>
+    </tbody>
+  </table>
+
+  <p class="small muted">落地时把优先级写成一个取值函数（<code>pick(metric, as_of)</code>），返回值带 <code>source</code> 字段；注入块里每条读数都署名来源。<b>冲突要写出来，不要静默择一</b> —— 这和分析链路"三态不可混"是同一条纪律。</p>
+</section>
+
+<!-- ══════ 3 注入块样例 ══════ -->
+<section>
+  <div class="kicker">03 · 样例</div>
+  <h2>注入块长什么样</h2>
+  <p class="muted small">下面是结构示例，<b>数值仅示意，不是实时读数</b>。目的是让评审看到"密度"与"口径声明"。</p>
+
+  <h4>给基本面分析师（新增，接在品种库块之后）</h4>
+<pre><span class="c">【国君四源 · 2026-10-19（确定性注入，零工具成本）】</span>
+<span class="k">权重</span>: 与公开接口 / 研报同口径冲突时以本块为准（交易所 / 国君原始口径）
+<span class="k">三态</span>: 基差 ok · 仓单 ok · 库存 ok · 利润 ok（4/4）
+
+<span class="k">◆ 基差</span> 现货 3,180 / 期货 3,150 / 基差 <span class="v">+30 (+0.95%)</span>，近175天分位 62%
+<span class="k">◆ 仓单</span> 82,410 吨，5日 <span class="v">-3.2%</span>，分位 41%
+<span class="k">◆ 库存</span> 期货库存 61,200（分位 38%）/ 社会库存 108,700（分位 71%）
+        <span class="v">⚠ 双口径背离：仓单降 + 社库升 → 库存向交割库转移</span>
+<span class="k">◆ 利润</span> 现货 214 元/吨，分位 <span class="v">78%（偏高 → 刺激供给，中期偏空）</span>
+
+<span class="c">【基本面量化结论（fund_module 同源，勿自行重算）】</span>
+<span class="k">◆ 三指标策略</span> 库存 高 / 基差 高 / 利润 高 → <span class="v">类型：偏空（远端）</span>
+<span class="k">◆ 象限</span> 估值 低 × 驱动 弱 → <span class="v">"低估值 + 弱驱动"（等待驱动反转）</span>
+<span class="k">◆ 虚实盘比</span> 1.82（仓单折手 4,120 / 主力持仓 7,500）→ 未触发逼仓边际</pre>
+
+  <h4>给技术分析师（新增）</h4>
+<pre><span class="c">【技术面结论（quant_module 同源）】</span>
+<span class="k">◆ 判读</span> 偏多（score +3 / 五项中三项为正）
+<span class="k">◆ 多周期共振</span> 日 / 周 / 月 <span class="v">2/3 同向</span>（月线仍空）
+<span class="k">◆ 关键位</span> 支撑 3,080（前低）/ 阻力 3,260（前高 + BOLL 上轨）
+<span class="k">◆ 波动</span> ATR(14) 62 → 建议止损 ≥ 1.5×ATR = 93
+<span class="k">◆ 全池位置</span> 趋势强度排名 <span class="v">7/21</span>（能化板块第 3）</pre>
+
+  <h4>给交易员（新增）</h4>
+<pre><span class="c">【证据摘要 · 三方结论】</span>
+<span class="k">技术</span> 偏多（+3）  <span class="k">基本面</span> 偏空（库存高 + 利润高）
+<span class="k">情绪</span> 中性（多空比 52/48，样本 1,240）
+<span class="v">⚠ 分歧：技术偏多 vs 基本面偏空 → 按规则降级为"区间/观望"</span>
+<span class="k">触发条件</span>: 收盘站上 3,260 且仓单 5 日继续下降 → 转多；跌破 3,080 → 转空
+<span class="k">失效条件</span>: 社会库存分位回落至 50% 以下（驱动反转）</pre>
+</section>
+
+
+
+<section>
+  <div class="kicker">04 · 结论优化</div>
+  <h2>"用结论优化结论"的核心：冲突消解</h2>
+  <p>现在四个分析师各写各的，到了研究员/交易员阶段靠 LLM 自由发挥。加上结论块之后，必须给一张<strong>明确的裁决表</strong>，否则模型会把矛盾的两段都抄进结论。</p>
+
+  <table class="t">
+    <thead><tr><th style="width:170px">技术面</th><th style="width:170px">基本面</th><th>处理</th><th style="width:200px">输出</th></tr></thead>
+    <tbody>
+      <tr><td>同向</td><td>同向</td><td>置信度上调一档；方向明确</td><td>单边（可带仓位建议）</td></tr>
+      <tr><td>同向</td><td>反向</td><td><b>降级为区间/观望</b>，必须写出两边证据与触发条件</td><td>"分歧" + 触发/失效条件</td></tr>
+      <tr><td>中性</td><td>同向</td><td>按基本面方向，但标注"缺技术确认"</td><td>轻仓/等待确认</td></tr>
+      <tr><td>反向</td><td>反向</td><td>同上（都是弱信号，不硬凑方向）</td><td>观望</td></tr>
+      <tr><td>任一缺失</td><td>—</td><td><b>不得用缺失方的"中性"顶替</b>，如实写"该维度无数据"</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">这条规则同时接上 Carver 的"反自欺评估"（不给没把握的方向）与多空逻辑的"证据链"要求。</p>
+</section>
+
+
+<!-- ══════ 5 路线 ══════ -->
+<section>
+  <div class="kicker">05 · 路线</div>
+  <h2>四个阶段，每阶段可独立上线</h2>
+
+  <div class="phase">
+    <div class="tag"><b>P0</b><span>约 1 天</span></div>
+    <div>
+      <h4 style="margin-top:0">国君四源接进基本面分析师</h4>
+      <ul>
+        <li>新增 <code>analysis_bundle(symbol, date)</code>：并行取 GTJA overview + quant/fund 缓存快照，3s 超时降级。</li>
+        <li>新增注入块 <code>gtja_context(symbol)</code>：8~12 条读数（基差/仓单/双口径库存/利润分位 + 三态计数）。</li>
+        <li>只注入<strong>基本面分析师</strong>；技术/宏观/情绪不注入（避免拿库存解释 K 线）。</li>
+      </ul>
+      <p class="small"><b>验收</b>：假 LLM 截获真实 system prompt，断言块存在且长度 300~1200 字；关掉注入→测试必红；P95 延迟 +≤8s；GTJA 失败时块内写"接口失败，未纳入"而不是静默消失。</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="tag"><b>P1</b><span>1~2 天</span></div>
+    <div>
+      <h4 style="margin-top:0">技术 / 基本面结论块 + 交易员证据摘要</h4>
+      <ul>
+        <li>技术块：<code>quant_module._technical_snapshot</code> 的 score/verdict/ma_state + 多周期共振 + 关键位 + ATR。</li>
+        <li>基本面块：<code>fund_module</code> 的三指标策略类型 / 四象象限 / 虚实盘比 / 利润分位（与 P0 的 GTJA 块互补：一个给读数，一个给结论）。</li>
+        <li>交易员节点注入「证据摘要」+ 冲突裁决表（见 04）。</li>
+      </ul>
+      <p class="small"><b>验收</b>：抽样 20 份报告，≥80% 明确引用了注入读数（正则匹配"分位/基差/仓单/象限"等锚点）；同一品种同一日期连跑 3 次，方向判定稳定（不让温度把结论抖来抖去）。</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="tag"><b>P2</b><span>约 2 天</span></div>
+    <div>
+      <h4 style="margin-top:0">四个下钻工具 + 全池截面</h4>
+      <ul>
+        <li><code>get_gtja_snapshot(symbol, window)</code>：四源三态 + 分位 + 单位说明。</li>
+        <li><code>get_quant_view(symbol, section)</code> / <code>get_fund_view(symbol, section)</code>：按 section 取结论，不返回整表。</li>
+        <li><code>get_cross_section(metric, top_n)</code>：21 品种排名（复用 quant ranking / fund matrix 的 10min 缓存）。</li>
+      </ul>
+      <p class="small"><b>验收</b>：工具调用成功率 ≥95%；单次分析的工具轮数 ≤ 现状 +1（防止模型到处乱查）；截面查询命中缓存 &lt;50ms。</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="tag"><b>P3</b><span>约 2 天</span></div>
+    <div>
+      <h4 style="margin-top:0">技能卡补齐：31 → 45 张</h4>
+      <ul>
+        <li>用 <code>_runtime_card_probe.py</code> 做运行时验收（不看静态 grep）。</li>
+        <li>按五书补落点：Carver 组合层（跨品种 handcrafting / forecast scaling）、Harris 执行层（按品种流动性的滑点参数）、鹿希武（交易计划落到交易员输出）、Murphy（多周期共振显式化）。</li>
+        <li>每张新卡都要有"落在哪个节点/哪段注入/哪条规则"，写进映射表。</li>
+      </ul>
+      <p class="small"><b>验收</b>：探针输出 ≥45 张；新增的每张卡都能在"关掉对应注入/规则"时让某条测试变红。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════ 6 成本 ══════ -->
+<section>
+  <div class="kicker">06 · 成本</div>
+  <h2>延迟与 token 预算</h2>
+  <table class="t">
+    <thead><tr><th style="width:200px">项</th><th style="width:240px">现状（实测/代码约定）</th><th>目标</th></tr></thead>
+    <tbody>
+      <tr><td>GTJA 全量端点冷启动</td><td>6~18s（6h 磁盘缓存）</td><td>分析前预取；命中时 &lt;50ms</td></tr>
+      <tr><td>GTJA 基差分片</td><td>175 天/片 × 最多 6 片 ≈ 3.2s</td><td>复用 overview 缓存，不在分析内现拉</td></tr>
+      <tr><td>quant 快照</td><td>overview 5min / 基差 15min / 期限 60s 缓存</td><td>直接读缓存</td></tr>
+      <tr><td>fund 全池矩阵</td><td>10min 缓存，并发 6；冷启动 40s+</td><td><b>禁止在分析里现算全池</b>，只读缓存</td></tr>
+      <tr><td>注入 token</td><td>现有三块方法论 ≈ 2.4k 字符</td><td>新增 ≤1.2k tokens（三块合计）</td></tr>
+      <tr><td>单次分析总延迟</td><td>—</td><td>P95 增加 ≤12s</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><b>最容易翻车的一处：</b>把 <code>fund_module</code> 的全池矩阵放进同步链路。它冷启动 40s 以上，而分析是用户点一次等一次的交互。正确做法是"读缓存 + 后台刷新"（stale-while-revalidate），缓存没有就退化为"本次不注入"，绝不能阻塞。</p>
+  </div>
+</section>
+
+<!-- ══════ 7 风险 ══════ -->
+<section>
+  <div class="kicker">07 · 风险</div>
+  <h2>风险与回滚</h2>
+  <table class="t">
+    <thead><tr><th style="width:200px">风险</th><th>机制</th><th style="width:280px">缓解</th></tr></thead>
+    <tbody>
+      <tr><td><b>GTJA 限流/失败</b></td><td>四源里有三源要打上游，分析时并发多</td><td>只用缓存值；失败写"接口失败，未纳入"；不改用 0 顶替（三态纪律）</td></tr>
+      <tr><td><b>两个数据源打架</b></td><td>方法论块（quant_methodology 现算）与 GTJA 同指标不同值</td><td>权重声明：一手品种库 &gt; GTJA &gt; 公开接口；同口径以新日期为准，并在块内标注口径</td></tr>
+      <tr><td><b>提示词膨胀</b></td><td>新块被塞在长提示中间，模型忽略</td><td>全部放在 system prompt <b>最前</b>；每块 ≤800 字；块首写"优先阅读"</td></tr>
+      <tr><td><b>结论被当事实</b></td><td>模型把"量化信号"写成"事实"</td><td>每个结论带 <code>as_of</code> 与来源；禁止反推；分歧必须写触发/失效条件</td></tr>
+      <tr><td><b>并发分析抢缓存</b></td><td>同一品种多用户同时点分析</td><td>单飞（single-flight）合并请求；缓存键含品种+日期</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <p><b>回滚方式：</b>每一阶段都是"新增注入函数 + 新增工具 + 在节点里加几行"，删掉对应调用即恢复。不改现有工具的返回格式、不改数据库结构、不改页面接口。</p>
+  </div>
+</section>
+
+<!-- ══════ 8 待确认 ══════ -->
+<section>
+  <div class="kicker">08 · 待确认</div>
+  <h2>三个需要你拍板的点</h2>
+  <ol>
+    <li><b>范围</b>：先做 P0（国君四源，1 天）还是 P0+P1（连量化结论一起，2~3 天）？</li>
+    <li><b>冲突处理</b>：技术偏多 / 基本面偏空时，你希望默认"降级为观望"，还是"按基本面方向、技术只做入场时机"？（两种都合理，取决于你的交易风格）</li>
+    <li><b>横截面</b>：全池排名要不要进报告正文？还是只作为分析师的内部参考（不写进结论）？</li>
+  </ol>
+  <p class="small muted">确认后我再动代码。按当前约定，实施时同样会走"实验副本先验 → 原项目落地 → 护栏 + 变异自检"的流程。</p>
+</section>
+
+<footer>AgentSense · 运行分析增强方案 · 2026-10-19 · 本文档不含任何代码改动</footer>
+</div>
+</body>
+</html>

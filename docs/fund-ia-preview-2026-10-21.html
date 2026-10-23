@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>基本面量化 · 改造效果图（2026-10-21）</title>
+<style>
+  :root{
+    --bg:#ffffff; --bg-card:#f5f5f7; --bg-nest:#ffffff; --bg-bar:rgba(255,255,255,.86);
+    --border:#d2d2d7; --border-l:#e8e8ed;
+    --text:#1d1d1f; --text-2:#57575d; --text-3:#6e6e73;
+    --brand:#0071e3; --brand-dim:rgba(0,113,227,.09); --brand-ln:rgba(0,113,227,.30);
+    --red:#d70015; --red-bg:rgba(215,0,21,.08);
+    --green:#1d7a34; --green-bg:rgba(48,209,88,.13);
+    --amber:#b25000; --amber-bg:rgba(255,159,10,.15);
+    --purple:#6b3fa0; --purple-bg:rgba(107,63,160,.10);
+    --shadow:none;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Consolas,monospace;
+  }
+  [data-theme="dark"]{
+    --bg:#000000; --bg-card:#1d1d1f; --bg-nest:#2c2c2e; --bg-bar:rgba(0,0,0,.78);
+    --border:#424245; --border-l:#2c2c2e;
+    --text:#f5f5f7; --text-2:#a1a1a6; --text-3:#98989d;
+    --brand:#2997ff; --brand-dim:rgba(41,151,255,.14); --brand-ln:rgba(41,151,255,.38);
+    --red:#ff453a; --red-bg:rgba(255,69,58,.14);
+    --green:#30d158; --green-bg:rgba(48,209,88,.14);
+    --amber:#ff9f0a; --amber-bg:rgba(255,159,10,.14);
+    --purple:#bf9bff; --purple-bg:rgba(191,155,255,.12);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.6;
+       -webkit-font-smoothing:antialiased}
+
+  /* ── 演示外壳（不属于产品 UI） ── */
+  .demo-bar{position:sticky;top:0;z-index:50;backdrop-filter:blur(18px);background:var(--bg-bar);
+            border-bottom:1px solid var(--border-l);padding:10px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .demo-bar .t{font-weight:650;font-size:14px;letter-spacing:-.01em}
+  .demo-bar .t small{font-weight:400;color:var(--text-3);margin-left:8px;font-size:12px}
+  .demo-bar .sp{flex:1}
+  .seg{display:inline-flex;background:var(--bg-card);border:1px solid var(--border-l);border-radius:999px;padding:2px}
+  .seg button{border:0;background:transparent;color:var(--text-2);font:inherit;font-size:12.5px;
+              padding:5px 14px;border-radius:999px;cursor:pointer}
+  .seg button.on{background:var(--bg-nest);color:var(--text);box-shadow:0 0 0 1px var(--border-l)}
+  [data-theme="dark"] .seg button.on{background:#3a3a3c}
+  .chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);cursor:pointer;user-select:none}
+  .chk input{accent-color:var(--brand)}
+
+  .stage{max-width:1560px;margin:0 auto;padding:18px 24px 90px}
+
+  /* ── 产品 UI ── */
+  .crumb{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--bg-card);
+         border:1px solid var(--border-l);border-radius:8px;font-size:12px;color:var(--text-3);margin-bottom:12px}
+  .crumb b{color:var(--text);font-weight:600}
+  .crumb .back{color:var(--brand);cursor:pointer}
+  .crumb .dot{color:var(--border)}
+
+  .page-head{background:var(--bg-card);border:1px solid var(--border-l);border-radius:10px;
+             padding:16px 18px;margin-bottom:14px}
+  .page-head .row1{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .page-head h1{font-size:19px;margin:0;font-weight:650;letter-spacing:-.01em}
+  .page-head .meta{font-size:12px;color:var(--text-3)}
+  .page-head .row2{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+  .sel{appearance:none;background:var(--bg-nest);color:var(--text);border:1px solid var(--border);
+       border-radius:7px;padding:6px 28px 6px 10px;font:inherit;font-size:12.5px;cursor:pointer;
+       background-image:linear-gradient(45deg,transparent 50%,var(--text-3) 50%),linear-gradient(135deg,var(--text-3) 50%,transparent 50%);
+       background-position:calc(100% - 15px) 51%,calc(100% - 10px) 51%;
+       background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+  .btn{border:1px solid var(--border);background:var(--bg-nest);color:var(--text);border-radius:7px;
+       padding:6px 13px;font:inherit;font-size:12.5px;cursor:pointer}
+  .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  .btn:hover{filter:brightness(1.04)}
+  .cov{font-size:11.5px;color:var(--text-3);margin-top:10px;line-height:1.7}
+  .cov b{color:var(--text-2);font-weight:600}
+
+  /* 分区标题条 */
+  .sec{display:flex;align-items:center;gap:14px;margin:26px 0 12px;padding:12px 16px;
+       border:1px solid var(--border-l);border-radius:10px;background:var(--bg-card)}
+  .sec .letter{flex:0 0 auto;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
+               font-weight:700;font-size:15px;background:var(--brand-dim);color:var(--brand);border:1px solid var(--brand-ln)}
+  .sec.data .letter{background:var(--brand-dim);color:var(--brand);border-color:var(--brand-ln)}
+  .sec.sig .letter{background:var(--purple-bg);color:var(--purple);border-color:currentColor}
+  .sec .txt{flex:1;min-width:0}
+  .sec .txt b{display:block;font-size:14.5px;letter-spacing:-.005em}
+  .sec .txt span{display:block;font-size:12px;color:var(--text-3);margin-top:1px}
+  .sec .cnt{font-size:11.5px;color:var(--text-3);white-space:nowrap}
+  .sec .fold{font-size:12px;color:var(--brand);cursor:pointer;white-space:nowrap;background:none;border:0;font-family:inherit}
+
+  /* 卡片 */
+  .card{background:var(--bg-card);border:1px solid var(--border-l);border-radius:10px;padding:15px 17px;margin-bottom:12px;position:relative}
+  .card h3{display:flex;align-items:center;gap:9px;margin:0 0 4px;font-size:14.5px;font-weight:650;letter-spacing:-.005em;flex-wrap:wrap}
+  .card h3::before{content:"";width:3px;height:15px;border-radius:2px;background:var(--brand);flex:0 0 auto}
+  .sec-sig .card h3::before{background:var(--purple)}
+  .card .no{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--brand);
+            background:var(--brand-dim);border:1px solid var(--brand-ln);border-radius:5px;padding:0 6px;line-height:18px}
+  .sec-sig .card .no{color:var(--purple);background:var(--purple-bg);border-color:currentColor}
+  .card .sub{font-size:12px;color:var(--text-3);margin:0 0 11px}
+  .card .body{font-size:13px;color:var(--text-2)}
+  .card .body b{color:var(--text)}
+  .badge{font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid transparent;white-space:nowrap;font-weight:500}
+  .b-warn{color:var(--amber);background:var(--amber-bg);border-color:currentColor}
+  .b-ok{color:var(--green);background:var(--green-bg);border-color:currentColor}
+  .b-bad{color:var(--red);background:var(--red-bg);border-color:currentColor}
+  .b-mute{color:var(--text-3);background:var(--bg-nest);border-color:var(--border-l)}
+  .b-brand{color:var(--brand);background:var(--brand-dim);border-color:var(--brand-ln)}
+  .b-pur{color:var(--purple);background:var(--purple-bg);border-color:currentColor}
+
+  /* 迁移标注 */
+  .mig{position:absolute;top:12px;right:14px;display:flex;gap:6px;align-items:center;font-size:11px;color:var(--text-3)}
+  .mig .k{font-family:var(--mono);color:var(--text-3)}
+  .mig .v{padding:0 6px;border-radius:4px;border:1px dashed currentColor;line-height:17px}
+  .mig .v.move{color:var(--text-2)}
+  .mig .v.split{color:var(--amber)}
+  .mig .v.merge{color:var(--red)}
+  .mig .v.new{color:var(--green)}
+  body:not(.show-mig) .mig{display:none}
+
+  /* 小组件 */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  @media (max-width:900px){.grid2,.grid3,.grid4{grid-template-columns:1fr 1fr}}
+  .nest{background:var(--bg-nest);border:1px solid var(--border-l);border-radius:8px;padding:11px 13px}
+  .nest .k{font-size:11.5px;color:var(--text-3);margin-bottom:3px}
+  .nest .v{font-size:19px;font-weight:650;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .nest .v small{font-size:11.5px;font-weight:400;color:var(--text-3);margin-left:4px}
+  .h4s{font-size:12px;font-weight:600;color:var(--text-2);margin:14px 0 7px;padding-left:8px;border-left:2px solid var(--border)}
+  table.t{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.t th,table.t td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border-l)}
+  table.t th{color:var(--text-3);font-weight:600;font-size:11.5px;border-bottom:1px solid var(--border)}
+  table.t td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .bar{height:6px;border-radius:3px;background:var(--bg-nest);overflow:hidden;position:relative}
+  .bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--brand);display:block}
+  .bar i.warn{background:var(--amber)}
+  .bar i.bad{background:var(--red)}
+  .kvline{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:4px 0}
+  .kvline span:first-child{color:var(--text-3)}
+  .kvline span:last-child{font-variant-numeric:tabular-nums}
+  .note{font-size:11.5px;color:var(--text-3);margin-top:9px;line-height:1.65}
+  .quote{font-size:12.5px;color:var(--text-2);background:var(--bg-nest);border-left:2px solid var(--brand);
+         border-radius:0 6px 6px 0;padding:8px 11px;margin:9px 0}
+
+  /* 现状模式：重号高亮 */
+  .card.dup-no{box-shadow:0 0 0 1.5px var(--red)}
+  .card .dupflag{position:absolute;top:11px;right:14px;font-size:11px;color:var(--red);
+                 background:var(--red-bg);border:1px dashed var(--red);border-radius:4px;padding:0 6px;line-height:17px}
+  .warnbar{border:1px solid var(--red);background:var(--red-bg);border-radius:8px;padding:10px 14px;
+           font-size:12.5px;color:var(--text);margin-bottom:14px;line-height:1.7}
+  .warnbar b{color:var(--red)}
+
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--text-3);margin:8px 0 0}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .hidden{display:none !important}
+  svg{display:block;max-width:100%}
+
+  /* 吸顶分区导航 */
+  .subnav{position:sticky;top:52px;z-index:40;display:flex;align-items:center;gap:8px;
+          padding:7px 10px;margin:0 0 10px;background:var(--bg-bar);border:1px solid var(--border-l);
+          border-radius:999px;backdrop-filter:blur(18px);width:max-content;max-width:100%}
+  .subnav button{border:0;background:transparent;font:inherit;font-size:12.5px;color:var(--text-2);
+                 padding:4px 12px;border-radius:999px;cursor:pointer;white-space:nowrap}
+  .subnav button.on{background:var(--bg-nest);color:var(--text);box-shadow:0 0 0 1px var(--border-l)}
+  .subnav .sep{width:1px;height:16px;background:var(--border-l)}
+  /* 折叠态 */
+  .sec-data.folded .card{display:none}
+  .foldhint{display:none;font-size:12.5px;color:var(--text-3);background:var(--bg-card);
+            border:1px dashed var(--border);border-radius:8px;padding:11px 14px;margin-bottom:12px}
+  .sec-data.folded .foldhint{display:block}
+  .sec-data.folded{min-height:0}
+  /* 锚点跳转别被吸顶条挡住标题 */
+  #secA,#secB{scroll-margin-top:118px}
+</style>
+</head>
+<body class="show-mig">
+
+<div class="demo-bar">
+  <div class="t">基本面量化 · 改造效果图<small>2026-10-21 · 计划稿，未改动产品</small></div>
+  <div class="sp"></div>
+  <div class="seg" id="modeSeg">
+    <button data-mode="now">现状顺序</button>
+    <button data-mode="new" class="on">新结构</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="migChk" checked>显示迁移标注</label>
+  <div class="seg" id="themeSeg">
+    <button data-theme="light" class="on">亮色</button>
+    <button data-theme="dark">暗色</button>
+  </div>
+</div>
+
+<div class="stage" id="stage"></div>
+
+<script>
+/* ───────────────────────── 可复用内容块 ───────────────────────── */
+const P = {};
+
+P.score = `
+  <div class="grid4">
+    <div class="nest"><div class="k">库存（社会+仓单）</div><div class="v">84%<small>分位 · 高</small></div></div>
+    <div class="nest"><div class="k">基差率</div><div class="v">0.00%<small>中性</small></div></div>
+    <div class="nest"><div class="k">期限结构</div><div class="v">back<small>近强远弱</small></div></div>
+    <div class="nest"><div class="k">利润（校验，不计分）</div><div class="v">15%<small>低 · 偏多</small></div></div>
+  </div>
+  <div class="quote">三指标共振才有单边优势；指标互相矛盾时转跨期（单边易被反复止损）。当前：库存偏空 / 基差中性 / 期限偏多 ⇒ <b>部分共振，单边无优势</b>。</div>`;
+
+P.inv = `
+  <div class="grid2">
+    <div>
+      <div class="kvline"><span>社会库存 分位</span><span><b>84%</b> · 高</span></div>
+      <div class="bar" style="margin:3px 0 10px"><i class="bad" style="width:84%"></i></div>
+      <div class="kvline"><span>交易所仓单 分位</span><span><b>35%</b> · 中</span></div>
+      <div class="bar" style="margin:3px 0 10px"><i style="width:35%"></i></div>
+      <div class="kvline"><span>综合档位</span><span><b>高（偏空）</b> · 双口径共振</span></div>
+      <div class="kvline"><span>最新社库存</span><span>97.9 万吨 · 2026-10-16</span></div>
+    </div>
+    <div class="nest" style="display:grid;place-items:center">
+      <svg width="240" height="116" viewBox="0 0 240 116">
+        <polyline points="0,96 34,88 68,90 102,72 136,60 170,64 204,44 238,38"
+                  fill="none" stroke="var(--brand)" stroke-width="2"/>
+        <polyline points="0,60 34,64 68,58 102,62 136,52 170,56 204,48 238,50"
+                  fill="none" stroke="var(--text-3)" stroke-width="1.4" stroke-dasharray="4 3"/>
+      </svg>
+      <div class="note" style="margin-top:2px">实线 社会库存 · 虚线 交易所仓单（24 期）</div>
+    </div>
+  </div>`;
+
+P.cycle = `
+  <div class="grid2">
+    <div class="nest" style="padding:8px">
+      <svg width="100%" height="150" viewBox="0 0 260 150">
+        <line x1="130" y1="6" x2="130" y2="144" stroke="var(--border)" stroke-width="1"/>
+        <line x1="6" y1="75" x2="254" y2="75" stroke="var(--border)" stroke-width="1"/>
+        <text x="188" y="18" font-size="9" fill="var(--text-3)">增库·涨价</text>
+        <text x="40" y="18" font-size="9" fill="var(--text-3)">降库·涨价</text>
+        <text x="42" y="144" font-size="9" fill="var(--text-3)">降库·跌价</text>
+        <text x="188" y="144" font-size="9" fill="var(--text-3)">增库·跌价</text>
+        <circle cx="196" cy="112" r="6" fill="var(--red)"/>
+        <circle cx="196" cy="112" r="12" fill="none" stroke="var(--red)" stroke-width="1" opacity=".45"/>
+      </svg>
+    </div>
+    <div>
+      <div class="kvline"><span>当前阶段</span><span><b>增库 · 跌价</b>（被动累库）</span></div>
+      <div class="kvline"><span>库存方向</span><span>4 期变化 <b>+12.4%</b></span></div>
+      <div class="kvline"><span>价格方向</span><span>4 期变化 <b>−3.1%</b></span></div>
+      <div class="quote">被动累库 = 需求走弱快于供给收缩，通常对应<b>偏空</b>；但若基差同步走强（现货抗跌），只能算<b>弱空</b>。</div>
+    </div>
+  </div>`;
+
+P.basis = `
+  <div class="grid2">
+    <div>
+      <div class="h4s">基差率走势（118 点）</div>
+      <svg width="100%" height="82" viewBox="0 0 300 82" preserveAspectRatio="none">
+        <line x1="0" y1="41" x2="300" y2="41" stroke="var(--border-l)" stroke-width="1"/>
+        <polyline points="0,34 30,30 60,44 90,40 120,46 150,41 180,38 210,44 240,42 270,40 300,41"
+                  fill="none" stroke="var(--brand)" stroke-width="1.8"/>
+      </svg>
+      <div class="kvline"><span>最新基差率</span><span><b>0.00%</b> · 贴水 0</span></div>
+    </div>
+    <div>
+      <div class="h4s">期限结构（back）</div>
+      <svg width="100%" height="82" viewBox="0 0 300 82" preserveAspectRatio="none">
+        <polyline points="10,26 70,38 130,48 190,56 250,63 290,68"
+                  fill="none" stroke="var(--green)" stroke-width="2"/>
+        <circle cx="10" cy="26" r="3" fill="var(--green)"/>
+        <circle cx="290" cy="68" r="3" fill="var(--green)"/>
+      </svg>
+      <div class="kvline"><span>近月 / 远月</span><span>3,205 / 2,987 · 价差 <b>−218</b></span></div>
+    </div>
+  </div>
+  <div class="note">近强远弱 = 现货偏紧；与基差同轴（back ⟺ 贴水），单独看容易重复计票。</div>`;
+
+P.profit = `
+  <table class="t">
+    <thead><tr><th>口径</th><th class="n">最新值</th><th class="n">日期</th><th class="n">历史分位</th><th>档位</th></tr></thead>
+    <tbody>
+      <tr><td>加工利润_现货压榨利润_美豆</td><td class="n">−243</td><td class="n">2026-10-19</td><td class="n">15%</td><td><span class="badge b-ok">低</span></td></tr>
+      <tr><td>加工利润_盘面压榨利润_美豆</td><td class="n">−116</td><td class="n">2026-10-20</td><td class="n">58%</td><td><span class="badge b-mute">中</span></td></tr>
+    </tbody>
+  </table>
+  <div class="note">多装置口径分色并列、不合并 —— 合并会掩盖「同品种不同装置利润分化」。低利润 = 亏损不可持续 → 偏多倾向；高利润 = 刺激供给 → 偏空倾向。</div>`;
+
+P.vr = `
+  <div class="grid2">
+    <div class="nest"><div class="k">虚实盘比</div><div class="v">21.3773</div>
+      <div class="note" style="margin-top:4px">(主力持仓 ÷ 2) ÷ 仓单折手数</div></div>
+    <div>
+      <div class="kvline"><span>仓单折手</span><span>52,939 手 × 系数 1</span></div>
+      <div class="kvline"><span>定性</span><span><b>钱多货少</b> · 易涨（多逼空）</span></div>
+      <div class="note">书中无固定阈值；2.0 / 0.5 仅为把连续比值翻译成定性描述的经验档位。</div>
+    </div>
+  </div>`;
+
+P.wtOver = `
+  <div class="grid4">
+    <div class="nest"><div class="k">CZCE 郑商所</div><div class="v">42,613<small>张</small></div></div>
+    <div class="nest"><div class="k">DCE 大商所</div><div class="v">66,298<small>手</small></div></div>
+    <div class="nest"><div class="k">GFEX 广期所</div><div class="v">78,665<small>手</small></div></div>
+    <div class="nest"><div class="k">SHFE 上期所</div><div class="v">294,622<small>吨</small></div></div>
+  </div>
+  <div class="note">另有 3,666,000 桶 × 1 只 · 排行可切「四所全部 / 单所」「分组排名 / 数值混排」</div>`;
+
+P.wtDetail = `
+  <div class="grid4">
+    <div class="nest"><div class="k">当前仓单量</div><div class="v">34,728<small>张</small></div></div>
+    <div class="nest"><div class="k">昨日</div><div class="v">34,560<small>张</small></div></div>
+    <div class="nest"><div class="k">当日增减</div><div class="v" style="color:var(--red)">+168</div></div>
+    <div class="nest"><div class="k">仓库 / 品牌</div><div class="v">26<small>/ 3</small></div></div>
+  </div>
+  <div class="note">子图 1 仓库分布 · 2 品牌结构 · 3 仓/厂库占比 · 4 当日增减结构；下接仓库级明细 26 行。</div>`;
+
+P.wtTrend = `
+  <svg width="100%" height="86" viewBox="0 0 320 86" preserveAspectRatio="none">
+    <polyline points="0,60 32,56 64,58 96,48 128,44 160,50 192,38 224,34 256,40 288,28 320,24"
+              fill="none" stroke="var(--brand)" stroke-width="2"/>
+  </svg>
+  <div class="note">25 个交易日 · 截至 2026-10-20 · 已是最新（交易所尚未发布更新日报）</div>`;
+
+P.research = `
+  <div class="grid4">
+    <div class="nest"><div class="k">研报开工率</div><div class="v">11<small>点</small></div></div>
+    <div class="nest"><div class="k">研报加工利润</div><div class="v">2<small>点</small></div></div>
+    <div class="nest"><div class="k">研报现货价</div><div class="v">32<small>点</small></div></div>
+    <div class="nest"><div class="k">研报库存</div><div class="v">32<small>点 · 社库/钢厂</small></div></div>
+  </div>
+  <div class="note">7 类口径均为研报披露值（非交易所/行情源），可与上方行情口径交叉验证。</div>`;
+
+P.sector = `
+  <svg width="100%" height="98" viewBox="0 0 320 98">
+    <g font-size="8" fill="var(--text-3)">
+      <text x="2" y="12">M</text><text x="42" y="12">RM</text><text x="82" y="12">Y</text>
+      <text x="122" y="12">P</text><text x="162" y="12">C</text><text x="202" y="12">A</text>
+      <text x="242" y="12">SR</text><text x="282" y="12">CF</text>
+      <text x="2" y="30">M</text><text x="2" y="48">RM</text><text x="2" y="66">Y</text>
+      <text x="2" y="84">P</text>
+    </g>
+    <g>
+      <rect x="36" y="18" width="32" height="14" rx="2" fill="var(--brand)" opacity=".85"/>
+      <rect x="76" y="18" width="32" height="14" rx="2" fill="var(--brand)" opacity=".55"/>
+      <rect x="116" y="18" width="32" height="14" rx="2" fill="var(--brand)" opacity=".35"/>
+      <rect x="196" y="18" width="32" height="14" rx="2" fill="var(--red)" opacity=".28"/>
+      <rect x="76" y="36" width="32" height="14" rx="2" fill="var(--brand)" opacity=".72"/>
+      <rect x="116" y="54" width="32" height="14" rx="2" fill="var(--brand)" opacity=".62"/>
+      <rect x="156" y="72" width="32" height="14" rx="2" fill="var(--brand)" opacity=".45"/>
+    </g>
+  </svg>
+  <div class="note">同板块品种的「价格-库存」Pearson R 横向对比；按 R 升序（负相关在前）。轻量版：只算品种池内的两两相关。</div>`;
+
+P.dims = `
+  <table class="t">
+    <thead><tr><th>维度</th><th>读数</th><th>是否计分</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>库存 + 基差</td><td><span class="badge b-warn">矛盾</span></td><td>计分</td><td>高库存但期货贴水（指标背离）→ 不建议单边追</td></tr>
+      <tr><td>反转 / 资金</td><td><span class="badge b-ok">正常</span></td><td>计分</td><td>价格处区间中部且持仓量平稳，无反转预警</td></tr>
+      <tr><td>期限结构</td><td><span class="badge b-brand">偏多</span></td><td>计分</td><td>近强远弱（back），近月 3,205 vs 远月 2,987</td></tr>
+      <tr><td>利润</td><td><span class="badge b-ok">低 · 偏多</span></td><td><b>校验，不计分</b></td><td>慢变量，只做交叉验证</td></tr>
+    </tbody>
+  </table>
+  <div class="note">参与维度：仓单 118 点 / 基差 36 点 / 日线 161 根</div>`;
+
+P.quad = `
+  <div class="grid2">
+    <div class="nest" style="padding:10px">
+      <svg width="100%" height="150" viewBox="0 0 260 150">
+        <rect x="6" y="6" width="124" height="69" fill="var(--brand)" opacity=".07"/>
+        <rect x="130" y="6" width="124" height="69" fill="var(--red)" opacity=".06"/>
+        <rect x="6" y="75" width="124" height="69" fill="var(--amber)" opacity=".10"/>
+        <rect x="130" y="75" width="124" height="69" fill="var(--text-3)" opacity=".05"/>
+        <line x1="130" y1="6" x2="130" y2="144" stroke="var(--border)" stroke-width="1"/>
+        <line x1="6" y1="75" x2="254" y2="75" stroke="var(--border)" stroke-width="1"/>
+        <text x="16" y="20" font-size="9" fill="var(--text-3)">低估值+驱动向上</text>
+        <text x="140" y="20" font-size="9" fill="var(--text-3)">高估值+驱动向上</text>
+        <text x="16" y="140" font-size="9" fill="var(--text-3)">低估值+驱动向下</text>
+        <text x="140" y="140" font-size="9" fill="var(--text-3)">高估值+驱动向下</text>
+        <circle cx="62" cy="118" r="6" fill="var(--red)"/>
+        <circle cx="62" cy="118" r="12" fill="none" stroke="var(--red)" opacity=".4" stroke-width="1"/>
+      </svg>
+    </div>
+    <div>
+      <div class="kvline"><span>估值分（负 = 低估）</span><span><b>−2.95</b></span></div>
+      <div class="kvline"><span>驱动分（正 = 向上）</span><span><b>−3.00</b></span></div>
+      <div class="kvline"><span>象限</span><span><b>第三象限</b> · 低估值 + 驱动向下</span></div>
+      <div class="kvline"><span>对应策略</span><span><b>套利 / 对冲</b>（适合反套，结合仓单有效期）</span></div>
+      <div class="note">这是品种分类工具，不是择时工具 —— 入场时机仍需技术面。</div>
+    </div>
+  </div>`;
+
+P.votes = `
+  <table class="t">
+    <thead><tr><th>体系</th><th>方向票</th><th>依据</th><th>细节</th></tr></thead>
+    <tbody>
+      <tr><td>多空逻辑</td><td><span class="badge b-pur">套利 / 对冲</span></td><td>基差率 + 库存分位</td><td>四象 · 第三象限（−2.95 / −3.0）</td></tr>
+      <tr><td>多空逻辑（期限结构）</td><td><span class="badge b-brand">偏多</span></td><td>近强远弱</td><td>3,205 vs 2,987，价差 −218</td></tr>
+      <tr><td>多空逻辑（库存周期）</td><td><span class="badge b-warn">偏空</span></td><td>增库 · 跌价</td><td>4 期库存 +12.4% / 价格 −3.1%</td></tr>
+      <tr><td>利润（校验项）</td><td><span class="badge b-ok">偏多</span></td><td>低利润不可持续</td><td>分位 15%</td></tr>
+    </tbody>
+  </table>
+  <div class="note">方向票并列陈列，不取平均、不混用；技术面体系（鹿希武 / 墨菲 / 威科夫 / Carver）在「技术面量化 → 方法论研判」。</div>`;
+
+P.verdict = `
+  <div class="grid2">
+    <div>
+      <div class="kvline"><span>方向</span><span><b>中性</b>（偏多成分占优但未达阈值）</span></div>
+      <div class="kvline"><span>强度</span><span><b>弱</b> · 计分 +1 / 净票 +2</span></div>
+      <div class="kvline"><span>时间止损</span><span>10 个交易日</span></div>
+    </div>
+    <div>
+      <div class="kvline"><span>触发</span><span>计分 ≥ +2 且基差转贴水扩大</span></div>
+      <div class="kvline"><span>失效</span><span>库存转降 或 基差率转负 &lt; −1%</span></div>
+      <div class="kvline"><span>不建议</span><span>单边追多（库存与基差背离）</span></div>
+    </div>
+  </div>`;
+
+/* ───────────────────────── 卡片定义 ───────────────────────── */
+const T = (s) => s.trim();
+
+const NEW = [
+  { group:'data', no:'A1', title:'库存：社会库存 × 交易所仓单（双口径）', badge:['高库存 · 双口径共振','b-warn'],
+    sub:'两个口径各自分位，不合并成一个分位 —— 背离本身是信号（库存向交割库转移）。',
+    body:P.inv, mig:['拆','split','原 ① 卡内'] },
+  { group:'data', no:'A2', title:'库存周期四象限', badge:['增库 · 跌价','b-warn'],
+    sub:'库存方向 × 价格方向 → 四阶段；被动/主动累库与去库的判定依据。',
+    body:P.cycle, mig:['拆','split','原 ① 卡内'] },
+  { group:'data', no:'A3', title:'基差与期限结构', badge:['基差率 0.00% · 118 点','b-mute'],
+    sub:'估值轴的原料：基差率走势 + 期限结构曲线。',
+    body:P.basis, mig:['拆','split','原 ② 卡内'] },
+  { group:'data', no:'A4', title:'加工 / 进口利润口径', badge:['2 个口径','b-mute'],
+    sub:'多装置分色并列，不合并。',
+    body:P.profit, mig:['挪','move','原 ③'] },
+  { group:'data', no:'A5', title:'虚实盘比与逼仓识别', badge:['21.38 · 钱多货少','b-brand'],
+    sub:'(主力持仓 ÷ 2) ÷ 仓单折手数。',
+    body:P.vr, mig:['挪','move','原 ④'] },
+  { group:'data', no:'A6', title:'仓单', badge:['独立控制条','b-mute'],
+    sub:'本块的选择器（品种范围 / 单位 / 数据日期）只作用于仓单，不影响上方页面级品种。',
+    body:'', mig:['改','move','原 仓单 ①②③'],
+    subs:[
+      { no:'A6.1', title:'仓单总览', badge:['品种池 19','b-mute'], body:P.wtOver },
+      { no:'A6.2', title:'品种仓单细则', badge:['仓库级 26 行','b-mute'], body:P.wtDetail },
+      { no:'A6.3', title:'仓单历史走势', badge:['25 个交易日','b-ok'], body:P.wtTrend },
+    ],
+    tools:true },
+  { group:'data', no:'A7', title:'研报披露指标', badge:['5 类 · 77 点','b-mute'],
+    sub:'研报口径（开工率 / 加工利润 / 现货价 / 库存），用于与行情口径交叉验证。',
+    body:P.research, mig:['补号','move','原「研报基本面指标」'] },
+  { group:'data', no:'A8', title:'板块相关性', badge:['Pearson R','b-mute'],
+    sub:'同板块品种「价格-库存」相关性矩阵，用来判断共振还是分化。',
+    body:P.sector, mig:['拆','split','原 ① 卡底部'] },
+
+  { group:'sig', no:'B1', title:'三指标计分', badge:['+1 · 中性','b-warn'],
+    sub:'库存 + 基差 + 期限结构三项计分；利润只做校验、不计分。',
+    body:P.score + '<div class="h4s">逐维读数（原 ⑤ 量化信号研判）</div>' + P.dims,
+    mig:['并','merge','原 ① 计分 + ⑤'] },
+  { group:'sig', no:'B2', title:'估值 × 驱动 四象定位', badge:['第三象限','b-pur'],
+    sub:'估值轴 = 基差率（越高越便宜）；驱动轴 = 库存分位反向。',
+    body:P.quad, mig:['并','merge','原 ② 结论 + ⑥ 首票'] },
+  { group:'sig', no:'B3', title:'体系方向票', badge:['4 张票 · 净 +2','b-pur'],
+    sub:'并列陈列，不取平均、不混用。',
+    body:P.votes, mig:['挪','move','原 ⑥ 票据表'] },
+  { group:'sig', no:'B4', title:'综合研判', badge:['中性偏多 · 弱','b-warn'],
+    sub:'方向 / 强度 / 触发 / 失效 —— 结构化四行，不再是「一句话中性」。',
+    body:P.verdict, mig:['并','merge','原 ⑤ 结论 + ⑥ 结论'] },
+];
+
+/* 现状模式：按真实 DOM 顺序，含原编号与内部结构 */
+const NOW = [
+  { no:'①', title:'三指标策略系统', badge:['+1 · 中性','b-warn'],
+    sub:'基本面信号计分 + 库存双口径 + 库存周期四象 + 板块相关性（四件事挤在一张卡里）',
+    body:'<div class="h4s">基本面信号计分</div>' + P.score +
+         '<div class="h4s">库存维度明细 · 社会库存 × 交易所仓单</div>' + P.inv +
+         '<div class="h4s">库存周期四象限</div>' + P.cycle +
+         '<div class="h4s">板块相关性总览</div>' + P.sector },
+  { no:'⑤', title:'量化信号研判', badge:['+1 · 中性 · 3计分+1校验','b-warn'],
+    sub:'与上一张卡的计分是同一件事，只是换了一套表述',
+    body:P.dims },
+  { no:'②', title:'估值 + 驱动 二维四象', badge:['第三象限','b-pur'],
+    sub:'四象定位 + 基差图 + 期限结构（结论与原料混在一张卡）',
+    body:P.quad + '<div class="h4s">基差与期限结构</div>' + P.basis },
+  { no:'③', title:'加工 / 进口利润口径', badge:['2 个口径','b-mute'],
+    sub:'数据卡，被夹在两张结论卡之间',
+    body:P.profit },
+  { no:'', title:'研报基本面指标', badge:['5 类 · 77 点','b-mute'],
+    sub:'无编号、不在面包屑里',
+    body:P.research },
+  { no:'④', title:'虚实盘比与逼仓识别', badge:['21.38 · 钱多货少','b-brand'],
+    sub:'编号在研报指标之前，位置却在之后',
+    body:P.vr },
+  { no:'⑥', title:'多空逻辑体系研判', badge:['4 张票 · 净 +2','b-pur'],
+    sub:'第一张票「多空逻辑 · 二维四象 · 第三象限」与 ② 重复',
+    body:P.votes + '<div class="h4s">结论</div>' + P.verdict },
+  { no:'', title:'仓单控制条', badge:['另一套筛选器','b-mute'],
+    sub:'品种范围 / 单位 / 数据日期 / 重载 —— 与页面级品种选择并存，作用域未标注',
+    body:'<div class="grid4">' +
+         '<div class="nest"><div class="k">品种范围</div><div class="v" style="font-size:13px">仅品种池</div></div>' +
+         '<div class="nest"><div class="k">单位</div><div class="v" style="font-size:13px">全部单位</div></div>' +
+         '<div class="nest"><div class="k">数据日期</div><div class="v" style="font-size:13px">2026-10-20</div></div>' +
+         '<div class="nest"><div class="k">采集</div><div class="v" style="font-size:13px">08:00 / 16:40</div></div>' +
+         '</div>' },
+  { no:'①', title:'仓单总览', badge:['品种池 19','b-mute'], sub:'第二套编号从这里重新开始', body:P.wtOver },
+  { no:'②', title:'品种仓单细则', badge:['仓库级 26 行','b-mute'], sub:'', body:P.wtDetail },
+  { no:'③', title:'仓单历史走势', badge:['25 个交易日','b-ok'], sub:'', body:P.wtTrend },
+];
+
+/* ───────────────────────── 渲染 ───────────────────────── */
+const stage = document.getElementById('stage');
+let mode = 'new';
+
+function crumbNew(){
+  const items = NEW.map(c=>`<span title="跳到 ${c.no}">${c.no}</span>`).join('<span class="dot">·</span>');
+  return `<div class="crumb"><span class="back">← 返回全品种总览</span><span class="dot">|</span>
+    <b>单品种明细</b><span class="dot">·</span>
+    <span style="color:var(--brand)">A 数据</span>${items.split('<span class="dot">·</span>').slice(0,8).join(' · ')}
+    <span class="dot">|</span>
+    <span style="color:var(--purple)">B 信号</span>
+    ${NEW.filter(c=>c.group==='sig').map(c=>c.no).join(' · ')}</div>`;
+}
+function crumbNow(){
+  return `<div class="crumb"><span class="back">← 返回全品种总览</span><span class="dot">|</span>
+    <span>单品种明细 · 三指标策略 / 估值驱动四象 / 利润 / 虚实盘比 / 多空逻辑体系研判 / 仓单分析</span>
+    <span style="margin-left:auto;color:var(--red)">纯文本 · 不可点 · 漏了「研报指标」「板块相关」</span></div>`;
+}
+function head(){
+  return `<div class="page-head">
+    <div class="row1">
+      <h1 onclick="void 0" style="cursor:pointer" title="点击返回全品种总览">基本面量化</h1>
+      <span class="badge b-mute">方法论：《期货多空逻辑》— 库存 / 基差 / 利润 三指标</span>
+      <span class="meta" style="margin-left:auto">数据截至 2026-10-21 15:38</span>
+    </div>
+    <div class="row2">
+      <span class="meta">品种</span>
+      <select class="sel"><option>M 豆粕 · 大商所</option><option>RB 螺纹钢 · 上期所</option><option>TA PTA · 郑商所</option></select>
+      <span class="badge b-ok">覆盖率 21/21</span>
+      <span style="flex:1"></span>
+      <button class="btn">刷新全部</button>
+      <button class="btn primary">全池刷新（限 5 只）</button>
+    </div>
+    <div class="cov">数据来源：交易所仓单、基差/现货、加工利润、库存。缺源品种会在卡片内标注「取数失败」，不静默补零。</div>
+  </div>`;
+}
+function migHtml(c){
+  if(!c.mig) return '';
+  const [label, cls, src] = c.mig;
+  return `<div class="mig"><span class="k">${src}</span><span class="v ${cls}">${label}</span></div>`;
+}
+function cardHtml(c, inGroup){
+  const badge = c.badge ? `<span class="badge ${c.badge[1]}">${c.badge[0]}</span>` : '';
+  const no = c.no ? `<span class="no">${c.no}</span>` : '';
+  let inner = '';
+  if(c.subs){
+    inner = c.subs.map(s=>`
+      <div class="card" style="background:var(--bg-nest);margin:10px 0 0">
+        <h3><span class="no">${s.no}</span>${s.title}<span class="badge ${s.badge[1]}">${s.badge[0]}</span></h3>
+        <div class="body">${s.body}</div>
+      </div>`).join('');
+  }
+  return `<div class="card">
+    ${migHtml(c)}
+    <h3>${no}${c.title}${badge}</h3>
+    ${c.sub ? `<div class="sub">${c.sub}</div>` : ''}
+    <div class="body">${c.body || ''}${inner}</div>
+  </div>`;
+}
+function toolsBar(){
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:2px 0 10px">
+    <span class="badge b-mute">本块独立筛选</span>
+    <select class="sel"><option>品种范围：仅品种池</option><option>全部品种</option></select>
+    <select class="sel"><option>单位：全部单位</option></select>
+    <select class="sel"><option>数据日期：2026-10-20</option></select>
+    <button class="btn">重新加载</button>
+    <button class="btn">采集最新数据</button>
+  </div>`;
+}
+function secHead(kind, title, desc, cnt){
+  return `<div class="sec ${kind}">
+    <div class="letter">${kind==='data'?'A':'B'}</div>
+    <div class="txt"><b>${title}</b><span>${desc}</span></div>
+    <span class="cnt">${cnt}</span>
+    <button class="fold" data-target="${kind==='data'?'secA':'secB'}">整区折叠</button>
+  </div>`;
+}
+
+function subnav(){
+  const nd = NEW.filter(c=>c.group==='data').length;
+  const ns = NEW.filter(c=>c.group==='sig').length;
+  return `<div class="subnav">
+    <button data-jump="secA" class="on">A · 数据底座 ${nd}</button>
+    <span class="sep"></span>
+    <button data-jump="secB">B · 信号与研判 ${ns}</button>
+  </div>`;
+}
+
+function renderNew(){
+  const dataCards = NEW.filter(c=>c.group==='data');
+  const sigCards = NEW.filter(c=>c.group==='sig');
+  const hint = `<div class="foldhint">数据区已折叠 —— 8 块原料：${dataCards.map(c=>c.no).join(' · ')}。
+    <b>结论在下方 B 区直接可见</b>；需要核验时再展开。</div>`;
+  stage.innerHTML = crumbNew() + head() + subnav() +
+    secHead('data','A · 数据底座','原始观测与计算值，用来核验结论；本区不含任何方向判断。',
+            `${dataCards.length} 块 · 其中仓单含 3 个子块`) +
+    `<div class="sec-data" id="secA">` + hint +
+      dataCards.map(c => cardHtml(c)).join('') +
+    `</div>` +
+    secHead('sig','B · 信号与研判','由 A 区数据推导，供决策；同一结论只出现一次。',
+            `${sigCards.length} 块 · 全部默认展开`) +
+    `<div class="sec-sig" id="secB">` + sigCards.map(c => cardHtml(c)).join('') + `</div>` +
+    `<div class="legend">
+       <span><i style="background:var(--brand)"></i>A 区 = 数据（原料）</span>
+       <span><i style="background:var(--purple)"></i>B 区 = 结论（产出）</span>
+       <span>右上角虚线标签：<b>挪</b> 平移 / <b>拆</b> 拆出 / <b>并</b> 合并 / <b>补号</b> 补编号（可关）</span>
+     </div>`;
+  // 仓单工具条插到 A6 卡内
+  const a6 = [...stage.querySelectorAll('.card')].find(el => el.textContent.includes('A6'));
+  if(a6){
+    const h3 = a6.querySelector('h3');
+    h3.insertAdjacentHTML('afterend', toolsBar());
+  }
+}
+
+function renderNow(){
+  const dupNos = {};
+  NOW.forEach(c => { if(c.no) dupNos[c.no] = (dupNos[c.no]||0)+1; });
+  stage.innerHTML = crumbNow() + head() +
+    `<div class="warnbar">
+      <b>现状：13 个区块平铺一层</b> · DOM 顺序 <b>① ⑤ ② ③ (研报) ④ ⑥ → 仓单 ①②③</b> ·
+      页面总高 <b>8182px</b> · 两套编号并存（红框为重复编号）· 结论被重复表达 4 次
+    </div>` +
+    NOW.map(c => {
+      const dup = c.no && dupNos[c.no] > 1;
+      const html = cardHtml(c);
+      return html.replace('<div class="card">',
+        `<div class="card${dup?' dup-no':''}">`)
+        .replace('</h3>', `</h3>${dup ? `<div class="dupflag">「${c.no}」重号</div>` : ''}`);
+    }).join('');
+}
+
+function render(){
+  mode === 'new' ? renderNew() : renderNow();
+}
+
+/* ── 交互 ── */
+stage.addEventListener('click', e => {
+  const f = e.target.closest('.fold');
+  if (f) {
+    const body = document.getElementById(f.dataset.target);
+    if (!body) return;
+    const folded = body.classList.toggle('folded');
+    f.textContent = folded ? '展开本区' : '整区折叠';
+    return;
+  }
+  const j = e.target.closest('.subnav button');
+  if (j) {
+    const el = document.getElementById(j.dataset.jump);
+    if (el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+    [...document.querySelectorAll('.subnav button')].forEach(x => x.classList.toggle('on', x === j));
+  }
+});
+
+document.getElementById('modeSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b) return;
+  mode = b.dataset.mode;
+  [...e.currentTarget.children].forEach(x => x.classList.toggle('on', x === b));
+  render();
+});
+document.getElementById('themeSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b) return;
+  document.documentElement.dataset.theme = b.dataset.theme;
+  [...e.currentTarget.children].forEach(x => x.classList.toggle('on', x === b));
+});
+document.getElementById('migChk').addEventListener('change', e => {
+  document.body.classList.toggle('show-mig', e.target.checked);
+});
+
+render();
+</script>
+</body>
+</html>

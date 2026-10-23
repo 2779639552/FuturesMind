@@ -30,6 +30,9 @@ DATA_DIR = os.path.join(ROOT, "data", "warrant")
 RAW_DIR = os.path.join(DATA_DIR, "raw")
 OUT_DIR = os.path.join(DATA_DIR, "out")
 WEB_DIR = os.path.join(DATA_DIR, "web")          # 供前端直接读取的 JSON
+# 【2026-10-21】每所「上一次成功采集」的快照。单所失败时用它兜底，
+#   避免一个瞬时网络故障就把该所从页面上整块抹掉（当时四所变两所、无提示）。
+LASTGOOD_DIR = os.path.join(DATA_DIR, "lastgood")
 
 
 def ensure_dir(path: str) -> str:

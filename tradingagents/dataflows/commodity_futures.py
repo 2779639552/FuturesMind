@@ -3527,6 +3527,27 @@ def get_futures_macro(start_date: str = "", end_date: str = "") -> str:
 #              没有外部文件则提示如何创建(见 RB.json.sample);
 #           2) 后半部分始终用免费 API(建筑业指数、房地产景气指数)补充;
 #           3) 外部数据字段缺失时用 .get(key, 'N/A') 兜底,不会崩。
+def _clip_series_to_end(df, date_col: str, end_date: str):
+    """把宏观序列裁到 end_date（含）。`end_date` 为空则原样返回。
+
+    【2026-10-23】建筑业指数 / 房地产景气指数原先直接 `iloc[-1]` 取最新 ——
+      回看历史日期的分析会读到"未来"的宏观读数（与 `get_verified_quote`
+      的窗口 bug 同一类：有截止日却取序列尾）。这两个指数是螺纹/建材的需求端
+      辅助判据，污染会让"当时的需求如何"变成"现在的需求如何"。
+    """
+    if not end_date or df is None or len(df) == 0:
+        return df
+    try:
+        d = pd.to_datetime(df[date_col], errors="coerce")
+        # ⚠️ 关键：**解析不出来的行要保留**。`NaT <= 日期` 恒为 False，
+        #   若直接 `df[d <= end]`，日期列一旦整列解析失败就会把整表清空 ——
+        #   那等于"为了防未来数据，把数据全丢了"。
+        mask = d.isna() | (d <= pd.to_datetime(end_date))
+        return df[mask]
+    except Exception:  # noqa: BLE001 - 裁不掉就返回原表，绝不因裁剪失败丢数据
+        return df
+
+
 def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str = "") -> str:
     """Fetch supply-side and demand-side indicators for a commodity variety.
 
@@ -3672,6 +3693,8 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
         ci = ak.macro_china_construction_index()  # 【调用函数】建筑业指数(日度,免费兜底补充)
         if not ci.empty:
             col_date = next((c for c in ci.columns if "日期" in str(c)), ci.columns[0])
+            ci = _clip_series_to_end(ci, col_date, end_date)  # 【2026-10-23】裁到 end_date
+        if not ci.empty:
             col_val = next(
                 (c for c in ci.columns if "指数值" in str(c) or "值" in str(c)), ci.columns[1]
             )
@@ -3695,6 +3718,8 @@ def get_futures_supply_demand(variety: str, start_date: str = "", end_date: str 
         re = ak.macro_china_real_estate()  # 【调用函数】房地产景气指数(免费兜底补充,关联螺纹钢需求)
         if not re.empty:
             col_date = next((c for c in re.columns if "日期" in str(c)), re.columns[0])
+            re = _clip_series_to_end(re, col_date, end_date)  # 【2026-10-23】裁到 end_date
+        if not re.empty:
             col_val = next(
                 (c for c in re.columns if "指数值" in str(c) or "值" in str(c)), re.columns[1]
             )
@@ -3792,10 +3817,12 @@ def get_verified_quote(
     except ValueError:
         return f"VERIFIED_SNAPSHOT_ERROR: invalid date format '{date}', use YYYY-MM-DD."
 
-    fetch_start = (target_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+    # 【2026-10-23 修】窗口从 30 天扩到 60 天：原先 -30 天只有约 22 个交易日，
+    #   碰上长假/停牌就不足 20 根，`all_closes[-20:]` 会拿 19 根去平均（分母错）。
+    fetch_start = (target_dt - timedelta(days=60)).strftime("%Y-%m-%d")
     fetch_end = (target_dt + timedelta(days=5)).strftime("%Y-%m-%d")
 
-    price_result = get_futures_price(symbol, fetch_start, fetch_end)  # 【调用函数】复用价格接口拉目标日前后窗口行情(30天前~5天后)
+    price_result = get_futures_price(symbol, fetch_start, fetch_end)  # 【调用函数】复用价格接口拉目标日前后窗口行情(60天前~5天后)
     if price_result.startswith("NO_DATA") or price_result.startswith("DATA_ERROR"):
         return f"VERIFIED_SNAPSHOT_UNAVAILABLE: {price_result}"
 
@@ -3803,6 +3830,12 @@ def get_verified_quote(
     lines = price_result.strip().split("\n")
     target_row = None
     latest_row = None
+    # 【2026-10-23 修】记录目标行在有效行中的序号，供后面把指标窗口**截断到目标日**。
+    #   窗口是 [target-60, target+5]，数据源往往已经把 target 之后的日子也填上了；
+    #   若直接 `all_closes[-20:]`，算的是"最新 20 根"而不是"截至目标日的 20 根"，
+    #   等于用未来数据算均线（实测 LC 报告 110,397.65 vs 113,379 的差异来源之一）。
+    target_idx = -1
+    valid_idx = 0
     for line in lines:
         if not line or line.startswith("#") or not line[0].isdigit():
             continue
@@ -3812,7 +3845,9 @@ def get_verified_quote(
         row_date = parts[0].strip()
         if row_date == date:
             target_row = parts
+            target_idx = valid_idx
         latest_row = parts  # Keep track of latest available
+        valid_idx += 1
 
     if target_row is None and latest_row is not None:
         # Target date may be non-trading day — use latest available
@@ -3839,6 +3874,11 @@ def get_verified_quote(
         parts2 = line.split(",")
         if len(parts2) >= 5:
             all_closes.append(float(parts2[4]))
+
+    # 【2026-10-23 修】截断到目标日（含）。目标日之后的数据不能被用来算指标，
+    #   否则 SMA/日涨跌幅都会"看到未来"——缓存或数据源预填了后续日期时必然发生。
+    if 0 <= target_idx < len(all_closes):
+        all_closes = all_closes[: target_idx + 1]
 
     prev_close = all_closes[-2] if len(all_closes) >= 2 else c
     day_change = (c - prev_close) / prev_close * 100 if prev_close != 0 else 0.0

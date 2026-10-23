@@ -315,28 +315,30 @@ def test_generate_quarterly_writes_quarterly_dir(all_dirs, monkeypatch):
 # ---------------------------------------------------------------------------
 # 8. 前端模板:下拉含季报 + 季度二级选择器
 # ---------------------------------------------------------------------------
-def test_template_has_quarterly_options_and_pickers():
-    """模板必须同时具备:5 个类型下拉的「季报」选项 + 3 个季度二级选择器 + 口径助手函数。
+def test_template_removed_period_selectors_from_research_cards():
+    """研报三张卡**不再**提供 日报/周报/季报/月报 下拉（2026-10-21 用户要求）。
 
-    【为什么要这个】前端改动分散在 5 个下拉与 3 张卡上,漏一处就是"选了季报没反应"
-    或"下拉里根本没有季报";这条护栏把清单钉死。改前端时若删了某个 id 会立刻红。
+    【契约变更】原护栏要求"5 个类型下拉 + 3 个季度选择器都在"；用户明确要求
+      "去除日报、周报、季报等选择的下拉栏，每个品种只使用最新的观点"。
+      现在：
+        · 每日总结 / 单品种总结 / 逐品种观点总览 —— 周期下拉与季度选择器**必须不存在**；
+        · 逐品种观点总览连「研报日期」也去掉（固定取最新）；
+        · **保留** 问答卡的检索类型筛选(res-ask-type) 与 研报库的列表筛选(res-filter-type)
+          —— 它们是筛选，不是周期导航。
     """
     from pathlib import Path
 
     html = (Path(web_app.__file__).parent / "web_template.html").read_text(encoding="utf-8")
-    # 5 个类型下拉都要有季报/月报选项(res-ask / res-daily / res-vsum / res-views / res-filter)
-    assert html.count('<option value="季报">季报</option>') == 5
-    assert html.count('<option value="月报">月报</option>') == 5  # 2026-10-08 加月报
-    # 3 个季度二级选择器
-    for qid in ("res-daily-quarter", "res-vsum-quarter", "res-views-quarter"):
-        assert f'id="{qid}"' in html, f"缺少季度二级选择器 {qid}"
-    # 口径助手与同步函数
-    for fn in ("_quarterLabel", "_periodLabel", "_quarterPickerModel", "_syncQuarterPicker", "_monthLabel"):
+    for gone in ("res-daily-type", "res-vsum-type", "res-views-type",
+                 "res-daily-quarter", "res-vsum-quarter", "res-views-quarter",
+                 "res-views-date"):
+        assert f'id="{gone}"' not in html, f"{gone} 应已删除（周期/日期不再让用户选）"
+    # 只保留问答与研报库两个筛选下拉的季报/月报选项
+    assert html.count('<option value="季报">季报</option>') == 2
+    assert html.count('<option value="月报">月报</option>') == 2
+    # 口径助手保留（后端/其它入口仍在用；删掉会连带影响周报、月报的标签渲染）
+    for fn in ("_quarterLabel", "_periodLabel", "_quarterPickerModel", "_monthLabel"):
         assert f"{fn}(" in html, f"模板缺少 {fn}"
-    # 三张卡都真的调用了同步函数(漏调用 ⇒ 选季报时下拉不切换)
-    assert html.count("_syncQuarterPicker(") >= 4  # 定义 1 + 调用 3
-    # 月报走 _periodLabel 周期标签(isPeriodic 含月报)
-    assert html.count("isPeriodic") >= 4
 
 
 # ---------------------------------------------------------------------------

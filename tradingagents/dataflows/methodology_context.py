@@ -77,9 +77,12 @@ def _num(v: Any, nd: int = 2) -> str:
 def _build_technical(symbol: str) -> str:
     """技术面分析师用: 鹿希武双线/A点 + 墨菲 ADXR/RSI背离。"""
     import quant_methodology as qm  # 【调用模块】方法论纯函数库
-    from quant_module import _load_daily_bars  # 【调用函数】复用后复权日线(同 ⑧卡片口径)
+    from quant_module import _daily_bars_cached  # 【调用函数】复用后复权日线(同 ⑧卡片口径)
 
-    bars = _load_daily_bars(symbol, 250)
+    # 【2026-10-22 收口】必须走缓存层。本块在技术分析师节点里**排在价格轴视图之前**
+    #   执行，原先两处各自 `_load_daily_bars` ⇒ 同一份日线被实拉两遍
+    #   （cProfile 实测 `_load_daily_bars` 调用 2 次、累计 6.819s，缓存层 0 次）。
+    bars = _daily_bars_cached(symbol, 250)
     if len(bars) < 30:
         return (f"【方法论读数 · 技术面】{symbol}: 日线仅 {len(bars)} 根(需 ≥30), "
                 f"方法论读数不可算 —— 请如实说明「结构点不足」, 不要估一个数。\n")
@@ -236,7 +239,7 @@ def _build_fundamental(symbol: str) -> str:
     """基本面分析师用: 多空逻辑估值驱动二维四象 + 库存/基差序列 + Carver 成本-速度上限。"""
     import quant_methodology as qm
     from quant_module import (_fetch_basis, _fetch_inventory, _fetch_term_structure,
-                              _load_daily_bars)
+                              _daily_bars_cached)
 
     lines: list[str] = [
         "【方法论读数 · 基本面】(五书技能确定性注入, 零工具成本, 优先阅读)",
@@ -306,7 +309,7 @@ def _build_fundamental(symbol: str) -> str:
     lines.append("")
     lines.append("◆ 库存周期四阶段(多空逻辑 cap-inventory-cycle)")
     try:
-        bars = _load_daily_bars(symbol, 180)
+        bars = _daily_bars_cached(symbol, 180)  # 【收口 2026-10-22】走缓存层
         px_series = [float(b["close"]) for b in bars if b.get("close") is not None]
         icp = qm.inventory_cycle_phase(inv_series, px_series, window=5)
         if icp.get("ok"):
@@ -402,7 +405,7 @@ def _build_fundamental(symbol: str) -> str:
     lines.append("")
     lines.append("◆ 跨品种套利五逻辑(多空逻辑 cap-cross-commodity-spread)")
     try:
-        from quant_module import _load_daily_bars as _ldb
+        from quant_module import _daily_bars_cached as _ldb  # 【收口 2026-10-22】
 
         _pairs = qm.cross_pair_of(symbol)
         if _pairs:

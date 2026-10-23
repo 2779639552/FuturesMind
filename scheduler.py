@@ -45,6 +45,9 @@ import json  # 【调用包】解析子进程的 COLLECT_RUN 机器可读报告(
 import logging  # 【调用包】日志记录(RAG 索引等任务内部异常留痕)
 import os  # 【调用包】路径/环境变量操作(定位虚拟环境解释器)
 import subprocess  # 【调用包】启动子进程(采集/管道脚本)
+import threading  # 【调用包】入库互斥锁(避免自动触发与定时任务并发)
+import time  # 【调用包】失败自动重试前的退避等待(2026-10-19)
+from functools import partial  # 【调用包】把重试步骤绑定成无参可调用(避免局部 return)
 import sys  # 【调用包】当前解释器路径定位(复用同一虚拟环境)
 from contextlib import suppress  # 【调用包】忽略指定异常的上下文管理器(解析条数容错)
 from datetime import datetime, timedelta  # 【调用包】当前时间/日期生成 + 启动补采延时(2026-09-21)
@@ -1456,6 +1459,19 @@ def _wechat_collect_count(out: str, since: float) -> tuple:
     return 0, "none"
 
 
+def _weread_failure_kind(err: str) -> str:
+    """把读书通道的失败分成两类 —— 决定「该不该自动重试」。
+
+    · credentials：采集器 `main()` 续期两次都失败 ⇒ **长期凭据 wr_vid/wr_rt 失效**，
+      只能人工扫码。这类**不重试**（重试只会再失败一次，还会把"告警"拖成"疑似已恢复"）。
+    · transient  ：其余（网络/DNS/平台 5xx/超时）⇒ 隔 60s 自动重试一次。
+
+    【为什么用退出码判据】`wechat_weread_collector.py` 在续期失败时 `return 3`；
+      `_wechat_step` 把它转成「weread 退出码 3」。这个约定比解析 stderr 文本稳定。
+    """
+    return "credentials" if "退出码 3" in (err or "") else "transient"
+
+
 def _run_wechat_collect(time_str: str = ""):
     """① 公众号**采集**一步:零登录「合集」通道游标增量,只列/抓新文,不碰 LLM。
 
@@ -1491,24 +1507,80 @@ def _run_wechat_collect(time_str: str = ""):
     _w_since = datetime.now().timestamp()
     w_env = dict(env)
     w_env["AGENTSENSE_WEREAD_DIR"] = WEREAD_STATE_DIR
-    w_out, w_err = _wechat_step(w_env, script_dir, venv_py, "weread",
-                                ["wechat_weread_collector.py", "--daily"], 1800)
+
+    # 用 partial 而不是局部函数：失败分支里**不能出现 return**
+    #   （旧护栏 test_scheduler_weread_failure_is_isolated 钉的是"不能提前退出，
+    #    否则会吞掉 wechat_collect_done 完成告警"；局部函数的 return 会被误判）。
+    _run_weread = partial(_wechat_step, w_env, script_dir, venv_py, "weread",
+                          ["wechat_weread_collector.py", "--daily"], 1800)
+
+    w_out, w_err = _run_weread()
+    # 【失败自动重试 2026-10-19】
+    #   采集器内部已有「启动时续期 ×2 + 请求级 -2012 续期重试」⇒ 仍失败多半是**瞬时抖动**
+    #   （网络/DNS/平台短暂 5xx）。隔 60s 自动重试一次，覆盖大部分偶发。
+    #   ⚠ 但「退出码 3」= 长期凭据（wr_vid/wr_rt）失效、两次续期都没成功 ⇒ **重试无意义**，
+    #     必须人工扫一次码；这类不重试、直接按 error 告警，避免"重试成功"的假象掩盖问题。
+    _retried = 0
+    if w_err and _weread_failure_kind(w_err) == "transient":
+        time.sleep(60)
+        _w_since = datetime.now().timestamp()      # 重试要重新取时点，否则读不到本次结果文件
+        w_out, w_err = _run_weread()
+        _retried = 1
     w_collected, _w_src = _wechat_weread_count(_w_since)
     if w_err:
-        _safe_alert(db, "wechat_weread_collect_failed", "WeChat MP (weread) collect failed",
-                    f"读书通道采集{tag} 失败：{w_err}"
-                    f"（多为 cookie 失效 → 重跑 probe/_weread_login.mjs；"
-                    f"合集通道结论不受影响）", severity="warn")
+        if _weread_failure_kind(w_err) == "credentials":
+            _safe_alert(db, "wechat_weread_collect_failed", "WeChat MP (weread) collect failed",
+                        f"读书通道采集{tag} 失败：{w_err}"
+                        f"（长期凭据 wr_vid/wr_rt 已失效：自动续期两次均失败 ⇒ **必须扫码**"
+                        f" node probe/_weread_login.mjs；合集通道结论不受影响）",
+                        severity="error")
+        else:
+            _safe_alert(db, "wechat_weread_collect_failed", "WeChat MP (weread) collect failed",
+                        f"读书通道采集{tag} 失败：{w_err}"
+                        f"（已自动续期并重试 {_retried} 次仍失败；"
+                        f"90 分钟会话密钥会自动刷新，通常**无需扫码**。合集通道结论不受影响）",
+                        severity="warn")
 
+    # 【2026-10-19】有新文就**立即**触发入库，消除 09:05/19:05 之间最长 10h 的空窗。
+    #   没有新文不触发（不烧 LLM）。并发由 _INGEST_LOCK 兜底。
+    _new_total = max(0, int(collected or 0)) + max(0, int(w_collected or 0))
     _safe_alert(db, "wechat_collect_done", "WeChat MP collect done",
                 f"公众号采集{tag} 完成：合集通道新发现 {collected} 篇 / "
                 f"读书通道新发现 {w_collected} 篇"
                 + (f"（读书通道出错：{w_err[:80]}）" if w_err else "")
-                + f"（入库由 {_WECHAT_INGEST_TIMES} 的入库任务接手）",
+                + ("（共 %d 篇新文 ⇒ 立即触发入库）" % _new_total if _new_total > 0
+                   else f"（无新文，不触发入库；定时任务 {_WECHAT_INGEST_TIMES} 仍会兜底）"),
                 severity="info")
+
+    if _new_total > 0:
+        _safe_alert(db, "wechat_ingest_triggered", "WeChat MP ingest triggered",
+                    f"采集到 {_new_total} 篇新文 ⇒ 立即入库（默认串行，避免与研报三源抢 LLM）",
+                    severity="info")
+        _run_wechat_ingest(tag)
+
+
+_INGEST_LOCK = threading.Lock()
 
 
 def _run_wechat_ingest(time_str: str = ""):
+    """② 公众号入库**入口**：进程级互斥，避免两路并发跑同一批。
+
+    【为什么需要】「采集后自动触发」与 19:05 定时任务可能同时起来；
+      DB 去重发生在**每篇处理完之后**，并发时同一篇会被两路各跑一遍 LLM
+      （既烧钱又可能撞 SQLite 写锁）。两路都在同一 web 进程内，进程级锁足够。
+    """
+    if not _INGEST_LOCK.acquire(blocking=False):
+        _safe_alert(get_db(), "wechat_ingest_skipped", "WeChat MP ingest skipped",
+                    "公众号入库已在进行中 ⇒ 跳过本次触发（幂等，本轮结束后下一轮会自动补）",
+                    severity="info")
+        return
+    try:
+        return _run_wechat_ingest_impl(time_str)
+    finally:
+        _INGEST_LOCK.release()
+
+
+def _run_wechat_ingest_impl(time_str: str = ""):
     """② 公众号**入库**一步:把 inbox 里未入库的文章接进研报库(要走 LLM)。
 
     【关键逻辑】读 **wechat_inbox.jsonl(追加式)** 而不是 wechat_new.json(每轮被覆盖):

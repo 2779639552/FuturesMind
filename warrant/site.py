@@ -180,8 +180,14 @@ def build(results: dict, date_str: str | None = None) -> dict:
             umix[u][1] += 1
         unit_mix = [{"unit": k, "qty": _i(v[0]), "count": v[1]}
                     for k, v in sorted(umix.items(), key=lambda kv: -kv[1][0])]
+        # 【2026-10-21】把"这一所是不是沿用了上次快照"透给前端：不标出来，
+        #   用户只会看到日期不动的旧数据，误以为是最新的。
+        _fetch = res.get("_fetch") or {}
         ex_meta.append({
             "code": ex, "name": EXCHANGE_CN.get(ex, ex), "unit": unit,
+            "date": res.get("date"),
+            "stale": bool(_fetch.get("stale")),
+            "fetch_error": _fetch.get("error"),
             "brand_support": bool(BRAND_SUPPORT.get(ex)),
             "product_count": len(prod_rows),
             "total_qty": _i(sum(_num(p.get("qty")) or 0 for p in prod_rows)),
@@ -263,11 +269,15 @@ def build(results: dict, date_str: str | None = None) -> dict:
                 "has_brand": bool(brands),
             })
 
+    # 本次真正采集失败的交易所清单（有快照兜底也会有数据，但必须外显）
+    fetch_errors = {m["code"]: {"error": m.get("fetch_error"), "date": m.get("date")}
+                    for m in ex_meta if m.get("stale")}
     overview = {
         "date": date_str,
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "exchanges": ex_meta,
         "products": products,
+        "fetch_errors": fetch_errors,
     }
     detail_doc = {
         "date": date_str,
